@@ -1,0 +1,14 @@
+FROM docker.io/library/node:18-bullseye-slim as build-web
+WORKDIR /app
+
+COPY client/web/antrea-ui/package.json .
+COPY client/web/antrea-ui/yarn.lock .
+
+RUN yarn install --pure-lockfile
+
+COPY client/web/antrea-ui .
+ARG NODE_ENV=production
+RUN yarn build
+
+FROM docker.io/nginxinc/nginx-unprivileged:1.23
+COPY --from=build-web /app/build /app

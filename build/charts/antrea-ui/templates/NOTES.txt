@@ -1,0 +1,29 @@
+{{- include "validateValues" . }}
+The Antrea UI has been successfully installed
+
+You are using version {{ .Chart.Version }}
+
+{{- $port := 3000 -}}
+{{- $scheme := "http" -}}
+{{- if .Values.https.enable }}
+{{- $scheme = "https" }}
+{{- end }}
+
+To access the UI, forward a local port to the antrea-ui service, and connect to
+that port locally with your browser:
+
+  $ kubectl -n {{ .Release.Namespace }} port-forward service/antrea-ui {{ $port }}:{{ .Values.service.port }}
+
+After running the command above, access "{{ $scheme }}://localhost:{{ $port }}" in your browser.
+
+{{- if and .Values.https.enable (eq .Values.https.method "auto") }}
+
+HTTPS is enabled to access the UI and a self-signed certificate was
+automatically generated. You can access the certificate with the following
+command:
+
+  $ kubectl -n {{ .Release.Namespace }} get secret/antrea-ui-tls-cert  -o jsonpath='{.data.cert\.pem}' | base64 --decode
+
+{{ end -}}
+
+For the Antrea documentation, please visit https://antrea.io

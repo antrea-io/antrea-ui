@@ -1,0 +1,29 @@
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: antrea-ui
+  labels:
+    app: antrea-ui
+rules:
+  - apiGroups:
+      - crd.antrea.io
+    resources:
+      - antreacontrollerinfos
+    verbs:
+      - get
+  - apiGroups:
+      - crd.antrea.io
+    resources:
+      - antreaagentinfos
+    verbs:
+      - list
+      - get
+  - apiGroups:
+      - crd.antrea.io
+    resources:
+      - traceflows
+      - traceflows/status
+    verbs:
+      - get
+      - list
+      - watch
