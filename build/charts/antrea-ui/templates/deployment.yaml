@@ -1,0 +1,139 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: antrea-ui
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: antrea-ui
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: antrea-ui
+  template:
+    metadata:
+      labels:
+        app: antrea-ui
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        # every time the chart is templated, a new JWT key is generated, so we
+        # need to re-create the Pod
+        rollme: {{ randAlphaNum 5 | quote }}
+        kubectl.kubernetes.io/default-container: frontend
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: antrea-ui
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+      containers:
+        - name: frontend
+          image: {{ include "frontendImage" . | quote }}
+          imagePullPolicy: {{ .Values.frontend.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.frontend.port }}
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+              {{- if .Values.https.enable }}
+              scheme: HTTPS
+              {{- end }}
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+              {{- if .Values.https.enable }}
+              scheme: HTTPS
+              {{- end }}
+          resources:
+            {{- toYaml .Values.frontend.resources | nindent 12 }}
+          volumeMounts:
+            - name: nginx-conf
+              mountPath: /etc/nginx/conf.d/default.conf
+              subPath: nginx.conf
+              readOnly: true
+            {{- if .Values.https.enable }}
+            - name: nginx-tls-cert
+              mountPath: /app/nginx-cert.pem
+              subPath: cert.pem
+              readOnly: true
+            - name: nginx-tls-key
+              mountPath: /app/nginx-key.pem
+              subPath: key.pem
+              readOnly: true
+            {{- end }}
+        - name: backend
+          image: {{ include "backendImage" . | quote }}
+          imagePullPolicy: {{ .Values.backend.image.pullPolicy }}
+          args:
+            - "-addr"
+            - ":{{ .Values.backend.port }}"
+            - "-jwt-key"
+            - "/app/jwt-key.pem"
+            {{- if .Values.https.enable }}
+            - "-cookie-secure"
+            {{- end }}
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          ports:
+            - name: api
+              containerPort: {{ .Values.backend.port }}
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: api
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: api
+          resources:
+            {{- toYaml .Values.backend.resources | nindent 12 }}
+          volumeMounts:
+            - name: jwt-key
+              mountPath: /app/jwt-key.pem
+              subPath: key.pem
+              readOnly: true
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      volumes:
+        - name: nginx-conf
+          configMap:
+            name: antrea-ui-nginx
+        - name: jwt-key
+          secret:
+            secretName: antrea-ui-jwt-key
+            defaultMode: 0400
+        {{- if .Values.https.enable }}
+        - name: nginx-tls-cert
+          secret:
+            secretName: antrea-ui-tls-cert
+            defaultMode: 0400
+        - name: nginx-tls-key
+          secret:
+            secretName: antrea-ui-tls-key
+            defaultMode: 0400
+        {{- end }}
+      terminationGracePeriodSeconds: 10

@@ -1,0 +1,102 @@
+# -- Configuration for the Antrea UI frontend container.
+frontend:
+  # -- Container image to use for the Antrea UI frontend.
+  image:
+    repository: "antrea/antrea-ui-frontend"
+    pullPolicy: "IfNotPresent"
+    tag: ""
+  # -- Container port on which the frontend will listen.
+  port: 3000
+  # -- Resource requests and limits for the frontend container.
+  resources: {}
+
+# -- Configuration for the Antrea UI backend container.
+backend:
+  # -- Container image to use for the Antrea UI backend.
+  image:
+    repository: "antrea/antrea-ui-backend"
+    pullPolicy: "IfNotPresent"
+    tag: ""
+  # -- Container port on which the backend will listen/
+  port: 8080
+  # -- Resource requests and limits for the backend container.
+  resources: {}
+
+# -- HTTPS configuration for the Antrea UI.
+https:
+  # -- Enable HTTPS (only) for accessing the web UI.
+  enable: false
+  # -- Method for generating the TLS certificate for the web server. We support "auto", "user", and
+  # "userCA". With "auto", Helm will generate a new self-signed certificate every time the template
+  # function is executed. With "user", the user is responsible for providing a certificate and key,
+  # which will be used directly. With "userCA", the user is responsible for providing a CA
+  # certificate and key, which will be used to generate a signed certificate to be used by the web
+  # server.
+  method: "auto"
+  # -- Configure automatic TLS certificate generation with Helm.
+  auto:
+    # -- Common name to use in the certificate.
+    commonName: "localhost"
+    # -- IP addresses to use in the certificate.
+    ipAddresses: []
+    # -- DNS names to use in the certificate.
+    dnsNames: []
+    # -- Number of days for which the certificate will be valid. There is no automatic rotation with
+    # this method.
+    daysValid: 365
+  # -- Use the provided TLS certificate and key.
+  user:
+    # -- Certificate (base64-encoded PEM format)
+    cert: ""
+    # -- Private key (base64-encoded PEM format)
+    key: ""
+  # -- Use the provided CA certificate and key to generate a signed certificate.
+  userCA:
+    # -- CA certificate (base64-encoded PEM format)
+    cert: ""
+    # -- CA private key (base64-encoded PEM format)
+    key: ""
+    # -- Common name to use in the certificate.
+    commonName: "localhost"
+    # -- IP addresses to use in the certificate.
+    ipAddresses: []
+    # -- DNS names to use in the certificate.
+    dnsNames: []
+    # -- Number of days for which the certificate will be valid. There is no automatic rotation with
+    # this method.
+    daysValid: 365
+  # TODO: cert-manager
+
+# -- IPv6 configuration for the Antrea UI.
+ipv6:
+  # -- Enable IPv6 for accessing the web UI. Even if the cluster does not support IPv6, you do not
+  # typically need to set this value to false.
+  enable: true
+
+# -- Configuration for the Antrea UI Service.
+service:
+  # --- The type of Service used for Antrea UI access, either ClusterIP, NodePort or LoadBalancer.
+  type: ClusterIP
+  # -- The port on which the Service is exposed.
+  port: 3000
+  # --- The Node port to use when the Service type is NodePort or LoadBalancer.
+  nodePort: 31234
+  # -- Annotations to be added to the Service.
+  annotations: {}
+  # -- Labels to be added to the Service.
+  labels: {}
+
+# -- Node selector for the Antrea UI Pod.
+nodeSelector:
+  kubernetes.io/os: linux
+
+# -- Affinity for the Antrea UI Pod.
+affinity: {}
+
+# -- Tolerations for the Antrea UI Pod.
+tolerations: {}
+
+# -- Annotations to be added to the Antrea UI Pod.
+podAnnotations: {}
+# -- Labels to be added to the Antrea UI Pod.
+podLabels: {}
