@@ -1,0 +1,37 @@
+name: Build and push container images for release
+on:
+  push:
+    tags:
+      - v*
+
+jobs:
+  get-version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.get-version.outputs.version }}
+    steps:
+    - name: Extract version from Github ref
+      id: get-version
+      env:
+        TAG: ${{ github.ref }}
+      run: |
+        version=${TAG:10}
+        echo "version=$version" >> $GITHUB_OUTPUT
+
+  build:
+    runs-on: ubuntu-latest
+    needs: get-version
+    steps:
+    - name: Check-out code
+      uses: actions/checkout@v3
+    - name: Build container images
+      run: make
+    - name: Push container images if needed
+      if: ${{ github.repository == 'antrea-io/antrea-ui' && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+      env:
+        DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+        DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+        VERSION: ${{ needs.get-version.outputs.version }}
+      run: |
+        docker push antrea/antrea-ui-frontend:"${VERSION}"
+        docker push antrea/antrea-ui-backend:"${VERSION}"

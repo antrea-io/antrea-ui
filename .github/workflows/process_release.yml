@@ -1,0 +1,28 @@
+name: Process new release
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  upload-release-assets:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    - name: Set up Go using version from go.mod
+      uses: actions/setup-go@v3
+      with:
+        go-version-file: 'go.mod'
+    - name: Build assets
+      env:
+        TAG: ${{ github.ref }}
+        PRERELEASE: ${{ github.event.release.prerelease }}
+      run: |
+        mkdir assets
+        VERSION="${TAG:10}" ./hack/release/prepare-assets.sh ./assets
+    - name: Upload all assets
+      uses: alexellis/upload-assets@0.4.0
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        asset_paths: '["./assets/*"]'

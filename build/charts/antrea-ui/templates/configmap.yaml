@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: antrea-ui-nginx
+  namespace: {{ .Release.Namespace }}
+data:
+  nginx.conf: {{ include "antrea-ui.nginx.conf" . | trim | quote }}
