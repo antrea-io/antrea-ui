@@ -10,11 +10,24 @@ interface ObjectMetadata {
 }
 
 export interface TraceflowPacket {
-    ipHeader: {
+    srcIP?: string
+    dstIP?: string
+    length?: number
+    ipHeader?: {
+        srcIP?: string
         protocol?: number
+        ttl?: number
+        flags?: number
+    }
+    ipv6Header?: {
+        srcIP?: string
+        nextHeader?: number
+        hopLimit?: number
     }
     transportHeader: {
         icmp?: {
+            id?: number
+            sequence?: number
         }
         udp?: {
             srcPort?: number
@@ -41,6 +54,8 @@ export interface TraceflowSpec {
         ip?: string
     }
     packet?: TraceflowPacket
+    liveTraffic?: boolean
+    droppedOnly?: boolean
     timeout?: number
 }
 
@@ -71,6 +86,7 @@ export interface TraceflowStatus {
     reason: string
     startTime: string
     results: TraceflowNodeResult[]
+    capturedPacket?: TraceflowPacket
 }
 
 interface Traceflow {

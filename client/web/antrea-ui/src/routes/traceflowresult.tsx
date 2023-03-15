@@ -5,10 +5,11 @@ import { TraceflowSpec, TraceflowStatus, TraceflowNodeResult, TraceflowObservati
 import * as d3 from 'd3';
 import { graphviz } from "d3-graphviz";
 import { CdsAlertGroup, CdsAlert } from "@cds/react/alert";
+import { useAPIError} from '../components/errors';
 
 class Node {
     name: string;
-    attrs: Map<string, string>;
+    private attrs: Map<string, string>;
 
     constructor(name: string) {
         this.name = name;
@@ -27,9 +28,9 @@ class Node {
 }
 
 class Edge {
-    startNode: string;
-    endNode: string;
-    attrs: Map<string, string>;
+    private startNode: string;
+    private endNode: string;
+    private attrs: Map<string, string>;
 
     constructor(startNode: string, endNode: string) {
         this.startNode = startNode;
@@ -45,8 +46,8 @@ class Edge {
 }
 
 class DotStringBuilder {
-    lines: string[];
-    indent: number;
+    private lines: string[];
+    private indent: number;
 
     constructor() {
         this.lines = new Array<string>();
@@ -72,12 +73,12 @@ class DotStringBuilder {
 }
 
 class Graph {
-    graphType: string;
-    name: string;
-    nodes: Node[];
-    edges: Edge[];
-    subgraphs: Graph[];
-    attrs: Map<string, string>;
+    private graphType: string;
+    private name: string;
+    private nodes: Node[];
+    private edges: Edge[];
+    private subgraphs: Graph[];
+    private attrs: Map<string, string>;
 
     constructor(graphType: string, name: string) {
         this.graphType = graphType;
@@ -159,41 +160,64 @@ function isReceiver(nodeResult: TraceflowNodeResult): boolean {
     return true;
 }
 
-function TraceflowGraph(props: {spec: TraceflowSpec, status: TraceflowStatus}) {
-    const tfSpec = props.spec;
-    const tfStatus = props.status;
-    const divRef = useRef<HTMLDivElement>(null);
+// const darkRed = `"#B20000"`
+// const mistyRose = `"#EDD5D5"`
+// const fireBrick = `"#B22222"`
+const ghostWhite = `"#F8F8FF"`;
+// const gainsboro = `"#DCDCDC"`
+const lightGrey = `"#C8C8C8"`;
+// const silver = `"#C0C0C0"`
+const grey = `"#808080"`;
+// const dimGrey = `"#696969"`
 
-    // const darkRed = `"#B20000"`
-    // const mistyRose = `"#EDD5D5"`
-    // const fireBrick = `"#B22222"`
-    const ghostWhite = `"#F8F8FF"`;
-    // const gainsboro = `"#DCDCDC"`
-    const lightGrey = `"#C8C8C8"`;
-    // const silver = `"#C0C0C0"`
-    const grey = `"#808080"`;
-    // const dimGrey = `"#696969"`
+class TraceflowResultError extends Error {
+    constructor(...params: any[]) {
+        super(...params);
+        this.message = `invalid Traceflow result: ${this.message}`;
+    }
+}
 
-    useEffect(() => {
-        renderGraph(buildGraph());
-    });
+class TraceflowGraphBuilder {
+    private spec: TraceflowSpec;
+    private status: TraceflowStatus;
 
-    function buildGraph(): Digraph {
+    constructor(spec: TraceflowSpec, status: TraceflowStatus) {
+        this.spec = spec;
+        this.status = status;
+    }
+
+    buildGraph(): Digraph {
         const graph = new Digraph('tf');
 
-        if (!tfStatus) return graph;
-        if (!tfStatus.results) return graph;
+        if (!this.status) return graph;
+        if (!this.status.results) return graph;
 
-        const senderNodeResult = tfStatus.results.find(isSender);
-        const receiverNodeResult = tfStatus.results.find(isReceiver);
+        const senderNodeResult = this.status.results.find(isSender);
+        const receiverNodeResult = this.status.results.find(isReceiver);
 
-        if (!senderNodeResult) return graph;
+        if (!senderNodeResult && !this.spec.liveTraffic) {
+            throw new TraceflowResultError("missing sender information for regular Traceflow");
+        }
 
-        const srcNode = buildEndpointNode('source', getSourceLabel());
-        const [srcCluster, srcLastNode] = buildSubgraph('cluster_source', srcNode, senderNodeResult, false);
+        if (!senderNodeResult) {
+            // Live Traceflow case
+            if (!receiverNodeResult) {
+                throw new TraceflowResultError("there is no Node result for live Traceflow");
+            }
+            const dstNode = this.buildEndpointNode('dest', this.getDestinationLabel());
+            const [dstCluster, dstFirstNode] = this.buildSubgraph('cluster_destination', dstNode, receiverNodeResult, true);
+            graph.addSubgraph(dstCluster);
+            const srcNode = this.buildEndpointNode('source', this.getSourceLabel());
+            graph.addNode(srcNode);
+            graph.addEdge(new Edge(srcNode.name, dstFirstNode.name));
+            return graph;
+        }
+
+        const srcNode = this.buildEndpointNode('source', this.getSourceLabel());
+        const [srcCluster, srcLastNode] = this.buildSubgraph('cluster_source', srcNode, senderNodeResult, false);
         graph.addSubgraph(srcCluster);
 
-        const dstNode = buildEndpointNode('dest', getDestinationLabel());
+        const dstNode = this.buildEndpointNode('dest', this.getDestinationLabel());
 
         if (!receiverNodeResult) {
             srcCluster.addNode(dstNode);
@@ -202,14 +226,14 @@ function TraceflowGraph(props: {spec: TraceflowSpec, status: TraceflowStatus}) {
         }
 
         // sender + receiver
-        const [dstCluster, dstFirstNode] = buildSubgraph('cluster_destination', dstNode, receiverNodeResult, true);
+        const [dstCluster, dstFirstNode] = this.buildSubgraph('cluster_destination', dstNode, receiverNodeResult, true);
         graph.addSubgraph(dstCluster);
         graph.addEdge(new Edge(srcLastNode.name, dstFirstNode.name));
 
         return graph;
     }
 
-    function getTraceflowLabel(obs: TraceflowObservation): string {
+    private getTraceflowLabel(obs: TraceflowObservation): string {
         const label: string[] = [obs.component];
         if (obs.componentInfo) label.push(obs.componentInfo);
         label.push(obs.action);
@@ -225,17 +249,43 @@ function TraceflowGraph(props: {spec: TraceflowSpec, status: TraceflowStatus}) {
         return label.join('\n');
     }
 
-    function getSourceLabel(): string {
-        const source = tfSpec.source;
+    private getSourceLabel(): string {
+        const source = this.spec.source;
         if (source.ip) return source.ip;
-        return source.namespace + '/' + source.pod;
+        if (source.pod) return source.namespace + '/' + source.pod;
+        if (this.spec.liveTraffic) {
+            return this.getCapturedPacketSrcIP();
+        }
+        return "";
     }
 
-    function getDestinationPod(): string {
-        const dest = tfSpec.destination;
-        if (dest.pod) return dest.pod;
+    private getCapturedPacketSrcIP(): string {
+        if (!this.spec.liveTraffic) {
+            throw new Error("getCapturedPacketSrcIP called for non live Traceflow");
+        }
+        const srcIP = this.status?.capturedPacket?.srcIP;
+        if (!srcIP) {
+            throw new TraceflowResultError("missing src IP in captured packet for live Traceflow");
+        }
+        return srcIP;
+    }
+
+    private getCapturedPacketDstIP(): string {
+        if (!this.spec.liveTraffic) {
+            throw new Error("getCapturedPacketDstIP called for non live Traceflow");
+        }
+        const dstIP = this.status?.capturedPacket?.dstIP;
+        if (!dstIP) {
+            throw new TraceflowResultError("missing dst IP in captured packet for live Traceflow");
+        }
+        return dstIP;
+    }
+
+    private getDestinationPod(): string {
+        const dest = this.spec.destination;
+        if (dest.pod) return dest.namespace + '/' + dest.pod;
         let pod: string = "";
-        tfStatus.results.forEach(nodeResult => {
+        this.status.results.forEach(nodeResult => {
             nodeResult.observations.forEach(obs => {
                 if (obs.pod) pod = obs.pod;
             });
@@ -243,14 +293,19 @@ function TraceflowGraph(props: {spec: TraceflowSpec, status: TraceflowStatus}) {
         return pod;
     }
 
-    function getDestinationLabel(): string {
-        const dest = tfSpec.destination;
+    private getDestinationLabel(): string {
+        const dest = this.spec.destination;
         if (dest.ip) return dest.ip;
         if (dest.service) return dest.namespace + '/' + dest.service;
-        return dest.namespace + '/' + getDestinationPod();
+        const pod = this.getDestinationPod();
+        if (pod) return pod;
+        if (this.spec.liveTraffic) {
+            return this.getCapturedPacketDstIP();
+        }
+        return "";
     }
 
-    function buildEndpointNode(name: string, label: string): Node {
+    private buildEndpointNode(name: string, label: string): Node {
         const n = new Node(name);
         n.setAttr('style', `"filled,bold"`);
         n.setAttr('label', `"${label}"`);
@@ -259,7 +314,7 @@ function TraceflowGraph(props: {spec: TraceflowSpec, status: TraceflowStatus}) {
         return n;
     }
 
-    function buildSubgraph(name: string, endpointNode: Node, nodeResult: TraceflowNodeResult, isDst: boolean): [Subgraph, Node] {
+    private buildSubgraph(name: string, endpointNode: Node, nodeResult: TraceflowNodeResult, isDst: boolean): [Subgraph, Node] {
         const graph = new Subgraph(name);
         graph.setAttr('style', `"filled,bold"`);
         graph.setAttr('bgcolor', ghostWhite);
@@ -269,7 +324,7 @@ function TraceflowGraph(props: {spec: TraceflowSpec, status: TraceflowStatus}) {
         nodeResult.observations.forEach((obs, idx) => {
             const nodeName = `${name}_${idx}`;
             const n = new Node(nodeName);
-            const label = getTraceflowLabel(obs);
+            const label = this.getTraceflowLabel(obs);
             n.setAttr('shape', `"box"`);
             n.setAttr('style', `"rounded,filled,solid"`);
             n.setAttr('label', `"${label}"`);
@@ -285,9 +340,34 @@ function TraceflowGraph(props: {spec: TraceflowSpec, status: TraceflowStatus}) {
         if (isDst) return [graph, nodes[0]];
         return [graph, nodes[nodes.length-1]];
     }
+}
 
-    function renderGraph(graph: Digraph) {
-        graphviz(divRef.current).renderDot(graph.asDot());
+function TraceflowGraph(props: {spec: TraceflowSpec, status: TraceflowStatus}) {
+    const tfSpec = props.spec;
+    const tfStatus = props.status;
+    const divRef = useRef<HTMLDivElement>(null);
+    const { addError } = useAPIError();
+
+    useEffect(() => {
+        const graphBuilder = new TraceflowGraphBuilder(tfSpec, tfStatus);
+        try {
+            renderGraph(graphBuilder.buildGraph());
+        } catch(e) {
+            console.error(e);
+            renderGraph(null);
+            if (e instanceof TraceflowResultError) addError(e);
+            else throw e;
+        }
+    }, [addError, tfSpec, tfStatus]);
+
+
+
+    function renderGraph(graph: Digraph | null) {
+        if (!graph) {
+            divRef.current?.replaceChildren();
+        } else {
+            graphviz(divRef.current).renderDot(graph.asDot());
+        }
     }
 
     return (
