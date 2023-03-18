@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/rsa"
 	"flag"
 	"fmt"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/go-logr/zapr"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 
 	"antrea.io/antrea-ui/pkg/auth"
 	"antrea.io/antrea-ui/pkg/env"
@@ -30,7 +32,47 @@ var (
 	logger       logr.Logger
 	jwtKeyPath   string
 	cookieSecure bool
+	verbosity    int
 )
+
+func ginLogger(logger logr.Logger, level int) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		// Start timer
+		start := time.Now()
+		path := c.Request.URL.Path
+		raw := c.Request.URL.RawQuery
+
+		// Process request
+		c.Next()
+
+		stop := time.Now()
+		latency := stop.Sub(start)
+		if latency > time.Minute {
+			latency = latency.Truncate(time.Second)
+		}
+
+		clientIP := c.ClientIP()
+		method := c.Request.Method
+		if raw != "" {
+			path = path + "?" + raw
+		}
+		statusCode := c.Writer.Status()
+		errorMessage := c.Errors.ByType(gin.ErrorTypePrivate).Last().Error()
+
+		keysAndValues := []interface{}{
+			"code", statusCode,
+			"client", clientIP,
+			"method", method,
+			"path", path,
+			"latency", latency.String(),
+		}
+		if errorMessage != "" {
+			keysAndValues = append(keysAndValues, "error", errorMessage)
+		}
+
+		logger.V(level).Info("GIN request", keysAndValues...)
+	}
+}
 
 func run() error {
 	k8sClient, err := k8s.DynamicClient()
@@ -44,7 +86,20 @@ func run() error {
 	if err := passwordStore.Init(context.Background()); err != nil {
 		return err
 	}
-	tokenManager := auth.NewTokenManager("key", auth.LoadPrivateKeyOrDie(jwtKeyPath))
+	var jwtKey *rsa.PrivateKey
+	if jwtKeyPath != "" {
+		var err error
+		if jwtKey, err = auth.LoadPrivateKeyFromFile(jwtKeyPath); err != nil {
+			return fmt.Errorf("failed to load JWT key from file: %w", err)
+		}
+	} else {
+		logger.Info("Generating RSA key for JWT")
+		var err error
+		if jwtKey, err = auth.GeneratePrivateKey(); err != nil {
+			return fmt.Errorf("failed to generate JWT key: %w", err)
+		}
+	}
+	tokenManager := auth.NewTokenManager("jwt-key", jwtKey)
 
 	s := server.NewServer(
 		logger,
@@ -54,10 +109,15 @@ func run() error {
 		tokenManager,
 		server.SetCookieSecure(cookieSecure),
 	)
+
+	var router *gin.Engine
 	if env.IsProductionEnv() {
 		gin.SetMode(gin.ReleaseMode)
+		router = gin.New()
+		router.Use(ginLogger(logger, 2), gin.Recovery())
+	} else {
+		router = gin.Default()
 	}
-	router := gin.Default()
 	if !env.IsProductionEnv() {
 		corsConfig := cors.DefaultConfig()
 		corsConfig.AllowOrigins = []string{"http://localhost:3000"}
@@ -101,20 +161,32 @@ func run() error {
 	return nil
 }
 
+func validateArgs() error {
+	if verbosity < 0 || verbosity >= 128 {
+		return fmt.Errorf("invalid verbosity level %d: it should be >= 0 and < 128", verbosity)
+	}
+	return nil
+}
+
 func main() {
 	flag.StringVar(&serverAddr, "addr", ":8080", "Listening address for server")
-	flag.StringVar(&jwtKeyPath, "jwt-key", "", "Path to PEM private key file to generate JWT tokens")
+	flag.StringVar(&jwtKeyPath, "jwt-key", "", "Path to PEM private key file to generate JWT tokens; if omitted one will be automatically generated")
 	flag.BoolVar(&cookieSecure, "cookie-secure", false, "Set the Secure attribute for authentication cookie, which requires HTTPS")
+	flag.IntVar(&verbosity, "v", 0, "Log verbosity")
 	flag.Parse()
 
-	zc := zap.NewProductionConfig()
-	if !env.IsProductionEnv() {
-		zc.Level = zap.NewAtomicLevelAt(zap.DebugLevel)
+	if err := validateArgs(); err != nil {
+		fmt.Fprintf(os.Stderr, "Invalid args: %v\n", err.Error())
+		os.Exit(1)
 	}
+
+	zc := zap.NewProductionConfig()
+	zc.Level = zap.NewAtomicLevelAt(zapcore.Level(-1 * verbosity))
 	zc.DisableStacktrace = true
 	zapLog, err := zc.Build()
 	if err != nil {
-		panic("Cannot initialize Zap logger")
+		fmt.Fprintf(os.Stderr, "Cannot initialize Zap logger: %v\n", err)
+		os.Exit(1)
 	}
 	logger = zapr.NewLogger(zapLog)
 	if err := run(); err != nil {

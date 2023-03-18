@@ -67,3 +67,9 @@ func TestLoadPrivateKeyFromFile(t *testing.T) {
 	require.NoError(t, err, "failed to load key from PEM file")
 	assert.NoError(t, privateKey.Validate())
 }
+
+func TestGeneratePrivateKey(t *testing.T) {
+	privateKey, err := GeneratePrivateKey()
+	require.NoError(t, err, "failed to generate private key")
+	assert.GreaterOrEqual(t, privateKey.N.BitLen(), 2048)
+}

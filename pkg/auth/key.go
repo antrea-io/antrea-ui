@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/pem"
@@ -8,6 +9,8 @@ import (
 
 	"github.com/spf13/afero"
 )
+
+const defaultPrivateKeySize = 2048
 
 var fs = afero.NewOsFs()
 
@@ -36,4 +39,8 @@ func LoadPrivateKeyOrDie(filepath string) *rsa.PrivateKey {
 		panic(fmt.Sprintf("Cannot load PEM data: %v", err))
 	}
 	return p
+}
+
+func GeneratePrivateKey() (*rsa.PrivateKey, error) {
+	return rsa.GenerateKey(rand.Reader, defaultPrivateKeySize)
 }
