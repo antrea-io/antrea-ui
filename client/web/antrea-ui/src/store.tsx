@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { configureStore, createSlice, PayloadAction } from '@reduxjs/toolkit';
+import { configureStore, createSlice, PayloadAction, PreloadedState } from '@reduxjs/toolkit';
 
 interface state {
     // if token is undefined: we do not have a token in memory but we may have a
@@ -40,13 +40,17 @@ const authSlice = createSlice({
     }
 });
 
-export const store = configureStore({
-    reducer: authSlice.reducer,
-});
+export const setupStore = (preloadedState?: PreloadedState<RootState>) => {
+    return configureStore({
+        reducer: authSlice.reducer,
+        preloadedState,
+    });
+};
+
+export const store = setupStore();
 
 export const { setToken } = authSlice.actions;
 
-// Infer the `RootState` and `AppDispatch` types from the store itself
-export type RootState = ReturnType<typeof store.getState>
-// Inferred type: {posts: PostsState, comments: CommentsState, users: UsersState}
+export type RootState = ReturnType<typeof authSlice.reducer>
+export type AppStore = ReturnType<typeof setupStore>
 export type AppDispatch = typeof store.dispatch

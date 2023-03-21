@@ -24,7 +24,7 @@ import { ErrorMessage } from '@hookform/error-message';
 import { ErrorMessageContainer } from '../components/form-errors';
 import { useLogout} from '../components/logout';
 import { accountAPI } from '../api/account';
-import { useAPIError} from '../components/errors';
+import { useAppError} from '../components/errors';
 
 type Inputs = {
     currentPassword: string
@@ -37,21 +37,21 @@ function UpdatePassword() {
 
     const [, logout] = useLogout();
 
-    const { addError } = useAPIError();
+    const { addError } = useAppError();
 
     const onSubmit: SubmitHandler<Inputs> = async data => {
         try {
             await accountAPI.updatePassword(data.currentPassword, data.newPassword);
-        } catch(e) {
+        } catch (e) {
             if (e instanceof Error ) addError(e);
             console.error(e);
             return;
         }
-        logout();
+        logout('Your password was successfully updated, please login again');
     };
 
     return (
-        <CdsCard>
+        <CdsCard title="Update Password">
             <div cds-layout="vertical gap:md">
                 <div cds-text="section" cds-layout="p-y:sm">
                     Update Password
@@ -60,8 +60,8 @@ function UpdatePassword() {
                 <form onSubmit = {handleSubmit(onSubmit)}>
                     <CdsFormGroup layout="horizontal">
                         <CdsPassword>
-                            <label>Current Password</label>
-                            <input type="password" {...register("currentPassword", {
+                            <label htmlFor="current-password-input">Current Password</label>
+                            <input id="current-password-input" type="password" {...register("currentPassword", {
                                 required: "Required field",
                             })} />
                         </CdsPassword>
@@ -71,8 +71,8 @@ function UpdatePassword() {
                             as={<ErrorMessageContainer />}
                         />
                         <CdsPassword>
-                            <label>New Password</label>
-                            <input type="password" {...register("newPassword", {
+                            <label htmlFor="new-password-input">New Password</label>
+                            <input id="new-password-input" type="password" {...register("newPassword", {
                                 required: "Required field",
                             })} />
                         </CdsPassword>
@@ -82,8 +82,8 @@ function UpdatePassword() {
                             as={<ErrorMessageContainer />}
                         />
                         <CdsPassword>
-                            <label>Confirm New Password</label>
-                            <input type="password" {...register("newPassword2", {
+                            <label htmlFor="confirm-password-input">Confirm New Password</label>
+                            <input id="confirm-password-input" type="password" {...register("newPassword2", {
                                 required: "Required field",
                                 validate: (value: string) => {
                                     if (value !== watch("newPassword")) {

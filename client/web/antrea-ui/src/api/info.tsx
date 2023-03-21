@@ -28,7 +28,7 @@ interface NetworkPolicyControllerInfo {
     appliedToGroupNum: number
 }
 
-interface ControllerCondition {
+export interface Condition {
     type: string
     status: string
     lastHeartbeatTime: string
@@ -36,6 +36,9 @@ interface ControllerCondition {
     message: string
 }
 
+export interface ControllerCondition extends Condition { }
+
+// The fields which we do not need at the moment are made optional
 export interface ControllerInfo {
     metadata: {
         name: string
@@ -43,26 +46,20 @@ export interface ControllerInfo {
     version: string
     podRef: K8sRef
     nodeRef: K8sRef
-    serviceRef: K8sRef
-    networkPolicyControllerInfo: NetworkPolicyControllerInfo
+    serviceRef?: K8sRef
+    networkPolicyControllerInfo?: NetworkPolicyControllerInfo
     connectedAgentNum: number
     controllerConditions: ControllerCondition[]
-    apiPort: number
+    apiPort?: number
 }
 
 interface OVSInfo {
     version: string
-    bridgeName: string
-    flowTable: Map<string,number>
+    bridgeName?: string
+    flowTable?: Map<string,number>
 }
 
-interface AgentCondition {
-    type: string
-    status: string
-    lastHeartbeatTime: string
-    reason: string
-    message: string
-}
+export interface AgentCondition extends Condition { }
 
 export interface AgentInfo {
     metadata: {
@@ -73,10 +70,10 @@ export interface AgentInfo {
     nodeRef: K8sRef
     nodeSubnets: string[]
     ovsInfo: OVSInfo
-    networkPolicyControllerInfo: NetworkPolicyControllerInfo
+    networkPolicyControllerInfo?: NetworkPolicyControllerInfo
     localPodNum: number
     agentConditions: AgentCondition[]
-    apiPort: number
+    apiPort?: number
 }
 
 export const controllerInfoAPI = {

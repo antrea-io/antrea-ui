@@ -17,38 +17,52 @@
 import React, { useState, useEffect} from 'react';
 import { CdsCard } from '@cds/react/card';
 import { CdsDivider } from '@cds/react/divider';
-import { AgentInfo, ControllerInfo, K8sRef, agentInfoAPI, controllerInfoAPI } from '../api/info';
-import { useAPIError} from '../components/errors';
+import { AgentInfo, ControllerInfo, Condition, K8sRef, agentInfoAPI, controllerInfoAPI } from '../api/info';
+import { useAppError} from '../components/errors';
 import { WaitForAPIResource } from '../components/progress';
 
 type Property = string
 
-const controllerProperties: Property[] = ["Name", "Version", "Pod Name", "Node Name", "Connected Agents"];
-const agentProperties: Property[] = ["Name", "Version", "Pod Name", "Node Name", "Local Pods", "OVS Version"];
+const controllerProperties: Property[] = ["Name", "Version", "Pod Name", "Node Name", "Connected Agents", "Healthy", "Last Heartbeat"];
+const agentProperties: Property[] = ["Name", "Version", "Pod Name", "Node Name", "Local Pods", "Node Subnets", "OVS Version", "Healthy", "Last Heartbeat"];
 
 function refToString(ref: K8sRef): string {
     if (ref.namespace) return ref.namespace + '/' + ref.name;
     return ref.name;
 }
 
+// returns status and last heartbeat time
+function getConditionInfo(conditions: Condition[], name: string): [string, string] {
+    const condition = conditions.find(c => c.type === name);
+    if (!condition) return ["False", "None"];
+    return [condition.status, new Date(condition.lastHeartbeatTime).toLocaleString()];
+}
+
 function controllerPropertyValues(controller: ControllerInfo): string[] {
+    const [healthy, lastHeartbeat] = getConditionInfo(controller.controllerConditions, 'ControllerHealthy');
     return [
         controller.metadata.name,
         controller.version,
         refToString(controller.podRef),
         refToString(controller.nodeRef),
         (controller.connectedAgentNum??0).toString(),
+        healthy,
+        lastHeartbeat,
     ];
 }
 
 function agentPropertyValues(agent: AgentInfo): string[] {
+    const [healthy, lastHeartbeat] = getConditionInfo(agent.agentConditions, 'AgentHealthy');
     return [
         agent.metadata.name,
         agent.version,
         refToString(agent.podRef),
         refToString(agent.nodeRef),
         (agent.localPodNum??0).toString(),
+        agent.nodeSubnets.join(','),
         agent.ovsInfo.version,
+        healthy,
+        lastHeartbeat,
     ];
 }
 
@@ -57,13 +71,13 @@ function ComponentSummary<T>(props: {title: string, data: T[], propertyNames: Pr
     const data = props.data;
 
     return (
-        <CdsCard>
+        <CdsCard title={props.title}>
             <div cds-layout="vertical gap:md">
                 <div cds-text="section" cds-layout="p-y:sm">
                     {props.title}
                 </div>
                 <CdsDivider cds-card-remove-margin></CdsDivider>
-                <table cds-table="border:all" cds-text="center">
+                <table cds-table="border:all" cds-text="center body">
                     <thead>
                         <tr>
                             {
@@ -98,14 +112,14 @@ function ComponentSummary<T>(props: {title: string, data: T[], propertyNames: Pr
 export default function Summary() {
     const [controllerInfo, setControllerInfo] = useState<ControllerInfo>();
     const [agentInfos, setAgentInfos] = useState<AgentInfo[]>();
-    const { addError, removeError } = useAPIError();
+    const { addError, removeError } = useAppError();
 
     useEffect(() => {
         async function getControllerInfo() {
             try {
                 const controllerInfo = await controllerInfoAPI.fetch();
                 return controllerInfo;
-            } catch(e) {
+            } catch (e) {
                 if (e instanceof Error ) addError(e);
                 console.error(e);
             }
@@ -115,7 +129,7 @@ export default function Summary() {
             try {
                 const agentInfos = await agentInfoAPI.fetchAll();
                 return agentInfos;
-            } catch(e) {
+            } catch (e) {
                 if (e instanceof Error ) addError(e);
                 console.error(e);
             }
@@ -143,7 +157,7 @@ export default function Summary() {
                 <WaitForAPIResource ready={controllerInfo !== undefined} text="Loading Controller Information">
                     <ComponentSummary title="Controller" data={new Array(controllerInfo!)} propertyNames={controllerProperties} getProperties={controllerPropertyValues} />
                 </WaitForAPIResource>
-                <WaitForAPIResource ready={agentInfos !==undefined} text="Loading Agents Information">
+                <WaitForAPIResource ready={agentInfos !== undefined} text="Loading Agents Information">
                     <ComponentSummary title="Agents" data={agentInfos!} propertyNames={agentProperties} getProperties={agentPropertyValues} />
                 </WaitForAPIResource>
             </div>

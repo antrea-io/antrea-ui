@@ -105,7 +105,7 @@ export interface TraceflowStatus {
     capturedPacket?: TraceflowPacket
 }
 
-interface Traceflow {
+export interface Traceflow {
     apiVersion?: string
     kind?: string
     metadata?: ObjectMetadata
@@ -118,7 +118,7 @@ export const traceflowAPI = {
         try {
             let response = await api.post(`traceflow`, {spec: tf}, {
                 headers: {
-                    "Content-Type": "application/json",
+                    "content-type": "application/json",
                 },
                 validateStatus: (status: number) => status === 202,
             });
@@ -129,9 +129,18 @@ export const traceflowAPI = {
             const reqURL = location;
             const statusURL = `${location}/status`;
 
-            for (let i = 0; i < 10; i++) {
-                const retryAfter = response.headers["retry-after"] ?? "1";
-                const waitFor = parseInt(retryAfter) * 1000;
+            // TODO: should this function take a timeout as parameter?
+            // Traceflow requests have their own timeout already, and callers
+            // should also feel free to time out while waiting for the promise
+            // to resolve.
+            for (;;) {
+            // for (let i = 0; i < 10; i++) {
+                const retryAfter = response.headers["retry-after"] ?? '0';
+                let waitFor = parseInt(retryAfter) * 1000;
+                // if retry-after header is missing or invalid, we wait for 100ms
+                if (isNaN(waitFor) || waitFor === 0) {
+                    waitFor = 100;
+                }
                 await new Promise(r => setTimeout(r, waitFor));
                 response = await api.get(`${statusURL}`, {
                     baseURL: `${apiServer}`,
@@ -148,6 +157,7 @@ export const traceflowAPI = {
                     return tf.status;
                 }
             }
+            // eslint-disable-next-line no-unreachable
             throw new APIError(0, "", "Timeout when waiting for traceflow request to complete");
         } catch(err) {
             console.error("Unable to run traceflow");

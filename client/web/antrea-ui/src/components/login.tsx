@@ -21,7 +21,7 @@ import { CdsFormGroup } from '@cds/react/forms';
 import { CdsInput } from "@cds/react/input";
 import { CdsPassword } from "@cds/react/password";
 import { authAPI } from '../api/auth';
-import { useAPIError} from './errors';
+import { useAppError} from './errors';
 import { ErrorMessageContainer } from './form-errors';
 
 type Inputs = {
@@ -32,7 +32,7 @@ type Inputs = {
 export default function Login(props: { setToken: (token: string) => void }) {
     const { register, handleSubmit, formState: { errors } } = useForm<Inputs>();
     const setToken = props.setToken;
-    const { addError } = useAPIError();
+    const { addError } = useAppError();
 
     const onSubmit: SubmitHandler<Inputs> = async data => {
         try {
@@ -48,8 +48,8 @@ export default function Login(props: { setToken: (token: string) => void }) {
         <form onSubmit = {handleSubmit(onSubmit)}>
             <CdsFormGroup layout="horizontal">
                 <CdsInput>
-                    <label>Username</label>
-                    <input {...register("username", {
+                    <label htmlFor="username-input">Username</label>
+                    <input id="username-input" {...register("username", {
                         required: "Required field",
                     })} defaultValue="admin" />
                 </CdsInput>
@@ -59,8 +59,8 @@ export default function Login(props: { setToken: (token: string) => void }) {
                     as={<ErrorMessageContainer />}
                 />
                 <CdsPassword>
-                    <label>Password</label>
-                    <input type="password" {...register("password", {
+                    <label htmlFor="password-input">Password</label>
+                    <input id="password-input" type="password" {...register("password", {
                         required: "Required field",
                     })} />
                 </CdsPassword>

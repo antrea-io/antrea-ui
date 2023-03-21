@@ -35,6 +35,8 @@ api.interceptors.request.use((request) => {
 const refreshAuthLogic = (failedRequest: AxiosError) =>
     authAPI.refreshToken().then(() => {
         if (failedRequest.response?.config.headers) {
+            // this is not really needed, as the interceptor above will still be called when we
+            // retry the original request.
             failedRequest.response.config.headers['Authorization'] = `Bearer ${getToken()}`;
         }
         return Promise.resolve();
