@@ -1,4 +1,6 @@
 GO                 ?= go
+LDFLAGS            :=
+GOFLAGS            :=
 BINDIR := $(CURDIR)/bin
 # version should match github.com/golang/mock version in go.mod
 GOMOCK_VERSION := v1.6.0
@@ -11,10 +13,15 @@ GOLANGCI_LINT_BIN     := $(GOLANGCI_LINT_BINDIR)/$(GOLANGCI_LINT_VERSION)/golang
 all: build
 
 include versioning.mk
+VERSION_LDFLAGS = -X antrea.io/antrea-ui/pkg/version.Version=$(VERSION)
+VERSION_LDFLAGS += -X antrea.io/antrea-ui/pkg/version.GitSHA=$(GIT_SHA)
+VERSION_LDFLAGS += -X antrea.io/antrea-ui/pkg/version.GitTreeState=$(GIT_TREE_STATE)
+VERSION_LDFLAGS += -X antrea.io/antrea-ui/pkg/version.ReleaseStatus=$(RELEASE_STATUS)
+LDFLAGS += $(VERSION_LDFLAGS)
 
 .PHONY: bin
 bin:
-	GOBIN=$(BINDIR) $(GO) install antrea.io/antrea-ui/...
+	GOBIN=$(BINDIR) $(GO) install $(GOFLAGS) -ldflags '-s -w $(LDFLAGS)' antrea.io/antrea-ui/...
 
 .PHONY: test
 test:

@@ -25,6 +25,7 @@ import (
 	passwordrw "antrea.io/antrea-ui/pkg/password/readwriter"
 	"antrea.io/antrea-ui/pkg/server"
 	"antrea.io/antrea-ui/pkg/signals"
+	"antrea.io/antrea-ui/pkg/version"
 )
 
 var (
@@ -79,6 +80,8 @@ func ginLogger(logger logr.Logger, level int) gin.HandlerFunc {
 }
 
 func run() error {
+	logger.Info("Starting Antrea UI backend", "version", version.GetFullVersionWithRuntimeInfo())
+
 	k8sClient, err := k8s.DynamicClient()
 	if err != nil {
 		return fmt.Errorf("failed to create K8s dynamic client: %w", err)

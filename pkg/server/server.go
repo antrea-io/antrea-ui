@@ -11,6 +11,7 @@ import (
 	"antrea.io/antrea-ui/pkg/auth"
 	traceflowhandler "antrea.io/antrea-ui/pkg/handlers/traceflow"
 	"antrea.io/antrea-ui/pkg/password"
+	"antrea.io/antrea-ui/pkg/version"
 )
 
 type server struct {
@@ -92,6 +93,9 @@ func (s *server) AddRoutes(router *gin.Engine) {
 		c.Status(http.StatusOK)
 	})
 	apiv1 := router.Group("/api/v1")
+	apiv1.GET("/version", func(c *gin.Context) {
+		c.String(http.StatusOK, version.GetFullVersionWithRuntimeInfo())
+	})
 	s.AddTraceflowRoutes(apiv1)
 	s.AddInfoRoutes(apiv1)
 	s.AddAccountRoutes(apiv1)
