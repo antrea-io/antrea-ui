@@ -57,7 +57,11 @@ func ginLogger(logger logr.Logger, level int) gin.HandlerFunc {
 			path = path + "?" + raw
 		}
 		statusCode := c.Writer.Status()
-		errorMessage := c.Errors.ByType(gin.ErrorTypePrivate).Last().Error()
+		lastError := c.Errors.ByType(gin.ErrorTypePrivate).Last()
+		errorMessage := ""
+		if lastError != nil {
+			errorMessage = lastError.Error()
+		}
 
 		keysAndValues := []interface{}{
 			"code", statusCode,
