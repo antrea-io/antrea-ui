@@ -51,7 +51,7 @@ $(GOMOCK_BIN):
 
 .PHONY: generate
 generate: $(GOMOCK_BIN)
-	PATH=$(CURDIR)/$(GOMOCK_BINDIR)/$(GOMOCK_VERSION):$$PATH $(GO) generate antrea.io/antrea-ui/...
+	PATH=$(CURDIR)/$(GOMOCK_BINDIR)/$(GOMOCK_VERSION):$$PATH MOCKGEN_COPYRIGHT_FILE=$(CURDIR)/hack/boilerplate/license_header.raw.txt $(GO) generate antrea.io/antrea-ui/...
 
 
 .PHONY: clean
@@ -72,3 +72,11 @@ build-backend:
 
 .PHONY: build
 build: build-frontend build-backend
+
+.PHONY: check-copyright
+check-copyright:
+	@GO=$(GO) $(CURDIR)/hack/add-license.sh
+
+.PHONY: add-copyright
+add-copyright:
+	@GO=$(GO) $(CURDIR)/hack/add-license.sh --add

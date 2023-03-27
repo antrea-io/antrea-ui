@@ -10,7 +10,7 @@ type Token struct {
 	ExpiresAt time.Time
 }
 
-//go:generate mockgen -source=interface.go -package=testing -destination=testing/mock_interface.go
+//go:generate mockgen -source=interface.go -package=testing -destination=testing/mock_interface.go -copyright_file=$MOCKGEN_COPYRIGHT_FILE
 
 type TokenManager interface {
 	GetToken() (*Token, error)
