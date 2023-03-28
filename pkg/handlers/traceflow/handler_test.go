@@ -86,10 +86,9 @@ func TestRequestsHandler(t *testing.T) {
 			require.NoError(t, err)
 
 			// TF status not updated yet, hence request not ready
-			status, err := h.GetRequestStatus(ctx, requestID)
+			_, done, err := h.GetRequestResult(ctx, requestID)
 			require.NoError(t, err)
-			assert.False(t, status.Done)
-			assert.NoError(t, status.Err)
+			assert.False(t, done)
 
 			traceflow, err := k8sClient.Resource(traceflowGVR).Get(ctx, tfName, metav1.GetOptions{})
 			require.NoError(t, err)
@@ -99,13 +98,9 @@ func TestRequestsHandler(t *testing.T) {
 			_, err = k8sClient.Resource(traceflowGVR).Update(ctx, traceflow, metav1.UpdateOptions{})
 			require.NoError(t, err)
 
-			status, err = h.GetRequestStatus(ctx, requestID)
+			tf, done, err := h.GetRequestResult(ctx, requestID)
 			require.NoError(t, err)
-			assert.True(t, status.Done)
-			assert.NoError(t, status.Err)
-
-			tf, err := h.GetRequestResult(ctx, requestID)
-			require.NoError(t, err)
+			require.True(t, done)
 			phase, ok, err := unstructured.NestedString(tf, "status", "phase")
 			require.NoError(t, err)
 			assert.True(t, ok)

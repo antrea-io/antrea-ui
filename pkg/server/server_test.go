@@ -98,6 +98,7 @@ func TestAuthorization(t *testing.T) {
 		"GET /api/v1/auth/login":         true,
 		"GET /api/v1/auth/refresh_token": true,
 		"GET /api/v1/auth/logout":        true,
+		"GET /api/v1/version":            true,
 	}
 	ts := newTestServer(t)
 	for _, routeInfo := range ts.router.Routes() {
@@ -109,6 +110,6 @@ func TestAuthorization(t *testing.T) {
 		require.NoError(t, err)
 		rr := httptest.NewRecorder()
 		ts.router.ServeHTTP(rr, req)
-		assert.Equalf(t, http.StatusUnauthorized, rr.Code, "route (%s) should be protected by token but it not", routeStr)
+		assert.Equalf(t, http.StatusUnauthorized, rr.Code, "route (%s) should be protected by token but it is not", routeStr)
 	}
 }

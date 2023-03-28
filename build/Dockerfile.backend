@@ -21,6 +21,4 @@ USER 65532:65532
 
 COPY --from=build-go /app/bin/server /app/server
 
-ENV APP_ENV=production
-
 ENTRYPOINT [ "/app/server" ]

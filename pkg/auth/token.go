@@ -33,9 +33,9 @@ const (
 )
 
 type tokenManager struct {
-	SigningKeyID       string
-	SigningKey         *rsa.PrivateKey
-	SigningMethod      jwt.SigningMethod
+	signingKeyID       string
+	signingKey         *rsa.PrivateKey
+	signingMethod      jwt.SigningMethod
 	refreshTokensMutex sync.RWMutex
 	refreshTokens      map[string]time.Time
 	clock              clock.Clock
@@ -47,9 +47,9 @@ type JWTAccessClaims struct {
 
 func newTokenManagerWithClock(keyID string, key *rsa.PrivateKey, clock clock.Clock) *tokenManager {
 	return &tokenManager{
-		SigningKeyID:  keyID,
-		SigningKey:    key,
-		SigningMethod: jwt.SigningMethodRS512,
+		signingKeyID:  keyID,
+		signingKey:    key,
+		signingMethod: jwt.SigningMethodRS512,
 		refreshTokens: make(map[string]time.Time),
 		clock:         clock,
 	}
@@ -75,12 +75,12 @@ func (m *tokenManager) getToken(expiresIn time.Duration) (*Token, error) {
 		},
 	}
 
-	token := jwt.NewWithClaims(m.SigningMethod, claims)
-	if m.SigningKeyID != "" {
-		token.Header["kid"] = m.SigningKeyID
+	token := jwt.NewWithClaims(m.signingMethod, claims)
+	if m.signingKeyID != "" {
+		token.Header["kid"] = m.signingKeyID
 	}
 
-	access, err := token.SignedString(m.SigningKey)
+	access, err := token.SignedString(m.signingKey)
 	if err != nil {
 		return nil, err
 	}
@@ -110,7 +110,7 @@ func (m *tokenManager) verifyToken(rawToken string) error {
 	_, err := jwt.Parse(
 		rawToken,
 		func(token *jwt.Token) (interface{}, error) {
-			return &m.SigningKey.PublicKey, nil
+			return &m.signingKey.PublicKey, nil
 		},
 		jwt.WithTimeFunc(m.clock.Now),
 	)
@@ -156,6 +156,7 @@ func (m *tokenManager) doRefreshTokenGC() {
 		return tokens
 	}()
 
+	// we delete the tokens by batches to avoid holding the lock for too long at one time.
 	const batchSize = 100
 	idx := 0
 	for idx < len(expiredTokens) {

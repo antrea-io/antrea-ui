@@ -47,7 +47,7 @@ func createTestControllerInfo(ctx context.Context, k8sClient dynamic.Interface, 
 func TestGetControllerInfo(t *testing.T) {
 	ctx := context.Background()
 	ts := newTestServer(t)
-	require.NoError(t, createTestControllerInfo(ctx, ts.k8sClient, "antrea-controller"), "failed top create test ControllerInfo")
+	require.NoError(t, createTestControllerInfo(ctx, ts.k8sClient, "antrea-controller"), "failed to create test ControllerInfo")
 
 	req, err := http.NewRequest("GET", "/api/v1/info/controller", nil)
 	require.NoError(t, err)
@@ -77,7 +77,7 @@ func createTestAgentInfo(ctx context.Context, k8sClient dynamic.Interface, name 
 func TestGetAgentInfo(t *testing.T) {
 	ctx := context.Background()
 	ts := newTestServer(t)
-	require.NoError(t, createTestAgentInfo(ctx, ts.k8sClient, "node-A"), "failed top create test AgentInfo")
+	require.NoError(t, createTestAgentInfo(ctx, ts.k8sClient, "node-A"), "failed to create test AgentInfo")
 
 	t.Run("valid name", func(t *testing.T) {
 		req, err := http.NewRequest("GET", "/api/v1/info/agents/node-A", nil)
@@ -102,8 +102,8 @@ func TestGetAgentInfo(t *testing.T) {
 func TestGetAgentInfos(t *testing.T) {
 	ctx := context.Background()
 	ts := newTestServer(t)
-	require.NoError(t, createTestAgentInfo(ctx, ts.k8sClient, "node-A"), "failed top create test AgentInfo")
-	require.NoError(t, createTestAgentInfo(ctx, ts.k8sClient, "node-B"), "failed top create test AgentInfo")
+	require.NoError(t, createTestAgentInfo(ctx, ts.k8sClient, "node-A"), "failed to create test AgentInfo")
+	require.NoError(t, createTestAgentInfo(ctx, ts.k8sClient, "node-B"), "failed to create test AgentInfo")
 
 	req, err := http.NewRequest("GET", "/api/v1/info/agents", nil)
 	require.NoError(t, err)

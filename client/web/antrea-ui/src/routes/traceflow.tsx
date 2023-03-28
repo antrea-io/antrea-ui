@@ -298,7 +298,7 @@ export default function Traceflow() {
             },
             max: {
                 value: 255,
-                message: "TCP flags must be <= 65535",
+                message: "TCP flags must be <= 255",
             },
             setValueAs: parseInt,
         },
@@ -312,7 +312,7 @@ export default function Traceflow() {
                 message: "timeout must be >= 1",
             },
             max: {
-                value: 65535,
+                value: 120,
                 message: "timeout must be <= 120",
             },
             setValueAs: parseInt,

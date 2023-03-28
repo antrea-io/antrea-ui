@@ -81,31 +81,17 @@ func (mr *MockRequestsHandlerMockRecorder) DeleteRequest(ctx, requestID interfac
 }
 
 // GetRequestResult mocks base method.
-func (m *MockRequestsHandler) GetRequestResult(ctx context.Context, requestID string) (map[string]interface{}, error) {
+func (m *MockRequestsHandler) GetRequestResult(ctx context.Context, requestID string) (map[string]interface{}, bool, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "GetRequestResult", ctx, requestID)
 	ret0, _ := ret[0].(map[string]interface{})
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
+	ret1, _ := ret[1].(bool)
+	ret2, _ := ret[2].(error)
+	return ret0, ret1, ret2
 }
 
 // GetRequestResult indicates an expected call of GetRequestResult.
 func (mr *MockRequestsHandlerMockRecorder) GetRequestResult(ctx, requestID interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetRequestResult", reflect.TypeOf((*MockRequestsHandler)(nil).GetRequestResult), ctx, requestID)
-}
-
-// GetRequestStatus mocks base method.
-func (m *MockRequestsHandler) GetRequestStatus(ctx context.Context, requestID string) (*traceflow.RequestStatus, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetRequestStatus", ctx, requestID)
-	ret0, _ := ret[0].(*traceflow.RequestStatus)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// GetRequestStatus indicates an expected call of GetRequestStatus.
-func (mr *MockRequestsHandlerMockRecorder) GetRequestStatus(ctx, requestID interface{}) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetRequestStatus", reflect.TypeOf((*MockRequestsHandler)(nil).GetRequestStatus), ctx, requestID)
 }

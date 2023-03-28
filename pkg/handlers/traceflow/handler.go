@@ -16,7 +16,6 @@ package traceflow
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -34,7 +33,6 @@ import (
 const (
 	traceflowExpiryTimeout = 60 * time.Minute
 	gcPeriod               = 1 * time.Minute
-	requestsPerHour        = 100
 )
 
 var (
@@ -42,6 +40,10 @@ var (
 		Group:    "crd.antrea.io",
 		Version:  "v1alpha1",
 		Resource: "traceflows",
+	}
+
+	traceflowLabels = map[string]string{
+		"ui.antrea.io": "",
 	}
 )
 
@@ -76,23 +78,8 @@ func (h *requestsHandler) CreateRequest(ctx context.Context, request *Request) (
 	return requestID, nil
 }
 
-func (h *requestsHandler) GetRequestStatus(ctx context.Context, requestID string) (*RequestStatus, error) {
-	_, done, err := h.getTraceflow(ctx, requestID)
-	return &RequestStatus{
-		Done: done,
-		Err:  err,
-	}, nil
-}
-
-func (h *requestsHandler) GetRequestResult(ctx context.Context, requestID string) (map[string]interface{}, error) {
-	object, done, err := h.getTraceflow(ctx, requestID)
-	if err != nil {
-		return nil, err
-	}
-	if !done {
-		return nil, fmt.Errorf("Traceflow not complete yet")
-	}
-	return object, nil
+func (h *requestsHandler) GetRequestResult(ctx context.Context, requestID string) (map[string]interface{}, bool, error) {
+	return h.getTraceflow(ctx, requestID)
 }
 
 func (h *requestsHandler) DeleteRequest(ctx context.Context, requestID string) (bool, error) {
@@ -128,13 +115,11 @@ func (h *requestsHandler) createTraceflow(ctx context.Context, tfName string, ob
 			"kind":       "Traceflow",
 			"metadata": map[string]interface{}{
 				"name": tfName,
-				"labels": map[string]interface{}{
-					"ui.antrea.io": "",
-				},
 			},
 			"spec": object["spec"],
 		},
 	}
+	traceflow.SetLabels(traceflowLabels)
 	if _, err := h.k8sClient.Resource(traceflowGVR).Create(ctx, traceflow, metav1.CreateOptions{}); err != nil {
 		return err
 	}
@@ -143,7 +128,7 @@ func (h *requestsHandler) createTraceflow(ctx context.Context, tfName string, ob
 
 func (h *requestsHandler) doGC(ctx context.Context) {
 	labelSelector := metav1.LabelSelector{
-		MatchLabels: map[string]string{"ui.antrea.io": ""},
+		MatchLabels: traceflowLabels,
 	}
 	list, err := h.k8sClient.Resource(traceflowGVR).List(ctx, metav1.ListOptions{
 		LabelSelector: labels.Set(labelSelector.MatchLabels).String(),

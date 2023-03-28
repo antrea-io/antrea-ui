@@ -32,7 +32,7 @@ func (s *server) UpdatePassword(c *gin.Context) {
 				message: "invalid body",
 			}
 		}
-		if err := s.passwordStore.Compare(c, []byte(updatePassword.CurrentPassword)); err != nil {
+		if err := s.passwordStore.Compare(c, updatePassword.CurrentPassword); err != nil {
 			return &serverError{
 				code:    http.StatusBadRequest,
 				message: "Invalid current admin password",

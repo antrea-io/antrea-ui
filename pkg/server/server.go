@@ -23,7 +23,7 @@ import (
 	"k8s.io/client-go/dynamic"
 
 	"antrea.io/antrea-ui/pkg/auth"
-	traceflowhandler "antrea.io/antrea-ui/pkg/handlers/traceflow"
+	"antrea.io/antrea-ui/pkg/handlers/traceflow"
 	"antrea.io/antrea-ui/pkg/password"
 	"antrea.io/antrea-ui/pkg/version"
 )
@@ -31,7 +31,7 @@ import (
 type server struct {
 	logger                   logr.Logger
 	k8sClient                dynamic.Interface
-	traceflowRequestsHandler traceflowhandler.RequestsHandler
+	traceflowRequestsHandler traceflow.RequestsHandler
 	passwordStore            password.Store
 	tokenManager             auth.TokenManager
 	config                   serverConfig
@@ -52,7 +52,7 @@ func SetCookieSecure(v bool) ServerOptions {
 func NewServer(
 	logger logr.Logger,
 	k8sClient dynamic.Interface,
-	traceflowRequestsHandler traceflowhandler.RequestsHandler,
+	traceflowRequestsHandler traceflow.RequestsHandler,
 	passwordStore password.Store,
 	tokenManager auth.TokenManager,
 	options ...ServerOptions,

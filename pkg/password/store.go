@@ -65,7 +65,7 @@ func (s *store) Init(ctx context.Context) error {
 	}
 	salt = make([]byte, saltLength)
 	if _, err := rand.Read(salt); err != nil {
-		return fmt.Errorf("error when generation random salt: %w", err)
+		return fmt.Errorf("error when generating random salt: %w", err)
 	}
 	hash, err = s.hasher.Hash([]byte(defaultPassword), salt)
 	if err != nil {

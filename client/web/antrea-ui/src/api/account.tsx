@@ -11,6 +11,6 @@ export const accountAPI = {
             headers: {
                 "Content-Type": "application/json",
             },
-        }).then((response) => {}).catch(handleError);
+        }).then(_ => {}).catch(handleError);
     },
 };

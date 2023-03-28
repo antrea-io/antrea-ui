@@ -51,17 +51,17 @@ func (s *server) CreateTraceflowRequest(c *gin.Context) {
 		return
 	}
 	c.Header("Access-Control-Expose-Headers", "Location, Retry-After")
-	c.Header("Location", fmt.Sprintf("/api/v1/traceflow/%s/status", requestID))
+	c.Header("Location", fmt.Sprintf("/api/v1/traceflow/%s", requestID))
 	c.Header("Retry-After", "2") // 2 seconds
 	c.Status(http.StatusAccepted)
 }
 
 func (s *server) GetTraceflowRequestStatus(c *gin.Context) {
 	requestID := c.Param("requestId")
-	var requestStatus *traceflowhandler.RequestStatus
+	var done bool
 	if sError := func() *serverError {
 		var err error
-		requestStatus, err = s.traceflowRequestsHandler.GetRequestStatus(c, requestID)
+		_, done, err = s.traceflowRequestsHandler.GetRequestResult(c, requestID)
 		if err != nil {
 			return &serverError{
 				code: http.StatusInternalServerError,
@@ -74,12 +74,11 @@ func (s *server) GetTraceflowRequestStatus(c *gin.Context) {
 		s.LogError(sError, "Failed to get Traceflow request status", "requestId", requestID)
 		return
 	}
-	if !requestStatus.Done {
+	if !done {
 		c.Header("Access-Control-Expose-Headers", "Location, Retry-After")
 		c.Header("Location", fmt.Sprintf("/api/v1/traceflow/%s/status", requestID))
 		c.Header("Retry-After", "1") // 1 second
-		// this may not be the best status code for this case
-		c.Status(http.StatusAccepted)
+		c.Status(http.StatusOK)
 		return
 	}
 	c.Header("Access-Control-Expose-Headers", "Location")
@@ -91,11 +90,17 @@ func (s *server) GetTraceflowRequestResult(c *gin.Context) {
 	requestID := c.Param("requestId")
 	var data []byte
 	if sError := func() *serverError {
-		tfResult, err := s.traceflowRequestsHandler.GetRequestResult(c, requestID)
+		tfResult, done, err := s.traceflowRequestsHandler.GetRequestResult(c, requestID)
 		if err != nil {
 			return &serverError{
 				code: http.StatusInternalServerError,
 				err:  fmt.Errorf("error when getting Traceflow request result: %w", err),
+			}
+		}
+		if !done {
+			return &serverError{
+				code:    http.StatusNotFound,
+				message: "Traceflow result not available, call the /status endpoint to check progress",
 			}
 		}
 		data, err = json.Marshal(tfResult)
@@ -115,7 +120,7 @@ func (s *server) GetTraceflowRequestResult(c *gin.Context) {
 	c.Data(http.StatusOK, "application/json; charset=utf-8", data)
 }
 
-func (s *server) DeleteTraceflowRequestResult(c *gin.Context) {
+func (s *server) DeleteTraceflowRequest(c *gin.Context) {
 	requestID := c.Param("requestId")
 	if sError := func() *serverError {
 		ok, err := s.traceflowRequestsHandler.DeleteRequest(c, requestID)
@@ -147,6 +152,9 @@ func (s *server) AddTraceflowRoutes(r *gin.RouterGroup) {
 	// rate-limit it to 100 requests per hour out of caution.
 	r.POST("", s.CreateTraceflowRequest, rateLimiter(100, 10))
 	r.GET("/:requestId/status", s.GetTraceflowRequestStatus)
+	r.GET("/:requestId", func(c *gin.Context) {
+		c.Redirect(http.StatusSeeOther, c.Request.URL.Path+"/status")
+	})
 	r.GET("/:requestId/result", s.GetTraceflowRequestResult)
-	r.DELETE("/:requestId/result", s.DeleteTraceflowRequestResult)
+	r.DELETE("/:requestId", s.DeleteTraceflowRequest)
 }

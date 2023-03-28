@@ -102,7 +102,6 @@ func run() error {
 	}
 
 	traceflowHandler := traceflowhandler.NewRequestsHandler(logger, k8sClient)
-	// passwordStore := password.NewStore(passwordrw.NewInMemory(), passwordhasher.NewArgon2id())
 	passwordStore := password.NewStore(passwordrw.NewK8sSecret(env.GetNamespace(), "antrea-ui-passwd", k8sClient), passwordhasher.NewArgon2id())
 	if err := passwordStore.Init(context.Background()); err != nil {
 		return err
@@ -132,14 +131,14 @@ func run() error {
 	)
 
 	var router *gin.Engine
-	if env.IsProductionEnv() {
+	if env.IsDevelopmentEnv() {
+		router = gin.Default()
+	} else {
 		gin.SetMode(gin.ReleaseMode)
 		router = gin.New()
 		router.Use(ginLogger(logger, 2), gin.Recovery())
-	} else {
-		router = gin.Default()
 	}
-	if !env.IsProductionEnv() {
+	if env.IsDevelopmentEnv() {
 		corsConfig := cors.DefaultConfig()
 		corsConfig.AllowOrigins = []string{"http://localhost:3000"}
 		corsConfig.AddAllowHeaders("Authorization")

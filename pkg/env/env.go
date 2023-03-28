@@ -18,8 +18,8 @@ import (
 	"os"
 )
 
-func IsProductionEnv() bool {
-	return os.Getenv("APP_ENV") == "production"
+func IsDevelopmentEnv() bool {
+	return os.Getenv("APP_ENV") == "dev" || os.Getenv("APP_ENV") == "development"
 }
 
 func GetNamespace() string {

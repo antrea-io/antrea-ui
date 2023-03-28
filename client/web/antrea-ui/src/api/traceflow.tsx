@@ -106,19 +106,25 @@ export const traceflowAPI = {
                 },
                 validateStatus: (status: number) => status === 202,
             });
+            let location = response.headers["location"];
+            if (!location) {
+                throw new APIError(0, "", "Missing Location after creating traceflow request");
+            }
+            const reqURL = location;
+            const statusURL = `${location}/status`;
 
             for (let i = 0; i < 10; i++) {
-                let location = response.headers["location"] ?? "";
-                let retryAfter = response.headers["retry-after"] ?? "";
-                let waitFor = parseInt(retryAfter) * 1000;
+                const retryAfter = response.headers["retry-after"] ?? "1";
+                const waitFor = parseInt(retryAfter) * 1000;
                 await new Promise(r => setTimeout(r, waitFor));
-                response = await api.get(`${location}`, {
+                response = await api.get(`${statusURL}`, {
                     baseURL: `${apiServer}`,
-                    validateStatus: (status: number) => status === 200 || status === 202,
+                    validateStatus: (status: number) => status === 200,
                 });
-                if (response.status === 200) {
+                const done = (response.status === 200 && response.request.responseURL.endsWith('/result'));
+                if (done) {
                     if (withDelete) {
-                        await api.delete(`${response.request.responseURL}`, {
+                        await api.delete(reqURL, {
                             validateStatus: (status: number) => status === 200,
                         }).then(_ => console.log("Traceflow deleted successfully")).catch(_ => console.error("Unable to delete traceflow"));
                     }

@@ -40,7 +40,7 @@ function UpdatePassword() {
                 <div cds-text="section" cds-layout="p-y:sm">
                     Update Password
                 </div>
-                <CdsDivider></CdsDivider>
+                <CdsDivider />
                 <form onSubmit = {handleSubmit(onSubmit)}>
                     <CdsFormGroup layout="horizontal">
                         <CdsPassword>
