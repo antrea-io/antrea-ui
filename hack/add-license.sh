@@ -58,10 +58,23 @@ case $key in
 esac
 done
 
+IGNORE_FILES=(
+    "client/web/antrea-ui/build/**"
+    "client/web/antrea-ui/node_modules/**"
+    "**/*.d.ts"
+    "**/*.yml"
+    "**/*.yaml"
+)
+IGNORE_FILES_TOKENS=()
+for p in "${IGNORE_FILES[@]}"; do
+    IGNORE_FILES_TOKENS+=("-ignore")
+    IGNORE_FILES_TOKENS+=("$p")
+done
+
 if $ADD; then
     echo "===> Adding License for files <==="
-    addlicense -c "Antrea Authors." -y $(date +%Y) `find . -type f -name "*.go"` `find . -type f -name "*.sh"`
+    addlicense -c "Antrea Authors." -y $(date +%Y) "${IGNORE_FILES_TOKENS[@]}" .
 else
     echo "===> Checking License for files <==="
-    addlicense -c "Antrea Authors." -check `find . -type f -name "*.go"` `find . -type f -name "*.sh"`
+    addlicense -c "Antrea Authors." -check "${IGNORE_FILES_TOKENS[@]}" .
 fi

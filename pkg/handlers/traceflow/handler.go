@@ -127,11 +127,8 @@ func (h *requestsHandler) createTraceflow(ctx context.Context, tfName string, ob
 }
 
 func (h *requestsHandler) doGC(ctx context.Context) {
-	labelSelector := metav1.LabelSelector{
-		MatchLabels: traceflowLabels,
-	}
 	list, err := h.k8sClient.Resource(traceflowGVR).List(ctx, metav1.ListOptions{
-		LabelSelector: labels.Set(labelSelector.MatchLabels).String(),
+		LabelSelector: labels.Set(traceflowLabels).String(),
 	})
 	if err != nil {
 		h.logger.Error(err, "Error when listing traceflows")
