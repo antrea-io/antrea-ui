@@ -150,7 +150,7 @@ func (s *server) AddTraceflowRoutes(r *gin.RouterGroup) {
 	r.Use(s.checkBearerToken)
 	// Because this API supports creating resources in the cluster, we
 	// rate-limit it to 100 requests per hour out of caution.
-	r.POST("", s.CreateTraceflowRequest, rateLimiter(100, 10))
+	r.POST("", rateLimiter(100, 10), s.CreateTraceflowRequest)
 	r.GET("/:requestId/status", s.GetTraceflowRequestStatus)
 	r.GET("/:requestId", func(c *gin.Context) {
 		c.Redirect(http.StatusSeeOther, c.Request.URL.Path+"/status")
