@@ -50,8 +50,9 @@ Kubernetes: `>= 1.16.0-0`
 | nodeSelector | object | `{"kubernetes.io/os":"linux"}` | Node selector for the Antrea UI Pod. |
 | podAnnotations | object | `{}` | Annotations to be added to the Antrea UI Pod. |
 | podLabels | object | `{}` | Labels to be added to the Antrea UI Pod. |
-| service | object | `{"annotations":{},"labels":{},"nodePort":31234,"port":3000,"type":"ClusterIP"}` | Configuration for the Antrea UI Service. |
+| service | object | `{"annotations":{},"externalTrafficPolicy":null,"labels":{},"nodePort":31234,"port":3000,"type":"ClusterIP"}` | Configuration for the Antrea UI Service. |
 | service.annotations | object | `{}` | Annotations to be added to the Service. |
+| service.externalTrafficPolicy | string | `nil` | Override the ExternalTrafficPolicy for the Service. Set it to Local to route Service traffic to Node-local endpoints only. |
 | service.labels | object | `{}` | Labels to be added to the Service. |
 | service.nodePort | int | `31234` | - The Node port to use when the Service type is NodePort or LoadBalancer. |
 | service.port | int | `3000` | The port on which the Service is exposed. |

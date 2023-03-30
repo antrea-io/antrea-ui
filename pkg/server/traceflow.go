@@ -22,6 +22,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	traceflowhandler "antrea.io/antrea-ui/pkg/handlers/traceflow"
+	"antrea.io/antrea-ui/pkg/server/ratelimit"
 )
 
 func (s *server) CreateTraceflowRequest(c *gin.Context) {
@@ -148,9 +149,17 @@ func (s *server) DeleteTraceflowRequest(c *gin.Context) {
 func (s *server) AddTraceflowRoutes(r *gin.RouterGroup) {
 	r = r.Group("/traceflow")
 	r.Use(s.checkBearerToken)
-	// Because this API supports creating resources in the cluster, we
-	// rate-limit it to 100 requests per hour out of caution.
-	r.POST("", rateLimiter(100, 10), s.CreateTraceflowRequest)
+	createTfHandlers := []gin.HandlerFunc{}
+	if s.config.MaxTraceflowsPerHour >= 0 {
+		burstSize := 0
+		if s.config.MaxTraceflowsPerHour > 0 {
+			burstSize = 10
+		}
+		tfRateLimiter := ratelimit.NewGlobalRateLimiterOrDie(fmt.Sprintf("%d/h", s.config.MaxTraceflowsPerHour), burstSize)
+		createTfHandlers = append(createTfHandlers, ratelimit.Middleware(tfRateLimiter))
+	}
+	createTfHandlers = append(createTfHandlers, s.CreateTraceflowRequest)
+	r.POST("", createTfHandlers...)
 	r.GET("/:requestId/status", s.GetTraceflowRequestStatus)
 	r.GET("/:requestId", func(c *gin.Context) {
 		c.Redirect(http.StatusSeeOther, c.Request.URL.Path+"/status")

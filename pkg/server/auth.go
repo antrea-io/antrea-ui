@@ -22,6 +22,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	apisv1alpha1 "antrea.io/antrea-ui/apis/v1alpha1"
+	"antrea.io/antrea-ui/pkg/server/ratelimit"
 )
 
 func (s *server) Login(c *gin.Context) {
@@ -70,7 +71,7 @@ func (s *server) Login(c *gin.Context) {
 			Path:     "/api/v1/auth",
 			Domain:   "",
 			MaxAge:   int(refreshToken.ExpiresIn / time.Second),
-			Secure:   s.config.cookieSecure,
+			Secure:   s.config.CookieSecure,
 			HttpOnly: true,
 			SameSite: http.SameSiteStrictMode,
 		})
@@ -145,7 +146,18 @@ func (s *server) Logout(c *gin.Context) {
 
 func (s *server) AddAuthRoutes(r *gin.RouterGroup) {
 	r = r.Group("/auth")
-	r.GET("/login", s.Login)
+	loginHandlers := []gin.HandlerFunc{}
+	if s.config.MaxLoginsPerSecond >= 0 {
+		const clientCacheSize = 10000
+		burstSize := 0
+		if s.config.MaxLoginsPerSecond > 0 {
+			burstSize = 1
+		}
+		loginRateLimiter := ratelimit.NewClientRateLimiterOrDie(fmt.Sprintf("%d/s", s.config.MaxLoginsPerSecond), burstSize, clientCacheSize, ratelimit.ClientKeyIP)
+		loginHandlers = append(loginHandlers, ratelimit.Middleware(loginRateLimiter))
+	}
+	loginHandlers = append(loginHandlers, s.Login)
+	r.GET("/login", loginHandlers...)
 	r.GET("/refresh_token", s.RefreshToken)
 	r.GET("/logout", s.Logout)
 }

@@ -101,6 +101,35 @@ func TestLogin(t *testing.T) {
 		})
 		assert.Equal(t, http.StatusUnauthorized, rr.Code)
 	})
+
+	t.Run("rate limiting 0/s", func(t *testing.T) {
+		ts := newTestServer(t, SetMaxLoginsPerSecond(0))
+		rr := sendRequest(ts, func(req *http.Request) {
+			req.SetBasicAuth(username, password)
+		})
+		assert.Equal(t, http.StatusTooManyRequests, rr.Code)
+	})
+
+	t.Run("rate limiting 5/s", func(t *testing.T) {
+		ts := newTestServer(t, SetMaxLoginsPerSecond(5))
+		ts.passwordStore.EXPECT().Compare(gomock.Any(), []byte(wrongPassword)).Return(fmt.Errorf("bad password")).AnyTimes()
+		rr := sendRequest(ts, func(req *http.Request) {
+			req.SetBasicAuth(username, wrongPassword)
+		})
+		assert.Equal(t, http.StatusUnauthorized, rr.Code)
+		assert.Eventually(t, func() bool {
+			rr := sendRequest(ts, func(req *http.Request) {
+				req.SetBasicAuth(username, wrongPassword)
+			})
+			return (rr.Code == http.StatusTooManyRequests)
+		}, time.Second, 10*time.Millisecond)
+		assert.Eventually(t, func() bool {
+			rr := sendRequest(ts, func(req *http.Request) {
+				req.SetBasicAuth(username, wrongPassword)
+			})
+			return (rr.Code == http.StatusUnauthorized)
+		}, time.Second, 100*time.Millisecond)
+	})
 }
 
 func TestRefreshToken(t *testing.T) {

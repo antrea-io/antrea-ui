@@ -20,6 +20,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/golang/mock/gomock"
 	"github.com/google/uuid"
@@ -29,8 +30,16 @@ import (
 	traceflowhandler "antrea.io/antrea-ui/pkg/handlers/traceflow"
 )
 
-func TestTraceflowRequest(t *testing.T) {
-	tf := map[string]interface{}{
+func mustMarshal(obj interface{}) []byte {
+	b, err := json.Marshal(obj)
+	if err != nil {
+		panic("Failed to marshal object to JSON")
+	}
+	return b
+}
+
+var (
+	tf = map[string]interface{}{
 		"spec": map[string]interface{}{
 			"source": map[string]interface{}{
 				"namespace": "default",
@@ -42,9 +51,11 @@ func TestTraceflowRequest(t *testing.T) {
 			},
 		},
 	}
-	tfJSON, err := json.Marshal(tf)
-	require.NoError(t, err)
 
+	tfJSON = mustMarshal(tf)
+)
+
+func TestTraceflowRequest(t *testing.T) {
 	ts := newTestServer(t)
 
 	// create traceflow request
@@ -130,4 +141,38 @@ func TestTraceflowRequest(t *testing.T) {
 	ts.traceflowRequestsHandler.EXPECT().DeleteRequest(gomock.Any(), requestID).Return(true, nil)
 	ts.router.ServeHTTP(rr, req)
 	assert.Equal(t, http.StatusOK, rr.Code)
+}
+
+func TestTraceflowRequestRateLimiting(t *testing.T) {
+	sendRequest := func(ts *testServer) *httptest.ResponseRecorder {
+		req, err := http.NewRequest("POST", "/api/v1/traceflow", bytes.NewBuffer(tfJSON))
+		require.NoError(t, err)
+		rr := httptest.NewRecorder()
+		ts.authorizeRequest(req)
+		ts.router.ServeHTTP(rr, req)
+		return rr
+	}
+
+	t.Run("0/s", func(t *testing.T) {
+		ts := newTestServer(t, SetMaxTraceflowsPerHour(0))
+		rr := sendRequest(ts)
+		assert.Equal(t, http.StatusTooManyRequests, rr.Code)
+	})
+
+	t.Run("5/s", func(t *testing.T) {
+		ts := newTestServer(t, SetMaxTraceflowsPerHour(5*3600))
+		ts.traceflowRequestsHandler.EXPECT().CreateRequest(gomock.Any(), &traceflowhandler.Request{
+			Object: tf,
+		}).Return(uuid.NewString(), nil).AnyTimes()
+		rr := sendRequest(ts)
+		assert.Equal(t, http.StatusAccepted, rr.Code)
+		assert.Eventually(t, func() bool {
+			rr := sendRequest(ts)
+			return (rr.Code == http.StatusTooManyRequests)
+		}, time.Second, 10*time.Millisecond)
+		assert.Eventually(t, func() bool {
+			rr := sendRequest(ts)
+			return (rr.Code == http.StatusAccepted)
+		}, time.Second, 100*time.Millisecond)
+	})
 }

@@ -85,6 +85,9 @@ service:
   annotations: {}
   # -- Labels to be added to the Service.
   labels: {}
+  # -- Override the ExternalTrafficPolicy for the Service. Set it to Local to route Service traffic
+  # to Node-local endpoints only.
+  externalTrafficPolicy:
 
 # -- Node selector for the Antrea UI Pod.
 nodeSelector:

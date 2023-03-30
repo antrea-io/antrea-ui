@@ -12,32 +12,25 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package server
+package ratelimit
 
 import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
-	"golang.org/x/time/rate"
 	"k8s.io/utils/clock"
 )
 
-func rateLimiterWithClock(maxRequestsPerHour int, burstSize int, clock clock.Clock) gin.HandlerFunc {
-	if maxRequestsPerHour <= 0 {
-		panic("Max requests per hour should be positive for rate limiter")
-	}
-	if burstSize <= 0 {
-		panic("Burst size should be positive for rate limiter")
-	}
-	rl := rate.NewLimiter(rate.Limit(maxRequestsPerHour)/3600.0, burstSize)
-	return func(c *gin.Context) {
-		if rl.AllowN(clock.Now(), 1) {
-			return
-		}
-		c.AbortWithStatus(http.StatusTooManyRequests)
-	}
+func Middleware(rateLimiter Interface) gin.HandlerFunc {
+	return MiddlewareWithClock(rateLimiter, &clock.RealClock{})
 }
 
-func rateLimiter(maxRequestsPerHour int, burstSize int) gin.HandlerFunc {
-	return rateLimiterWithClock(maxRequestsPerHour, burstSize, &clock.RealClock{})
+func MiddlewareWithClock(rateLimiter Interface, clock clock.Clock) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if rateLimiter.Allow(clock.Now(), c.Request) {
+			return
+		}
+		// TODO: consider including the X-Rate-Limit-* headers (and/or Retry-After)
+		c.AbortWithStatus(http.StatusTooManyRequests)
+	}
 }
