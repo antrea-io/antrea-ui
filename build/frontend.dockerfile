@@ -13,6 +13,7 @@
 # limitations under the License.
 
 FROM node:18-bullseye-slim as build-web
+
 WORKDIR /app
 
 COPY client/web/antrea-ui/package.json .
@@ -25,4 +26,6 @@ ARG NODE_ENV=production
 RUN yarn build
 
 FROM nginxinc/nginx-unprivileged:1.23
+
 COPY --from=build-web /app/build /app
+COPY build/scripts/nginx-reloader.sh /docker-entrypoint.d/99-nginx-reloader.sh

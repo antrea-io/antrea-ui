@@ -22,7 +22,7 @@ HTTPS is enabled to access the UI and a self-signed certificate was
 automatically generated. You can access the certificate with the following
 command:
 
-  $ kubectl -n {{ .Release.Namespace }} get secret/antrea-ui-tls-cert  -o jsonpath='{.data.cert\.pem}' | base64 --decode
+  $ kubectl -n {{ .Release.Namespace }} get secret/antrea-ui-tls-helm  -o jsonpath='{.data.tls\.crt}' | base64 --decode
 
 {{ end -}}
 
