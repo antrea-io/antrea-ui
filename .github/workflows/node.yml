@@ -18,4 +18,6 @@ jobs:
       with:
         node-version: 19
     - run: yarn install
+      working-directory: client/web/antrea-ui/
     - run: yarn lint
+      working-directory: client/web/antrea-ui/
