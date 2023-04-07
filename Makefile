@@ -1,9 +1,11 @@
 GO                 ?= go
+# read Go version from go,mod file
+GO_VERSION         := $(shell grep '^go.*$$' go.mod | awk '{print $$2}')
 LDFLAGS            :=
 GOFLAGS            :=
 BINDIR := $(CURDIR)/bin
 # version should match github.com/golang/mock version in go.mod
-GOMOCK_VERSION := v1.6.0
+GOMOCK_VERSION := $(shell grep '^\s*github.com\/golang\/mock\sv\S*$$' go.mod | awk '{print $$2}')
 GOMOCK_BINDIR  := .mockgen-bin
 GOMOCK_BIN     := $(GOMOCK_BINDIR)/$(GOMOCK_VERSION)/mockgen
 GOLANGCI_LINT_VERSION := v1.51.2
@@ -62,12 +64,12 @@ clean:
 
 .PHONY: build-frontend
 build-frontend:
-	docker build -t antrea/antrea-ui-frontend:$(DOCKER_IMG_VERSION) -f build/Dockerfile.frontend .
+	docker build -t antrea/antrea-ui-frontend:$(DOCKER_IMG_VERSION) -f build/frontend.dockerfile --build-arg GO_VERSION=$(GO_VERSION) .
 	docker tag antrea/antrea-ui-frontend:$(DOCKER_IMG_VERSION) antrea/antrea-ui-frontend
 
 .PHONY: build-backend
 build-backend:
-	docker build -t antrea/antrea-ui-backend:$(DOCKER_IMG_VERSION) -f build/Dockerfile.backend .
+	docker build -t antrea/antrea-ui-backend:$(DOCKER_IMG_VERSION) -f build/backend.dockerfile --build-arg GO_VERSION=$(GO_VERSION) .
 	docker tag antrea/antrea-ui-backend:$(DOCKER_IMG_VERSION) antrea/antrea-ui-backend
 
 .PHONY: build
