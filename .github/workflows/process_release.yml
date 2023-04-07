@@ -26,3 +26,23 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
         asset_paths: '["./assets/*"]'
+
+  update-website:
+    name: Trigger website update for release
+    needs: upload-release-assets
+    runs-on: ubuntu-latest
+    steps:
+    - id: get-version
+      env:
+        TAG: ${{ github.ref }}
+      run: |
+        version=${TAG:10}
+        echo "::set-output name=version::$version"
+    - name: Update Helm index with Antrea UI archive
+      uses: benc-uk/workflow-dispatch@v121
+      with:
+        repo: antrea-io/website
+        ref: refs/heads/main
+        workflow: Update Helm index
+        token: ${{ secrets.ANTREA_WEBSITE_WORKFLOW_DISPATCH_PAT }}
+        inputs: ${{ format('{{ "archive-url":"https://github.com/antrea-io/antrea-ui/releases/download/{0}/antrea-ui-chart.tgz" }}', steps.get-version.outputs.version) }}
