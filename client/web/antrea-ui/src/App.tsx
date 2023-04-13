@@ -20,7 +20,7 @@ import './App.css';
 import { Outlet, Link } from "react-router-dom";
 import NavTab from './components/nav';
 import Login from './components/login';
-import { useLogout} from './components/logout';
+import { useLogout } from './components/logout';
 import { CdsButton } from '@cds/react/button';
 import { APIErrorProvider, APIErrorNotification } from './components/errors';
 import { Provider, useSelector, useDispatch } from 'react-redux';
@@ -71,9 +71,7 @@ function Logout() {
     const [, logout] = useLogout();
 
     return (
-        <div cds-layout="vertical p:md gap:md">
-            <CdsButton type="button" action="outline" onClick={()=> { logout(); }}>Logout</CdsButton>
-        </div>
+        <CdsButton type="button" action="outline" onClick={() => { logout(); }}>Logout</CdsButton>        
     );
 }
 
@@ -81,15 +79,18 @@ function App() {
     return (
         <div cds-text="body" cds-theme="dark">
             {/* 100vh to fill the whole screen */}
-            <div style={{height: "fit-content", minHeight:"100vh"}} cds-layout="vertical gap:md align:top">
-                <header cds-layout="horizontal wrap:none gap:md m-t:lg">
-                    <Link to="/">
-                        <img src={logo} alt="logo" style={{height: "2rem"}}/>
-                    </Link>
-                    <p cds-text="heading" cds-layout="align:vertical-center">Antrea UI</p>
-                </header>
+            <div style={{ height: "fit-content", minHeight: "100vh" }} cds-layout="vertical gap:md align:top">
                 <Provider store={store}>
-                    <div cds-layout="horizontal align:top wrap:none" style={{height: "100%"}}>
+                    <header cds-layout="horizontal wrap:none gap:md m-t:lg" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding:"0px 12px"}}>
+                        <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                            <Link to="/">
+                                <img src={logo} alt="logo" style={{ height: "2rem" }} />
+                            </Link>
+                            <p cds-text="heading" cds-layout="align:vertical-center">Antrea UI</p>
+                        </div>
+                        <Logout />
+                    </header>
+                    <div cds-layout="horizontal align:top wrap:none" style={{ height: "100%" }}>
                         <NavTab />
                         <APIErrorProvider>
                             <div cds-layout="vertical">
@@ -100,7 +101,6 @@ function App() {
                             </div>
                         </APIErrorProvider>
                     </div>
-                    <Logout />
                 </Provider>
             </div>
         </div>
