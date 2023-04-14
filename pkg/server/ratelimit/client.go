@@ -110,7 +110,7 @@ func ClientKeyIP(req *http.Request) string {
 		return net.ParseIP(value)
 	}
 
-	// we first look for the rightmost non-public IP address in X-Forwarded-For
+	// we first look for the rightmost non-private IP address in X-Forwarded-For
 	// if none is found, we look for an IP address in X-Real-IP
 	// if this fails as well, we use the "real" IP
 	// see https://adam-p.ca/blog/2022/03/x-forwarded-for/ for the rationale

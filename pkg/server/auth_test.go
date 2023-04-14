@@ -121,13 +121,13 @@ func TestLogin(t *testing.T) {
 			rr := sendRequest(ts, func(req *http.Request) {
 				req.SetBasicAuth(username, wrongPassword)
 			})
-			return (rr.Code == http.StatusTooManyRequests)
+			return rr.Code == http.StatusTooManyRequests
 		}, time.Second, 10*time.Millisecond)
 		assert.Eventually(t, func() bool {
 			rr := sendRequest(ts, func(req *http.Request) {
 				req.SetBasicAuth(username, wrongPassword)
 			})
-			return (rr.Code == http.StatusUnauthorized)
+			return rr.Code == http.StatusUnauthorized
 		}, time.Second, 100*time.Millisecond)
 	})
 }
