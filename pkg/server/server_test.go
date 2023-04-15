@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
 	"testing"
 	"time"
 
@@ -42,11 +43,26 @@ func init() {
 	gin.SetMode(gin.ReleaseMode)
 }
 
+type testk8sProxyHandler struct {
+	request *http.Request
+}
+
+func (h *testk8sProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	h.request = r
+	b, err := httputil.DumpRequest(r, false)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+	} else {
+		w.Write(b)
+	}
+}
+
 type testServer struct {
 	s                        *server
 	router                   *gin.Engine
 	k8sClient                *dynamicfake.FakeDynamicClient
 	traceflowRequestsHandler *traceflowhandlertesting.MockRequestsHandler
+	k8sProxyHandler          *testk8sProxyHandler
 	passwordStore            *passwordtesting.MockStore
 	tokenManager             *authtesting.MockTokenManager
 }
@@ -58,9 +74,18 @@ func newTestServer(t *testing.T, options ...ServerOptions) *testServer {
 	k8sClient := dynamicfake.NewSimpleDynamicClient(scheme)
 	ctrl := gomock.NewController(t)
 	traceflowRequestsHandler := traceflowhandlertesting.NewMockRequestsHandler(ctrl)
+	k8sProxyHandler := &testk8sProxyHandler{}
 	passwordStore := passwordtesting.NewMockStore(ctrl)
 	tokenManager := authtesting.NewMockTokenManager(ctrl)
-	s := NewServer(logger, k8sClient, traceflowRequestsHandler, passwordStore, tokenManager, options...)
+	s := NewServer(
+		logger,
+		k8sClient,
+		traceflowRequestsHandler,
+		k8sProxyHandler,
+		passwordStore,
+		tokenManager,
+		options...,
+	)
 	router := gin.Default()
 	s.AddRoutes(router)
 	return &testServer{
@@ -68,6 +93,7 @@ func newTestServer(t *testing.T, options ...ServerOptions) *testServer {
 		router:                   router,
 		k8sClient:                k8sClient,
 		traceflowRequestsHandler: traceflowRequestsHandler,
+		k8sProxyHandler:          k8sProxyHandler,
 		passwordStore:            passwordStore,
 		tokenManager:             tokenManager,
 	}

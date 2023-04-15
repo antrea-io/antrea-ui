@@ -17,6 +17,7 @@ package server
 import (
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -101,7 +102,8 @@ func (s *server) GetAgentInfo(c *gin.Context) {
 
 func (s *server) AddInfoRoutes(r *gin.RouterGroup) {
 	r = r.Group("/info")
-	r.Use(s.checkBearerToken)
+	removalDate := time.Date(2023, 7, 1, 0, 0, 0, 0, time.UTC)
+	r.Use(s.checkBearerToken, announceDeprecationMiddleware(removalDate, "use /k8s instead"))
 	r.GET("/controller", s.GetControllerInfo)
 	r.GET("/agents", s.GetAgentInfos)
 	r.GET("/agents/:name", s.GetAgentInfo)

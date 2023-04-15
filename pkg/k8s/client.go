@@ -16,9 +16,11 @@ package k8s
 
 import (
 	"flag"
+	"net/http"
 	"os"
 
 	"k8s.io/client-go/dynamic"
+	_ "k8s.io/client-go/plugin/pkg/client/auth"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 )
@@ -32,7 +34,7 @@ func inCluster() bool {
 	return inCluster
 }
 
-func DynamicClient() (dynamic.Interface, error) {
+func restConfig() (*rest.Config, error) {
 	var config *rest.Config
 	if inCluster() {
 		var err error
@@ -48,7 +50,23 @@ func DynamicClient() (dynamic.Interface, error) {
 			return nil, err
 		}
 	}
-	return dynamic.NewForConfig(config)
+	return config, nil
+}
+
+func Client() (*rest.Config, *http.Client, *dynamic.DynamicClient, error) {
+	config, err := restConfig()
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	httpClient, err := rest.HTTPClientFor(config)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	client, err := dynamic.NewForConfigAndClient(config, httpClient)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return config, httpClient, client, nil
 }
 
 func init() {

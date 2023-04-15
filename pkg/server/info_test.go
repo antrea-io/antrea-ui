@@ -44,6 +44,11 @@ func createTestControllerInfo(ctx context.Context, k8sClient dynamic.Interface, 
 	return err
 }
 
+func checkInfoDeprecationHeaders(t *testing.T, header http.Header) {
+	assert.Equal(t, `299 - "Deprecated API: use /k8s instead"`, header.Get("Warning"))
+	assert.Equal(t, "Sat, 01 Jul 2023 00:00:00 GMT", header.Get("Sunset"))
+}
+
 func TestGetControllerInfo(t *testing.T) {
 	ctx := context.Background()
 	ts := newTestServer(t)
@@ -56,6 +61,7 @@ func TestGetControllerInfo(t *testing.T) {
 	ts.router.ServeHTTP(rr, req)
 	assert.Equal(t, http.StatusOK, rr.Code)
 	assert.Equal(t, "antrea-controller", gjson.GetBytes(rr.Body.Bytes(), "metadata.name").String())
+	checkInfoDeprecationHeaders(t, rr.Result().Header)
 }
 
 func createTestAgentInfo(ctx context.Context, k8sClient dynamic.Interface, name string) error {
@@ -87,6 +93,7 @@ func TestGetAgentInfo(t *testing.T) {
 		ts.router.ServeHTTP(rr, req)
 		assert.Equal(t, http.StatusOK, rr.Code)
 		assert.Equal(t, "node-A", gjson.GetBytes(rr.Body.Bytes(), "metadata.name").String())
+		checkInfoDeprecationHeaders(t, rr.Result().Header)
 	})
 
 	t.Run("invalid name", func(t *testing.T) {
@@ -96,6 +103,7 @@ func TestGetAgentInfo(t *testing.T) {
 		rr := httptest.NewRecorder()
 		ts.router.ServeHTTP(rr, req)
 		assert.Equal(t, http.StatusNotFound, rr.Code)
+		checkInfoDeprecationHeaders(t, rr.Result().Header)
 	})
 }
 
@@ -112,4 +120,5 @@ func TestGetAgentInfos(t *testing.T) {
 	ts.router.ServeHTTP(rr, req)
 	assert.Equal(t, http.StatusOK, rr.Code)
 	assert.Len(t, gjson.ParseBytes(rr.Body.Bytes()).Array(), 2)
+	checkInfoDeprecationHeaders(t, rr.Result().Header)
 }
