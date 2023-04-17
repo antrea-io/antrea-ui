@@ -348,12 +348,12 @@ export default function Traceflow() {
                 <form onSubmit = {handleSubmit(onSubmit)}>
                     <CdsFormGroup layout="horizontal">
                         <CdsInput>
-                            <label htmlFor="source-namespace-input">Source Namespace</label>
-                            <input id="source-namespace-input" {...register("srcNamespace")} />
+                            <label>Source Namespace</label>
+                            <input {...register("srcNamespace")} />
                         </CdsInput>
                         <CdsInput>
-                            <label htmlFor="source-input">Source</label>
-                            <input id="source-input" {...register("src", { required: (!isLiveTraffic) && "Source Pod is required" })} placeholder={isLiveTraffic ? "Pod Name, or IP" : "Pod Name"} />
+                            <label>Source</label>
+                            <input {...register("src", { required: (!isLiveTraffic) && "Source Pod is required" })} placeholder={isLiveTraffic ? "Pod Name, or IP" : "Pod Name"} />
                         </CdsInput>
                         <ErrorMessage
                             errors={errors}
@@ -361,8 +361,8 @@ export default function Traceflow() {
                             as={<ErrorMessageContainer />}
                         />
                         <CdsSelect>
-                            <label htmlFor="protocol-input">Protocol</label>
-                            <select id="protocol-input" {...protocol} onChange={(event) => {
+                            <label>Protocol</label>
+                            <select {...protocol} onChange={(event) => {
                                 protocol.onChange(event);
                                 setProto(event.target.value);
                                 reset(defaultValues(isLiveTraffic, event.target.value), { keepValues: false, keepDirtyValues: true});
@@ -374,8 +374,8 @@ export default function Traceflow() {
                         </CdsSelect>
                         { (proto === "TCP" || proto === "UDP") && <>
                             <CdsInput>
-                                <label htmlFor="source-port-input">Source Port</label>
-                                <input id="source-port-input" type="number" {...srcPort} />
+                                <label>Source Port</label>
+                                <input type="number" {...srcPort} />
                                 { isLiveTraffic && <CdsControlMessage>use 0 to match any port</CdsControlMessage> }
                                 { !isLiveTraffic && <CdsControlMessage>use 0 for arbitrary port</CdsControlMessage> }
                             </CdsInput>
@@ -388,25 +388,25 @@ export default function Traceflow() {
                         <CdsRadioGroup>
                             <label>Destination Type</label>
                             <CdsRadio key="pod">
-                                <label htmlFor="destination-type-pod-input">Pod</label>
-                                <input id="destination-type-pod-input" {...destinationType} type="radio" value="Pod" />
+                                <label>Pod</label>
+                                <input {...destinationType} type="radio" value="Pod" />
                             </CdsRadio>
                             <CdsRadio key="service">
-                                <label htmlFor="destination-type-service-input">Service</label>
-                                <input id="destination-type-service-input" {...destinationType} type="radio" value="Service" />
+                                <label>Service</label>
+                                <input {...destinationType} type="radio" value="Service" />
                             </CdsRadio>
                             <CdsRadio key="ip">
-                                <label htmlFor="destination-type-ip-input">IP</label>
-                                <input id="destination-type-ip-input" {...destinationType} type="radio" value="IP" />
+                                <label>IP</label>
+                                <input {...destinationType} type="radio" value="IP" />
                             </CdsRadio>
                         </CdsRadioGroup>
                         <CdsInput>
-                            <label htmlFor="destination-namespace-input">Destination Namespace</label>
-                            <input id="destination-namespace-input" {...register("dstNamespace")} />
+                            <label>Destination Namespace</label>
+                            <input {...register("dstNamespace")} />
                         </CdsInput>
                         <CdsInput>
-                            <label htmlFor="destination-input">Destination</label>
-                            <input id="destination-input" {...register("dst", { required: (!isLiveTraffic) && "Destination is required" })} placeholder="Pod / Service Name, or IP" />
+                            <label>Destination</label>
+                            <input {...register("dst", { required: (!isLiveTraffic) && "Destination is required" })} placeholder="Pod / Service Name, or IP" />
                         </CdsInput>
                         <ErrorMessage
                             errors={errors}
@@ -415,8 +415,8 @@ export default function Traceflow() {
                         />
                         { (proto === "TCP" || proto === "UDP") && <>
                             <CdsInput>
-                                <label htmlFor="destination-port">Destination Port</label>
-                                <input id="destination-port" type="number" {...dstPort} />
+                                <label>Destination Port</label>
+                                <input type="number" {...dstPort} />
                                 { isLiveTraffic && <CdsControlMessage>use 0 to match any port</CdsControlMessage> }
                             </CdsInput>
                             <ErrorMessage
@@ -428,8 +428,8 @@ export default function Traceflow() {
                         {/* TCP flags have no meaning in Live Traceflow as they are ignored and we only match SYN packets */}
                         { (proto === "TCP" && !isLiveTraffic) && <>
                             <CdsInput>
-                                <label htmlFor="tcp-flags-input">TCP Flags</label>
-                                <input id="tcp-flags-input" type="number" {...tcpFlags} />
+                                <label>TCP Flags</label>
+                                <input type="number" {...tcpFlags} />
                                 <CdsControlMessage>use 2 for SYN flag</CdsControlMessage>
                             </CdsInput>
                             <ErrorMessage
@@ -439,20 +439,20 @@ export default function Traceflow() {
                             />
                         </> }
                         <CdsInput>
-                            <label htmlFor="request-timeout-input">Request Timeout</label>
-                            <input id="request-timeout-input" type="number" {...timeout} placeholder="Timeout in seconds" />
+                            <label>Request Timeout</label>
+                            <input type="number" {...timeout} placeholder="Timeout in seconds" />
                         </CdsInput>
                         <div cds-layout="horizontal gap:lg">
                             <CdsCheckbox>
-                                <label htmlFor="use-ipv6-input">Use IPv6</label>
-                                <input id="use-ipv6-input" type="checkbox" {...useIPv6} onChange={(event) => {
+                                <label>Use IPv6</label>
+                                <input type="checkbox" {...useIPv6} onChange={(event) => {
                                     useIPv6.onChange(event);
                                     setIPv6(event.currentTarget.checked);
                                 }} checked={ipv6} />
                             </CdsCheckbox>
                             <CdsCheckbox>
-                                <label htmlFor="live-traffic-input">Live Traffic</label>
-                                <input id="live-traffic-input" type="checkbox" {...liveTraffic} onChange={(event) => {
+                                <label>Live Traffic</label>
+                                <input type="checkbox" {...liveTraffic} onChange={(event) => {
                                     liveTraffic.onChange(event);
                                     setIsLiveTraffic(event.currentTarget.checked);
                                     reset(defaultValues(event.currentTarget.checked, proto), { keepValues: false, keepDirtyValues: true });
@@ -460,8 +460,8 @@ export default function Traceflow() {
                             </CdsCheckbox>
                             { isLiveTraffic &&
                                 <CdsCheckbox>
-                                    <label htmlFor="dropped-traffic-only-input">Dropped Traffic Only</label>
-                                    <input id="dropped-traffic-only-input" type="checkbox" {...register("droppedOnly")} />
+                                    <label>Dropped Traffic Only</label>
+                                    <input type="checkbox" {...register("droppedOnly")} />
                                 </CdsCheckbox>
                             }
                         </div>

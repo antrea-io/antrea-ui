@@ -48,8 +48,8 @@ export default function Login(props: { setToken: (token: string) => void }) {
         <form onSubmit = {handleSubmit(onSubmit)}>
             <CdsFormGroup layout="horizontal">
                 <CdsInput>
-                    <label htmlFor="username-input">Username</label>
-                    <input id="username-input" {...register("username", {
+                    <label>Username</label>
+                    <input {...register("username", {
                         required: "Required field",
                     })} defaultValue="admin" />
                 </CdsInput>
@@ -59,8 +59,8 @@ export default function Login(props: { setToken: (token: string) => void }) {
                     as={<ErrorMessageContainer />}
                 />
                 <CdsPassword>
-                    <label htmlFor="password-input">Password</label>
-                    <input id="password-input" type="password" {...register("password", {
+                    <label>Password</label>
+                    <input type="password" {...register("password", {
                         required: "Required field",
                     })} />
                 </CdsPassword>

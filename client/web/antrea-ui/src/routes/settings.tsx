@@ -60,8 +60,8 @@ function UpdatePassword() {
                 <form onSubmit = {handleSubmit(onSubmit)}>
                     <CdsFormGroup layout="horizontal">
                         <CdsPassword>
-                            <label htmlFor="current-password-input">Current Password</label>
-                            <input id="current-password-input" type="password" {...register("currentPassword", {
+                            <label>Current Password</label>
+                            <input type="password" {...register("currentPassword", {
                                 required: "Required field",
                             })} />
                         </CdsPassword>
@@ -71,8 +71,8 @@ function UpdatePassword() {
                             as={<ErrorMessageContainer />}
                         />
                         <CdsPassword>
-                            <label htmlFor="new-password-input">New Password</label>
-                            <input id="new-password-input" type="password" {...register("newPassword", {
+                            <label>New Password</label>
+                            <input type="password" {...register("newPassword", {
                                 required: "Required field",
                             })} />
                         </CdsPassword>
@@ -82,8 +82,8 @@ function UpdatePassword() {
                             as={<ErrorMessageContainer />}
                         />
                         <CdsPassword>
-                            <label htmlFor="confirm-password-input">Confirm New Password</label>
-                            <input id="confirm-password-input" type="password" {...register("newPassword2", {
+                            <label>Confirm New Password</label>
+                            <input type="password" {...register("newPassword2", {
                                 required: "Required field",
                                 validate: (value: string) => {
                                     if (value !== watch("newPassword")) {

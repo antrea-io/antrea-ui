@@ -49,10 +49,10 @@ interface testInputs {
     newPassword2?: string
 }
 
-function inputsToEvents(inputs: testInputs) {
-    if (inputs.currentPassword) userEvent.type(screen.getByLabelText('Current Password'), inputs.currentPassword);
-    if (inputs.newPassword) userEvent.type(screen.getByLabelText('New Password'), inputs.newPassword);
-    if (inputs.newPassword2) userEvent.type(screen.getByLabelText('Confirm New Password'), inputs.newPassword2);
+async function inputsToEvents(inputs: testInputs) {
+    if (inputs.currentPassword) userEvent.type(await screen.findByLabelText('Current Password'), inputs.currentPassword);
+    if (inputs.newPassword) userEvent.type(await screen.findByLabelText('New Password'), inputs.newPassword);
+    if (inputs.newPassword2) userEvent.type(await screen.findByLabelText('Confirm New Password'), inputs.newPassword2);
 }
 
 describe('Settings', () => {
@@ -78,7 +78,7 @@ describe('Settings', () => {
         test('update is successful', async () => {
             mockedAccountAPI.updatePassword.mockResolvedValueOnce();
             render(<Provider store={store}><Settings /></Provider>, { wrapper: MemoryRouter });
-            inputsToEvents({currentPassword: currentPassword, newPassword: newPassword, newPassword2: newPassword});
+            await inputsToEvents({currentPassword: currentPassword, newPassword: newPassword, newPassword2: newPassword});
             // unclear why this is needed, but without it the form is not submitted
             await userEvent.click(document.body);
             userEvent.click(screen.getByRole('button', {name: 'Submit'}));
@@ -91,7 +91,7 @@ describe('Settings', () => {
             const err = new APIError(400, 'Bad Request', 'Invalid password');
             mockedAccountAPI.updatePassword.mockRejectedValueOnce(err);
             render(<Provider store={store}><Settings /></Provider>, { wrapper: MemoryRouter });
-            inputsToEvents({currentPassword: badPassword, newPassword: newPassword, newPassword2: newPassword});
+            await inputsToEvents({currentPassword: badPassword, newPassword: newPassword, newPassword2: newPassword});
             await userEvent.click(document.body);
             userEvent.click(screen.getByRole('button', {name: 'Submit'}));
             await waitFor(() => expect(mockAddError).toHaveBeenCalledWith(err));
@@ -143,7 +143,7 @@ describe('Settings', () => {
 
             test.each<testCase>(testCases)('$name', async (tc: testCase) => {
                 render(<Provider store={store}><Settings /></Provider>, { wrapper: MemoryRouter });
-                inputsToEvents(tc.inputs);
+                await inputsToEvents(tc.inputs);
                 await userEvent.click(document.body);
                 userEvent.click(screen.getByRole('button', {name: 'Submit'}));
                 expect(await screen.findAllByText(tc.expectedError)).not.toHaveLength(0);

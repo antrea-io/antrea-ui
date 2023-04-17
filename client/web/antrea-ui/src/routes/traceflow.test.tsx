@@ -57,33 +57,33 @@ interface testInputs {
     tcpFlags?: number
 }
 
-function inputsToEvents(inputs: testInputs) {
-    if (inputs.liveTraffic) userEvent.click(screen.getByLabelText('Live Traffic'));
-    if (inputs.droppedOnly) userEvent.click(screen.getByLabelText('Dropped Traffic Only'));
-    if (inputs.proto) userEvent.selectOptions(screen.getByLabelText('Protocol'), inputs.proto);
-    if (inputs.ipv6) userEvent.click(screen.getByLabelText('Use IPv6'));
+async function inputsToEvents(inputs: testInputs) {
+    if (inputs.liveTraffic) userEvent.click(await screen.findByLabelText('Live Traffic'));
+    if (inputs.droppedOnly) userEvent.click(await screen.findByLabelText('Dropped Traffic Only'));
+    if (inputs.proto) userEvent.selectOptions(await screen.findByLabelText('Protocol'), inputs.proto);
+    if (inputs.ipv6) userEvent.click(await screen.findByLabelText('Use IPv6'));
     if (inputs.srcNamespace) {
-        const srcNamespace = screen.getByLabelText('Source Namespace');
+        const srcNamespace = await screen.findByLabelText('Source Namespace');
         // clear needs to be called first, to remove the defaultValue
         userEvent.clear(srcNamespace);
         userEvent.type(srcNamespace, inputs.srcNamespace);
     }
-    if (inputs.src) userEvent.type(screen.getByLabelText('Source'), inputs.src);
-    if (inputs.srcPort) userEvent.type(screen.getByLabelText('Source Port'), `${inputs.srcPort}`);
-    if (inputs.destinationType) userEvent.click(screen.getByLabelText(inputs.destinationType));
+    if (inputs.src) userEvent.type(await screen.findByLabelText('Source'), inputs.src);
+    if (inputs.srcPort) userEvent.type(await screen.findByLabelText('Source Port'), `${inputs.srcPort}`);
+    if (inputs.destinationType) userEvent.click(await screen.findByLabelText(inputs.destinationType));
     if (inputs.dstNamespace) {
-        const dstNamespace = screen.getByLabelText('Destination Namespace');
+        const dstNamespace = await screen.findByLabelText('Destination Namespace');
         userEvent.clear(dstNamespace);
         userEvent.type(dstNamespace, inputs.dstNamespace);
     }
-    if (inputs.dst) userEvent.type(screen.getByLabelText('Destination'), inputs.dst);
+    if (inputs.dst) userEvent.type(await screen.findByLabelText('Destination'), inputs.dst);
     if (inputs.dstPort) {
-        const dstPort = screen.getByLabelText('Destination Port');
+        const dstPort = await screen.findByLabelText('Destination Port');
         userEvent.clear(dstPort);
         userEvent.type(dstPort, `${inputs.dstPort}`);
     }
     if (inputs.timeout) {
-        const timeout = screen.getByLabelText('Request Timeout');
+        const timeout = await screen.findByLabelText('Request Timeout');
         userEvent.clear(timeout);
         userEvent.type(timeout, `${inputs.timeout}`);
     }
@@ -146,9 +146,9 @@ describe('Traceflow form', () => {
         },
     ];
 
-    test.each<testCase>(testCases)('check form fields - $inputs', (tc: testCase) => {
+    test.each<testCase>(testCases)('check form fields - $inputs', async (tc: testCase) => {
         render(<Traceflow />, { wrapper: MemoryRouter });
-        inputsToEvents(tc.inputs);
+        await inputsToEvents(tc.inputs);
 
         tc.mustBePresent?.forEach(x => expect(screen.getByLabelText(x)).toBeInTheDocument());
         tc.mustNotBePresent?.forEach(x => expect(screen.queryByLabelText(x)).toBeNull());
@@ -239,7 +239,7 @@ describe('Traceflow request', () => {
     test.each<testCase>(testCases)('$name', async (tc: testCase) => {
         render(<Traceflow />, { wrapper: MemoryRouter });
 
-        inputsToEvents(tc.inputs);
+        await inputsToEvents(tc.inputs);
 
         mockedTraceflowAPI.runTraceflow.mockResolvedValueOnce({} as TraceflowStatus);
 
