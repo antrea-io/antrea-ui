@@ -51,7 +51,7 @@ type testServer struct {
 	tokenManager             *authtesting.MockTokenManager
 }
 
-func newTestServer(t *testing.T) *testServer {
+func newTestServer(t *testing.T, options ...ServerOptions) *testServer {
 	logger := testr.New(t)
 	scheme := runtime.NewScheme()
 	scheme.AddKnownTypeWithName(agentInfoGVR.GroupVersion().WithKind("AntreaAgentInfoList"), &unstructured.UnstructuredList{})
@@ -60,7 +60,7 @@ func newTestServer(t *testing.T) *testServer {
 	traceflowRequestsHandler := traceflowhandlertesting.NewMockRequestsHandler(ctrl)
 	passwordStore := passwordtesting.NewMockStore(ctrl)
 	tokenManager := authtesting.NewMockTokenManager(ctrl)
-	s := NewServer(logger, k8sClient, traceflowRequestsHandler, passwordStore, tokenManager)
+	s := NewServer(logger, k8sClient, traceflowRequestsHandler, passwordStore, tokenManager, options...)
 	router := gin.Default()
 	s.AddRoutes(router)
 	return &testServer{

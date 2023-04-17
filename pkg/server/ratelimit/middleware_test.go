@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package server
+package ratelimit
 
 import (
 	"net/http"
@@ -22,29 +22,36 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	clocktesting "k8s.io/utils/clock/testing"
 )
 
-func TestRateLimiter(t *testing.T) {
+func init() {
+	// avoid verbose Gin logging
+	gin.SetMode(gin.ReleaseMode)
+}
+
+func TestMiddleware(t *testing.T) {
 	start := time.Now()
 	clock := clocktesting.NewFakeClock(start)
-	rl := rateLimiterWithClock(3, 2, clock)
+	rl, err := NewGlobalRateLimiter("2/h", 1)
+	require.NoError(t, err)
+	middleware := MiddlewareWithClock(rl, clock)
 
 	sendRequest := func() int {
 		rr := httptest.NewRecorder()
 		c, _ := gin.CreateTestContext(rr)
-		rl(c)
+		middleware(c)
 		return rr.Code
 	}
 
 	assert.Equal(t, http.StatusOK, sendRequest())
-	assert.Equal(t, http.StatusOK, sendRequest())
-	// we have exceeded burst size
+	// we have exceeded burst size of 1
 	assert.Equal(t, http.StatusTooManyRequests, sendRequest())
-	// we should get about 1 token every 20 minutes, so should still fail after 15 minutes...
-	clock.SetTime(start.Add(15 * time.Minute))
-	assert.Equal(t, http.StatusTooManyRequests, sendRequest())
-	// ... but should succeed after 25 minutes
+	// we should get about 1 token every 30 minutes, so should still fail after 25 minutes...
 	clock.SetTime(start.Add(25 * time.Minute))
+	assert.Equal(t, http.StatusTooManyRequests, sendRequest())
+	// ... but should succeed after 35 minutes
+	clock.SetTime(start.Add(35 * time.Minute))
 	assert.Equal(t, http.StatusOK, sendRequest())
 }

@@ -38,14 +38,29 @@ type server struct {
 }
 
 type serverConfig struct {
-	cookieSecure bool
+	// keep all fields exported, so the config struct can be logged
+	CookieSecure         bool
+	MaxTraceflowsPerHour int
+	MaxLoginsPerSecond   int
 }
 
 type ServerOptions func(c *serverConfig)
 
 func SetCookieSecure(v bool) ServerOptions {
 	return func(c *serverConfig) {
-		c.cookieSecure = v
+		c.CookieSecure = v
+	}
+}
+
+func SetMaxTraceflowsPerHour(v int) ServerOptions {
+	return func(c *serverConfig) {
+		c.MaxTraceflowsPerHour = v
+	}
+}
+
+func SetMaxLoginsPerSecond(v int) ServerOptions {
+	return func(c *serverConfig) {
+		c.MaxLoginsPerSecond = v
 	}
 }
 
@@ -57,10 +72,15 @@ func NewServer(
 	tokenManager auth.TokenManager,
 	options ...ServerOptions,
 ) *server {
-	config := serverConfig{}
+	config := serverConfig{
+		// disable rate limiting by default
+		MaxTraceflowsPerHour: -1,
+		MaxLoginsPerSecond:   -1,
+	}
 	for _, fn := range options {
 		fn(&config)
 	}
+	logger.Info("Created server config", "config", config)
 	return &server{
 		logger:                   logger,
 		k8sClient:                k8sClient,

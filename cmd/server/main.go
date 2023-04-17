@@ -43,11 +43,13 @@ import (
 )
 
 var (
-	serverAddr   string
-	logger       logr.Logger
-	jwtKeyPath   string
-	cookieSecure bool
-	verbosity    int
+	serverAddr           string
+	logger               logr.Logger
+	jwtKeyPath           string
+	cookieSecure         bool
+	maxTraceflowsPerHour int
+	maxLoginsPerSecond   int
+	verbosity            int
 )
 
 func ginLogger(logger logr.Logger, level int) gin.HandlerFunc {
@@ -192,6 +194,8 @@ func main() {
 	flag.StringVar(&serverAddr, "addr", ":8080", "Listening address for server")
 	flag.StringVar(&jwtKeyPath, "jwt-key", "", "Path to PEM private key file to generate JWT tokens; if omitted one will be automatically generated")
 	flag.BoolVar(&cookieSecure, "cookie-secure", false, "Set the Secure attribute for authentication cookie, which requires HTTPS")
+	flag.IntVar(&maxTraceflowsPerHour, "max-traceflows-per-hour", 100, "Rate limit the number of Traceflow requests (across all clients); use -1 to remove rate-limiting")
+	flag.IntVar(&maxLoginsPerSecond, "max-logins-per-second", 1, "Rate limit the number of login attempts (per client IP); use -1 to remove rate-limiting")
 	flag.IntVar(&verbosity, "v", 0, "Log verbosity")
 	flag.Parse()
 

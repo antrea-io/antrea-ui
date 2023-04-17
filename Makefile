@@ -27,7 +27,7 @@ bin:
 
 .PHONY: test
 test:
-	$(GO) test -v ./...
+	$(GO) test -race -v ./...
 
 # code linting
 $(GOLANGCI_LINT_BIN):
