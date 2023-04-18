@@ -54,9 +54,8 @@ export const authAPI = {
             if (error.response?.status === 401) {
                 // resetting token, this will "redirect" the user to the login screen
                 setToken("");
-            } else {
-                handleError(error);
             }
+            handleError(error);
         });
     },
 };

@@ -20,16 +20,20 @@ import { authAPI } from '../api/auth';
 import { useDispatch } from 'react-redux';
 import { setToken } from '../store';
 
-export function useLogout(): [boolean, (() => Promise<void>)] {
+export function useLogout(): [boolean, ((msg?: string) => Promise<void>)] {
     const navigate = useNavigate();
     const [logoutComplete, setLogoutComplete] = useState<boolean>(false);
     const dispatch = useDispatch();
 
-    async function logout() {
+    async function logout(msg?: string) {
         await authAPI.logout();
         dispatch(setToken(""));
         setLogoutComplete(true);
-        navigate("/");
+        navigate("/", {
+            state: {
+                logoutMsg: msg,
+            },
+        });
         // navigate(0)
     }
 

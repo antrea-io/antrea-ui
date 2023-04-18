@@ -14,30 +14,43 @@
  * limitations under the License.
  */
 
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import logo from './logo.svg';
 import './App.css';
-import { Outlet, Link } from "react-router-dom";
+import { Outlet, Link, useLocation } from "react-router-dom";
 import NavTab from './components/nav';
 import Login from './components/login';
 import { useLogout } from './components/logout';
 import { CdsButton } from '@cds/react/button';
-import { APIErrorProvider, APIErrorNotification } from './components/errors';
+import { CdsAlertGroup, CdsAlert } from "@cds/react/alert";
+import { AppErrorProvider, AppErrorNotification } from './components/errors';
 import { Provider, useSelector, useDispatch } from 'react-redux';
 import type { RootState } from './store';
 import { store, setToken } from './store';
 import { authAPI } from './api/auth';
+import { APIError } from './api/common';
+import { useAppError} from './components/errors';
 
 function LoginWall(props: React.PropsWithChildren) {
+    const { state } = useLocation();
+    const [msg, setMsg] = useState<string | null>();
     const token = useSelector((state: RootState) => state.token);
     const dispatch = useDispatch();
+    const { addError, removeError } = useAppError();
 
     useEffect(() => {
+        removeError();
+
         async function refreshToken() {
             try {
                 await authAPI.refreshToken();
-            } catch (error) {
-                // ignore error
+            } catch (e) {
+                if (e instanceof APIError && e.code === 401) {
+                    // ignore 401 errors
+                    return;
+                }
+                if (e instanceof Error) addError(e);
+                console.error(e);
             }
         }
 
@@ -45,7 +58,11 @@ function LoginWall(props: React.PropsWithChildren) {
             // try a refresh
             refreshToken();
         }
-    }, [token]);
+    }, [token, addError, removeError]);
+
+    useEffect(() => {
+        setMsg(state?.logoutMsg || null);
+    }, [state]);
 
     function doSetToken(token: string) {
         dispatch(setToken(token));
@@ -56,6 +73,11 @@ function LoginWall(props: React.PropsWithChildren) {
             <div cds-layout="vertical p:md gap:md">
                 <p cds-text="section" >Please log in</p>
                 <Login setToken={doSetToken} />
+                { msg && <>
+                    <CdsAlertGroup status="success">
+                        <CdsAlert closable onCloseChange={() => setMsg(null)}>{msg}</CdsAlert>
+                    </CdsAlertGroup>
+                </> }
             </div>
         );
     }
@@ -71,7 +93,7 @@ function Logout() {
     const [, logout] = useLogout();
 
     return (
-        <CdsButton type="button" action="outline" onClick={() => { logout(); }}>Logout</CdsButton>        
+        <CdsButton type="button" action="outline" onClick={() => { logout('You successfully logged out'); }}>Logout</CdsButton>        
     );
 }
 
@@ -92,14 +114,14 @@ function App() {
                     </header>
                     <div cds-layout="horizontal align:top wrap:none" style={{ height: "100%" }}>
                         <NavTab />
-                        <APIErrorProvider>
+                        <AppErrorProvider>
                             <div cds-layout="vertical">
                                 <LoginWall>
                                     <Outlet />
                                 </LoginWall>
-                                <APIErrorNotification />
+                                <AppErrorNotification />
                             </div>
-                        </APIErrorProvider>
+                        </AppErrorProvider>
                     </div>
                 </Provider>
             </div>

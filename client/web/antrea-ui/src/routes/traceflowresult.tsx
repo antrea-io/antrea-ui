@@ -21,7 +21,7 @@ import { TraceflowSpec, TraceflowStatus, TraceflowNodeResult, TraceflowObservati
 import * as d3 from 'd3';
 import { graphviz } from "d3-graphviz";
 import { CdsAlertGroup, CdsAlert } from "@cds/react/alert";
-import { useAPIError} from '../components/errors';
+import { useAppError} from '../components/errors';
 
 class Node {
     name: string;
@@ -362,17 +362,16 @@ function TraceflowGraph(props: {spec: TraceflowSpec, status: TraceflowStatus}) {
     const tfSpec = props.spec;
     const tfStatus = props.status;
     const divRef = useRef<HTMLDivElement>(null);
-    const { addError } = useAPIError();
+    const { addError } = useAppError();
 
     useEffect(() => {
         const graphBuilder = new TraceflowGraphBuilder(tfSpec, tfStatus);
         try {
             renderGraph(graphBuilder.buildGraph());
-        } catch(e) {
+        } catch (e) {
             console.error(e);
             renderGraph(null);
             if (e instanceof TraceflowResultError) addError(e);
-            else throw e;
         }
     }, [addError, tfSpec, tfStatus]);
 

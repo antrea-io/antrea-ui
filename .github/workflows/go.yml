@@ -36,6 +36,9 @@ jobs:
         test -z "$(git status --porcelain)" || (echo "you should run 'go mod tidy' and commit the changes"; exit 1)
         make generate
         test -z "$(git status --porcelain)" || (echo "you should run 'make generate' and commit the changes"; exit 1)
+    - name: Check copyright headers
+      run: |
+        make check-copyright
 
   golangci:
     runs-on: ubuntu-latest

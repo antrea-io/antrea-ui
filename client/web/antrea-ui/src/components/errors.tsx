@@ -17,19 +17,19 @@
 import React, { useState, useCallback, useContext } from 'react';
 import { CdsAlertGroup, CdsAlert } from "@cds/react/alert";
 
-interface APIErrorContextType {
+interface AppErrorContextType {
     error: Error | null
     addError: (error: Error) => void
     removeError: () => void
 }
 
-export const APIErrorContext = React.createContext<APIErrorContextType>({
+export const AppErrorContext = React.createContext<AppErrorContextType>({
     error: null,
     addError: (error: Error) => {},
     removeError: () => {}
 });
 
-export function APIErrorProvider(props: React.PropsWithChildren) {
+export function AppErrorProvider(props: React.PropsWithChildren) {
     const [error, setError] = useState<Error | null>(null);
 
     const removeError = () => setError(null);
@@ -43,19 +43,19 @@ export function APIErrorProvider(props: React.PropsWithChildren) {
     };
 
     return (
-        <APIErrorContext.Provider value={contextValue}>
+        <AppErrorContext.Provider value={contextValue}>
             {props.children}
-        </APIErrorContext.Provider>
+        </AppErrorContext.Provider>
     );
 }
 
-export function useAPIError() {
-  const { error, addError, removeError } = useContext(APIErrorContext);
+export function useAppError() {
+  const { error, addError, removeError } = useContext(AppErrorContext);
   return { error, addError, removeError };
 }
 
-export function APIErrorNotification() {
-    const { error, removeError } = useAPIError();
+export function AppErrorNotification() {
+    const { error, removeError } = useAppError();
 
     const handleClose = () => {
         removeError();

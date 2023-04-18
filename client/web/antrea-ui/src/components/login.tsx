@@ -21,7 +21,7 @@ import { CdsFormGroup } from '@cds/react/forms';
 import { CdsInput } from "@cds/react/input";
 import { CdsPassword } from "@cds/react/password";
 import { authAPI } from '../api/auth';
-import { useAPIError} from './errors';
+import { useAppError} from './errors';
 import { ErrorMessageContainer } from './form-errors';
 
 type Inputs = {
@@ -32,7 +32,7 @@ type Inputs = {
 export default function Login(props: { setToken: (token: string) => void }) {
     const { register, handleSubmit, formState: { errors } } = useForm<Inputs>();
     const setToken = props.setToken;
-    const { addError } = useAPIError();
+    const { addError } = useAppError();
 
     const onSubmit: SubmitHandler<Inputs> = async data => {
         try {

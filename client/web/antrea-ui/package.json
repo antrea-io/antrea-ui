@@ -55,6 +55,14 @@
       ]
     }
   },
+  "jest": {
+    "moduleNameMapper": {
+      "@cds/react(.*)": "<rootDir>/node_modules/@cds/react/$1"
+    },
+    "transformIgnorePatterns": [
+      "node_modules/(?!@cds|lit|@lit|@lit-labs|ramda|axios|is-ip|ip-regex|super-regex|function-timeout|time-span|convert-hrtime|clone-regexp|is-regexp)"
+    ]
+  },
   "browserslist": {
     "production": [
       ">0.2%",
@@ -66,5 +74,11 @@
       "last 1 firefox version",
       "last 1 safari version"
     ]
+  },
+  "devDependencies": {
+    "@types/uuid": "^9.0.1",
+    "jsdom-testing-mocks": "^1.7.0",
+    "nock": "^13.3.0",
+    "uuid": "^9.0.0"
   }
 }

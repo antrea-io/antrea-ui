@@ -28,8 +28,7 @@ import { ErrorMessage } from '@hookform/error-message';
 import { ErrorMessageContainer } from '../components/form-errors';
 import { isIP, ipVersion } from 'is-ip';
 import { TraceflowPacket, TraceflowSpec, traceflowAPI } from '../api/traceflow';
-import { APIError } from '../api/common';
-import { useAPIError} from '../components/errors';
+import { useAppError} from '../components/errors';
 
 type Inputs = {
     srcNamespace: string
@@ -164,8 +163,8 @@ function createTraceflowRequest(inputs: Inputs): TraceflowSpec {
     }
 
     spec.packet = createTraceflowPacket(inputs, useIPv6);
-    spec.liveTraffic = inputs.liveTraffic;
-    spec.droppedOnly = inputs.droppedOnly;
+    if (inputs.liveTraffic) spec.liveTraffic = inputs.liveTraffic;
+    if (inputs.droppedOnly) spec.droppedOnly = inputs.droppedOnly;
     spec.timeout = inputs.timeout;
 
     return spec;
@@ -220,7 +219,7 @@ export default function Traceflow() {
     const [ipv6, setIPv6] = useState<boolean>(false);
     const mountedRef = useRef<boolean>(false);
 
-    const { addError, removeError } = useAPIError();
+    const { addError, removeError } = useAppError();
 
     async function runTraceflow(tf: TraceflowSpec, cb: () => void) {
         try {
@@ -232,14 +231,14 @@ export default function Traceflow() {
                 state: {
                     spec: tf,
                     status: tfStatus,
-                }
+                },
             });
-        } catch(e) {
+        } catch (e) {
             // not sure whether this is the best way to do this, but we want to
             // remove the graph if present
             navigate(`/traceflow`);
-            if (e instanceof APIError) addError(e);
-            else throw e;
+            if (e instanceof Error) addError(e);
+            console.error(e);
         }
         if (mountedRef.current) {
             cb();
@@ -251,7 +250,7 @@ export default function Traceflow() {
         let tf: TraceflowSpec;
         try {
             tf = createTraceflowRequest(data);
-        } catch(e) {
+        } catch (e) {
             addError(e as Error);
             return;
         }
@@ -467,8 +466,8 @@ export default function Traceflow() {
                             }
                         </div>
                         <div cds-layout="horizontal gap:lg">
-                            <CdsButton type="submit">Run Traceflow</CdsButton>
-                            <CdsButton type="button" action="outline" onClick={()=> {
+                            <CdsButton role="button" type="submit">Run Traceflow</CdsButton>
+                            <CdsButton role="button" type="button" action="outline" onClick={()=> {
                                 setIsLiveTraffic(false);
                                 setProto("TCP");
                                 setIPv6(false);

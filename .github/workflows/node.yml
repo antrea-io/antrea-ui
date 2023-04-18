@@ -21,3 +21,5 @@ jobs:
       working-directory: client/web/antrea-ui/
     - run: yarn lint
       working-directory: client/web/antrea-ui/
+    - run: yarn test
+      working-directory: client/web/antrea-ui/

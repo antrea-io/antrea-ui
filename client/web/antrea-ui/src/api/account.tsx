@@ -25,7 +25,7 @@ export const accountAPI = {
             newPassword: encode(newPassword),
         }), {
             headers: {
-                "Content-Type": "application/json",
+                "content-type": "application/json",
             },
         }).then(_ => {}).catch(handleError);
     },
