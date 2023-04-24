@@ -1,4 +1,4 @@
-# -- Configuration for the Antrea UI frontend container.
+# Configuration for the Antrea UI frontend container.
 frontend:
   # -- Container image to use for the Antrea UI frontend.
   image:
@@ -10,7 +10,7 @@ frontend:
   # -- Resource requests and limits for the frontend container.
   resources: {}
 
-# -- Configuration for the Antrea UI backend container.
+# Configuration for the Antrea UI backend container.
 backend:
   # -- Container image to use for the Antrea UI backend.
   image:
@@ -22,17 +22,18 @@ backend:
   # -- Resource requests and limits for the backend container.
   resources: {}
 
-# -- HTTPS configuration for the Antrea UI.
+# HTTPS configuration for the Antrea UI.
 https:
   # -- Enable HTTPS (only) for accessing the web UI.
   enable: false
-  # -- Method for generating the TLS certificate for the web server. We support "auto", "user", and
-  # "userCA". With "auto", Helm will generate a new self-signed certificate every time the template
-  # function is executed. With "user", the user is responsible for providing a certificate and key,
-  # which will be used directly. With "userCA", the user is responsible for providing a CA
-  # certificate and key, which will be used to generate a signed certificate to be used by the web
-  # server. With "secret", the user is responsible for providing a secret of type kubernetes.io/tls,
-  # in the Namespace of the release. The secret must include the tls.crt and tls.key data fields.
+  # -- Method for generating the TLS certificate for the web server. We support "auto", "user",
+  # "userCA", and "secret". With "auto", Helm will generate a new self-signed certificate every time
+  # the template function is executed. With "user", the user is responsible for providing a
+  # certificate and key, which will be used directly. With "userCA", the user is responsible for
+  # providing a CA certificate and key, which will be used to generate a signed certificate to be
+  # used by the web server. With "secret", the user is responsible for providing a secret of type
+  # kubernetes.io/tls, in the Namespace of the release. The secret must include the tls.crt and
+  # tls.key data fields.
   method: "auto"
   # -- Configure automatic TLS certificate generation with Helm.
   auto:
@@ -73,13 +74,13 @@ https:
     # kube-system).
     secretName: "antrea-ui-tls"
 
-# -- IPv6 configuration for the Antrea UI.
+# IPv6 configuration for the Antrea UI.
 ipv6:
   # -- Enable IPv6 for accessing the web UI. Even if the cluster does not support IPv6, you do not
   # typically need to set this value to false.
   enable: true
 
-# -- Configuration for the Antrea UI Service.
+# Configuration for the Antrea UI Service.
 service:
   # --- The type of Service used for Antrea UI access, either ClusterIP, NodePort or LoadBalancer.
   type: ClusterIP
