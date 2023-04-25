@@ -64,12 +64,12 @@ clean:
 
 .PHONY: build-frontend
 build-frontend:
-	docker build -t antrea/antrea-ui-frontend:$(DOCKER_IMG_VERSION) -f build/frontend.dockerfile --build-arg GO_VERSION=$(GO_VERSION) .
+	docker build --pull -t antrea/antrea-ui-frontend:$(DOCKER_IMG_VERSION) -f build/frontend.dockerfile --build-arg GO_VERSION=$(GO_VERSION) .
 	docker tag antrea/antrea-ui-frontend:$(DOCKER_IMG_VERSION) antrea/antrea-ui-frontend
 
 .PHONY: build-backend
 build-backend:
-	docker build -t antrea/antrea-ui-backend:$(DOCKER_IMG_VERSION) -f build/backend.dockerfile --build-arg GO_VERSION=$(GO_VERSION) .
+	docker build --pull -t antrea/antrea-ui-backend:$(DOCKER_IMG_VERSION) -f build/backend.dockerfile --build-arg GO_VERSION=$(GO_VERSION) .
 	docker tag antrea/antrea-ui-backend:$(DOCKER_IMG_VERSION) antrea/antrea-ui-backend
 
 .PHONY: build
