@@ -36,6 +36,13 @@ spec:
         - name: frontend
           image: {{ include "frontendImage" . | quote }}
           imagePullPolicy: {{ .Values.frontend.image.pullPolicy }}
+          env:
+            - name: NGINX_RELOADER_DIRECTORIES
+              {{- if .Values.https.enable }}
+              value: "/app/ssl"
+              {{- else }}
+              value: ""
+              {{- end }}
           ports:
             - name: http
               containerPort: {{ .Values.frontend.port }}
@@ -62,13 +69,8 @@ spec:
               subPath: nginx.conf
               readOnly: true
             {{- if .Values.https.enable }}
-            - name: nginx-tls-cert
-              mountPath: /app/nginx-cert.pem
-              subPath: cert.pem
-              readOnly: true
-            - name: nginx-tls-key
-              mountPath: /app/nginx-key.pem
-              subPath: key.pem
+            - name: nginx-tls
+              mountPath: /app/ssl
               readOnly: true
             {{- end }}
         - name: backend
@@ -127,13 +129,13 @@ spec:
             secretName: antrea-ui-jwt-key
             defaultMode: 0400
         {{- if .Values.https.enable }}
-        - name: nginx-tls-cert
+        {{- $secretName := "antrea-ui-tls-helm" }}
+        {{- if eq .Values.https.method "secret" }}
+        {{- $secretName = .Values.https.secret.secretName }}
+        {{- end }}
+        - name: nginx-tls
           secret:
-            secretName: antrea-ui-tls-cert
-            defaultMode: 0400
-        - name: nginx-tls-key
-          secret:
-            secretName: antrea-ui-tls-key
+            secretName: {{ $secretName }}
             defaultMode: 0400
         {{- end }}
       terminationGracePeriodSeconds: 10
