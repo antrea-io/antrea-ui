@@ -130,6 +130,8 @@ func run() error {
 		passwordStore,
 		tokenManager,
 		server.SetCookieSecure(cookieSecure),
+		server.SetMaxLoginsPerSecond(maxLoginsPerSecond),
+		server.SetMaxTraceflowsPerHour(maxTraceflowsPerHour),
 	)
 
 	var router *gin.Engine
