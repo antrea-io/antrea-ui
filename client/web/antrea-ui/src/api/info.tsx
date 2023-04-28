@@ -38,23 +38,22 @@ export interface Condition {
 
 export interface ControllerCondition extends Condition { }
 
-// The fields which we do not need at the moment are made optional
 export interface ControllerInfo {
     metadata: {
         name: string
     }
-    version: string
-    podRef: K8sRef
-    nodeRef: K8sRef
+    version?: string
+    podRef?: K8sRef
+    nodeRef?: K8sRef
     serviceRef?: K8sRef
     networkPolicyControllerInfo?: NetworkPolicyControllerInfo
-    connectedAgentNum: number
-    controllerConditions: ControllerCondition[]
+    connectedAgentNum?: number
+    controllerConditions?: ControllerCondition[]
     apiPort?: number
 }
 
 interface OVSInfo {
-    version: string
+    version?: string
     bridgeName?: string
     flowTable?: Map<string,number>
 }
@@ -65,14 +64,14 @@ export interface AgentInfo {
     metadata: {
         name: string
     }
-    version: string
-    podRef: K8sRef
-    nodeRef: K8sRef
-    nodeSubnets: string[]
-    ovsInfo: OVSInfo
+    version?: string
+    podRef?: K8sRef
+    nodeRef?: K8sRef
+    nodeSubnets?: string[]
+    ovsInfo?: OVSInfo
     networkPolicyControllerInfo?: NetworkPolicyControllerInfo
-    localPodNum: number
-    agentConditions: AgentCondition[]
+    localPodNum?: number
+    agentConditions?: AgentCondition[]
     apiPort?: number
 }
 
