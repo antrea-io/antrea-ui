@@ -63,6 +63,12 @@ function makeCondition(type: string, status: string, date: Date): Condition {
     };
 }
 
+function arrayFrequencies<T>(data: T[]): Map<T, number> {
+    const counts = new Map<T, number>();
+    data.forEach(d => counts.set(d, (counts.get(d)??0) + 1));
+    return counts;
+}
+
 function checkControllerInfo(data: string[]) {
     const section = screen.getByRole('region', { name: /controller/i });
     expect(within(section).getByText('Controller')).toBeInTheDocument();
@@ -74,7 +80,8 @@ function checkControllerInfo(data: string[]) {
     expect(within(section).getAllByRole('row')).toHaveLength(2);
     // name of the row is the contents of all cells, space-separated
     const row = within(section).getByRole('row', { name: data.join(' ') });
-    data.forEach(d => expect(within(row).getByRole('cell', { name: d })));
+    // some cells may have the same content / name, which is why we check that the count is correct
+    arrayFrequencies(data).forEach((count, c) => expect(within(row).getAllByRole('cell', { name: c })).toHaveLength(count));
 }
 
 function checkAgentInfos(data: string[][] | undefined) {
@@ -86,7 +93,8 @@ function checkAgentInfos(data: string[][] | undefined) {
     }
     data.forEach(data => {
         const row = within(section).getByRole('row', { name: data.join(' ') });
-        data.forEach(d => expect(within(row).getByRole('cell', { name: d })));
+        // some cells may have the same content / name, which is why we check that the count is correct
+        arrayFrequencies(data).forEach((count, c) => expect(within(row).getAllByRole('cell', { name: c })).toHaveLength(count));
     });
 }
 
@@ -162,6 +170,24 @@ describe('Summary', () => {
                 message: "",
             }]),
             expectedControllerData: ['antrea-controller', 'v1.0.0', 'kube-system/antrea-controller', 'nodeA', '0', 'True', 'Invalid Date'],
+        },
+        {
+            name: 'missing controller fields',
+            controllerInfo: {
+                metadata: makeMetadata('antrea-controller'),
+            },
+            expectedControllerData: ['antrea-controller', 'Unknown', 'Unknown', 'Unknown', '0', 'False', 'None'],
+        },
+        {
+            name: 'missing agent fields',
+            controllerInfo: controller,
+            expectedControllerData: controllerData,
+            agentInfo: [{
+                metadata: makeMetadata('antrea-agent-1'),
+            }],
+            expectedAgentData: [
+                ['antrea-agent-1', 'Unknown', 'Unknown', 'Unknown', '0', 'None', 'Unknown', 'False', 'None'],
+            ],
         },
     ];
 
