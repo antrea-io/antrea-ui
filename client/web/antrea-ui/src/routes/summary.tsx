@@ -23,18 +23,20 @@ import { WaitForAPIResource } from '../components/progress';
 
 type Property = string
 
-const controllerProperties: Property[] = ["Name", "Version", "Pod Name", "Node Name", "Connected Agents", "Healthy", "Last Heartbeat"];
-const agentProperties: Property[] = ["Name", "Version", "Pod Name", "Node Name", "Local Pods", "Node Subnets", "OVS Version", "Healthy", "Last Heartbeat"];
+const controllerProperties: Property[] = ['Name', 'Version', 'Pod Name', 'Node Name', 'Connected Agents', 'Healthy', 'Last Heartbeat'];
+const agentProperties: Property[] = ['Name', 'Version', 'Pod Name', 'Node Name', 'Local Pods', 'Node Subnets', 'OVS Version', 'Healthy', 'Last Heartbeat'];
 
-function refToString(ref: K8sRef): string {
+function refToString(ref: K8sRef | undefined): string {
+    if (!ref) return 'Unknown';
     if (ref.namespace) return ref.namespace + '/' + ref.name;
     return ref.name;
 }
 
 // returns status and last heartbeat time
-function getConditionInfo(conditions: Condition[], name: string): [string, string] {
+function getConditionInfo(conditions: Condition[] | undefined, name: string): [string, string] {
+    if (!conditions) return ['False', 'None'];
     const condition = conditions.find(c => c.type === name);
-    if (!condition) return ["False", "None"];
+    if (!condition) return ['False', 'None'];
     return [condition.status, new Date(condition.lastHeartbeatTime).toLocaleString()];
 }
 
@@ -42,7 +44,7 @@ function controllerPropertyValues(controller: ControllerInfo): string[] {
     const [healthy, lastHeartbeat] = getConditionInfo(controller.controllerConditions, 'ControllerHealthy');
     return [
         controller.metadata.name,
-        controller.version,
+        controller?.version ?? 'Unknown',
         refToString(controller.podRef),
         refToString(controller.nodeRef),
         (controller.connectedAgentNum??0).toString(),
@@ -55,12 +57,12 @@ function agentPropertyValues(agent: AgentInfo): string[] {
     const [healthy, lastHeartbeat] = getConditionInfo(agent.agentConditions, 'AgentHealthy');
     return [
         agent.metadata.name,
-        agent.version,
+        agent?.version ?? 'Unknown',
         refToString(agent.podRef),
         refToString(agent.nodeRef),
         (agent.localPodNum??0).toString(),
-        agent.nodeSubnets.join(','),
-        agent.ovsInfo.version,
+        agent.nodeSubnets?.join(',') ?? 'None',
+        agent?.ovsInfo?.version ?? 'Unknown',
         healthy,
         lastHeartbeat,
     ];
