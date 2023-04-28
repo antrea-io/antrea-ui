@@ -60,10 +60,18 @@ chart values, you will need to:
 The default `admin` password is `admin`. You can change it in the `Settings`
 tab.
 
-### Enabling HTTPS
+### Using HTTPS
 
-We recommend enabling HTTPS in the Antrea UI web server. At the moment, there
-are 3 different ways of enabling HTTPs:
+We recommend accessing the Antrea UI over HTTPS. It can be done one of 2 ways:
+
+1. If you are using an [Ingress Controller](https://kubernetes.io/docs/concepts/services-networking/ingress-controllers/),
+   you can terminate TLS at Ingress. This does not require any customization
+   when installing the antrea-ui Helm chart. You need to create the appropriate
+   [Ingress resource](https://kubernetes.io/docs/concepts/services-networking/ingress/),
+   exposing an HTTPS route for the antrea-ui Service. Refer to [this](reference-deployments.md#ingress-with-nginx--cert-manager-lets-encrypt-on-eks)
+   for an example.
+2. Otherwise, you can enable HTTPS directly in the Antrea UI web server. There
+   are different 4 methods for doing so, which are described below.
 
 #### `auto`: Helm generates a self-signed certificate
 
@@ -105,7 +113,7 @@ helm install antrea-ui build/charts/antrea-ui --namespace kube-system -f values-
 
 The certificate should include `localhost` as a Subject Alternate Name (SAN).
 
-### `userCA`: User provides a CA certificate
+#### `userCA`: User provides a CA certificate
 
 With this option, you will need to provide your own CA certificate and
 key. Helm will generate a signed certificate using the provided data.
@@ -122,3 +130,25 @@ EOF
 
 helm install antrea-ui build/charts/antrea-ui --namespace kube-system -f values-userCA.yml
 ```
+
+#### `secret`: User provides a Secret of type kubernetes.io/tls
+
+With this option, you will need to provide a K8s Secret of type
+kubernetes.io/tls, which includes the tls.crt and tls.key data fields.
+
+```bash
+cat <<EOF >> values-secret.yml
+https:
+  enable: true
+  method: "secret"
+  secretName: "<name>"
+EOF
+
+helm install antrea-ui antrea/antrea-ui --namespace kube-system -f values-secret.yml
+```
+
+If you do not provide a `secretName`, it will default to `"antrea-ui-tls"`.
+
+With this method, you can integrate with [cert-manager](https://cert-manager.io/).
+Refer to [this](reference-deployments.md#loadbalancer-service-with-metallb--cert-manager-self-signed)
+for an example.
