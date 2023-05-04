@@ -15,8 +15,10 @@
 package server
 
 import (
+	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/go-logr/logr"
@@ -32,6 +34,7 @@ type server struct {
 	logger                   logr.Logger
 	k8sClient                dynamic.Interface
 	traceflowRequestsHandler traceflow.RequestsHandler
+	k8sProxyHandler          http.Handler
 	passwordStore            password.Store
 	tokenManager             auth.TokenManager
 	config                   serverConfig
@@ -68,6 +71,7 @@ func NewServer(
 	logger logr.Logger,
 	k8sClient dynamic.Interface,
 	traceflowRequestsHandler traceflow.RequestsHandler,
+	k8sProxyHandler http.Handler,
 	passwordStore password.Store,
 	tokenManager auth.TokenManager,
 	options ...ServerOptions,
@@ -85,6 +89,7 @@ func NewServer(
 		logger:                   logger,
 		k8sClient:                k8sClient,
 		traceflowRequestsHandler: traceflowRequestsHandler,
+		k8sProxyHandler:          k8sProxyHandler,
 		passwordStore:            passwordStore,
 		tokenManager:             tokenManager,
 		config:                   config,
@@ -122,6 +127,13 @@ func (s *server) checkBearerToken(c *gin.Context) {
 	}
 }
 
+func announceDeprecationMiddleware(removalDate time.Time, message string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Header("Warning", fmt.Sprintf(`299 - "Deprecated API: %s"`, message))
+		c.Header("Sunset", removalDate.UTC().Format(http.TimeFormat))
+	}
+}
+
 func (s *server) AddRoutes(router *gin.Engine) {
 	router.GET("/healthz", func(c *gin.Context) {
 		c.Status(http.StatusOK)
@@ -134,4 +146,5 @@ func (s *server) AddRoutes(router *gin.Engine) {
 	s.AddInfoRoutes(apiv1)
 	s.AddAccountRoutes(apiv1)
 	s.AddAuthRoutes(apiv1)
+	s.AddK8sRoutes(apiv1)
 }

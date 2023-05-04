@@ -78,7 +78,7 @@ export interface AgentInfo {
 export const controllerInfoAPI = {
     fetch: async (): Promise<ControllerInfo> => {
         return api.get(
-            `info/controller`,
+            `k8s/apis/crd.antrea.io/v1beta1/antreacontrollerinfos/antrea-controller`
         ).then((response) => response.data as ControllerInfo).catch((error) => {
             console.error("Unable to fetch Controller Info");
             handleError(error);
@@ -89,8 +89,8 @@ export const controllerInfoAPI = {
 export const agentInfoAPI = {
     fetchAll: async (): Promise<AgentInfo[]> => {
         return api.get(
-            `info/agents`,
-        ).then((response) => response.data as AgentInfo[]).catch((error) => {
+            `k8s/apis/crd.antrea.io/v1beta1/antreaagentinfos`,
+        ).then((response) => response.data.items as AgentInfo[]).catch((error) => {
             console.error("Unable to fetch Agent Infos");
             handleError(error);
         });
@@ -98,7 +98,7 @@ export const agentInfoAPI = {
 
     fetch: async (name: string): Promise<AgentInfo> => {
         return api.get(
-            `info/agents/${name}`,
+            `k8s/apis/crd.antrea.io/v1beta1/antreaagentinfos/${name}`,
         ).then((response) => response.data as AgentInfo).catch((error) => {
             console.error("Unable to fetch Agent Info");
             handleError(error);

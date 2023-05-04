@@ -20,6 +20,7 @@ import (
 	"flag"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"time"
 
@@ -32,6 +33,7 @@ import (
 
 	"antrea.io/antrea-ui/pkg/auth"
 	"antrea.io/antrea-ui/pkg/env"
+	"antrea.io/antrea-ui/pkg/handlers/k8sproxy"
 	traceflowhandler "antrea.io/antrea-ui/pkg/handlers/traceflow"
 	"antrea.io/antrea-ui/pkg/k8s"
 	"antrea.io/antrea-ui/pkg/password"
@@ -98,13 +100,18 @@ func ginLogger(logger logr.Logger, level int) gin.HandlerFunc {
 func run() error {
 	logger.Info("Starting Antrea UI backend", "version", version.GetFullVersionWithRuntimeInfo())
 
-	k8sClient, err := k8s.DynamicClient()
+	k8sRESTConfig, k8sHTTPClient, k8sDynamicClient, err := k8s.Client()
 	if err != nil {
-		return fmt.Errorf("failed to create K8s dynamic client: %w", err)
+		return fmt.Errorf("failed to create K8s client: %w", err)
+	}
+	k8sServerURL, err := url.Parse(k8sRESTConfig.Host)
+	if err != nil {
+		return fmt.Errorf("failed to parse K8s server URL '%s': %w", k8sRESTConfig.Host, err)
 	}
 
-	traceflowHandler := traceflowhandler.NewRequestsHandler(logger, k8sClient)
-	passwordStore := password.NewStore(passwordrw.NewK8sSecret(env.GetNamespace(), "antrea-ui-passwd", k8sClient), passwordhasher.NewArgon2id())
+	traceflowHandler := traceflowhandler.NewRequestsHandler(logger, k8sDynamicClient)
+	k8sProxyHandler := k8sproxy.NewK8sProxyHandler(logger, k8sServerURL, k8sHTTPClient.Transport)
+	passwordStore := password.NewStore(passwordrw.NewK8sSecret(env.GetNamespace(), "antrea-ui-passwd", k8sDynamicClient), passwordhasher.NewArgon2id())
 	if err := passwordStore.Init(context.Background()); err != nil {
 		return err
 	}
@@ -125,8 +132,9 @@ func run() error {
 
 	s := server.NewServer(
 		logger,
-		k8sClient,
+		k8sDynamicClient,
 		traceflowHandler,
+		k8sProxyHandler,
 		passwordStore,
 		tokenManager,
 		server.SetCookieSecure(cookieSecure),
