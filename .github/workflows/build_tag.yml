@@ -25,13 +25,18 @@ jobs:
     - name: Check-out code
       uses: actions/checkout@v3
     - name: Build container images
+      env:
+        # VERSION must be set for docker image to be tagged correctly
+        VERSION: ${{ needs.get-version.outputs.version }}
       run: make
-    - name: Push container images if needed
-      if: ${{ github.repository == 'antrea-io/antrea-ui' && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    - name: Push container images
+      # in case workflow runs from a fork
+      if: ${{ github.repository == 'antrea-io/antrea-ui' }}
       env:
         DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
         DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
         VERSION: ${{ needs.get-version.outputs.version }}
       run: |
+        echo "$DOCKER_PASSWORD" | docker login -u "$DOCKER_USERNAME" --password-stdin
         docker push antrea/antrea-ui-frontend:"${VERSION}"
         docker push antrea/antrea-ui-backend:"${VERSION}"
