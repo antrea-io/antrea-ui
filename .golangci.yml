@@ -32,3 +32,11 @@ linters:
     - goimports
     - vet
     - revive
+
+issues:
+  exclude-rules:
+    # This is temporary
+    # Golangci-lint is no honoring the "lint:ignore" comments for staticcheck
+    - linters:
+        - staticcheck
+      text: "SA1019:"

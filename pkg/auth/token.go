@@ -172,5 +172,6 @@ func (m *tokenManager) doRefreshTokenGC() {
 }
 
 func (m *tokenManager) runRefreshTokenGC(stopCh <-chan struct{}) {
+	//lint:ignore SA1019 apimachinery doesn't provide a correct alternative yet
 	wait.BackoffUntil(m.doRefreshTokenGC, wait.NewJitteredBackoffManager(refreshTokenGCPeriod, 0.0, m.clock), true, stopCh)
 }

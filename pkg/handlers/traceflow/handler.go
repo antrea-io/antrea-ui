@@ -150,10 +150,8 @@ func (h *requestsHandler) doGC(ctx context.Context) {
 }
 
 func (h *requestsHandler) runGC(stopCh <-chan struct{}) {
-	ctx, cancel := wait.ContextForChannel(stopCh)
-	defer cancel()
-	go wait.BackoffUntil(func() {
-		h.doGC(ctx)
-	}, wait.NewJitteredBackoffManager(gcPeriod, 0.0, h.clock), true, stopCh)
+	ctx := wait.ContextForChannel(stopCh)
+	//lint:ignore SA1019 apimachinery doesn't provide a correct alternative yet
+	go wait.BackoffUntil(func() { h.doGC(ctx) }, wait.NewJitteredBackoffManager(gcPeriod, 0.0, h.clock), true, stopCh)
 	<-stopCh
 }
