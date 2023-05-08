@@ -17,7 +17,6 @@ package main
 import (
 	"context"
 	"crypto/rsa"
-	"flag"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -32,6 +31,7 @@ import (
 	"go.uber.org/zap/zapcore"
 
 	"antrea.io/antrea-ui/pkg/auth"
+	serverconfig "antrea.io/antrea-ui/pkg/config/server"
 	"antrea.io/antrea-ui/pkg/env"
 	"antrea.io/antrea-ui/pkg/handlers/k8sproxy"
 	traceflowhandler "antrea.io/antrea-ui/pkg/handlers/traceflow"
@@ -45,13 +45,8 @@ import (
 )
 
 var (
-	serverAddr           string
-	logger               logr.Logger
-	jwtKeyPath           string
-	cookieSecure         bool
-	maxTraceflowsPerHour int
-	maxLoginsPerSecond   int
-	verbosity            int
+	config *serverconfig.Config
+	logger logr.Logger
 )
 
 func ginLogger(logger logr.Logger, level int) gin.HandlerFunc {
@@ -116,9 +111,9 @@ func run() error {
 		return err
 	}
 	var jwtKey *rsa.PrivateKey
-	if jwtKeyPath != "" {
+	if config.Auth.Basic.JWTKeyPath != "" {
 		var err error
-		if jwtKey, err = auth.LoadPrivateKeyFromFile(jwtKeyPath); err != nil {
+		if jwtKey, err = auth.LoadPrivateKeyFromFile(config.Auth.Basic.JWTKeyPath); err != nil {
 			return fmt.Errorf("failed to load JWT key from file: %w", err)
 		}
 	} else {
@@ -137,9 +132,9 @@ func run() error {
 		k8sProxyHandler,
 		passwordStore,
 		tokenManager,
-		server.SetCookieSecure(cookieSecure),
-		server.SetMaxLoginsPerSecond(maxLoginsPerSecond),
-		server.SetMaxTraceflowsPerHour(maxTraceflowsPerHour),
+		server.SetCookieSecure(config.Auth.CookieSecure),
+		server.SetMaxLoginsPerSecond(config.Limits.MaxLoginsPerSecond),
+		server.SetMaxTraceflowsPerHour(config.Limits.MaxTraceflowsPerHour),
 	)
 
 	var router *gin.Engine
@@ -160,7 +155,7 @@ func run() error {
 	s.AddRoutes(router)
 
 	srv := &http.Server{
-		Addr:              serverAddr,
+		Addr:              config.Addr,
 		Handler:           router,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
@@ -173,7 +168,7 @@ func run() error {
 	// Initializing the server in a goroutine so that
 	// it won't block the graceful shutdown handling below
 	go func() {
-		logger.Info("Starting server", "address", serverAddr)
+		logger.Info("Starting server", "address", config.Addr)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			logger.Error(err, "Server error")
 			os.Exit(1)
@@ -193,29 +188,16 @@ func run() error {
 	return nil
 }
 
-func validateArgs() error {
-	if verbosity < 0 || verbosity >= 128 {
-		return fmt.Errorf("invalid verbosity level %d: it should be >= 0 and < 128", verbosity)
-	}
-	return nil
-}
-
 func main() {
-	flag.StringVar(&serverAddr, "addr", ":8080", "Listening address for server")
-	flag.StringVar(&jwtKeyPath, "jwt-key", "", "Path to PEM private key file to generate JWT tokens; if omitted one will be automatically generated")
-	flag.BoolVar(&cookieSecure, "cookie-secure", false, "Set the Secure attribute for authentication cookie, which requires HTTPS")
-	flag.IntVar(&maxTraceflowsPerHour, "max-traceflows-per-hour", 100, "Rate limit the number of Traceflow requests (across all clients); use -1 to remove rate-limiting")
-	flag.IntVar(&maxLoginsPerSecond, "max-logins-per-second", 1, "Rate limit the number of login attempts (per client IP); use -1 to remove rate-limiting")
-	flag.IntVar(&verbosity, "v", 0, "Log verbosity")
-	flag.Parse()
-
-	if err := validateArgs(); err != nil {
-		fmt.Fprintf(os.Stderr, "Invalid args: %v\n", err.Error())
+	var err error
+	config, err = serverconfig.LoadConfig()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to load config: %v\n", err)
 		os.Exit(1)
 	}
 
 	zc := zap.NewProductionConfig()
-	zc.Level = zap.NewAtomicLevelAt(zapcore.Level(-1 * verbosity))
+	zc.Level = zap.NewAtomicLevelAt(zapcore.Level(-1 * config.LogVerbosity))
 	zc.DisableStacktrace = true
 	zapLog, err := zc.Build()
 	if err != nil {
@@ -223,6 +205,9 @@ func main() {
 		os.Exit(1)
 	}
 	logger = zapr.NewLogger(zapLog)
+
+	logger.V(2).Info("Config loaded", "config", config)
+
 	if err := run(); err != nil {
 		logger.Error(err, "error in run() function")
 		os.Exit(1)
