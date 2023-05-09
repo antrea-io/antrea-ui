@@ -45,8 +45,7 @@ func TestLogin(t *testing.T) {
 	wrongPassword := "abc"
 
 	sendRequest := func(ts *testServer, mutators ...func(req *http.Request)) *httptest.ResponseRecorder {
-		req, err := http.NewRequest("GET", "/api/v1/auth/login", nil)
-		require.NoError(t, err)
+		req := httptest.NewRequest("GET", "/api/v1/auth/login", nil)
 		for _, m := range mutators {
 			m(req)
 		}
@@ -134,8 +133,7 @@ func TestLogin(t *testing.T) {
 
 func TestRefreshToken(t *testing.T) {
 	sendRequest := func(ts *testServer, refreshToken *string) *httptest.ResponseRecorder {
-		req, err := http.NewRequest("GET", "/api/v1/auth/refresh_token", nil)
-		require.NoError(t, err)
+		req := httptest.NewRequest("GET", "/api/v1/auth/refresh_token", nil)
 		if refreshToken != nil {
 			req.AddCookie(&http.Cookie{
 				Name:  "antrea-ui-refresh-token",
@@ -183,8 +181,7 @@ func TestRefreshToken(t *testing.T) {
 
 func TestLogout(t *testing.T) {
 	sendRequest := func(ts *testServer, refreshToken *string) *httptest.ResponseRecorder {
-		req, err := http.NewRequest("GET", "/api/v1/auth/logout", nil)
-		require.NoError(t, err)
+		req := httptest.NewRequest("GET", "/api/v1/auth/logout", nil)
 		if refreshToken != nil {
 			req.AddCookie(&http.Cookie{
 				Name:  "antrea-ui-refresh-token",

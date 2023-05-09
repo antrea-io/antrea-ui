@@ -27,7 +27,6 @@ import (
 	"github.com/golang/mock/gomock"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
@@ -132,8 +131,7 @@ func TestAuthorization(t *testing.T) {
 		if _, ok := unprotectedRoutes[routeStr]; ok {
 			continue
 		}
-		req, err := http.NewRequest(routeInfo.Method, routeInfo.Path, nil)
-		require.NoError(t, err)
+		req := httptest.NewRequest(routeInfo.Method, routeInfo.Path, nil)
 		rr := httptest.NewRecorder()
 		ts.router.ServeHTTP(rr, req)
 		assert.Equalf(t, http.StatusUnauthorized, rr.Code, "route (%s) should be protected by token but it is not", routeStr)

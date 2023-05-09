@@ -59,8 +59,7 @@ func TestTraceflowRequest(t *testing.T) {
 	ts := newTestServer(t)
 
 	// create traceflow request
-	req, err := http.NewRequest("POST", "/api/v1/traceflow", bytes.NewBuffer(tfJSON))
-	require.NoError(t, err)
+	req := httptest.NewRequest("POST", "/api/v1/traceflow", bytes.NewReader(tfJSON))
 	ts.authorizeRequest(req)
 	rr := httptest.NewRecorder()
 	requestID := uuid.NewString()
@@ -75,8 +74,7 @@ func TestTraceflowRequest(t *testing.T) {
 	reqURI := url.RequestURI()
 
 	// get request: should give a 303 redirect to /status endpoint
-	req, err = http.NewRequest("GET", reqURI, nil)
-	require.NoError(t, err)
+	req = httptest.NewRequest("GET", reqURI, nil)
 	ts.authorizeRequest(req)
 	rr = httptest.NewRecorder()
 	ts.router.ServeHTTP(rr, req)
@@ -88,8 +86,7 @@ func TestTraceflowRequest(t *testing.T) {
 	assert.Equal(t, reqURI+"/status", statusURI)
 
 	// get status: not ready yet
-	req, err = http.NewRequest("GET", statusURI, nil)
-	require.NoError(t, err)
+	req = httptest.NewRequest("GET", statusURI, nil)
 	ts.authorizeRequest(req)
 	rr = httptest.NewRecorder()
 	ts.traceflowRequestsHandler.EXPECT().GetRequestResult(gomock.Any(), requestID).Return(tf, false, nil)
@@ -108,8 +105,7 @@ func TestTraceflowRequest(t *testing.T) {
 	}
 
 	// get status: ready
-	req, err = http.NewRequest("GET", statusURI, nil)
-	require.NoError(t, err)
+	req = httptest.NewRequest("GET", statusURI, nil)
 	ts.authorizeRequest(req)
 	rr = httptest.NewRecorder()
 	ts.traceflowRequestsHandler.EXPECT().GetRequestResult(gomock.Any(), requestID).Return(tfResult, true, nil)
@@ -122,8 +118,7 @@ func TestTraceflowRequest(t *testing.T) {
 	assert.Equal(t, reqURI+"/result", resultURI)
 
 	// get result
-	req, err = http.NewRequest("GET", resultURI, nil)
-	require.NoError(t, err)
+	req = httptest.NewRequest("GET", resultURI, nil)
 	ts.authorizeRequest(req)
 	rr = httptest.NewRecorder()
 	ts.traceflowRequestsHandler.EXPECT().GetRequestResult(gomock.Any(), requestID).Return(tfResult, true, nil)
@@ -134,8 +129,7 @@ func TestTraceflowRequest(t *testing.T) {
 	assert.Equal(t, tfResult, result)
 
 	// delete request
-	req, err = http.NewRequest("DELETE", reqURI, nil)
-	require.NoError(t, err)
+	req = httptest.NewRequest("DELETE", reqURI, nil)
 	ts.authorizeRequest(req)
 	rr = httptest.NewRecorder()
 	ts.traceflowRequestsHandler.EXPECT().DeleteRequest(gomock.Any(), requestID).Return(true, nil)
@@ -145,8 +139,7 @@ func TestTraceflowRequest(t *testing.T) {
 
 func TestTraceflowRequestRateLimiting(t *testing.T) {
 	sendRequest := func(ts *testServer) *httptest.ResponseRecorder {
-		req, err := http.NewRequest("POST", "/api/v1/traceflow", bytes.NewBuffer(tfJSON))
-		require.NoError(t, err)
+		req := httptest.NewRequest("POST", "/api/v1/traceflow", bytes.NewReader(tfJSON))
 		rr := httptest.NewRecorder()
 		ts.authorizeRequest(req)
 		ts.router.ServeHTTP(rr, req)
