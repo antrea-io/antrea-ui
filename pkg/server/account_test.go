@@ -33,8 +33,7 @@ func TestUpdatePassword(t *testing.T) {
 	sendAuthorizedRequest := func(ts *testServer, body any) *httptest.ResponseRecorder {
 		b, err := json.Marshal(body)
 		require.NoError(t, err)
-		req, err := http.NewRequest("PUT", "/api/v1/account/password", bytes.NewBuffer(b))
-		require.NoError(t, err)
+		req := httptest.NewRequest("PUT", "/api/v1/account/password", bytes.NewReader(b))
 		ts.authorizeRequest(req)
 		rr := httptest.NewRecorder()
 		ts.router.ServeHTTP(rr, req)

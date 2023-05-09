@@ -54,8 +54,7 @@ func TestGetControllerInfo(t *testing.T) {
 	ts := newTestServer(t)
 	require.NoError(t, createTestControllerInfo(ctx, ts.k8sClient, "antrea-controller"), "failed to create test ControllerInfo")
 
-	req, err := http.NewRequest("GET", "/api/v1/info/controller", nil)
-	require.NoError(t, err)
+	req := httptest.NewRequest("GET", "/api/v1/info/controller", nil)
 	ts.authorizeRequest(req)
 	rr := httptest.NewRecorder()
 	ts.router.ServeHTTP(rr, req)
@@ -86,8 +85,7 @@ func TestGetAgentInfo(t *testing.T) {
 	require.NoError(t, createTestAgentInfo(ctx, ts.k8sClient, "node-A"), "failed to create test AgentInfo")
 
 	t.Run("valid name", func(t *testing.T) {
-		req, err := http.NewRequest("GET", "/api/v1/info/agents/node-A", nil)
-		require.NoError(t, err)
+		req := httptest.NewRequest("GET", "/api/v1/info/agents/node-A", nil)
 		ts.authorizeRequest(req)
 		rr := httptest.NewRecorder()
 		ts.router.ServeHTTP(rr, req)
@@ -97,8 +95,7 @@ func TestGetAgentInfo(t *testing.T) {
 	})
 
 	t.Run("invalid name", func(t *testing.T) {
-		req, err := http.NewRequest("GET", "/api/v1/info/agents/node-B", nil)
-		require.NoError(t, err)
+		req := httptest.NewRequest("GET", "/api/v1/info/agents/node-B", nil)
 		ts.authorizeRequest(req)
 		rr := httptest.NewRecorder()
 		ts.router.ServeHTTP(rr, req)
@@ -113,8 +110,7 @@ func TestGetAgentInfos(t *testing.T) {
 	require.NoError(t, createTestAgentInfo(ctx, ts.k8sClient, "node-A"), "failed to create test AgentInfo")
 	require.NoError(t, createTestAgentInfo(ctx, ts.k8sClient, "node-B"), "failed to create test AgentInfo")
 
-	req, err := http.NewRequest("GET", "/api/v1/info/agents", nil)
-	require.NoError(t, err)
+	req := httptest.NewRequest("GET", "/api/v1/info/agents", nil)
 	ts.authorizeRequest(req)
 	rr := httptest.NewRecorder()
 	ts.router.ServeHTTP(rr, req)

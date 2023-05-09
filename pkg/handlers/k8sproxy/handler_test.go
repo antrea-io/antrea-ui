@@ -38,9 +38,8 @@ func TestK8sProxyHandler(t *testing.T) {
 	require.NoError(t, err)
 	h := NewK8sProxyHandler(logger, serverURL, http.DefaultTransport)
 
-	req, err := http.NewRequest("GET", "/api/v1/k8s/api/v1/pods", nil)
+	req := httptest.NewRequest("GET", "/api/v1/k8s/api/v1/pods", nil)
 	req.RemoteAddr = "127.0.0.1:32167"
-	require.NoError(t, err)
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, req)
 	require.Equal(t, http.StatusOK, rr.Code)
