@@ -73,16 +73,6 @@ func LoadConfig() (*Config, error) {
 	flags.String("addr", ":8080", "Listening address for server")
 	mustBindPFlag("addr", "addr")
 
-	// These are legacy flags, introduced before config file support was added.
-	flags.String("jwt-key", "", "Path to PEM private key file to generate JWT tokens; if omitted one will be automatically generated")
-	mustBindPFlag("auth.basic.jwtKeyPath", "jwt-key")
-	flags.Bool("cookie-secure", false, "Set the Secure attribute for authentication cookie, which requires HTTPS")
-	mustBindPFlag("auth.cookieSecure", "cookie-secure")
-	flags.Int("max-traceflows-per-hour", DefaultMaxTraceflowsPerHour, "Rate limit the number of Traceflow requests (across all clients); use -1 to remove rate-limiting")
-	mustBindPFlag("limits.maxTraceflowsPerHour", "max-traceflows-per-hour")
-	flags.Int("max-logins-per-second", DefaultMaxLoginsPerSecond, "Rate limit the number of login attempts (per client IP); use -1 to remove rate-limiting")
-	mustBindPFlag("limits.maxLoginsPerSecond", "max-logins-per-second")
-
 	if err := flags.Parse(os.Args[1:]); err != nil {
 		return nil, err
 	}
