@@ -77,13 +77,8 @@ spec:
           image: {{ include "backendImage" . | quote }}
           imagePullPolicy: {{ .Values.backend.image.pullPolicy }}
           args:
-            - "-addr"
-            - ":{{ .Values.backend.port }}"
-            - "-jwt-key"
-            - "/app/jwt-key.pem"
-            {{- if .Values.https.enable }}
-            - "-cookie-secure"
-            {{- end }}
+            - "-c"
+            - "/app/server-conf.yaml"
           env:
             - name: POD_NAMESPACE
               valueFrom:
@@ -104,6 +99,10 @@ spec:
           resources:
             {{- toYaml .Values.backend.resources | nindent 12 }}
           volumeMounts:
+            - name: server-conf
+              mountPath: /app/server-conf.yaml
+              subPath: server.conf
+              readOnly: true
             - name: jwt-key
               mountPath: /app/jwt-key.pem
               subPath: key.pem
@@ -124,6 +123,9 @@ spec:
         - name: nginx-conf
           configMap:
             name: antrea-ui-nginx
+        - name: server-conf
+          configMap:
+            name: antrea-ui-backend
         - name: jwt-key
           secret:
             secretName: antrea-ui-jwt-key

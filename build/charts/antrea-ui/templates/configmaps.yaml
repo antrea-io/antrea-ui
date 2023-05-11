@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: antrea-ui-nginx
+  namespace: {{ .Release.Namespace }}
+data:
+  nginx.conf: {{ include "antrea-ui.nginx.conf" . | trim | quote }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: antrea-ui-backend
+  namespace: {{ .Release.Namespace }}
+data:
+  server.conf: {{ include "antrea-ui.backend.conf" . | trim | quote }}
