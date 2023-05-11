@@ -5,6 +5,7 @@ in a K8s cluster. It is not meant to be comprehensive, and you will need to
 adjust configuration parameters to suit your specific use case.
 
 - [LoadBalancer Service with MetalLB + cert-manager (self-signed)](#loadbalancer-service-with-metallb--cert-manager-self-signed)
+- [Ingress with Nginx + cert-manager (Let's Encrypt) on EKS](#ingress-with-nginx--cert-manager-lets-encrypt-on-eks)
 
 ## LoadBalancer Service with MetalLB + cert-manager (self-signed)
 
@@ -143,3 +144,149 @@ After that, you will be able to access the UI by visiting
 `https://antrea-ui.local`, without any error or warning (assuming that your
 previously added your self-signed CA certificate to the trust store of your
 operating system).
+
+## Ingress with Nginx + cert-manager (Let's Encrypt) on EKS
+
+### Prerequisites
+
+For this example, we will use an EKS cluster, running Antrea in
+`networkPolicyOnly` mode. Refer to the Antrea
+[documentation](https://github.com/antrea-io/antrea/blob/main/docs/eks-installation.md#deploying-antrea-in-networkpolicyonly-mode)
+for more information on this. Note that this is just one example deployment, and
+that the rest of this section is widely applicable to many K8s clusters, whether
+they use cloud-managed K8s services or not.
+
+Our K8s cluster is also running the following software:
+
+* [NGINX Ingress Controller](https://docs.nginx.com/nginx-ingress-controller/),
+  to expose an HTTP route to the Antrea UI Service.
+* [AWS Load Balancer Controller](https://docs.aws.amazon.com/eks/latest/userguide/aws-load-balancer-controller.html),
+  to expose the NGINX Ingress Controller as a LoadBalancer Service and make it
+  publicly accessible.
+* [cert-manager](https://cert-manager.io/), to automatically generate TLS
+  certificates for our Ingress routes.
+* [ExternalDNS](https://github.com/kubernetes-sigs/external-dns), to
+  automatically publish DNS records for our Ingress routes. In our case, we will
+  use a domain name registered with AWS Route 53, and ExternalDNS has been
+  configured to update the corresponding Hosted Zone.
+
+The NGINX Ingress Controller, cert-manager and ExternalDNS are not specific to
+EKS / AWS, and are used in many production clusters. Other providers offer
+alternatives to the AWS Load Balancer Controller, and bare-metal clusters can
+use [MetalLB](https://metallb.universe.tf/).
+
+The purpose of this document is not to provide comprehensive installation and
+configuration instructions for the above software. Instead, we want to focus on
+the necessary steps for Antrea UI installation.
+
+However, for the sake of reference, the NGINX Ingress Controller was installed
+with the following values:
+
+```yaml
+controller:
+  service:
+    type: LoadBalancer
+    annotations:
+      service.beta.kubernetes.io/aws-load-balancer-name: apps-ingress
+      service.beta.kubernetes.io/aws-load-balancer-type: external
+      service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing
+      service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: ip
+      service.beta.kubernetes.io/aws-load-balancer-healthcheck-protocol: http
+      service.beta.kubernetes.io/aws-load-balancer-healthcheck-path: /healthz
+      service.beta.kubernetes.io/aws-load-balancer-healthcheck-port: 10254
+```
+
+To deploy ExternalDNS on AWS, refer to the following
+[document](https://github.com/kubernetes-sigs/external-dns/blob/master/docs/tutorials/aws.md).
+Make sure that you use the correct domain filter, and that ExternalDNS is
+configured to watch Ingress resources.
+
+### Configure cert-manager
+
+This is the issuer we create to issue our TLS certificates through Let's
+Encrypt. Our example domain name (`abas.link`) is managed through AWS Route 53,
+hence our DNS solver configuration. In our case, we use static AWS credentials,
+but there are better ways to configure access for EKS clusters. Refer to the
+cert-manager [documentation](https://cert-manager.io/docs/configuration/acme/dns01/route53/).
+
+```yaml
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-acme
+spec:
+  acme:
+    email: <YOUR EMAIL ADDRESS>
+    # The ACME server URL
+    server: https://acme-v02.api.letsencrypt.org/directory
+    # Name of a secret used to store the ACME account private key
+    privateKeySecretRef:
+      name: letsencrypt-private-key
+    solvers:
+    - dns01:
+        route53:
+          region: <AWS_REGION>
+          accessKeyID: <AWS_ACCESS_KEY_ID>
+          secretAccessKeySecretRef:
+            name: <secret name>
+            key: <secret key for AWS_SECRET_ACCESS_KEY>
+      # Optional, use if you need to filter by domain name
+      # selector:
+      #   dnsNames:
+      #   - 'abas.link'
+      #   - '*.abas.link'
+```
+
+### Install Antrea UI with Helm
+
+You do not need any customization when installing the Antrea UI with Helm. Just
+run:
+
+```bash
+helm install antrea-ui antrea/antrea-ui --namespace kube-system
+```
+
+### Create the Ingress Resource
+
+We create the following Ingress resource to expose an HTTPS route to the Antrea
+UI:
+
+```bash
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  namespace: kube-system
+  name: antrea-ui
+  annotations:
+    kubernetes.io/ingress.class: "nginx"
+    # this should match the name of the ClusterIssuer resource defined above
+    cert-manager.io/cluster-issuer: "letsencrypt-acme"
+spec:
+  tls:
+  - hosts:
+    # use the correct domain name for you
+    - antrea-ui.abas.link
+    secretName: antrea-ui-tls
+  rules:
+  # use the correct domain name for you
+  - host: antrea-ui.abas.link
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: antrea-ui
+            port:
+              # port used by default by the antrea-ui frontend
+              number: 3000
+```
+
+For more details and configuration options, you can refer to the cert-manager
+[documentation](https://cert-manager.io/docs/tutorials/acme/nginx-ingress/).
+
+### Accessing the UI
+
+You should now be able to access the UI using the hostname specified in the
+Ingress resource. In our case, we can access the UI by visiting
+`https://antrea-ui.abas.link/`.
