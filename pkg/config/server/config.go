@@ -78,7 +78,8 @@ func LoadConfig() (*Config, error) {
 	}
 
 	// You can set defaults for configuration parameters here
-	// v.SetDefault(<key>, <value>)
+	v.SetDefault("limits.maxLoginsPerSecond", DefaultMaxLoginsPerSecond)
+	v.SetDefault("limits.maxTraceflowsPerHour", DefaultMaxTraceflowsPerHour)
 
 	// By default, look for a file named config (any supported extension) in the working directory.
 	v.AddConfigPath(".")
