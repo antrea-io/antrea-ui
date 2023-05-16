@@ -81,6 +81,6 @@ Kubeconfig file with enough permissions (using the default / admin Kubeconfig is
 the easiest way).
 
 1. Build the backend with `make bin`.
-2. Run the backend with `APP_ENV=dev ./bin/server -kubeconfig <path to Kubeconfig>`.
+2. Run the backend with `KUBECONFIG=<path to Kubeconfig> APP_ENV=dev ./bin/server`.
 3. Run the frontend with `cd client/web/antrea-ui/ && yarn start`.
 4. You can access the UI in your browser by visiting `http://localhost:3000/`.
