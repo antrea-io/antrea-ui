@@ -17,14 +17,22 @@ backend:
     repository: "antrea/antrea-ui-backend"
     pullPolicy: "IfNotPresent"
     tag: ""
-  # -- Container port on which the backend will listen/
+  # -- Container port on which the backend will listen.
   port: 8080
   # -- Resource requests and limits for the backend container.
   resources: {}
 
+security:
+  # -- (bool) Set the Secure attribute for Antrea UI cookies. The attribute is set by default when HTTPS is
+  # enabled in Antrea UI (by setting https.enable to true). When using an Ingress to terminate TLS,
+  # you should explicitly set cookieSecure to true for security hardening purposes.
+  # @default -- same as https.enable
+  cookieSecure:
+
 # HTTPS configuration for the Antrea UI.
 https:
-  # -- Enable HTTPS (only) for accessing the web UI.
+  # -- Enable HTTPS (only) for accessing the web UI. When using an Ingress to terminate TLS, you do
+  # not need to enable HTTPS here.
   enable: false
   # -- Method for generating the TLS certificate for the web server. We support "auto", "user",
   # "userCA", and "secret". With "auto", Helm will generate a new self-signed certificate every time

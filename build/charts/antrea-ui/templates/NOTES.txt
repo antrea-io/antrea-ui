@@ -9,8 +9,8 @@ You are using version {{ .Chart.Version }}
 {{- $scheme = "https" }}
 {{- end }}
 
-To access the UI, forward a local port to the antrea-ui service, and connect to
-that port locally with your browser:
+To access the UI, forward a local port to the antrea-ui service, and connect to that port locally
+with your browser:
 
   $ kubectl -n {{ .Release.Namespace }} port-forward service/antrea-ui {{ $port }}:{{ .Values.service.port }}
 
@@ -18,12 +18,18 @@ After running the command above, access "{{ $scheme }}://localhost:{{ $port }}" 
 
 {{- if and .Values.https.enable (eq .Values.https.method "auto") }}
 
-HTTPS is enabled to access the UI and a self-signed certificate was
-automatically generated. You can access the certificate with the following
-command:
+HTTPS is enabled to access the UI and a self-signed certificate was automatically generated. You can
+access the certificate with the following command:
 
   $ kubectl -n {{ .Release.Namespace }} get secret/antrea-ui-tls-helm  -o jsonpath='{.data.tls\.crt}' | base64 --decode
 
-{{ end -}}
+{{- end }}
+
+{{- if and (not .Values.https.enable) (not (kindIs "bool" .Values.security.cookieSecure)) }}
+
+HTTPS is disabled. If you are using Ingress to expose the UI and you are terminating TLS at Ingress,
+we recommend that you set security.cookieSecure to true.
+
+{{- end }}
 
 For the Antrea documentation, please visit https://antrea.io

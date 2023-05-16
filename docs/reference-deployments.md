@@ -239,11 +239,12 @@ spec:
 
 ### Install Antrea UI with Helm
 
-You do not need any customization when installing the Antrea UI with Helm. Just
-run:
+You need very little customization when installing the Antrea UI with Helm. We
+do recommend that you enable the [Secure attribute for cookies](https://developer.mozilla.org/en-US/docs/Web/HTTP/Cookies#restrict_access_to_cookies)
+when using HTTPS in order to harden security:
 
 ```bash
-helm install antrea-ui antrea/antrea-ui --namespace kube-system
+helm install antrea-ui antrea/antrea-ui --namespace kube-system --set security.cookieSecure=true
 ```
 
 ### Create the Ingress Resource

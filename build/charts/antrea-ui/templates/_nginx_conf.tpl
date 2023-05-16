@@ -33,7 +33,8 @@ server {
             proxy_hide_header Access-Control-Allow-Origin;
             proxy_pass http://127.0.0.1:{{ .Values.backend.port }};
             # ensure the correct flags are set, even though the api server should already be setting them
-            {{- if .Values.https.enable }}
+            {{- $secure := include "cookieSecure" . -}}
+            {{- if eq $secure "true" }}
             proxy_cookie_flags ~ httponly secure samesite=strict;
             {{- else }}
             proxy_cookie_flags ~ httponly samesite=strict;

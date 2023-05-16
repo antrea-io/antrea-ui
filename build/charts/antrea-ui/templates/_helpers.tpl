@@ -26,6 +26,16 @@
 {{- print .Values.backend.image.repository ":" (include "backendImageTag" .) -}}
 {{- end -}}
 
+{{- define "cookieSecure" -}}
+{{- if eq .Values.security.cookieSecure true }}
+{{- true }}
+{{- else if eq .Values.security.cookieSecure false }}
+{{- false }}
+{{- else }}
+{{- .Values.https.enable }}
+{{- end }}
+{{- end -}}
+
 {{- define "validateValues" -}}
 {{- if .Values.https.enable -}}
 {{- if not ( has .Values.https.method ( list "auto" "user" "userCA" "secret" ) ) -}}

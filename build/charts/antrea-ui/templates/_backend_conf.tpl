@@ -3,5 +3,5 @@ addr: ":{{ .Values.backend.port }}"
 auth:
   basic:
     jwtKeyPath: "/app/jwt-key.pem"
-  cookieSecure: {{ .Values.https.enable }}
+  cookieSecure: {{ include "cookieSecure" . }}
 {{- end }}
