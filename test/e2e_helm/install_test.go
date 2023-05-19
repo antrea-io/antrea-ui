@@ -43,37 +43,17 @@ var (
 	kubeconfigContext string
 )
 
-func checkAPIAccessHTTP() func(t *testing.T, endpoint string) {
+func checkAPIAccess(scheme string, tlsConfig *tls.Config) func(t *testing.T, endpoint string) {
 	return func(t *testing.T, endpoint string) {
 		url := url.URL{
-			Scheme: "http",
+			Scheme: scheme,
 			Host:   endpoint,
 			Path:   "api/v1/version",
 		}
 		http_helper.HttpGetWithRetryWithCustomValidation(
 			t,
 			url.String(),
-			nil,           // TLS config
-			10,            // retries
-			1*time.Second, // sleep between retries
-			func(statusCode int, body string) bool {
-				return statusCode == 200
-			},
-		)
-	}
-}
-
-func checkAPIAccessHTTPS(tlsConfig *tls.Config) func(t *testing.T, endpoint string) {
-	return func(t *testing.T, endpoint string) {
-		url := url.URL{
-			Scheme: "https",
-			Host:   endpoint,
-			Path:   "api/v1/version",
-		}
-		http_helper.HttpGetWithRetryWithCustomValidation(
-			t,
-			url.String(),
-			tlsConfig,     // TLS config
+			tlsConfig,
 			10,            // retries
 			1*time.Second, // sleep between retries
 			func(statusCode int, body string) bool {
@@ -94,7 +74,7 @@ func TestInstall(t *testing.T) {
 	}{
 		{
 			name:   "default",
-			checks: checkAPIAccessHTTP(),
+			checks: checkAPIAccess("http", nil),
 		},
 		{
 			name: "https - auto",
@@ -102,7 +82,8 @@ func TestInstall(t *testing.T) {
 				"https.enable": "true",
 				"https.method": "auto",
 			},
-			checks: checkAPIAccessHTTPS(
+			checks: checkAPIAccess(
+				"https",
 				// #nosec G402: intentional for test
 				&tls.Config{
 					InsecureSkipVerify: true,

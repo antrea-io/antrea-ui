@@ -51,79 +51,61 @@ func (p *AuthProvider) getAccessToken(ctx context.Context, host string) (string,
 		return data.AccessToken, nil
 	}
 
-	tokenCh := make(chan string, 1)
-	errCh := make(chan error, 1)
-
-	if p.refreshCookie == nil {
-		go func() {
+	token, err := func() (string, error) {
+		if p.refreshCookie == nil {
 			timer := time.NewTimer(0)
 			defer timer.Stop()
 			for {
 				select {
 				case <-ctx.Done():
-					errCh <- ctx.Err()
+					return "", ctx.Err()
 				case <-timer.C:
 					resp, err := login(ctx)
 					if err != nil {
-						errCh <- err
-						return
+						return "", err
 					}
 					body, err := io.ReadAll(resp.Body)
 					resp.Body.Close()
 					if err != nil {
-						errCh <- err
-						return
+						return "", err
 					}
 					if resp.StatusCode == http.StatusOK {
 						p.refreshCookie = resp.Cookies()[0]
 						token, err := parseToken(body)
 						if err != nil {
-							errCh <- err
-							return
+							return "", err
 						}
-						tokenCh <- token
+						return token, nil
 					} else if resp.StatusCode == http.StatusTooManyRequests {
 						timer.Reset(100 * time.Millisecond)
 						continue
 					} else {
-						errCh <- fmt.Errorf("failed to log in: %w", err)
-						return
+						return "", fmt.Errorf("failed to log in: %w", err)
 					}
 				}
 			}
-		}()
-	} else {
-		go func() {
+		} else {
 			resp, err := refreshToken(ctx)
 			if err != nil {
-				errCh <- err
-				return
+				return "", err
 			}
 			body, err := io.ReadAll(resp.Body)
 			resp.Body.Close()
 			if err != nil {
-				errCh <- err
-				return
+				return "", err
 			}
 			if resp.StatusCode != http.StatusOK {
-				errCh <- fmt.Errorf("failed to refresh token: %w", err)
-				return
+				return "", fmt.Errorf("failed to refresh token: %w", err)
 			}
 			token, err := parseToken(body)
 			if err != nil {
-				errCh <- err
-				return
+				return "", err
 			}
-			tokenCh <- token
-		}()
-	}
+			return token, nil
+		}
+	}()
 
-	select {
-	case err := <-errCh:
-		return "", err
-	case token := <-tokenCh:
-		return token, nil
-	}
+	return token, err
 }
 
 var authProvider = &AuthProvider{}

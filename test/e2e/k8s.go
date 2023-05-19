@@ -18,7 +18,6 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
-
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"

@@ -12,5 +12,5 @@ UI.
 To run the tests:
 
 ```bash
-go test -v ./test/e2e-helm
+go test -v ./test/e2e_helm
 ```

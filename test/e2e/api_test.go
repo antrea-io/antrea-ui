@@ -139,7 +139,6 @@ func TestAPI(t *testing.T) {
 
 		statusURI := reqURI + "/status"
 
-		var resultURI string
 		require.Eventually(t, func() bool {
 			resp, err := Request(ctx, host, "GET", statusURI, nil, setAccessTokenMutator(token))
 			require.NoError(t, err)
@@ -148,11 +147,6 @@ func TestAPI(t *testing.T) {
 			// when the Traceflow completes, there will be an automatic redirect to the result
 			return strings.HasSuffix(resp.Request.URL.Path, "/result")
 		}, 30*time.Second, 1*time.Second)
-
-		resp, err = Request(ctx, host, "GET", resultURI, nil, setAccessTokenMutator(token))
-		require.NoError(t, err)
-		defer resp.Body.Close()
-		require.Equal(t, http.StatusOK, resp.StatusCode)
 	})
 }
 

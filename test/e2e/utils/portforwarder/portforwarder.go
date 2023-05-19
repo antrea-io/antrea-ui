@@ -67,9 +67,9 @@ func NewPortForwarder(
 
 // Start Port Forwarding channel
 func (p *PortForwarder) Start() (int, error) {
-	p.stopCh = make(chan struct{}, 1)
+	p.stopCh = make(chan struct{})
 	readyCh := make(chan struct{})
-	errCh := make(chan error, 1)
+	errCh := make(chan error)
 
 	url := p.clientset.CoreV1().RESTClient().Post().
 		Resource("pods").
@@ -115,5 +115,5 @@ func (p *PortForwarder) Start() (int, error) {
 
 // Stop Port Forwarding channel
 func (p *PortForwarder) Stop() {
-	p.stopCh <- struct{}{}
+	close(p.stopCh)
 }

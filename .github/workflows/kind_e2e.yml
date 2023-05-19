@@ -52,13 +52,13 @@ jobs:
         helm repo update
         helm install --namespace kube-system antrea antrea/antrea
         kubectl rollout status -n kube-system ds/antrea-agent --timeout=5m
-    # For e2e-htlm tests, Antrea UI should not be installed
-    - name: Run e2e-helm tests
-      run: go test -v ./test/e2e-helm
+    # For e2e helm tests, Antrea UI should not be installed
+    - name: Run e2e helm tests
+      run: go test -v ./test/e2e_helm
     - name: Install Antrea UI
       run: |
         helm install --namespace kube-system antrea-ui ./build/charts/antrea-ui
         kubectl rollout status -n kube-system deployment/antrea-ui --timeout=5m
-    # For e2e-htlm tests, Antrea UI should be installed first
+    # For e2e tests, Antrea UI should be installed first
     - name: Run e2e tests
       run: go test -v ./test/e2e
