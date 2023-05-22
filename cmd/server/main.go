@@ -106,14 +106,20 @@ func run() error {
 
 	traceflowHandler := traceflowhandler.NewRequestsHandler(logger, k8sDynamicClient)
 	k8sProxyHandler := k8sproxy.NewK8sProxyHandler(logger, k8sServerURL, k8sHTTPClient.Transport)
-	passwordStore := password.NewStore(passwordrw.NewK8sSecret(env.GetNamespace(), "antrea-ui-passwd", k8sDynamicClient), passwordhasher.NewArgon2id())
-	if err := passwordStore.Init(context.Background()); err != nil {
-		return err
+
+	var passwordStore password.Store
+	if config.Auth.Basic.Enabled {
+		store := password.NewStore(passwordrw.NewK8sSecret(env.GetNamespace(), "antrea-ui-passwd", k8sDynamicClient), passwordhasher.NewArgon2id())
+		if err := store.Init(context.Background()); err != nil {
+			return err
+		}
+		passwordStore = store
 	}
+
 	var jwtKey *rsa.PrivateKey
-	if config.Auth.Basic.JWTKeyPath != "" {
+	if config.Auth.JWTKeyPath != "" {
 		var err error
-		if jwtKey, err = auth.LoadPrivateKeyFromFile(config.Auth.Basic.JWTKeyPath); err != nil {
+		if jwtKey, err = auth.LoadPrivateKeyFromFile(config.Auth.JWTKeyPath); err != nil {
 			return fmt.Errorf("failed to load JWT key from file: %w", err)
 		}
 	} else {
@@ -125,6 +131,34 @@ func run() error {
 	}
 	tokenManager := auth.NewTokenManager("jwt-key", jwtKey)
 
+	var oidcProvider *server.OIDCProvider
+	if config.Auth.OIDC.Enabled {
+		var err error
+		oidcProvider, err = func() (*server.OIDCProvider, error) {
+			provider, err := server.NewOIDCProvider(
+				logger,
+				config.URL,
+				config.Auth.OIDC.IssuerURL,
+				config.Auth.OIDC.DiscoveryURL,
+				config.Auth.OIDC.ClientID,
+				config.Auth.OIDC.ClientSecret,
+				config.Auth.OIDC.LogoutURL,
+			)
+			if err != nil {
+				return nil, err
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancel()
+			if err := provider.Init(ctx); err != nil {
+				return nil, err
+			}
+			return provider, nil
+		}()
+		if err != nil {
+			return err
+		}
+	}
+
 	s := server.NewServer(
 		logger,
 		k8sDynamicClient,
@@ -132,6 +166,7 @@ func run() error {
 		k8sProxyHandler,
 		passwordStore,
 		tokenManager,
+		oidcProvider,
 		config,
 	)
 

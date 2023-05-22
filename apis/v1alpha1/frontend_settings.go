@@ -12,24 +12,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package auth
+package v1alpha1
 
-import (
-	"time"
-)
-
-type Token struct {
-	Raw       string
-	ExpiresIn time.Duration
-	ExpiresAt time.Time
+type FrontendAuthSettings struct {
+	BasicEnabled     bool   `json:"basicEnabled"`
+	OIDCEnabled      bool   `json:"oidcEnabled"`
+	OIDCProviderName string `json:"oidcProviderName,omitempty"`
 }
 
-//go:generate mockgen -source=interface.go -package=testing -destination=testing/mock_interface.go -copyright_file=$MOCKGEN_COPYRIGHT_FILE
-
-type TokenManager interface {
-	GetToken() (*Token, error)
-	VerifyToken(rawToken string) error
-	GetRefreshToken(lifetime time.Duration, subject string) (*Token, error)
-	VerifyRefreshToken(rawToken string) error
-	DeleteRefreshToken(rawToken string)
+// FrontendSettings are global settings exposed to the frontend, which can be
+// used to render some pages appropriately. These settings are not user-specific
+// and not confidential (the API for these settings is not protected by any auth
+// mechanism).
+type FrontendSettings struct {
+	Version string               `json:"version"`
+	Auth    FrontendAuthSettings `json:"auth"`
 }

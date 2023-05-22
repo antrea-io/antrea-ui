@@ -15,6 +15,7 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"testing"
 	"time"
@@ -23,6 +24,8 @@ import (
 	"github.com/go-logr/logr/testr"
 	"github.com/golang/mock/gomock"
 	"github.com/google/uuid"
+	"github.com/oauth2-proxy/mockoidc"
+	"github.com/stretchr/testify/require"
 
 	"antrea.io/antrea-ui/pkg/auth"
 	authtesting "antrea.io/antrea-ui/pkg/auth/testing"
@@ -50,6 +53,20 @@ func setMaxLoginsPerSecond(v int) testServerOptions {
 	}
 }
 
+func enableOIDCAuth() testServerOptions {
+	return func(c *serverconfig.Config) {
+		c.Auth.OIDC.Enabled = true
+	}
+}
+
+func disableBasicAuth() testServerOptions {
+	return func(c *serverconfig.Config) {
+		c.Auth.Basic.Enabled = false
+	}
+}
+
+const testServerAddr = "http://localhost:8080"
+
 func newTestServer(t *testing.T, options ...testServerOptions) *testServer {
 	logger := testr.New(t)
 	ctrl := gomock.NewController(t)
@@ -57,14 +74,38 @@ func newTestServer(t *testing.T, options ...testServerOptions) *testServer {
 	tokenManager := authtesting.NewMockTokenManager(ctrl)
 
 	config := &serverconfig.Config{}
+	// enable basic auth by default
+	config.Auth.Basic.Enabled = true
 	// disable rate limiting by default
 	config.Limits.MaxLoginsPerSecond = -1
 	for _, fn := range options {
 		fn(config)
 	}
 
+	var oidcProvider *OIDCProvider
+	if config.Auth.OIDC.Enabled {
+		t.Logf("Starting mock OIDC server")
+		mockOIDC, err := mockoidc.Run()
+		require.NoError(t, err, "failed to start mock OIDC server")
+		t.Cleanup(func() { mockOIDC.Shutdown() })
+		oidcConfig := mockOIDC.Config()
+		provider, err := NewOIDCProvider(
+			logger,
+			testServerAddr,
+			oidcConfig.Issuer,
+			"", // discovery URL
+			oidcConfig.ClientID,
+			oidcConfig.ClientSecret,
+			"", // logoutURL
+		)
+		require.NoError(t, err, "failed to create OIDC provider")
+		err = provider.Init(context.TODO())
+		require.NoError(t, err, "failed to initialize OIDC provider")
+		oidcProvider = provider
+	}
+
 	// we use nil for parameters which are only used by the API server
-	s := NewServer(logger, nil, nil, nil, passwordStore, tokenManager, config)
+	s := NewServer(logger, nil, nil, nil, passwordStore, tokenManager, oidcProvider, config)
 	router := gin.Default()
 	s.AddRoutes(router)
 	return &testServer{

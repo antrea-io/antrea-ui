@@ -22,7 +22,7 @@ import config from '../config';
 
 const { apiServer } = config;
 
-interface Token {
+export interface Token {
     tokenType: string
     accessToken: string
     expiresIn: number

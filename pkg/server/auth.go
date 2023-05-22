@@ -28,6 +28,9 @@ import (
 	cookieutils "antrea.io/antrea-ui/pkg/server/utils/cookie"
 )
 
+// After 24 hours, the user will need to enter his credentials (password) again.
+const BasicAuthRefreshTokenLifetime = 24 * time.Hour
+
 func (s *Server) Login(c *gin.Context) {
 	if sError := func() *errors.ServerError {
 		user, password, ok := c.Request.BasicAuth()
@@ -49,7 +52,7 @@ func (s *Server) Login(c *gin.Context) {
 				Message: "Invalid admin password",
 			}
 		}
-		refreshToken, err := s.tokenManager.GetRefreshToken()
+		refreshToken, err := s.tokenManager.GetRefreshToken(BasicAuthRefreshTokenLifetime, user)
 		if err != nil {
 			return &errors.ServerError{
 				Code: http.StatusInternalServerError,
@@ -80,8 +83,6 @@ func (s *Server) Login(c *gin.Context) {
 
 func (s *Server) RefreshToken(c *gin.Context) {
 	if sError := func() *errors.ServerError {
-		// /refresh supports both the Authorization header and the token cookie, giving
-		// priority to the Authorization header
 		var refreshToken string
 		auth := c.GetHeader("Authorization")
 		if auth != "" {
@@ -131,9 +132,29 @@ func (s *Server) RefreshToken(c *gin.Context) {
 
 func (s *Server) Logout(c *gin.Context) {
 	if sError := func() *errors.ServerError {
+		redirectURL := c.Query("redirect_url")
 		refreshToken, ok := cookieutils.UnsetRefreshTokenCookie(c.Request, c.Writer)
 		if ok {
 			s.tokenManager.DeleteRefreshToken(refreshToken)
+		}
+		if s.config.OIDCAuthEnabled {
+			idToken, err := cookieutils.UnsetLargeCookie(c.Request, c.Writer, "antrea-ui-oidc-id-token", "/auth")
+			if s.config.OIDCNeedsLogout && err == nil {
+				logoutURL, err := s.oidcProvider.BuildLogoutURL(idToken)
+				if err != nil {
+					return &errors.ServerError{
+						Code: http.StatusInternalServerError,
+						Err:  fmt.Errorf("error when building OIDC logout URL: %w", err),
+					}
+				}
+				c.Redirect(http.StatusSeeOther, logoutURL)
+				return nil
+			}
+		}
+		if redirectURL != "" {
+			c.Redirect(http.StatusFound, redirectURL)
+		} else {
+			c.Status(http.StatusOK)
 		}
 		return nil
 	}(); sError != nil {
@@ -141,23 +162,29 @@ func (s *Server) Logout(c *gin.Context) {
 		s.LogError(sError, "Failed to logout")
 		return
 	}
-	c.Status(http.StatusOK)
 }
 
 func (s *Server) AddAuthRoutes(r *gin.RouterGroup) {
 	r = r.Group("/auth")
-	loginHandlers := []gin.HandlerFunc{}
-	if s.config.MaxLoginsPerSecond >= 0 {
-		const clientCacheSize = 10000
-		burstSize := 0
-		if s.config.MaxLoginsPerSecond > 0 {
-			burstSize = 1
+	if s.config.BasicAuthEnabled {
+		loginHandlers := []gin.HandlerFunc{}
+		if s.config.MaxLoginsPerSecond >= 0 {
+			const clientCacheSize = 10000
+			burstSize := 0
+			if s.config.MaxLoginsPerSecond > 0 {
+				burstSize = 1
+			}
+			loginRateLimiter := ratelimit.NewClientRateLimiterOrDie(fmt.Sprintf("%d/s", s.config.MaxLoginsPerSecond), burstSize, clientCacheSize, ratelimit.ClientKeyIP)
+			loginHandlers = append(loginHandlers, ratelimit.Middleware(loginRateLimiter))
 		}
-		loginRateLimiter := ratelimit.NewClientRateLimiterOrDie(fmt.Sprintf("%d/s", s.config.MaxLoginsPerSecond), burstSize, clientCacheSize, ratelimit.ClientKeyIP)
-		loginHandlers = append(loginHandlers, ratelimit.Middleware(loginRateLimiter))
+		loginHandlers = append(loginHandlers, s.Login)
+		r.POST("/login", loginHandlers...)
 	}
-	loginHandlers = append(loginHandlers, s.Login)
-	r.POST("/login", loginHandlers...)
 	r.GET("/refresh_token", s.RefreshToken)
+	r.GET("/logout", s.Logout)
 	r.POST("/logout", s.Logout)
+	if s.config.OIDCAuthEnabled {
+		s.logger.Info("Adding OAuth2 routes")
+		s.AddOAuth2Routes(r)
+	}
 }

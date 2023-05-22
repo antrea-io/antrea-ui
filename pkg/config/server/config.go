@@ -29,6 +29,7 @@ const (
 
 type Config struct {
 	Addr   string
+	URL    string
 	Auth   AuthConfig
 	Limits struct {
 		MaxLoginsPerSecond   int
@@ -39,8 +40,20 @@ type Config struct {
 
 type AuthConfig struct {
 	Basic struct {
-		JWTKeyPath string
+		Enabled bool
 	}
+	OIDC struct {
+		Enabled      bool
+		ProviderName string
+		ClientID     string
+		ClientSecret string
+		IssuerURL    string
+		// See https://pkg.go.dev/github.com/coreos/go-oidc/v3/oidc#InsecureIssuerURLContext
+		// In the general case, it is not recommended to use this
+		DiscoveryURL string
+		LogoutURL    string
+	}
+	JWTKeyPath   string
 	CookieSecure bool
 }
 
@@ -48,6 +61,15 @@ func validateConfig(config *Config) error {
 	if config.LogVerbosity < 0 || config.LogVerbosity >= 128 {
 		return fmt.Errorf("invalid verbosity level %d: it should be >= 0 and < 128", config.LogVerbosity)
 	}
+
+	if config.Auth.OIDC.Enabled && config.URL == "" {
+		return fmt.Errorf("URL is required when enabling OIDC authentication")
+	}
+
+	if !config.Auth.Basic.Enabled && !config.Auth.OIDC.Enabled {
+		return fmt.Errorf("at least one of auth.basic.enabled and auth.oidc.enabled must be true")
+	}
+
 	return nil
 }
 
@@ -77,10 +99,16 @@ func LoadConfig() (*Config, error) {
 		return nil, err
 	}
 
+	// Configuration variables that can be set through environment
+	v.MustBindEnv("auth.oidc.clientId", "ANTREA_UI_AUTH_OIDC_CLIENT_ID")
+	v.MustBindEnv("auth.oidc.clientSecret", "ANTREA_UI_AUTH_OIDC_CLIENT_SECRET")
+
 	// You can set defaults for configuration parameters here
 	v.SetDefault("limits.maxLoginsPerSecond", DefaultMaxLoginsPerSecond)
 	v.SetDefault("limits.maxTraceflowsPerHour", DefaultMaxTraceflowsPerHour)
 	v.SetDefault("auth.cookieSecure", true)
+	v.SetDefault("auth.basic.enabled", true)
+	v.SetDefault("auth.oidc.enabled", false)
 
 	// By default, look for a file named config (any supported extension) in the working directory.
 	v.AddConfigPath(".")

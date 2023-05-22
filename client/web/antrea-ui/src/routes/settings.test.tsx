@@ -22,6 +22,8 @@ import { mockIntersectionObserver } from 'jsdom-testing-mocks';
 import Settings from './settings';
 import { accountAPI } from '../api/account';
 import { APIError } from '../api/common';
+import { Settings as AppSettings } from '../api/settings';
+import AppSettingsContext from '../components/settings';
 import { Provider } from 'react-redux';
 import { setupStore, AppStore } from '../store';
 
@@ -32,7 +34,7 @@ jest.mock('../api/account');
 
 const mockLogout = jest.fn();
 jest.mock('../components/logout', () => ({
-    useLogout: () => [false, mockLogout],
+    useLogout: () => mockLogout,
 }));
 
 const mockAddError = jest.fn();
@@ -42,6 +44,14 @@ jest.mock('../components/errors', () => ({
         return { addError };
     }
 }));
+
+const defaultSettings = {
+    version: 'v0.1.0',
+    auth: {
+        basicEnabled: true,
+        oidcEnabled: false,
+    },
+} as AppSettings;
 
 interface testInputs {
     currentPassword?: string
@@ -70,6 +80,18 @@ describe('Settings', () => {
         jest.resetAllMocks();
     });
 
+    const TestProviders = (props: React.PropsWithChildren<{ settings: AppSettings }>) => {
+        return (
+            <MemoryRouter>
+                <Provider store={store}>
+                    <AppSettingsContext.Provider value={props.settings}>
+                        { props.children }
+                    </AppSettingsContext.Provider>
+                </Provider>
+            </MemoryRouter>
+        );
+    };
+
     const badPassword = 'pswdBad';
     const currentPassword = 'pswd1';
     const newPassword = 'pswd2';
@@ -77,7 +99,7 @@ describe('Settings', () => {
     describe('Update Password', () => {
         test('update is successful', async () => {
             mockedAccountAPI.updatePassword.mockResolvedValueOnce();
-            render(<Provider store={store}><Settings /></Provider>, { wrapper: MemoryRouter });
+            render(<TestProviders settings={defaultSettings}><Settings /></TestProviders>);
             await inputsToEvents({currentPassword: currentPassword, newPassword: newPassword, newPassword2: newPassword});
             // unclear why this is needed, but without it the form is not submitted
             await userEvent.click(document.body);
@@ -90,7 +112,7 @@ describe('Settings', () => {
         test('update failed', async () => {
             const err = new APIError(400, 'Bad Request', 'Invalid password');
             mockedAccountAPI.updatePassword.mockRejectedValueOnce(err);
-            render(<Provider store={store}><Settings /></Provider>, { wrapper: MemoryRouter });
+            render(<TestProviders settings={defaultSettings}><Settings /></TestProviders>);
             await inputsToEvents({currentPassword: badPassword, newPassword: newPassword, newPassword2: newPassword});
             await userEvent.click(document.body);
             userEvent.click(screen.getByRole('button', {name: 'Submit'}));
@@ -142,7 +164,7 @@ describe('Settings', () => {
             ];
 
             test.each<testCase>(testCases)('$name', async (tc: testCase) => {
-                render(<Provider store={store}><Settings /></Provider>, { wrapper: MemoryRouter });
+                render(<TestProviders settings={defaultSettings}><Settings /></TestProviders>);
                 await inputsToEvents(tc.inputs);
                 await userEvent.click(document.body);
                 userEvent.click(screen.getByRole('button', {name: 'Submit'}));

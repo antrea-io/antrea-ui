@@ -15,7 +15,9 @@
 package auth
 
 import (
+	"crypto/rand"
 	"crypto/rsa"
+	"encoding/hex"
 	"fmt"
 	"sync"
 	"time"
@@ -27,9 +29,10 @@ import (
 
 const (
 	Issuer               = "ui.antrea.io"
+	Audience             = "ui.antrea.io"
 	tokenLifetime        = 10 * time.Minute
-	refreshTokenLifetime = 24 * time.Hour
 	refreshTokenGCPeriod = 1 * time.Minute
+	tokenIDLength        = 20
 )
 
 type tokenManager struct {
@@ -39,6 +42,7 @@ type tokenManager struct {
 	refreshTokensMutex sync.RWMutex
 	refreshTokens      map[string]time.Time
 	clock              clock.Clock
+	jwtParser          *jwt.Parser
 }
 
 type JWTAccessClaims struct {
@@ -46,12 +50,19 @@ type JWTAccessClaims struct {
 }
 
 func newTokenManagerWithClock(keyID string, key *rsa.PrivateKey, clock clock.Clock) *tokenManager {
+	signingMethod := jwt.SigningMethodRS512
 	return &tokenManager{
 		signingKeyID:  keyID,
 		signingKey:    key,
-		signingMethod: jwt.SigningMethodRS512,
+		signingMethod: signingMethod,
 		refreshTokens: make(map[string]time.Time),
 		clock:         clock,
+		jwtParser: jwt.NewParser(
+			jwt.WithValidMethods([]string{signingMethod.Name}),
+			jwt.WithIssuer(Issuer),
+			jwt.WithAudience(Audience),
+			jwt.WithTimeFunc(clock.Now),
+		),
 	}
 }
 
@@ -64,14 +75,30 @@ func (m *tokenManager) Run(stopCh <-chan struct{}) {
 	<-stopCh
 }
 
-func (m *tokenManager) getToken(expiresIn time.Duration) (*Token, error) {
+func getTokenID() (string, error) {
+	tokenID := make([]byte, tokenIDLength)
+	_, err := rand.Read(tokenID)
+	if err != nil {
+		return "", fmt.Errorf("error when generating random token ID: %w", err)
+	}
+	return hex.EncodeToString(tokenID), nil
+}
+
+func (m *tokenManager) getToken(expiresIn time.Duration, subject string) (*Token, error) {
 	createdAt := m.clock.Now()
 	expiresAt := createdAt.Add(expiresIn)
+	tokenID, err := getTokenID()
+	if err != nil {
+		return nil, err
+	}
 	claims := &JWTAccessClaims{
 		RegisteredClaims: jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(expiresAt),
 			Issuer:    Issuer,
+			Subject:   subject,
+			Audience:  jwt.ClaimStrings{Audience},
+			ExpiresAt: jwt.NewNumericDate(expiresAt),
 			IssuedAt:  jwt.NewNumericDate(createdAt),
+			ID:        tokenID,
 		},
 	}
 
@@ -92,11 +119,11 @@ func (m *tokenManager) getToken(expiresIn time.Duration) (*Token, error) {
 }
 
 func (m *tokenManager) GetToken() (*Token, error) {
-	return m.getToken(tokenLifetime)
+	return m.getToken(tokenLifetime, "")
 }
 
-func (m *tokenManager) GetRefreshToken() (*Token, error) {
-	token, err := m.getToken(refreshTokenLifetime)
+func (m *tokenManager) GetRefreshToken(lifetime time.Duration, subject string) (*Token, error) {
+	token, err := m.getToken(lifetime, subject)
 	if err != nil {
 		return nil, err
 	}
@@ -107,12 +134,11 @@ func (m *tokenManager) GetRefreshToken() (*Token, error) {
 }
 
 func (m *tokenManager) verifyToken(rawToken string) error {
-	_, err := jwt.Parse(
+	_, err := m.jwtParser.Parse(
 		rawToken,
 		func(token *jwt.Token) (interface{}, error) {
 			return &m.signingKey.PublicKey, nil
 		},
-		jwt.WithTimeFunc(m.clock.Now),
 	)
 	if err != nil {
 		return err

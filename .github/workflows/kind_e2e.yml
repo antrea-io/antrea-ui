@@ -55,9 +55,10 @@ jobs:
     # For e2e helm tests, Antrea UI should not be installed
     - name: Run e2e helm tests
       run: go test -v ./test/e2e_helm
+    # We install Antrea UI with extra features enabled (e.g., OIDC) for better test coverage
     - name: Install Antrea UI
       run: |
-        helm install --namespace kube-system antrea-ui ./build/charts/antrea-ui
+        helm install --namespace kube-system antrea-ui -f ci/antrea-ui-values.yml ./build/charts/antrea-ui
         kubectl rollout status -n kube-system deployment/antrea-ui --timeout=5m
     # For e2e tests, Antrea UI should be installed first
     - name: Run e2e tests

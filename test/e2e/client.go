@@ -26,6 +26,14 @@ import (
 	apisv1alpha1 "antrea.io/antrea-ui/apis/v1alpha1"
 )
 
+func parseAccessToken(body []byte) (string, error) {
+	var data apisv1alpha1.Token
+	if err := json.Unmarshal(body, &data); err != nil {
+		return "", fmt.Errorf("invalid response body format: %w", err)
+	}
+	return data.AccessToken, nil
+}
+
 type AuthProvider struct {
 	refreshCookie *http.Cookie
 }
@@ -43,14 +51,6 @@ func (p *AuthProvider) getAccessToken(ctx context.Context, host string) (string,
 		})
 	}
 
-	parseToken := func(body []byte) (string, error) {
-		var data apisv1alpha1.Token
-		if err := json.Unmarshal(body, &data); err != nil {
-			return "", fmt.Errorf("invalid response body format: %w", err)
-		}
-		return data.AccessToken, nil
-	}
-
 	token, err := func() (string, error) {
 		if p.refreshCookie == nil {
 			timer := time.NewTimer(0)
@@ -65,13 +65,13 @@ func (p *AuthProvider) getAccessToken(ctx context.Context, host string) (string,
 						return "", err
 					}
 					body, err := io.ReadAll(resp.Body)
-					resp.Body.Close()
 					if err != nil {
 						return "", err
 					}
+					resp.Body.Close()
 					if resp.StatusCode == http.StatusOK {
 						p.refreshCookie = resp.Cookies()[0]
-						token, err := parseToken(body)
+						token, err := parseAccessToken(body)
 						if err != nil {
 							return "", err
 						}
@@ -90,14 +90,14 @@ func (p *AuthProvider) getAccessToken(ctx context.Context, host string) (string,
 				return "", err
 			}
 			body, err := io.ReadAll(resp.Body)
-			resp.Body.Close()
 			if err != nil {
 				return "", err
 			}
+			resp.Body.Close()
 			if resp.StatusCode != http.StatusOK {
 				return "", fmt.Errorf("failed to refresh token: %w", err)
 			}
-			token, err := parseToken(body)
+			token, err := parseAccessToken(body)
 			if err != nil {
 				return "", err
 			}
@@ -110,12 +110,14 @@ func (p *AuthProvider) getAccessToken(ctx context.Context, host string) (string,
 
 var authProvider = &AuthProvider{}
 
-func Request(ctx context.Context, host string, method string, path string, body io.Reader, mutators ...func(req *http.Request)) (*http.Response, error) {
-	url := url.URL{
-		Scheme: "http",
-		Host:   host,
-		Path:   path,
-	}
+func RequestURLWithClient(
+	ctx context.Context,
+	client *http.Client,
+	method string,
+	url *url.URL,
+	body io.Reader,
+	mutators ...func(req *http.Request),
+) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, method, url.String(), body)
 	if err != nil {
 		return nil, err
@@ -123,11 +125,59 @@ func Request(ctx context.Context, host string, method string, path string, body 
 	for _, m := range mutators {
 		m(req)
 	}
-	return http.DefaultClient.Do(req)
+	return client.Do(req)
+}
+
+func RequestWithClient(
+	ctx context.Context,
+	client *http.Client,
+	host string,
+	method string,
+	path string,
+	body io.Reader,
+	mutators ...func(req *http.Request),
+) (*http.Response, error) {
+	url := &url.URL{
+		Scheme: "http",
+		Host:   host,
+		Path:   path,
+	}
+	return RequestURLWithClient(ctx, client, method, url, body, mutators...)
+}
+
+func Request(
+	ctx context.Context,
+	host string,
+	method string,
+	path string,
+	body io.Reader,
+	mutators ...func(req *http.Request),
+) (*http.Response, error) {
+	return RequestWithClient(ctx, http.DefaultClient, host, method, path, body, mutators...)
 }
 
 func GetAccessToken(ctx context.Context, host string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	return authProvider.getAccessToken(ctx, host)
+}
+
+func GetFrontendSettings(ctx context.Context) (*apisv1alpha1.FrontendSettings, error) {
+	resp, err := Request(ctx, host, "GET", "api/v1/settings", nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("unexpected status when retrieving settings: %s", resp.Status)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	var settings apisv1alpha1.FrontendSettings
+	if err := json.Unmarshal(body, &settings); err != nil {
+		return nil, err
+	}
+	return &settings, nil
 }

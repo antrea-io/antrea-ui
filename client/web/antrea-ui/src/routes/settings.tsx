@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+import { useContext } from 'react';
 import { useForm, SubmitHandler } from "react-hook-form";
 import { CdsCard } from '@cds/react/card';
 import { CdsDivider } from '@cds/react/divider';
@@ -25,6 +26,7 @@ import { ErrorMessageContainer } from '../components/form-errors';
 import { useLogout} from '../components/logout';
 import { accountAPI } from '../api/account';
 import { useAppError} from '../components/errors';
+import SettingsContext from '../components/settings';
 
 type Inputs = {
     currentPassword: string
@@ -35,7 +37,7 @@ type Inputs = {
 function UpdatePassword() {
     const { register, watch, handleSubmit, formState: { errors } } = useForm<Inputs>();
 
-    const [, logout] = useLogout();
+    const logout = useLogout();
 
     const { addError } = useAppError();
 
@@ -106,11 +108,12 @@ function UpdatePassword() {
 }
 
 export default function Settings() {
+    const settings = useContext(SettingsContext);
     return (
         <main>
             <div cds-layout="vertical gap:lg">
                 <p cds-text="title">Settings</p>
-                <UpdatePassword />
+                { settings.auth.basicEnabled && <UpdatePassword /> }
             </div>
         </main>
     );
