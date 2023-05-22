@@ -1,0 +1,64 @@
+name: Kind E2E Tests
+on:
+  pull_request:
+    branches:
+    - main
+    - release-*
+  push:
+    branches:
+    - main
+    - release-*
+
+env:
+  KIND_VERSION: v0.18.0
+
+jobs:
+  check-changes:
+    name: Check whether tests need to be run based on diff
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+      with:
+        fetch-depth: 0
+    - uses: antrea-io/has-changes@v2
+      id: check_diff
+      with:
+        paths-ignore: docs/* *.md
+    outputs:
+      has_changes: ${{ steps.check_diff.outputs.has_changes }}
+
+  e2e-tests:
+    name: Run e2e tests using Kind
+    needs: check-changes
+    if: ${{ needs.check-changes.outputs.has_changes == 'yes' }}
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    - name: Build container images
+      run: make
+    - name: Install Kind
+      run: |
+        curl -Lo ./kind https://github.com/kubernetes-sigs/kind/releases/download/${KIND_VERSION}/kind-$(uname)-amd64
+        chmod +x ./kind
+        sudo mv kind /usr/local/bin
+    - name: Create Kind cluster
+      run: |
+        kind create cluster --config ci/kind-config.yml
+        kind load docker-image antrea/antrea-ui-frontend
+        kind load docker-image antrea/antrea-ui-backend
+    - name: Install Antrea
+      run: |
+        helm repo add antrea https://charts.antrea.io
+        helm repo update
+        helm install --namespace kube-system antrea antrea/antrea
+        kubectl rollout status -n kube-system ds/antrea-agent --timeout=5m
+    # For e2e helm tests, Antrea UI should not be installed
+    - name: Run e2e helm tests
+      run: go test -v ./test/e2e_helm
+    - name: Install Antrea UI
+      run: |
+        helm install --namespace kube-system antrea-ui ./build/charts/antrea-ui
+        kubectl rollout status -n kube-system deployment/antrea-ui --timeout=5m
+    # For e2e tests, Antrea UI should be installed first
+    - name: Run e2e tests
+      run: go test -v ./test/e2e
