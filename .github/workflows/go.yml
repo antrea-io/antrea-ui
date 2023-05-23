@@ -10,6 +10,19 @@ on:
     - release-*
 
 jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Check-out code
+      uses: actions/checkout@v3
+    - name: Set up Go using version from go.mod
+      uses: actions/setup-go@v4
+      with:
+        go-version-file: 'go.mod'
+    - name: Build binaries
+      run: |
+        make bin
+
   test:
     runs-on: ubuntu-latest
     steps:
