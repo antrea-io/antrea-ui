@@ -21,37 +21,8 @@ import (
 	"os"
 	"testing"
 
-	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/clientcmd"
-
 	"antrea.io/antrea-ui/test/e2e/utils/portforwarder"
 )
-
-var (
-	kubeconfigPath string
-
-	k8sRESTConfig *rest.Config
-	k8sClient     kubernetes.Interface
-
-	// the host address for accessing the Antrea UI
-	host string
-)
-
-func createK8sClient() (*rest.Config, kubernetes.Interface, error) {
-	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
-	configOverrides := &clientcmd.ConfigOverrides{}
-	loadingRules.ExplicitPath = kubeconfigPath
-	config, err := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loadingRules, configOverrides).ClientConfig()
-	if err != nil {
-		return nil, nil, err
-	}
-	client, err := kubernetes.NewForConfig(config)
-	if err != nil {
-		return nil, nil, err
-	}
-	return config, client, err
-}
 
 func startPortForwarding(ctx context.Context) (string, func(), error) {
 	antreaUIPod, err := getAntreaUIPod(ctx)
@@ -78,7 +49,7 @@ func startPortForwarding(ctx context.Context) (string, func(), error) {
 // testMain is meant to be called by TestMain and enables the use of defer statements.
 func testMain(m *testing.M) int {
 	var err error
-	k8sRESTConfig, k8sClient, err = createK8sClient()
+	k8sRESTConfig, k8sClient, err = createK8sClient("")
 	if err != nil {
 		log.Fatalf("Error when creating K8s client: %v", err)
 	}

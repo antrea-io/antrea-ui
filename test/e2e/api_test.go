@@ -30,11 +30,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-const (
-	antreaNamespace = "kube-system"
-	antreaUIPort    = 3000
-)
-
 func TestLoginRateLimiting(t *testing.T) {
 	ctx := context.Background()
 	badLogin := func() int {
