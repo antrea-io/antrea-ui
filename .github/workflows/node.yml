@@ -11,6 +11,7 @@ on:
 
 jobs:
   yarn:
+    name: Run Node checks
     runs-on: ubuntu-latest
     steps:
     - name: Check-out code

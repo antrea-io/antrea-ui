@@ -11,6 +11,7 @@ on:
 
 jobs:
   verify:
+    name: Verify docs
     runs-on: ubuntu-latest
     steps:
     - name: Check-out code
