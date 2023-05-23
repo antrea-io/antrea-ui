@@ -45,7 +45,7 @@ func TestLogin(t *testing.T) {
 	wrongPassword := "abc"
 
 	sendRequest := func(ts *testServer, mutators ...func(req *http.Request)) *httptest.ResponseRecorder {
-		req := httptest.NewRequest("GET", "/api/v1/auth/login", nil)
+		req := httptest.NewRequest("POST", "/api/v1/auth/login", nil)
 		for _, m := range mutators {
 			m(req)
 		}
@@ -81,7 +81,7 @@ func TestLogin(t *testing.T) {
 		assert.Equal(t, refreshToken.Raw, cookie.Value)
 		assert.Equal(t, "/api/v1/auth", cookie.Path)
 		assert.Equal(t, "", cookie.Domain)
-		assert.Equal(t, int(testTokenValidity/time.Second), cookie.MaxAge)
+		assert.Equal(t, 0, cookie.MaxAge)
 		assert.True(t, cookie.HttpOnly)
 		assert.Equal(t, http.SameSiteStrictMode, cookie.SameSite)
 	})
@@ -132,56 +132,88 @@ func TestLogin(t *testing.T) {
 }
 
 func TestRefreshToken(t *testing.T) {
-	sendRequest := func(ts *testServer, refreshToken *string) *httptest.ResponseRecorder {
+	sendRequestWithAuthorizationHeader := func(ts *testServer, refreshToken string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest("GET", "/api/v1/auth/refresh_token", nil)
-		if refreshToken != nil {
-			req.AddCookie(&http.Cookie{
-				Name:  "antrea-ui-refresh-token",
-				Value: *refreshToken,
-			})
-		}
+		req.Header.Add("Authorization", fmt.Sprintf("Bearer %s", refreshToken))
 		rr := httptest.NewRecorder()
 		ts.router.ServeHTTP(rr, req)
 		return rr
 	}
 
-	t.Run("valid refresh", func(t *testing.T) {
-		ts := newTestServer(t)
-		refreshToken := getTestToken()
-		token := getTestToken()
-		gomock.InOrder(
-			ts.tokenManager.EXPECT().VerifyRefreshToken(refreshToken.Raw),
-			ts.tokenManager.EXPECT().GetToken().Return(token, nil),
-		)
-		rr := sendRequest(ts, &refreshToken.Raw)
-		assert.Equal(t, http.StatusOK, rr.Code)
+	sendRequestWithCookie := func(ts *testServer, refreshToken string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest("GET", "/api/v1/auth/refresh_token", nil)
+		req.AddCookie(&http.Cookie{
+			Name:  "antrea-ui-refresh-token",
+			Value: refreshToken,
+		})
+		rr := httptest.NewRecorder()
+		ts.router.ServeHTTP(rr, req)
+		return rr
+	}
 
-		// check body of response
-		var data apisv1alpha1.Token
-		require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &data))
-		assert.Equal(t, token.Raw, data.AccessToken)
-		assert.Equal(t, "Bearer", data.TokenType)
-		assert.Equal(t, int64(testTokenValidity/time.Second), data.ExpiresIn)
-	})
+	sendRequestNoAuth := func(ts *testServer) *httptest.ResponseRecorder {
+		req := httptest.NewRequest("GET", "/api/v1/auth/refresh_token", nil)
+		rr := httptest.NewRecorder()
+		ts.router.ServeHTTP(rr, req)
+		return rr
+	}
 
-	t.Run("missing cookie", func(t *testing.T) {
+	t.Run("no auth", func(t *testing.T) {
 		ts := newTestServer(t)
-		rr := sendRequest(ts, nil)
+		rr := sendRequestNoAuth(ts)
 		assert.Equal(t, http.StatusUnauthorized, rr.Code)
 	})
 
-	t.Run("wrong refresh token", func(t *testing.T) {
-		ts := newTestServer(t)
-		badToken := "bad"
-		ts.tokenManager.EXPECT().VerifyRefreshToken(badToken).Return(fmt.Errorf("bad token"))
-		rr := sendRequest(ts, &badToken)
-		assert.Equal(t, http.StatusUnauthorized, rr.Code)
-	})
+	authMethods := []struct {
+		name        string
+		requestFunc func(ts *testServer, refreshToken string) *httptest.ResponseRecorder
+	}{
+		{
+			name:        "auth header",
+			requestFunc: sendRequestWithAuthorizationHeader,
+		},
+		{
+			name:        "cookie",
+			requestFunc: sendRequestWithCookie,
+		},
+	}
+
+	for _, m := range authMethods {
+		t.Run(m.name, func(t *testing.T) {
+			t.Run("valid refresh", func(t *testing.T) {
+				ts := newTestServer(t)
+				refreshToken := getTestToken()
+				token := getTestToken()
+				gomock.InOrder(
+					ts.tokenManager.EXPECT().VerifyRefreshToken(refreshToken.Raw),
+					ts.tokenManager.EXPECT().GetToken().Return(token, nil),
+				)
+				rr := m.requestFunc(ts, refreshToken.Raw)
+				assert.Equal(t, http.StatusOK, rr.Code)
+
+				// check body of response
+				var data apisv1alpha1.Token
+				require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &data))
+				assert.Equal(t, token.Raw, data.AccessToken)
+				assert.Equal(t, "Bearer", data.TokenType)
+				assert.Equal(t, int64(testTokenValidity/time.Second), data.ExpiresIn)
+			})
+
+			t.Run("wrong refresh token", func(t *testing.T) {
+				ts := newTestServer(t)
+				badToken := "bad"
+				ts.tokenManager.EXPECT().VerifyRefreshToken(badToken).Return(fmt.Errorf("bad token"))
+				rr := m.requestFunc(ts, badToken)
+				assert.Equal(t, http.StatusUnauthorized, rr.Code)
+			})
+		})
+	}
+
 }
 
 func TestLogout(t *testing.T) {
 	sendRequest := func(ts *testServer, refreshToken *string) *httptest.ResponseRecorder {
-		req := httptest.NewRequest("GET", "/api/v1/auth/logout", nil)
+		req := httptest.NewRequest("POST", "/api/v1/auth/logout", nil)
 		if refreshToken != nil {
 			req.AddCookie(&http.Cookie{
 				Name:  "antrea-ui-refresh-token",

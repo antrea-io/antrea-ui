@@ -17,6 +17,7 @@ package server
 import (
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -70,7 +71,7 @@ func (s *server) Login(c *gin.Context) {
 			Value:    refreshToken.Raw,
 			Path:     "/api/v1/auth",
 			Domain:   "",
-			MaxAge:   int(refreshToken.ExpiresIn / time.Second),
+			MaxAge:   0, // make it a session cookie
 			Secure:   s.config.CookieSecure,
 			HttpOnly: true,
 			SameSite: http.SameSiteStrictMode,
@@ -86,15 +87,30 @@ func (s *server) Login(c *gin.Context) {
 
 func (s *server) RefreshToken(c *gin.Context) {
 	if sError := func() *serverError {
-		cookie, err := c.Request.Cookie("antrea-ui-refresh-token")
-		if err != nil {
-			return &serverError{
-				code:    http.StatusUnauthorized,
-				message: "Missing 'antrea-ui-refresh-token' cookie",
-				err:     err,
+		// /refresh supports both the Authorization header and the token cookie, giving
+		// priority to the Authorization header
+		var refreshToken string
+		auth := c.GetHeader("Authorization")
+		if auth != "" {
+			t := strings.Split(auth, " ")
+			if len(t) != 2 || t[0] != "Bearer" {
+				return &serverError{
+					code:    http.StatusUnauthorized,
+					message: "Authorization header does not have valid format",
+				}
 			}
+			refreshToken = t[1]
+		} else {
+			cookie, err := c.Request.Cookie("antrea-ui-refresh-token")
+			if err != nil {
+				return &serverError{
+					code:    http.StatusUnauthorized,
+					message: "Missing 'antrea-ui-refresh-token' cookie",
+					err:     err,
+				}
+			}
+			refreshToken = cookie.Value
 		}
-		refreshToken := cookie.Value
 		if err := s.tokenManager.VerifyRefreshToken(refreshToken); err != nil {
 			return &serverError{
 				code:    http.StatusUnauthorized,
@@ -157,7 +173,7 @@ func (s *server) AddAuthRoutes(r *gin.RouterGroup) {
 		loginHandlers = append(loginHandlers, ratelimit.Middleware(loginRateLimiter))
 	}
 	loginHandlers = append(loginHandlers, s.Login)
-	r.GET("/login", loginHandlers...)
+	r.POST("/login", loginHandlers...)
 	r.GET("/refresh_token", s.RefreshToken)
-	r.GET("/logout", s.Logout)
+	r.POST("/logout", s.Logout)
 }

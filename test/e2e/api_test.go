@@ -38,7 +38,7 @@ const (
 func TestLoginRateLimiting(t *testing.T) {
 	ctx := context.Background()
 	badLogin := func() int {
-		resp, err := Request(ctx, host, "GET", "api/v1/auth/login", nil, func(req *http.Request) {
+		resp, err := Request(ctx, host, "POST", "api/v1/auth/login", nil, func(req *http.Request) {
 			req.SetBasicAuth("admin", "bad") // invalid password
 		})
 		require.NoError(t, err)

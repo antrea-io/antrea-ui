@@ -36,7 +36,7 @@ api.defaults.withCredentials = true;
 
 export const authAPI = {
     login: async (username: string, password: string): Promise<Token> => {
-        return api.get(`auth/login`, {
+        return api.post(`auth/login`, {}, {
             headers: {
                 "Authorization": "Basic " + encode(username + ":" + password),
             },
@@ -44,7 +44,7 @@ export const authAPI = {
     },
 
     logout: async (): Promise<void> => {
-        return api.get(`auth/logout`).then(_ => {}).catch((error) => handleError(error, "Error when trying to log out"));
+        return api.post(`auth/logout`, {}).then(_ => {}).catch((error) => handleError(error, "Error when trying to log out"));
     },
 
     refreshToken: async (): Promise<void> => {

@@ -120,9 +120,9 @@ func (ts *testServer) authorizeRequest(req *http.Request) {
 func TestAuthorization(t *testing.T) {
 	unprotectedRoutes := map[string]bool{
 		"GET /healthz":                   true,
-		"GET /api/v1/auth/login":         true,
+		"POST /api/v1/auth/login":        true,
 		"GET /api/v1/auth/refresh_token": true,
-		"GET /api/v1/auth/logout":        true,
+		"POST /api/v1/auth/logout":       true,
 		"GET /api/v1/version":            true,
 	}
 	ts := newTestServer(t)
