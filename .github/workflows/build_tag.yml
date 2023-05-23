@@ -19,6 +19,7 @@ jobs:
         echo "version=$version" >> $GITHUB_OUTPUT
 
   build:
+    name: Build release Docker images
     runs-on: ubuntu-latest
     needs: get-version
     steps:
