@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package server
+package api
 
 import (
 	"bytes"
@@ -147,13 +147,13 @@ func TestTraceflowRequestRateLimiting(t *testing.T) {
 	}
 
 	t.Run("0/s", func(t *testing.T) {
-		ts := newTestServer(t, SetMaxTraceflowsPerHour(0))
+		ts := newTestServer(t, setMaxTraceflowsPerHour(0))
 		rr := sendRequest(ts)
 		assert.Equal(t, http.StatusTooManyRequests, rr.Code)
 	})
 
 	t.Run("5/s", func(t *testing.T) {
-		ts := newTestServer(t, SetMaxTraceflowsPerHour(5*3600))
+		ts := newTestServer(t, setMaxTraceflowsPerHour(5*3600))
 		ts.traceflowRequestsHandler.EXPECT().CreateRequest(gomock.Any(), &traceflowhandler.Request{
 			Object: tf,
 		}).Return(uuid.NewString(), nil).AnyTimes()

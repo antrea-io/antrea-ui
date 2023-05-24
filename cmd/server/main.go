@@ -132,9 +132,7 @@ func run() error {
 		k8sProxyHandler,
 		passwordStore,
 		tokenManager,
-		server.SetCookieSecure(config.Auth.CookieSecure),
-		server.SetMaxLoginsPerSecond(config.Limits.MaxLoginsPerSecond),
-		server.SetMaxTraceflowsPerHour(config.Limits.MaxTraceflowsPerHour),
+		config,
 	)
 
 	var router *gin.Engine

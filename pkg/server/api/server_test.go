@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package server
+package api
 
 import (
 	"fmt"
@@ -33,6 +33,7 @@ import (
 
 	"antrea.io/antrea-ui/pkg/auth"
 	authtesting "antrea.io/antrea-ui/pkg/auth/testing"
+	serverconfig "antrea.io/antrea-ui/pkg/config/server"
 	traceflowhandlertesting "antrea.io/antrea-ui/pkg/handlers/traceflow/testing"
 	passwordtesting "antrea.io/antrea-ui/pkg/password/testing"
 )
@@ -57,7 +58,7 @@ func (h *testk8sProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 }
 
 type testServer struct {
-	s                        *server
+	s                        *Server
 	router                   *gin.Engine
 	k8sClient                *dynamicfake.FakeDynamicClient
 	traceflowRequestsHandler *traceflowhandlertesting.MockRequestsHandler
@@ -66,7 +67,21 @@ type testServer struct {
 	tokenManager             *authtesting.MockTokenManager
 }
 
-func newTestServer(t *testing.T, options ...ServerOptions) *testServer {
+type testServerOptions func(c *serverconfig.Config)
+
+func setMaxTraceflowsPerHour(v int) testServerOptions {
+	return func(c *serverconfig.Config) {
+		c.Limits.MaxTraceflowsPerHour = v
+	}
+}
+
+func setMaxLoginsPerSecond(v int) testServerOptions {
+	return func(c *serverconfig.Config) {
+		c.Limits.MaxLoginsPerSecond = v
+	}
+}
+
+func newTestServer(t *testing.T, options ...testServerOptions) *testServer {
 	logger := testr.New(t)
 	scheme := runtime.NewScheme()
 	scheme.AddKnownTypeWithName(agentInfoGVR.GroupVersion().WithKind("AntreaAgentInfoList"), &unstructured.UnstructuredList{})
@@ -76,6 +91,15 @@ func newTestServer(t *testing.T, options ...ServerOptions) *testServer {
 	k8sProxyHandler := &testk8sProxyHandler{}
 	passwordStore := passwordtesting.NewMockStore(ctrl)
 	tokenManager := authtesting.NewMockTokenManager(ctrl)
+
+	config := &serverconfig.Config{}
+	// disable rate limiting by default
+	config.Limits.MaxLoginsPerSecond = -1
+	config.Limits.MaxTraceflowsPerHour = -1
+	for _, fn := range options {
+		fn(config)
+	}
+
 	s := NewServer(
 		logger,
 		k8sClient,
@@ -83,10 +107,10 @@ func newTestServer(t *testing.T, options ...ServerOptions) *testServer {
 		k8sProxyHandler,
 		passwordStore,
 		tokenManager,
-		options...,
+		config,
 	)
 	router := gin.Default()
-	s.AddRoutes(router)
+	s.AddRoutes(&router.RouterGroup)
 	return &testServer{
 		s:                        s,
 		router:                   router,

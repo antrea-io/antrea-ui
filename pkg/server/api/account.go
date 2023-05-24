@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package server
+package api
 
 import (
 	"fmt"
@@ -21,32 +21,33 @@ import (
 	"github.com/gin-gonic/gin"
 
 	apisv1alpha1 "antrea.io/antrea-ui/apis/v1alpha1"
+	"antrea.io/antrea-ui/pkg/server/errors"
 )
 
-func (s *server) UpdatePassword(c *gin.Context) {
-	if sError := func() *serverError {
+func (s *Server) UpdatePassword(c *gin.Context) {
+	if sError := func() *errors.ServerError {
 		var updatePassword apisv1alpha1.UpdatePassword
 		if err := c.BindJSON(&updatePassword); err != nil {
-			return &serverError{
-				code:    http.StatusBadRequest,
-				message: "invalid body",
+			return &errors.ServerError{
+				Code:    http.StatusBadRequest,
+				Message: "invalid body",
 			}
 		}
 		if err := s.passwordStore.Compare(c, updatePassword.CurrentPassword); err != nil {
-			return &serverError{
-				code:    http.StatusBadRequest,
-				message: "Invalid current admin password",
+			return &errors.ServerError{
+				Code:    http.StatusBadRequest,
+				Message: "Invalid current admin password",
 			}
 		}
 		if err := s.passwordStore.Update(c, updatePassword.NewPassword); err != nil {
-			return &serverError{
-				code: http.StatusInternalServerError,
-				err:  fmt.Errorf("error when updating password: %w", err),
+			return &errors.ServerError{
+				Code: http.StatusInternalServerError,
+				Err:  fmt.Errorf("error when updating password: %w", err),
 			}
 		}
 		return nil
 	}(); sError != nil {
-		s.HandleError(c, sError)
+		errors.HandleError(c, sError)
 		s.LogError(sError, "Failed to update password")
 		return
 	}
@@ -54,7 +55,7 @@ func (s *server) UpdatePassword(c *gin.Context) {
 	c.Status(http.StatusOK)
 }
 
-func (s *server) AddAccountRoutes(r *gin.RouterGroup) {
+func (s *Server) AddAccountRoutes(r *gin.RouterGroup) {
 	r = r.Group("/account")
 	r.Use(s.checkBearerToken)
 	r.PUT("/password", s.UpdatePassword)

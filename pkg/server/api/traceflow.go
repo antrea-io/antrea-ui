@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package server
+package api
 
 import (
 	"encoding/json"
@@ -22,17 +22,18 @@ import (
 	"github.com/gin-gonic/gin"
 
 	traceflowhandler "antrea.io/antrea-ui/pkg/handlers/traceflow"
+	"antrea.io/antrea-ui/pkg/server/errors"
 	"antrea.io/antrea-ui/pkg/server/ratelimit"
 )
 
-func (s *server) CreateTraceflowRequest(c *gin.Context) {
+func (s *Server) CreateTraceflowRequest(c *gin.Context) {
 	var requestID string
-	if sError := func() *serverError {
+	if sError := func() *errors.ServerError {
 		var tfRequest map[string]interface{}
 		if err := c.BindJSON(&tfRequest); err != nil {
-			return &serverError{
-				code:    http.StatusBadRequest,
-				message: err.Error(),
+			return &errors.ServerError{
+				Code:    http.StatusBadRequest,
+				Message: err.Error(),
 			}
 		}
 		var err error
@@ -40,14 +41,14 @@ func (s *server) CreateTraceflowRequest(c *gin.Context) {
 			Object: tfRequest,
 		})
 		if err != nil {
-			return &serverError{
-				code: http.StatusInternalServerError,
-				err:  fmt.Errorf("error when creating Traceflow request: %w", err),
+			return &errors.ServerError{
+				Code: http.StatusInternalServerError,
+				Err:  fmt.Errorf("error when creating Traceflow request: %w", err),
 			}
 		}
 		return nil
 	}(); sError != nil {
-		s.HandleError(c, sError)
+		errors.HandleError(c, sError)
 		s.LogError(sError, "Failed to create Traceflow request")
 		return
 	}
@@ -57,21 +58,21 @@ func (s *server) CreateTraceflowRequest(c *gin.Context) {
 	c.Status(http.StatusAccepted)
 }
 
-func (s *server) GetTraceflowRequestStatus(c *gin.Context) {
+func (s *Server) GetTraceflowRequestStatus(c *gin.Context) {
 	requestID := c.Param("requestId")
 	var done bool
-	if sError := func() *serverError {
+	if sError := func() *errors.ServerError {
 		var err error
 		_, done, err = s.traceflowRequestsHandler.GetRequestResult(c, requestID)
 		if err != nil {
-			return &serverError{
-				code: http.StatusInternalServerError,
-				err:  fmt.Errorf("error when getting Traceflow request status: %w", err),
+			return &errors.ServerError{
+				Code: http.StatusInternalServerError,
+				Err:  fmt.Errorf("error when getting Traceflow request status: %w", err),
 			}
 		}
 		return nil
 	}(); sError != nil {
-		s.HandleError(c, sError)
+		errors.HandleError(c, sError)
 		s.LogError(sError, "Failed to get Traceflow request status", "requestId", requestID)
 		return
 	}
@@ -87,33 +88,33 @@ func (s *server) GetTraceflowRequestStatus(c *gin.Context) {
 	c.Status(http.StatusFound)
 }
 
-func (s *server) GetTraceflowRequestResult(c *gin.Context) {
+func (s *Server) GetTraceflowRequestResult(c *gin.Context) {
 	requestID := c.Param("requestId")
 	var data []byte
-	if sError := func() *serverError {
+	if sError := func() *errors.ServerError {
 		tfResult, done, err := s.traceflowRequestsHandler.GetRequestResult(c, requestID)
 		if err != nil {
-			return &serverError{
-				code: http.StatusInternalServerError,
-				err:  fmt.Errorf("error when getting Traceflow request result: %w", err),
+			return &errors.ServerError{
+				Code: http.StatusInternalServerError,
+				Err:  fmt.Errorf("error when getting Traceflow request result: %w", err),
 			}
 		}
 		if !done {
-			return &serverError{
-				code:    http.StatusNotFound,
-				message: "Traceflow result not available, call the /status endpoint to check progress",
+			return &errors.ServerError{
+				Code:    http.StatusNotFound,
+				Message: "Traceflow result not available, call the /status endpoint to check progress",
 			}
 		}
 		data, err = json.Marshal(tfResult)
 		if err != nil {
-			return &serverError{
-				code: http.StatusInternalServerError,
-				err:  fmt.Errorf("error when converting Traceflow request result to JSON: %w", err),
+			return &errors.ServerError{
+				Code: http.StatusInternalServerError,
+				Err:  fmt.Errorf("error when converting Traceflow request result to JSON: %w", err),
 			}
 		}
 		return nil
 	}(); sError != nil {
-		s.HandleError(c, sError)
+		errors.HandleError(c, sError)
 		s.LogError(sError, "Failed to get result for Traceflow request", "requestId", requestID)
 		return
 	}
@@ -121,32 +122,32 @@ func (s *server) GetTraceflowRequestResult(c *gin.Context) {
 	c.Data(http.StatusOK, "application/json; charset=utf-8", data)
 }
 
-func (s *server) DeleteTraceflowRequest(c *gin.Context) {
+func (s *Server) DeleteTraceflowRequest(c *gin.Context) {
 	requestID := c.Param("requestId")
-	if sError := func() *serverError {
+	if sError := func() *errors.ServerError {
 		ok, err := s.traceflowRequestsHandler.DeleteRequest(c, requestID)
 		if err != nil {
-			return &serverError{
-				code: http.StatusInternalServerError,
-				err:  fmt.Errorf("error when deleting Traceflow request: %w", err),
+			return &errors.ServerError{
+				Code: http.StatusInternalServerError,
+				Err:  fmt.Errorf("error when deleting Traceflow request: %w", err),
 			}
 		}
 		if !ok {
-			return &serverError{
-				code:    http.StatusNotFound,
-				message: "Traceflow request not found",
+			return &errors.ServerError{
+				Code:    http.StatusNotFound,
+				Message: "Traceflow request not found",
 			}
 		}
 		return nil
 	}(); sError != nil {
-		s.HandleError(c, sError)
+		errors.HandleError(c, sError)
 		s.LogError(sError, "Failed to delete Traceflow request", "requestId", requestID)
 		return
 	}
 	c.Status(http.StatusOK)
 }
 
-func (s *server) AddTraceflowRoutes(r *gin.RouterGroup) {
+func (s *Server) AddTraceflowRoutes(r *gin.RouterGroup) {
 	r = r.Group("/traceflow")
 	r.Use(s.checkBearerToken)
 	createTfHandlers := []gin.HandlerFunc{}
