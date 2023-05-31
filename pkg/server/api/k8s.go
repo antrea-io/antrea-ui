@@ -12,13 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package server
+package api
 
 import (
 	"net/http"
 	"strings"
 
 	"github.com/gin-gonic/gin"
+
+	"antrea.io/antrea-ui/pkg/server/errors"
 )
 
 // allowedPaths contains the K8s api paths that we are proxying.
@@ -28,7 +30,7 @@ var allowedPaths = []string{
 	"/apis/crd.antrea.io/v1beta1/antreacontrollerinfos",
 }
 
-func (s *server) GetK8s(c *gin.Context) {
+func (s *Server) GetK8s(c *gin.Context) {
 	// we need to strip the beginning of the path (/api/v1/k8s) before proxying
 	path := c.Param("path")
 	request := c.Request
@@ -38,26 +40,26 @@ func (s *server) GetK8s(c *gin.Context) {
 	s.k8sProxyHandler.ServeHTTP(c.Writer, c.Request)
 }
 
-func (s *server) checkK8sPath(c *gin.Context) {
-	if sError := func() *serverError {
+func (s *Server) checkK8sPath(c *gin.Context) {
+	if sError := func() *errors.ServerError {
 		path := c.Param("path")
 		for _, allowedPath := range allowedPaths {
 			if strings.HasPrefix(path, allowedPath) {
 				return nil
 			}
 		}
-		return &serverError{
-			code:    http.StatusNotFound,
-			message: "This K8s API path is not being proxied",
+		return &errors.ServerError{
+			Code:    http.StatusNotFound,
+			Message: "This K8s API path is not being proxied",
 		}
 	}(); sError != nil {
-		s.HandleError(c, sError)
+		errors.HandleError(c, sError)
 		c.Abort()
 		return
 	}
 }
 
-func (s *server) AddK8sRoutes(r *gin.RouterGroup) {
+func (s *Server) AddK8sRoutes(r *gin.RouterGroup) {
 	r = r.Group("/k8s")
 	r.Use(s.checkBearerToken)
 	r.GET("/*path", s.checkK8sPath, s.GetK8s)

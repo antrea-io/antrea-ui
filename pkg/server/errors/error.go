@@ -12,37 +12,38 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package server
+package errors
 
 import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/go-logr/logr"
 )
 
-type serverError struct {
-	code    int
-	err     error
-	message string
+type ServerError struct {
+	Code    int
+	Err     error
+	Message string
 }
 
-func (s *server) HandleError(c *gin.Context, sError *serverError) {
+func HandleError(c *gin.Context, sError *ServerError) {
 	if sError == nil {
-		panic("serverError is nil")
+		panic("ServerError is nil")
 	}
-	if sError.err != nil {
-		c.Error(sError.err)
+	if sError.Err != nil {
+		c.Error(sError.Err)
 	}
-	if sError.code == http.StatusInternalServerError {
-		c.JSON(sError.code, "Internal Server Error")
+	if sError.Code == http.StatusInternalServerError {
+		c.JSON(sError.Code, "Internal Server Error")
 	} else {
-		c.JSON(sError.code, sError.message)
+		c.JSON(sError.Code, sError.Message)
 	}
 }
 
-func (s *server) LogError(sError *serverError, msg string, keysAndValues ...interface{}) {
-	if sError == nil || sError.err == nil {
+func LogError(logger logr.Logger, sError *ServerError, msg string, keysAndValues ...interface{}) {
+	if sError == nil || sError.Err == nil {
 		return
 	}
-	s.logger.Error(sError.err, msg, keysAndValues...)
+	logger.Error(sError.Err, msg, keysAndValues...)
 }

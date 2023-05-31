@@ -15,56 +15,22 @@
 package server
 
 import (
-	"fmt"
 	"net/http"
-	"strings"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/go-logr/logr"
 	"k8s.io/client-go/dynamic"
 
 	"antrea.io/antrea-ui/pkg/auth"
+	serverconfig "antrea.io/antrea-ui/pkg/config/server"
 	"antrea.io/antrea-ui/pkg/handlers/traceflow"
 	"antrea.io/antrea-ui/pkg/password"
-	"antrea.io/antrea-ui/pkg/version"
+	"antrea.io/antrea-ui/pkg/server/api"
 )
 
-type server struct {
-	logger                   logr.Logger
-	k8sClient                dynamic.Interface
-	traceflowRequestsHandler traceflow.RequestsHandler
-	k8sProxyHandler          http.Handler
-	passwordStore            password.Store
-	tokenManager             auth.TokenManager
-	config                   serverConfig
-}
-
-type serverConfig struct {
-	// keep all fields exported, so the config struct can be logged
-	CookieSecure         bool
-	MaxTraceflowsPerHour int
-	MaxLoginsPerSecond   int
-}
-
-type ServerOptions func(c *serverConfig)
-
-func SetCookieSecure(v bool) ServerOptions {
-	return func(c *serverConfig) {
-		c.CookieSecure = v
-	}
-}
-
-func SetMaxTraceflowsPerHour(v int) ServerOptions {
-	return func(c *serverConfig) {
-		c.MaxTraceflowsPerHour = v
-	}
-}
-
-func SetMaxLoginsPerSecond(v int) ServerOptions {
-	return func(c *serverConfig) {
-		c.MaxLoginsPerSecond = v
-	}
+type Server struct {
+	logger    logr.Logger
+	apiServer *api.Server
 }
 
 func NewServer(
@@ -74,77 +40,25 @@ func NewServer(
 	k8sProxyHandler http.Handler,
 	passwordStore password.Store,
 	tokenManager auth.TokenManager,
-	options ...ServerOptions,
-) *server {
-	config := serverConfig{
-		// disable rate limiting by default
-		MaxTraceflowsPerHour: -1,
-		MaxLoginsPerSecond:   -1,
-	}
-	for _, fn := range options {
-		fn(&config)
-	}
-	logger.Info("Created server config", "config", config)
-	return &server{
-		logger:                   logger,
-		k8sClient:                k8sClient,
-		traceflowRequestsHandler: traceflowRequestsHandler,
-		k8sProxyHandler:          k8sProxyHandler,
-		passwordStore:            passwordStore,
-		tokenManager:             tokenManager,
-		config:                   config,
+	config *serverconfig.Config,
+) *Server {
+	return &Server{
+		logger: logger,
+		apiServer: api.NewServer(
+			logger,
+			k8sClient,
+			traceflowRequestsHandler,
+			k8sProxyHandler,
+			passwordStore,
+			tokenManager,
+			config,
+		),
 	}
 }
 
-func (s *server) checkBearerToken(c *gin.Context) {
-	if sError := func() *serverError {
-		auth := c.GetHeader("Authorization")
-		if auth == "" {
-			return &serverError{
-				code:    http.StatusUnauthorized,
-				message: "Missing Authorization header",
-			}
-		}
-		t := strings.Split(auth, " ")
-		if len(t) != 2 || t[0] != "Bearer" {
-			return &serverError{
-				code:    http.StatusUnauthorized,
-				message: "Authorization header does not have valid format",
-			}
-		}
-		if err := s.tokenManager.VerifyToken(t[1]); err != nil {
-			return &serverError{
-				code:    http.StatusUnauthorized,
-				message: "Invalid Bearer token",
-				err:     err,
-			}
-		}
-		return nil
-	}(); sError != nil {
-		s.HandleError(c, sError)
-		c.Abort()
-		return
-	}
-}
-
-func announceDeprecationMiddleware(removalDate time.Time, message string) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		c.Header("Warning", fmt.Sprintf(`299 - "Deprecated API: %s"`, message))
-		c.Header("Sunset", removalDate.UTC().Format(http.TimeFormat))
-	}
-}
-
-func (s *server) AddRoutes(router *gin.Engine) {
+func (s *Server) AddRoutes(router *gin.Engine) {
 	router.GET("/healthz", func(c *gin.Context) {
 		c.Status(http.StatusOK)
 	})
-	apiv1 := router.Group("/api/v1")
-	apiv1.GET("/version", func(c *gin.Context) {
-		c.String(http.StatusOK, version.GetFullVersionWithRuntimeInfo())
-	})
-	s.AddTraceflowRoutes(apiv1)
-	s.AddInfoRoutes(apiv1)
-	s.AddAccountRoutes(apiv1)
-	s.AddAuthRoutes(apiv1)
-	s.AddK8sRoutes(apiv1)
+	s.apiServer.AddRoutes(&router.RouterGroup)
 }

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package server
+package api
 
 import (
 	"fmt"
@@ -23,42 +23,43 @@ import (
 	"github.com/gin-gonic/gin"
 
 	apisv1alpha1 "antrea.io/antrea-ui/apis/v1alpha1"
+	"antrea.io/antrea-ui/pkg/server/errors"
 	"antrea.io/antrea-ui/pkg/server/ratelimit"
 )
 
-func (s *server) Login(c *gin.Context) {
-	if sError := func() *serverError {
+func (s *Server) Login(c *gin.Context) {
+	if sError := func() *errors.ServerError {
 		user, password, ok := c.Request.BasicAuth()
 		if !ok {
-			return &serverError{
-				code:    http.StatusUnauthorized,
-				message: "Basic Auth required",
+			return &errors.ServerError{
+				Code:    http.StatusUnauthorized,
+				Message: "Basic Auth required",
 			}
 		}
 		if user != "admin" {
-			return &serverError{
-				code:    http.StatusUnauthorized,
-				message: "Must authenticate as admin",
+			return &errors.ServerError{
+				Code:    http.StatusUnauthorized,
+				Message: "Must authenticate as admin",
 			}
 		}
 		if err := s.passwordStore.Compare(c, []byte(password)); err != nil {
-			return &serverError{
-				code:    http.StatusUnauthorized,
-				message: "Invalid admin password",
+			return &errors.ServerError{
+				Code:    http.StatusUnauthorized,
+				Message: "Invalid admin password",
 			}
 		}
 		refreshToken, err := s.tokenManager.GetRefreshToken()
 		if err != nil {
-			return &serverError{
-				code: http.StatusInternalServerError,
-				err:  fmt.Errorf("error when getting JWT refresh token: %w", err),
+			return &errors.ServerError{
+				Code: http.StatusInternalServerError,
+				Err:  fmt.Errorf("error when getting JWT refresh token: %w", err),
 			}
 		}
 		token, err := s.tokenManager.GetToken()
 		if err != nil {
-			return &serverError{
-				code: http.StatusInternalServerError,
-				err:  fmt.Errorf("error when getting JWT token: %w", err),
+			return &errors.ServerError{
+				Code: http.StatusInternalServerError,
+				Err:  fmt.Errorf("error when getting JWT token: %w", err),
 			}
 		}
 		resp := apisv1alpha1.Token{
@@ -79,14 +80,14 @@ func (s *server) Login(c *gin.Context) {
 		c.JSON(http.StatusOK, resp)
 		return nil
 	}(); sError != nil {
-		s.HandleError(c, sError)
+		errors.HandleError(c, sError)
 		s.LogError(sError, "Failed to login")
 		return
 	}
 }
 
-func (s *server) RefreshToken(c *gin.Context) {
-	if sError := func() *serverError {
+func (s *Server) RefreshToken(c *gin.Context) {
+	if sError := func() *errors.ServerError {
 		// /refresh supports both the Authorization header and the token cookie, giving
 		// priority to the Authorization header
 		var refreshToken string
@@ -94,35 +95,35 @@ func (s *server) RefreshToken(c *gin.Context) {
 		if auth != "" {
 			t := strings.Split(auth, " ")
 			if len(t) != 2 || t[0] != "Bearer" {
-				return &serverError{
-					code:    http.StatusUnauthorized,
-					message: "Authorization header does not have valid format",
+				return &errors.ServerError{
+					Code:    http.StatusUnauthorized,
+					Message: "Authorization header does not have valid format",
 				}
 			}
 			refreshToken = t[1]
 		} else {
 			cookie, err := c.Request.Cookie("antrea-ui-refresh-token")
 			if err != nil {
-				return &serverError{
-					code:    http.StatusUnauthorized,
-					message: "Missing 'antrea-ui-refresh-token' cookie",
-					err:     err,
+				return &errors.ServerError{
+					Code:    http.StatusUnauthorized,
+					Message: "Missing 'antrea-ui-refresh-token' cookie",
+					Err:     err,
 				}
 			}
 			refreshToken = cookie.Value
 		}
 		if err := s.tokenManager.VerifyRefreshToken(refreshToken); err != nil {
-			return &serverError{
-				code:    http.StatusUnauthorized,
-				message: "Invalid refresh token",
-				err:     err,
+			return &errors.ServerError{
+				Code:    http.StatusUnauthorized,
+				Message: "Invalid refresh token",
+				Err:     err,
 			}
 		}
 		token, err := s.tokenManager.GetToken()
 		if err != nil {
-			return &serverError{
-				code: http.StatusInternalServerError,
-				err:  fmt.Errorf("error when getting JWT token: %w", err),
+			return &errors.ServerError{
+				Code: http.StatusInternalServerError,
+				Err:  fmt.Errorf("error when getting JWT token: %w", err),
 			}
 		}
 		resp := apisv1alpha1.Token{
@@ -133,14 +134,14 @@ func (s *server) RefreshToken(c *gin.Context) {
 		c.JSON(http.StatusOK, resp)
 		return nil
 	}(); sError != nil {
-		s.HandleError(c, sError)
+		errors.HandleError(c, sError)
 		s.LogError(sError, "Failed to refresh token")
 		return
 	}
 }
 
-func (s *server) Logout(c *gin.Context) {
-	if sError := func() *serverError {
+func (s *Server) Logout(c *gin.Context) {
+	if sError := func() *errors.ServerError {
 		cookie, err := c.Request.Cookie("antrea-ui-refresh-token")
 		if err != nil {
 			// no cookie
@@ -153,14 +154,14 @@ func (s *server) Logout(c *gin.Context) {
 		http.SetCookie(c.Writer, cookie)
 		return nil
 	}(); sError != nil {
-		s.HandleError(c, sError)
+		errors.HandleError(c, sError)
 		s.LogError(sError, "Failed to logout")
 		return
 	}
 	c.Status(http.StatusOK)
 }
 
-func (s *server) AddAuthRoutes(r *gin.RouterGroup) {
+func (s *Server) AddAuthRoutes(r *gin.RouterGroup) {
 	r = r.Group("/auth")
 	loginHandlers := []gin.HandlerFunc{}
 	if s.config.MaxLoginsPerSecond >= 0 {

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package server
+package api
 
 import (
 	"encoding/json"
@@ -102,7 +102,7 @@ func TestLogin(t *testing.T) {
 	})
 
 	t.Run("rate limiting 0/s", func(t *testing.T) {
-		ts := newTestServer(t, SetMaxLoginsPerSecond(0))
+		ts := newTestServer(t, setMaxLoginsPerSecond(0))
 		rr := sendRequest(ts, func(req *http.Request) {
 			req.SetBasicAuth(username, password)
 		})
@@ -110,7 +110,7 @@ func TestLogin(t *testing.T) {
 	})
 
 	t.Run("rate limiting 5/s", func(t *testing.T) {
-		ts := newTestServer(t, SetMaxLoginsPerSecond(5))
+		ts := newTestServer(t, setMaxLoginsPerSecond(5))
 		ts.passwordStore.EXPECT().Compare(gomock.Any(), []byte(wrongPassword)).Return(fmt.Errorf("bad password")).AnyTimes()
 		rr := sendRequest(ts, func(req *http.Request) {
 			req.SetBasicAuth(username, wrongPassword)
