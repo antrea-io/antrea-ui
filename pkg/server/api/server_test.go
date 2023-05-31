@@ -20,7 +20,6 @@ import (
 	"net/http/httptest"
 	"net/http/httputil"
 	"testing"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/go-logr/logr/testr"
@@ -31,7 +30,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 
-	"antrea.io/antrea-ui/pkg/auth"
 	authtesting "antrea.io/antrea-ui/pkg/auth/testing"
 	serverconfig "antrea.io/antrea-ui/pkg/config/server"
 	traceflowhandlertesting "antrea.io/antrea-ui/pkg/handlers/traceflow/testing"
@@ -75,12 +73,6 @@ func setMaxTraceflowsPerHour(v int) testServerOptions {
 	}
 }
 
-func setMaxLoginsPerSecond(v int) testServerOptions {
-	return func(c *serverconfig.Config) {
-		c.Limits.MaxLoginsPerSecond = v
-	}
-}
-
 func newTestServer(t *testing.T, options ...testServerOptions) *testServer {
 	logger := testr.New(t)
 	scheme := runtime.NewScheme()
@@ -94,7 +86,6 @@ func newTestServer(t *testing.T, options ...testServerOptions) *testServer {
 
 	config := &serverconfig.Config{}
 	// disable rate limiting by default
-	config.Limits.MaxLoginsPerSecond = -1
 	config.Limits.MaxTraceflowsPerHour = -1
 	for _, fn := range options {
 		fn(config)
@@ -122,18 +113,8 @@ func newTestServer(t *testing.T, options ...testServerOptions) *testServer {
 	}
 }
 
-const testTokenValidity = 1 * time.Hour
-
-func getTestToken() *auth.Token {
-	return &auth.Token{
-		Raw:       fmt.Sprintf("token-%s", uuid.NewString()),
-		ExpiresIn: testTokenValidity,
-		ExpiresAt: time.Now().Add(testTokenValidity),
-	}
-}
-
 func (ts *testServer) authorizeRequest(req *http.Request) {
-	token := getTestToken().Raw
+	token := fmt.Sprintf("token-%s", uuid.NewString())
 	req.Header.Add("Authorization", fmt.Sprintf("Bearer %s", token))
 	ts.tokenManager.EXPECT().VerifyToken(token).Return(nil)
 }
@@ -143,11 +124,7 @@ func (ts *testServer) authorizeRequest(req *http.Request) {
 // token, it needs to be manually added to the unprotectedRoutes map below.
 func TestAuthorization(t *testing.T) {
 	unprotectedRoutes := map[string]bool{
-		"GET /healthz":                   true,
-		"POST /api/v1/auth/login":        true,
-		"GET /api/v1/auth/refresh_token": true,
-		"POST /api/v1/auth/logout":       true,
-		"GET /api/v1/version":            true,
+		"GET /api/v1/version": true,
 	}
 	ts := newTestServer(t)
 	for _, routeInfo := range ts.router.Routes() {

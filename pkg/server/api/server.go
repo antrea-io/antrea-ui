@@ -34,9 +34,7 @@ import (
 
 type serverConfig struct {
 	// keep all fields exported, so the config struct can be logged
-	CookieSecure         bool
 	MaxTraceflowsPerHour int
-	MaxLoginsPerSecond   int
 }
 
 type Server struct {
@@ -59,9 +57,7 @@ func NewServer(
 	config *serverconfig.Config,
 ) *Server {
 	c := serverConfig{
-		CookieSecure:         config.Auth.CookieSecure,
 		MaxTraceflowsPerHour: config.Limits.MaxTraceflowsPerHour,
-		MaxLoginsPerSecond:   config.Limits.MaxLoginsPerSecond,
 	}
 	logger.Info("Created API server config", "config", c)
 	return &Server{
@@ -121,7 +117,6 @@ func (s *Server) AddRoutes(r *gin.RouterGroup) {
 	s.AddTraceflowRoutes(apiv1)
 	s.AddInfoRoutes(apiv1)
 	s.AddAccountRoutes(apiv1)
-	s.AddAuthRoutes(apiv1)
 	s.AddK8sRoutes(apiv1)
 }
 

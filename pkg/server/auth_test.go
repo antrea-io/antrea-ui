@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package api
+package server
 
 import (
 	"encoding/json"
@@ -45,7 +45,7 @@ func TestLogin(t *testing.T) {
 	wrongPassword := "abc"
 
 	sendRequest := func(ts *testServer, mutators ...func(req *http.Request)) *httptest.ResponseRecorder {
-		req := httptest.NewRequest("POST", "/api/v1/auth/login", nil)
+		req := httptest.NewRequest("POST", "/auth/login", nil)
 		for _, m := range mutators {
 			m(req)
 		}
@@ -79,7 +79,7 @@ func TestLogin(t *testing.T) {
 		cookie := getRefreshTokenSetCookie(rr.Result())
 		require.NotNil(t, cookie, "Missing refresh token cookie in response")
 		assert.Equal(t, refreshToken.Raw, cookie.Value)
-		assert.Equal(t, "/api/v1/auth", cookie.Path)
+		assert.Equal(t, "/auth", cookie.Path)
 		assert.Equal(t, "", cookie.Domain)
 		assert.Equal(t, 0, cookie.MaxAge)
 		assert.True(t, cookie.HttpOnly)
@@ -133,7 +133,7 @@ func TestLogin(t *testing.T) {
 
 func TestRefreshToken(t *testing.T) {
 	sendRequestWithAuthorizationHeader := func(ts *testServer, refreshToken string) *httptest.ResponseRecorder {
-		req := httptest.NewRequest("GET", "/api/v1/auth/refresh_token", nil)
+		req := httptest.NewRequest("GET", "/auth/refresh_token", nil)
 		req.Header.Add("Authorization", fmt.Sprintf("Bearer %s", refreshToken))
 		rr := httptest.NewRecorder()
 		ts.router.ServeHTTP(rr, req)
@@ -141,7 +141,7 @@ func TestRefreshToken(t *testing.T) {
 	}
 
 	sendRequestWithCookie := func(ts *testServer, refreshToken string) *httptest.ResponseRecorder {
-		req := httptest.NewRequest("GET", "/api/v1/auth/refresh_token", nil)
+		req := httptest.NewRequest("GET", "/auth/refresh_token", nil)
 		req.AddCookie(&http.Cookie{
 			Name:  "antrea-ui-refresh-token",
 			Value: refreshToken,
@@ -152,7 +152,7 @@ func TestRefreshToken(t *testing.T) {
 	}
 
 	sendRequestNoAuth := func(ts *testServer) *httptest.ResponseRecorder {
-		req := httptest.NewRequest("GET", "/api/v1/auth/refresh_token", nil)
+		req := httptest.NewRequest("GET", "/auth/refresh_token", nil)
 		rr := httptest.NewRecorder()
 		ts.router.ServeHTTP(rr, req)
 		return rr
@@ -213,7 +213,7 @@ func TestRefreshToken(t *testing.T) {
 
 func TestLogout(t *testing.T) {
 	sendRequest := func(ts *testServer, refreshToken *string) *httptest.ResponseRecorder {
-		req := httptest.NewRequest("POST", "/api/v1/auth/logout", nil)
+		req := httptest.NewRequest("POST", "/auth/logout", nil)
 		if refreshToken != nil {
 			req.AddCookie(&http.Cookie{
 				Name:  "antrea-ui-refresh-token",
