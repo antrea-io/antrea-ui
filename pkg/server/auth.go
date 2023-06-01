@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package api
+package server
 
 import (
 	"fmt"
@@ -25,6 +25,7 @@ import (
 	apisv1alpha1 "antrea.io/antrea-ui/apis/v1alpha1"
 	"antrea.io/antrea-ui/pkg/server/errors"
 	"antrea.io/antrea-ui/pkg/server/ratelimit"
+	cookieutils "antrea.io/antrea-ui/pkg/server/utils/cookie"
 )
 
 func (s *Server) Login(c *gin.Context) {
@@ -67,16 +68,7 @@ func (s *Server) Login(c *gin.Context) {
 			TokenType:   "Bearer",
 			ExpiresIn:   int64(token.ExpiresIn / time.Second),
 		}
-		http.SetCookie(c.Writer, &http.Cookie{
-			Name:     "antrea-ui-refresh-token",
-			Value:    refreshToken.Raw,
-			Path:     "/api/v1/auth",
-			Domain:   "",
-			MaxAge:   0, // make it a session cookie
-			Secure:   s.config.CookieSecure,
-			HttpOnly: true,
-			SameSite: http.SameSiteStrictMode,
-		})
+		cookieutils.SetRefreshTokenCookie(c.Writer, refreshToken.Raw, s.config.CookieSecure)
 		c.JSON(http.StatusOK, resp)
 		return nil
 	}(); sError != nil {
@@ -101,16 +93,13 @@ func (s *Server) RefreshToken(c *gin.Context) {
 				}
 			}
 			refreshToken = t[1]
+		} else if token, ok := cookieutils.GetRefreshTokenFromCookie(c.Request); ok {
+			refreshToken = token
 		} else {
-			cookie, err := c.Request.Cookie("antrea-ui-refresh-token")
-			if err != nil {
-				return &errors.ServerError{
-					Code:    http.StatusUnauthorized,
-					Message: "Missing 'antrea-ui-refresh-token' cookie",
-					Err:     err,
-				}
+			return &errors.ServerError{
+				Code:    http.StatusUnauthorized,
+				Message: "No authentication present (cookie / Authorization header)",
 			}
-			refreshToken = cookie.Value
 		}
 		if err := s.tokenManager.VerifyRefreshToken(refreshToken); err != nil {
 			return &errors.ServerError{
@@ -142,16 +131,10 @@ func (s *Server) RefreshToken(c *gin.Context) {
 
 func (s *Server) Logout(c *gin.Context) {
 	if sError := func() *errors.ServerError {
-		cookie, err := c.Request.Cookie("antrea-ui-refresh-token")
-		if err != nil {
-			// no cookie
-			return nil
+		refreshToken, ok := cookieutils.UnsetRefreshTokenCookie(c.Request, c.Writer)
+		if ok {
+			s.tokenManager.DeleteRefreshToken(refreshToken)
 		}
-		refreshToken := cookie.Value
-		s.tokenManager.DeleteRefreshToken(refreshToken)
-		cookie.Value = ""
-		cookie.MaxAge = -1
-		http.SetCookie(c.Writer, cookie)
 		return nil
 	}(); sError != nil {
 		errors.HandleError(c, sError)

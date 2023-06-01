@@ -41,6 +41,21 @@ server {
             {{- end }}
         }
 
+        # at the moment, the config is the same as for /api
+        location /auth {
+            proxy_http_version 1.1;
+            proxy_pass_request_headers on;
+            proxy_hide_header Access-Control-Allow-Origin;
+            proxy_pass http://127.0.0.1:{{ .Values.backend.port }};
+            # ensure the correct flags are set, even though the api server should already be setting them
+            {{- $secure := include "cookieSecure" . -}}
+            {{- if eq $secure "true" }}
+            proxy_cookie_flags ~ httponly secure samesite=strict;
+            {{- else }}
+            proxy_cookie_flags ~ httponly samesite=strict;
+            {{- end }}
+        }
+
         location / {
             try_files $uri $uri/ /index.html;
         }

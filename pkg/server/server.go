@@ -26,11 +26,21 @@ import (
 	"antrea.io/antrea-ui/pkg/handlers/traceflow"
 	"antrea.io/antrea-ui/pkg/password"
 	"antrea.io/antrea-ui/pkg/server/api"
+	"antrea.io/antrea-ui/pkg/server/errors"
 )
 
+type serverConfig struct {
+	// keep all fields exported, so the config struct can be logged
+	CookieSecure       bool
+	MaxLoginsPerSecond int
+}
+
 type Server struct {
-	logger    logr.Logger
-	apiServer *api.Server
+	logger        logr.Logger
+	config        serverConfig
+	apiServer     *api.Server
+	passwordStore password.Store
+	tokenManager  auth.TokenManager
 }
 
 func NewServer(
@@ -42,8 +52,14 @@ func NewServer(
 	tokenManager auth.TokenManager,
 	config *serverconfig.Config,
 ) *Server {
+	c := serverConfig{
+		CookieSecure:       config.Auth.CookieSecure,
+		MaxLoginsPerSecond: config.Limits.MaxLoginsPerSecond,
+	}
+	logger.Info("Created server config", "config", c)
 	return &Server{
 		logger: logger,
+		config: c,
 		apiServer: api.NewServer(
 			logger,
 			k8sClient,
@@ -53,6 +69,8 @@ func NewServer(
 			tokenManager,
 			config,
 		),
+		passwordStore: passwordStore,
+		tokenManager:  tokenManager,
 	}
 }
 
@@ -61,4 +79,9 @@ func (s *Server) AddRoutes(router *gin.Engine) {
 		c.Status(http.StatusOK)
 	})
 	s.apiServer.AddRoutes(&router.RouterGroup)
+	s.AddAuthRoutes(&router.RouterGroup)
+}
+
+func (s *Server) LogError(sError *errors.ServerError, msg string, keysAndValues ...interface{}) {
+	errors.LogError(s.logger, sError, msg, keysAndValues...)
 }

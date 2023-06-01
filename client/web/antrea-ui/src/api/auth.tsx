@@ -20,7 +20,7 @@ import { encode } from 'base-64';
 import { setToken } from './token';
 import config from '../config';
 
-const { apiUri } = config;
+const { apiServer } = config;
 
 interface Token {
     tokenType: string
@@ -29,7 +29,7 @@ interface Token {
 }
 
 const api = axios.create({
-    baseURL: apiUri,
+    baseURL: apiServer,
 });
 
 api.defaults.withCredentials = true;

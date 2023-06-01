@@ -54,7 +54,7 @@ describe('axios instance', () => {
     test('expired token', async () => {
         const scope = nock('http://localhost')
             .get('/api/v1/test').matchHeader('Authorization', `Bearer ${token1}`).reply(401, 'expired token')
-            .get('/api/v1/auth/refresh_token').reply(200, JSON.stringify({
+            .get('/auth/refresh_token').reply(200, JSON.stringify({
                 accessToken: token2,
                 tokenType: 'Bearer',
                 expiresIn: 3600,
@@ -78,7 +78,7 @@ describe('axios instance', () => {
     test('failed refresh', async () => {
         const scope = nock('http://localhost')
             .get('/api/v1/test').matchHeader('Authorization', `Bearer ${token1}`).reply(401, 'expired token')
-            .get('/api/v1/auth/refresh_token').reply(500, 'unknown error');
+            .get('/auth/refresh_token').reply(500, 'unknown error');
 
         getTokenMock.mockReturnValueOnce(token1);
 
@@ -93,7 +93,7 @@ describe('axios instance', () => {
     test('failed refresh with unauthenticated', async () => {
         const scope = nock('http://localhost')
             .get('/api/v1/test').matchHeader('Authorization', `Bearer ${token1}`).reply(401, 'expired token')
-            .get('/api/v1/auth/refresh_token').reply(401, 'expired cookie');
+            .get('/auth/refresh_token').reply(401, 'expired cookie');
 
         getTokenMock.mockReturnValueOnce(token1);
 

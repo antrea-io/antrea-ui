@@ -32,13 +32,13 @@ type AuthProvider struct {
 
 func (p *AuthProvider) getAccessToken(ctx context.Context, host string) (string, error) {
 	login := func(ctx context.Context) (*http.Response, error) {
-		return Request(ctx, host, "POST", "api/v1/auth/login", nil, func(req *http.Request) {
+		return Request(ctx, host, "POST", "auth/login", nil, func(req *http.Request) {
 			req.SetBasicAuth("admin", "admin") // default credentials
 		})
 	}
 
 	refreshToken := func(ctx context.Context) (*http.Response, error) {
-		return Request(ctx, host, "GET", "api/v1/auth/refresh_token", nil, func(req *http.Request) {
+		return Request(ctx, host, "GET", "auth/refresh_token", nil, func(req *http.Request) {
 			req.AddCookie(p.refreshCookie)
 		})
 	}
