@@ -84,6 +84,18 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
+            {{- if .Values.auth.oidc.enable }}
+            - name: ANTREA_UI_AUTH_OIDC_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: antrea-ui-oidc-client
+                  key: clientID
+            - name: ANTREA_UI_AUTH_OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: antrea-ui-oidc-client
+                  key: clientSecret
+            {{- end }}
           ports:
             - name: api
               containerPort: {{ .Values.backend.port }}
@@ -107,6 +119,50 @@ spec:
               mountPath: /app/jwt-key.pem
               subPath: key.pem
               readOnly: true
+        {{- if .Values.dex.enable }}
+        - name: dex
+          image: {{ .Values.dex.image.repository }}:{{ .Values.dex.image.tag | default "latest" }}
+          imagePullPolicy: {{ .Values.dex.image.pullPolicy }}
+          args:
+            - "dex"
+            - "serve"
+            - "/etc/dex/config.yaml"
+          env:
+            {{- if .Values.auth.oidc.enable }}
+            - name: ANTREA_UI_AUTH_OIDC_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: antrea-ui-oidc-client
+                  key: clientID
+            - name: ANTREA_UI_AUTH_OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: antrea-ui-oidc-client
+                  key: clientSecret
+            {{- end }}
+          ports:
+            - name: dex-http
+              containerPort: 5556
+              protocol: TCP
+            - name: dex-telemetry
+              containerPort: 5558
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz/live
+              port: dex-telemetry
+          readinessProbe:
+            httpGet:
+              path: /healthz/ready
+              port: dex-telemetry
+          resources:
+            {{- toYaml .Values.dex.resources | nindent 12 }}
+          volumeMounts:
+            - name: dex-conf
+              mountPath: /etc/dex/config.yaml
+              subPath: dex.conf
+              readOnly: true
+        {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
@@ -139,5 +195,10 @@ spec:
           secret:
             secretName: {{ $secretName }}
             defaultMode: 0400
+        {{- end }}
+        {{- if .Values.dex.enable }}
+        - name: dex-conf
+          configMap:
+            name: antrea-ui-dex
         {{- end }}
       terminationGracePeriodSeconds: 10

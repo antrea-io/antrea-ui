@@ -4,6 +4,7 @@ go 1.19
 
 require (
 	github.com/blang/semver v3.5.1+incompatible
+	github.com/coreos/go-oidc/v3 v3.5.0
 	github.com/gin-contrib/cors v1.4.0
 	github.com/gin-gonic/gin v1.8.2
 	github.com/go-logr/logr v1.2.3
@@ -13,14 +14,18 @@ require (
 	github.com/google/uuid v1.3.0
 	github.com/gruntwork-io/terratest v0.41.23
 	github.com/hashicorp/golang-lru/v2 v2.0.2
+	github.com/oauth2-proxy/mockoidc v0.0.0-20220308204021-b9169deeb282
 	github.com/spf13/afero v1.9.5
 	github.com/spf13/pflag v1.0.5
 	github.com/spf13/viper v1.15.0
 	github.com/stretchr/testify v1.8.1
 	github.com/tidwall/gjson v1.14.4
+	github.com/tonglil/buflogr v1.0.1
 	go.uber.org/zap v1.24.0
 	golang.org/x/crypto v0.1.0
 	golang.org/x/exp v0.0.0-20230224173230-c95f2b4c22f2
+	golang.org/x/net v0.8.0
+	golang.org/x/oauth2 v0.3.0
 	golang.org/x/time v0.3.0
 	k8s.io/api v0.27.1
 	k8s.io/apimachinery v0.27.1
@@ -39,6 +44,7 @@ require (
 	github.com/ghodss/yaml v1.0.0 // indirect
 	github.com/gin-contrib/sse v0.1.0 // indirect
 	github.com/go-errors/errors v1.0.2-0.20180813162953-d98b870cc4e0 // indirect
+	github.com/go-jose/go-jose/v3 v3.0.0 // indirect
 	github.com/go-openapi/jsonpointer v0.19.6 // indirect
 	github.com/go-openapi/jsonreference v0.20.1 // indirect
 	github.com/go-openapi/swag v0.22.3 // indirect
@@ -48,6 +54,7 @@ require (
 	github.com/go-sql-driver/mysql v1.4.1 // indirect
 	github.com/goccy/go-json v0.9.11 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
+	github.com/golang-jwt/jwt v3.2.2+incompatible // indirect
 	github.com/golang/protobuf v1.5.3 // indirect
 	github.com/google/gnostic v0.5.7-v3refs // indirect
 	github.com/google/go-cmp v0.5.9 // indirect
@@ -86,8 +93,6 @@ require (
 	go.uber.org/atomic v1.9.0 // indirect
 	go.uber.org/goleak v1.2.0 // indirect
 	go.uber.org/multierr v1.8.0 // indirect
-	golang.org/x/net v0.8.0 // indirect
-	golang.org/x/oauth2 v0.1.0 // indirect
 	golang.org/x/sys v0.6.0 // indirect
 	golang.org/x/term v0.6.0 // indirect
 	golang.org/x/text v0.8.0 // indirect
@@ -95,6 +100,7 @@ require (
 	google.golang.org/protobuf v1.28.1 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
 	gopkg.in/ini.v1 v1.67.0 // indirect
+	gopkg.in/square/go-jose.v2 v2.6.0 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	k8s.io/klog/v2 v2.90.1 // indirect

@@ -152,3 +152,8 @@ If you do not provide a `secretName`, it will default to `"antrea-ui-tls"`.
 With this method, you can integrate with [cert-manager](https://cert-manager.io/).
 Refer to [this](reference-deployments.md#loadbalancer-service-with-metallb--cert-manager-self-signed)
 for an example.
+
+### Using Single Sign-On (SSO) with OIDC
+
+Refer to this [document](oidc.md) for instructions on how to configure SSO for
+Antrea UI.

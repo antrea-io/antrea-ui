@@ -29,7 +29,7 @@ import (
 	apisv1alpha1 "antrea.io/antrea-ui/apis/v1alpha1"
 )
 
-func getRefreshTokenSetCookie(response *http.Response) *http.Cookie {
+func getRefreshTokenCookie(response *http.Response) *http.Cookie {
 	cookies := response.Cookies()
 	for _, cookie := range cookies {
 		if cookie.Name == "antrea-ui-refresh-token" {
@@ -60,7 +60,7 @@ func TestLogin(t *testing.T) {
 		token := getTestToken()
 		gomock.InOrder(
 			ts.passwordStore.EXPECT().Compare(gomock.Any(), []byte(password)),
-			ts.tokenManager.EXPECT().GetRefreshToken().Return(refreshToken, nil),
+			ts.tokenManager.EXPECT().GetRefreshToken(BasicAuthRefreshTokenLifetime, "admin").Return(refreshToken, nil),
 			ts.tokenManager.EXPECT().GetToken().Return(token, nil),
 		)
 		rr := sendRequest(ts, func(req *http.Request) {
@@ -76,7 +76,7 @@ func TestLogin(t *testing.T) {
 		assert.Equal(t, int64(testTokenValidity/time.Second), data.ExpiresIn)
 
 		// check cookie
-		cookie := getRefreshTokenSetCookie(rr.Result())
+		cookie := getRefreshTokenCookie(rr.Result())
 		require.NotNil(t, cookie, "Missing refresh token cookie in response")
 		assert.Equal(t, refreshToken.Raw, cookie.Value)
 		assert.Equal(t, "/auth", cookie.Path)
@@ -128,6 +128,14 @@ func TestLogin(t *testing.T) {
 			})
 			return rr.Code == http.StatusUnauthorized
 		}, time.Second, 100*time.Millisecond)
+	})
+
+	t.Run("basic auth disabled", func(t *testing.T) {
+		ts := newTestServer(t, disableBasicAuth())
+		rr := sendRequest(ts, func(req *http.Request) {
+			req.SetBasicAuth(username, password)
+		})
+		assert.Equal(t, http.StatusNotFound, rr.Code)
 	})
 }
 
@@ -233,7 +241,7 @@ func TestLogout(t *testing.T) {
 		assert.Equal(t, http.StatusOK, rr.Code)
 
 		// check cookie
-		cookie := getRefreshTokenSetCookie(rr.Result())
+		cookie := getRefreshTokenCookie(rr.Result())
 		require.NotNil(t, cookie, "Missing refresh token cookie in response")
 		assert.Empty(t, cookie.Value)
 		assert.Equal(t, -1, cookie.MaxAge)

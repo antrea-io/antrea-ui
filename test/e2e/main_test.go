@@ -29,7 +29,10 @@ func startPortForwarding(ctx context.Context) (string, func(), error) {
 	if err != nil {
 		return "", nil, err
 	}
-	pf, err := portforwarder.NewPortForwarder(k8sRESTConfig, antreaNamespace, antreaUIPod.Name, antreaUIPort, "localhost", 0)
+	// we use the same port number for forwarding as the target port (antreaUIPort, which is 3000)
+	// this is because the config used for CI assumes that the UI is accessible at localhost:3000
+	// from the host
+	pf, err := portforwarder.NewPortForwarder(k8sRESTConfig, antreaNamespace, antreaUIPod.Name, antreaUIPort, "localhost", antreaUIPort)
 	if err != nil {
 		return "", nil, err
 	}
@@ -48,6 +51,8 @@ func startPortForwarding(ctx context.Context) (string, func(), error) {
 
 // testMain is meant to be called by TestMain and enables the use of defer statements.
 func testMain(m *testing.M) int {
+	ctx := context.Background()
+
 	var err error
 	k8sRESTConfig, k8sClient, err = createK8sClient("")
 	if err != nil {
@@ -60,12 +65,18 @@ func testMain(m *testing.M) int {
 	// we currently configure port forwarding once for all tests: this could be an issue if the
 	// Antrea UI crashes, as forwading would stop working altogether and all subsequent tests
 	// would fail
-	addr, stopPortForwarding, err := startPortForwarding(context.Background())
+	addr, stopPortForwarding, err := startPortForwarding(ctx)
 	if err != nil {
 		log.Fatalf("Failed to configure port-forwarding, make sure the UI is running: %v", err)
 	}
 	defer stopPortForwarding()
 	host = addr
+
+	settings, err = GetFrontendSettings(ctx)
+	if err != nil {
+		log.Fatalf("Error when retrieving frontend settings: %v", err)
+	}
+	log.Printf("Frontend settings: %+v", settings)
 
 	return m.Run()
 }

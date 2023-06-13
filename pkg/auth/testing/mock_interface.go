@@ -21,6 +21,7 @@ package testing
 
 import (
 	reflect "reflect"
+	time "time"
 
 	auth "antrea.io/antrea-ui/pkg/auth"
 	gomock "github.com/golang/mock/gomock"
@@ -62,18 +63,18 @@ func (mr *MockTokenManagerMockRecorder) DeleteRefreshToken(rawToken interface{})
 }
 
 // GetRefreshToken mocks base method.
-func (m *MockTokenManager) GetRefreshToken() (*auth.Token, error) {
+func (m *MockTokenManager) GetRefreshToken(lifetime time.Duration, subject string) (*auth.Token, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetRefreshToken")
+	ret := m.ctrl.Call(m, "GetRefreshToken", lifetime, subject)
 	ret0, _ := ret[0].(*auth.Token)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // GetRefreshToken indicates an expected call of GetRefreshToken.
-func (mr *MockTokenManagerMockRecorder) GetRefreshToken() *gomock.Call {
+func (mr *MockTokenManagerMockRecorder) GetRefreshToken(lifetime, subject interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetRefreshToken", reflect.TypeOf((*MockTokenManager)(nil).GetRefreshToken))
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetRefreshToken", reflect.TypeOf((*MockTokenManager)(nil).GetRefreshToken), lifetime, subject)
 }
 
 // GetToken mocks base method.

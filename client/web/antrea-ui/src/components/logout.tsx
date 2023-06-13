@@ -14,28 +14,28 @@
  * limitations under the License.
  */
 
-import { useState } from 'react';
-import { useNavigate } from "react-router-dom";
-import { authAPI } from '../api/auth';
 import { useDispatch } from 'react-redux';
 import { setToken } from '../store';
+import config from '../config';
 
-export function useLogout(): [boolean, ((msg?: string) => Promise<void>)] {
-    const navigate = useNavigate();
-    const [logoutComplete, setLogoutComplete] = useState<boolean>(false);
+const { apiServer } = config;
+
+export function useLogout(): ((msg?: string) => Promise<void>) {
     const dispatch = useDispatch();
 
     async function logout(msg?: string) {
-        await authAPI.logout();
         dispatch(setToken(""));
-        setLogoutComplete(true);
-        navigate("/", {
-            state: {
-                logoutMsg: msg,
-            },
-        });
-        // navigate(0)
+        localStorage.removeItem('ui.antrea.io/use-oidc');
+        let redirectURL = window.location.origin;
+        if (msg) {
+            const params = new URLSearchParams();
+            params.set('msg', msg);
+            redirectURL += `?${params.toString()}`;
+        }
+        const params = new URLSearchParams();
+        params.set('redirect_url', redirectURL);
+        window.location.href=`${apiServer}/auth/logout?${params.toString()}`;
     }
 
-    return [logoutComplete, logout];
+    return logout;
 }

@@ -24,6 +24,11 @@ import (
 	clocktesting "k8s.io/utils/clock/testing"
 )
 
+const (
+	refreshTokenLifetime = 1 * time.Hour
+	refreshTokenSubject  = "foo@example.com" // #nosec G101: fake test credentials
+)
+
 func getTokenManager(t *testing.T, clock clock.Clock) *tokenManager {
 	privateKey, err := LoadPrivateKeyFromBytes([]byte(sampleKey))
 	require.NoError(t, err, "failed to load key from PEM data")
@@ -62,7 +67,7 @@ func TestRefreshToken(t *testing.T) {
 	t.Run("valid", func(t *testing.T) {
 		now := time.Now()
 		m := getTokenManager(t, clocktesting.NewFakeClock(now))
-		token, err := m.GetRefreshToken()
+		token, err := m.GetRefreshToken(refreshTokenLifetime, refreshTokenSubject)
 		require.NoError(t, err, "failed to generate token")
 		assert.Equal(t, refreshTokenLifetime, token.ExpiresIn)
 		assert.Equal(t, now.Add(refreshTokenLifetime), token.ExpiresAt)
@@ -73,7 +78,7 @@ func TestRefreshToken(t *testing.T) {
 		now := time.Now()
 		clock := clocktesting.NewFakeClock(now)
 		m := getTokenManager(t, clock)
-		token, err := m.GetRefreshToken()
+		token, err := m.GetRefreshToken(refreshTokenLifetime, refreshTokenSubject)
 		require.NoError(t, err, "failed to generate token")
 		clock.Step(refreshTokenLifetime + 1*time.Second)
 		assert.Error(t, m.VerifyRefreshToken(token.Raw), "token should have expired")
@@ -89,7 +94,7 @@ func TestRefreshToken(t *testing.T) {
 func TestDeleteRefreshToken(t *testing.T) {
 	now := time.Now()
 	m := getTokenManager(t, clocktesting.NewFakeClock(now))
-	token, err := m.GetRefreshToken()
+	token, err := m.GetRefreshToken(refreshTokenLifetime, refreshTokenSubject)
 	require.NoError(t, err, "failed to generate token")
 	require.NoError(t, m.VerifyRefreshToken(token.Raw), "failed to validate token")
 	m.DeleteRefreshToken(token.Raw)
@@ -103,7 +108,7 @@ func TestRefreshTokenGC(t *testing.T) {
 	stopCh := make(chan struct{})
 	defer close(stopCh)
 	go m.Run(stopCh)
-	token, err := m.GetRefreshToken()
+	token, err := m.GetRefreshToken(refreshTokenLifetime, refreshTokenSubject)
 	require.NoError(t, err, "failed to generate token")
 	require.NoError(t, m.VerifyRefreshToken(token.Raw), "failed to validate token")
 	clock.Step(refreshTokenLifetime + refreshTokenGCPeriod)

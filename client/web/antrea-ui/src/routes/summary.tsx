@@ -140,7 +140,7 @@ export default function Summary() {
         // Defining this functions inside of useEffect is recommended
         // https://reactjs.org/docs/hooks-faq.html#is-it-safe-to-omit-functions-from-the-list-of-dependencies
         async function getData() {
-            let [controllerInfo, agentInfos] = await Promise.all([getControllerInfo(), getAgentInfos()]);
+            const [controllerInfo, agentInfos] = await Promise.all([getControllerInfo(), getAgentInfos()]);
             setControllerInfo(controllerInfo);
             setAgentInfos(agentInfos);
 

@@ -26,7 +26,7 @@ interface AppErrorContextType {
 export const AppErrorContext = React.createContext<AppErrorContextType>({
     error: null,
     addError: (error: Error) => {},
-    removeError: () => {}
+    removeError: () => {},
 });
 
 export function AppErrorProvider(props: React.PropsWithChildren) {

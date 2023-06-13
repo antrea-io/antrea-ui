@@ -14,38 +14,84 @@
  * limitations under the License.
  */
 
-import React from 'react';
-import { act, render, screen } from '@testing-library/react';
+import React, { ReactElement, useContext } from 'react';
+import { act, render, screen, waitFor, RenderOptions } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
+import { Provider } from 'react-redux';
 import { mockIntersectionObserver } from 'jsdom-testing-mocks';
-import App from './App';
-import { store, setToken } from './store';
+import App, { LoginWall, WaitForSettings } from './App';
+import { setupStore, AppStore, setToken, store } from './store';
 import { authAPI } from './api/auth';
 import { APIError } from './api/common';
+import { Settings, settingsAPI } from './api/settings';
+import SettingsContext from './components/settings';
+import { AppErrorProvider, AppErrorNotification } from './components/errors';
 
 // required by Clarity
 mockIntersectionObserver();
 
 jest.mock('./api/auth');
+jest.mock('./api/settings');
 
-describe('App auth', () => {
-    const mockedAuthAPI = jest.mocked(authAPI, true);
-    jest.spyOn(console, 'error').mockImplementation(() => {});
+const mockedAuthAPI = jest.mocked(authAPI, true);
+const mockedSettingsAPI = jest.mocked(settingsAPI, true);
+const consoleErrorMock = jest.spyOn(console, 'error');
 
-    afterAll(() => {
-        jest.restoreAllMocks();
+let testStore: AppStore;
+
+beforeEach(() => {
+    consoleErrorMock.mockImplementation();
+});
+afterAll(() => {
+    jest.restoreAllMocks();
+});
+afterEach(() => {
+    jest.resetAllMocks();
+});
+
+const defaultSettings = {
+    version: 'v0.1.0',
+    auth: {
+        basicEnabled: true,
+        oidcEnabled: false,
+    },
+} as Settings;
+
+describe('LoginWall', () => {
+    beforeEach(() => {
+        testStore = setupStore();
     });
+
+    const TestProviders = (props: React.PropsWithChildren<{ settings: Settings, url: string  }>) => {
+        return (
+            <MemoryRouter initialEntries={[props.url]}>
+                <Provider store={testStore}>
+                    <AppErrorProvider>
+                        <SettingsContext.Provider value={props.settings}>
+                            { props.children }
+                        </SettingsContext.Provider>
+                        <AppErrorNotification />
+                    </AppErrorProvider>
+                </Provider>
+            </MemoryRouter>
+        );
+    };
+
+    const customRender = (ui: ReactElement, settings: Settings, url: string = '/', options?: Omit<RenderOptions, 'wrapper'>) => {
+        return render(
+            <TestProviders settings={settings} url={url}>{ui}</TestProviders>,
+            { ...options},
+        );
+    };
+
     afterEach(() => {
-        act(() => {
-            store.dispatch(setToken(undefined));
-        });
-        jest.resetAllMocks();
+        localStorage.removeItem('ui.antrea.io/use-oidc');
     });
 
     test('refresh error - unauthenticated', async () => {
         mockedAuthAPI.refreshToken.mockRejectedValueOnce(new APIError(401, 'Unauthenticated', 'cookie expired'));
-        render(<App />, { wrapper: MemoryRouter });
+        customRender(<LoginWall />, defaultSettings);
         expect(await screen.findByText('Please log in')).toBeInTheDocument();
         expect(mockedAuthAPI.refreshToken).toHaveBeenCalledTimes(1);
         expect(console.error).not.toHaveBeenCalled();
@@ -53,7 +99,7 @@ describe('App auth', () => {
 
     test('refresh error - other API error', async () => {
         mockedAuthAPI.refreshToken.mockRejectedValueOnce(new APIError(404, 'Not Found'));
-        render(<App />, { wrapper: MemoryRouter });
+        customRender(<LoginWall />, defaultSettings);
         expect(await screen.findByText('Please log in')).toBeInTheDocument();
         expect(await screen.findByText(/Not Found/)).toBeInTheDocument();
         expect(mockedAuthAPI.refreshToken).toHaveBeenCalledTimes(1);
@@ -62,7 +108,7 @@ describe('App auth', () => {
 
     test('refresh error - other error', async () => {
         mockedAuthAPI.refreshToken.mockRejectedValueOnce(new Error('some error'));
-        render(<App />, { wrapper: MemoryRouter });
+        customRender(<LoginWall />, defaultSettings);
         expect(await screen.findByText('Please log in')).toBeInTheDocument();
         expect(await screen.findByText(/some error/)).toBeInTheDocument();
         expect(mockedAuthAPI.refreshToken).toHaveBeenCalledTimes(1);
@@ -70,30 +116,151 @@ describe('App auth', () => {
     });
 
     test('refresh success', () => {
-        mockedAuthAPI.refreshToken.mockImplementation(() => {
-            store.dispatch(setToken('my token'));
+        mockedAuthAPI.refreshToken.mockImplementationOnce(() => {
+            testStore.dispatch(setToken('my token'));
             return Promise.resolve();
         });
-        render(<App />, { wrapper: MemoryRouter });
+        customRender(<LoginWall />, defaultSettings);
         expect(screen.queryByText('Please log in')).toBeNull();
         expect(mockedAuthAPI.refreshToken).toHaveBeenCalledTimes(1);
     });
 
     test('already logged in', () => {
         act(() => {
-            store.dispatch(setToken('my token'));
+            testStore.dispatch(setToken('my token'));
         });
-        render(<App />, { wrapper: MemoryRouter });
+        customRender(<LoginWall />, defaultSettings);
         expect(screen.queryByText('Please log in')).toBeNull();
         expect(mockedAuthAPI.refreshToken).not.toHaveBeenCalled();
     });
 
-    test('logout', async () => {
+    test('no log in screen during refresh', async () => {
+        mockedAuthAPI.refreshToken.mockImplementation(async () => {
+            return new Promise((resolve, reject) => setTimeout(() => reject(new APIError(401, 'Unauthenticated', 'cookie expired')), 200));
+        });
+
+        customRender(<LoginWall />, defaultSettings);
+
+        // we wait for refreshToken to be called
+        await waitFor(() => expect(mockedAuthAPI.refreshToken).toHaveBeenCalledTimes(1));
+        // at this point in time, the log in screen should not be visible (refreshToken has been
+        // called but has not completed yet).
+        expect(screen.queryByText('Please log in')).toBeNull();
+        // the log in screen should eventually be visible (200ms timeout above)
+        expect(await screen.findByText('Please log in')).toBeInTheDocument();
+    });
+
+    test('oidc search param', async () => {
+        const defaultSettings = {
+            version: 'v0.1.0',
+            auth: {
+                basicEnabled: true,
+                oidcEnabled: true,
+            },
+        } as Settings;
+
+        customRender(<LoginWall />, defaultSettings, '/summary?auth_method=oidc');
+
+        await waitFor(() => expect(localStorage.getItem('ui.antrea.io/use-oidc')).toEqual('yes'));
+    });
+});
+
+describe('WaitForSettings', () => {
+    const TestProviders = (props: React.PropsWithChildren) => {
+        return (
+            <MemoryRouter>
+                <AppErrorProvider>
+                    { props.children }
+                    <AppErrorNotification />
+                </AppErrorProvider>
+            </MemoryRouter>
+        );
+    };
+
+    const customRender = (ui: ReactElement, options?: Omit<RenderOptions, 'wrapper'>) => {
+        return render(
+            <TestProviders>{ui}</TestProviders>,
+            { ...options},
+        );
+    };
+
+    const TestComponent = () => {
+        const settings = useContext(SettingsContext);
+        return (
+            <p>{JSON.stringify(settings)}</p>
+        );
+    };
+
+    const settings = {
+        version: 'v0.1.0',
+        auth: {
+            basicEnabled: true,
+            oidcEnabled: false,
+        },
+    } as Settings;
+
+    test('success', async () => {
+        mockedSettingsAPI.fetch.mockImplementation(async () => {
+            // we use a timeout rather than a condition flag
+            // using the flag would require some careful use of act() when toggling the flag
+            return new Promise((resolve) => setTimeout(() => resolve(settings), 200));
+        });
+
+        customRender(<WaitForSettings><TestComponent /></WaitForSettings>);
+
+        await waitFor(() => expect(mockedSettingsAPI.fetch).toHaveBeenCalledTimes(1));
+        // while the data is loading, we should see the following message
+        expect(screen.getByText('Loading app settings')).toBeInTheDocument();
+        expect(await screen.findByText(JSON.stringify(settings))).toBeInTheDocument();
+    });
+
+    test('API error', async() => {
+        mockedSettingsAPI.fetch.mockRejectedValueOnce(new APIError(404, 'Not Found', 'page not found'));
+
+        customRender(<WaitForSettings><TestComponent /></WaitForSettings>);
+
+        expect(await screen.findByText(/Not Found/)).toBeInTheDocument();
+        expect(mockedSettingsAPI.fetch).toHaveBeenCalledTimes(1);
+        expect(console.error).toHaveBeenCalled();
+    });
+});
+
+describe('App', () => {
+    beforeEach(() => {
+        mockedSettingsAPI.fetch.mockResolvedValue(defaultSettings);
+    });
+
+    afterEach(() => {
         act(() => {
+            store.dispatch(setToken(undefined));
+        });
+    });
+
+    test('login', async () => {
+        // It's important to use mockImplementationOnce instead of mockImplementation.
+        // There is an edge case where calling store.dispatch(setToken(undefined)) in afterEach will
+        // cause the component to be updated, with a new call to refreshToken, which in turn will
+        // set the token to 'my token', hence impacting subsequent test cases.
+        // Unlike for the test suites above, we cannot use an ephemeral test store when testing App.
+        mockedAuthAPI.refreshToken.mockImplementationOnce(() => {
             store.dispatch(setToken('my token'));
+            return Promise.resolve();
         });
         render(<App />, { wrapper: MemoryRouter });
+        await waitFor(() => expect(mockedAuthAPI.refreshToken).toHaveBeenCalledTimes(1));
         expect(screen.queryByText('Please log in')).toBeNull();
+    });
+
+    test('logout', async () => {
+        mockedAuthAPI.refreshToken.mockImplementationOnce(() => {
+            store.dispatch(setToken('my token'));
+            return Promise.resolve();
+        });
+        render(<App />, { wrapper: MemoryRouter });
+        // mimic a user login
+        await waitFor(() => expect(mockedAuthAPI.refreshToken).toHaveBeenCalledTimes(1));
+        expect(screen.queryByText('Please log in')).toBeNull();
+        // logout action
         userEvent.click(screen.getByText('Logout'));
         expect(await screen.findByText('Please log in')).toBeInTheDocument();
         expect(store.getState().token).toEqual('');

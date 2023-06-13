@@ -14,10 +14,10 @@
  * limitations under the License.
  */
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useContext } from 'react';
 import logo from './logo.svg';
 import './App.css';
-import { Outlet, Link, useLocation } from "react-router-dom";
+import { Outlet, Link, useSearchParams } from "react-router-dom";
 import NavTab from './components/nav';
 import Login from './components/login';
 import { useLogout } from './components/logout';
@@ -28,15 +28,20 @@ import { Provider, useSelector, useDispatch } from 'react-redux';
 import type { RootState } from './store';
 import { store, setToken } from './store';
 import { authAPI } from './api/auth';
+import { Settings, settingsAPI } from './api/settings';
 import { APIError } from './api/common';
 import { useAppError} from './components/errors';
+import { WaitForAPIResource } from './components/progress';
+import SettingsContext from './components/settings';
 
-function LoginWall(props: React.PropsWithChildren) {
-    const { state } = useLocation();
+export function LoginWall(props: React.PropsWithChildren) {
+    const settings = useContext(SettingsContext);
     const [msg, setMsg] = useState<string | null>();
     const token = useSelector((state: RootState) => state.token);
     const dispatch = useDispatch();
     const { addError, removeError } = useAppError();
+    const [refreshDone, setRefreshDone] = useState<boolean>(false);
+    const [searchParams, setSearchParams] = useSearchParams();
 
     useEffect(() => {
         removeError();
@@ -51,49 +56,106 @@ function LoginWall(props: React.PropsWithChildren) {
                 }
                 if (e instanceof Error) addError(e);
                 console.error(e);
+            } finally {
+                // indicate that the refresh API call has completed
+                setRefreshDone(true);
             }
         }
 
         if (token === undefined) {
             // try a refresh
             refreshToken();
+        } else {
+            // If token is defined and we don't need to call refreshToken, set the refreshDone flag
+            // to true automatically.
+            // Not sure how important this is in practice, except maybe for unit tests.
+            // For users, the only way to have a defined token is if refreshToken has actually been
+            // called. In unit tests, it could be possible to set the token directly without having
+            // an actual call to refreshToken.
+            setRefreshDone(true);
         }
     }, [token, addError, removeError]);
 
     useEffect(() => {
-        setMsg(state?.logoutMsg || null);
-    }, [state]);
+        // From the React documentation:
+        // > By default, React DOM escapes any values embedded in JSX before rendering them.
+        // So we should not have to worry about displaying msg as is.
+        setMsg(searchParams.get('msg'));
+    }, [searchParams, setSearchParams]);
+
+    useEffect(() => {
+        // we use this to remember that we successfully authenticated with OIDC
+        // when the refreshToken expires, we will use this information to login with OIDC by default
+        const authMethod = searchParams.get('auth_method');
+        if (authMethod === 'oidc' && settings.auth.oidcEnabled) {
+            localStorage.setItem('ui.antrea.io/use-oidc', 'yes');
+        }
+        if (authMethod) {
+            searchParams.delete('auth_method');
+            setSearchParams(searchParams);
+        }
+    }, [searchParams, setSearchParams, settings]);
 
     function doSetToken(token: string) {
         dispatch(setToken(token));
     }
 
-    if (!token) {
+    if (token) {
         return (
-            <div cds-layout="vertical p:md gap:md">
+            <div cds-layout="vertical align:stretch">
+                {props.children}
+            </div>
+        );
+    }
+
+    return (
+        <WaitForAPIResource ready={refreshDone} text="Attempting to authenticate">
+            <div cds-layout="vertical">
                 <p cds-text="section" >Please log in</p>
-                <Login setToken={doSetToken} />
+                <Login setToken={doSetToken} settings={settings} />
                 { msg && <>
                     <CdsAlertGroup status="success">
                         <CdsAlert closable onCloseChange={() => setMsg(null)}>{msg}</CdsAlert>
                     </CdsAlertGroup>
                 </> }
             </div>
-        );
-    }
-
-    return (
-        <div cds-layout="vertical align:stretch p:md gap:md">
-            {props.children}
-        </div>
+        </WaitForAPIResource>
     );
 }
 
 function Logout() {
-    const [, logout] = useLogout();
+    const logout = useLogout();
 
     return (
         <CdsButton type="button" action="outline" onClick={() => { logout('You successfully logged out'); }}>Logout</CdsButton>        
+    );
+}
+
+export function WaitForSettings(props: React.PropsWithChildren) {
+    const [settings, setSettings] = useState<Settings>();
+    const { addError, removeError } = useAppError();
+
+    useEffect(() => {
+        async function getSettings() {
+            try {
+                const settings = await settingsAPI.fetch();
+                setSettings(settings);
+                removeError();
+            } catch (e) {
+                if (e instanceof Error) addError(e);
+                console.error(e);
+            }
+        }
+
+        getSettings();
+    }, [addError, removeError, setSettings]);
+
+    return (
+        <WaitForAPIResource ready={settings !== undefined} text='Loading app settings'>
+            <SettingsContext.Provider value={settings!}>
+                {props.children}
+            </SettingsContext.Provider>
+        </WaitForAPIResource>
     );
 }
 
@@ -114,14 +176,16 @@ function App() {
                     </header>
                     <div cds-layout="horizontal align:top wrap:none" style={{ height: "100%" }}>
                         <NavTab />
-                        <AppErrorProvider>
-                            <div cds-layout="vertical">
-                                <LoginWall>
-                                    <Outlet />
-                                </LoginWall>
+                        <div cds-layout="vertical p:md gap:md">
+                            <AppErrorProvider>
+                                <WaitForSettings>
+                                    <LoginWall>
+                                        <Outlet />
+                                    </LoginWall>
+                                </WaitForSettings>
                                 <AppErrorNotification />
-                            </div>
-                        </AppErrorProvider>
+                            </AppErrorProvider>
+                        </div>
                     </div>
                 </Provider>
             </div>

@@ -124,7 +124,8 @@ func (ts *testServer) authorizeRequest(req *http.Request) {
 // token, it needs to be manually added to the unprotectedRoutes map below.
 func TestAuthorization(t *testing.T) {
 	unprotectedRoutes := map[string]bool{
-		"GET /api/v1/version": true,
+		"GET /api/v1/version":  true,
+		"GET /api/v1/settings": true,
 	}
 	ts := newTestServer(t)
 	for _, routeInfo := range ts.router.Routes() {

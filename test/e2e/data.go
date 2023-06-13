@@ -17,6 +17,8 @@ package e2e
 import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+
+	apisv1alpha1 "antrea.io/antrea-ui/apis/v1alpha1"
 )
 
 const (
@@ -30,4 +32,6 @@ var (
 
 	// the host address for accessing the Antrea UI
 	host string
+
+	settings *apisv1alpha1.FrontendSettings
 )

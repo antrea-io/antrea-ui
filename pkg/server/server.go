@@ -31,6 +31,9 @@ import (
 
 type serverConfig struct {
 	// keep all fields exported, so the config struct can be logged
+	BasicAuthEnabled   bool
+	OIDCAuthEnabled    bool
+	OIDCNeedsLogout    bool
 	CookieSecure       bool
 	MaxLoginsPerSecond int
 }
@@ -41,6 +44,7 @@ type Server struct {
 	apiServer     *api.Server
 	passwordStore password.Store
 	tokenManager  auth.TokenManager
+	oidcProvider  *OIDCProvider
 }
 
 func NewServer(
@@ -50,9 +54,13 @@ func NewServer(
 	k8sProxyHandler http.Handler,
 	passwordStore password.Store,
 	tokenManager auth.TokenManager,
+	oidcProvider *OIDCProvider,
 	config *serverconfig.Config,
 ) *Server {
 	c := serverConfig{
+		BasicAuthEnabled:   config.Auth.Basic.Enabled,
+		OIDCAuthEnabled:    config.Auth.OIDC.Enabled,
+		OIDCNeedsLogout:    (config.Auth.OIDC.LogoutURL != ""),
 		CookieSecure:       config.Auth.CookieSecure,
 		MaxLoginsPerSecond: config.Limits.MaxLoginsPerSecond,
 	}
@@ -71,6 +79,7 @@ func NewServer(
 		),
 		passwordStore: passwordStore,
 		tokenManager:  tokenManager,
+		oidcProvider:  oidcProvider,
 	}
 }
 

@@ -1,0 +1,12 @@
+url: http://localhost:3000
+auth:
+  oidc:
+    enable: true
+dex:
+  enable: true
+  config:
+    connectors:
+    - type: mockCallback
+      id: mock
+      name: Test
+logVerbosity: 2

@@ -13,3 +13,13 @@ metadata:
   namespace: {{ .Release.Namespace }}
 data:
   server.conf: {{ include "antrea-ui.backend.conf" . | trim | quote }}
+---
+{{- if .Values.dex.enable }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: antrea-ui-dex
+  namespace: {{ .Release.Namespace }}
+data:
+  dex.conf: {{ include "antrea-ui.dex.conf" . | trim | quote }}
+{{- end }}

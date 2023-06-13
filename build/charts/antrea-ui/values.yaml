@@ -21,6 +21,11 @@ backend:
   port: 8080
   # -- Resource requests and limits for the backend container.
   resources: {}
+  # -- Log verbosity switch for backend server.
+  logVerbosity: 0
+
+# -- Address at which the Antrea UI is accessible. Not required for most configurations.
+url: ""
 
 security:
   # -- (bool) Set the Secure attribute for Antrea UI cookies. The attribute is set by default when HTTPS is
@@ -81,6 +86,52 @@ https:
     # cert-manager. The secret must exist in the Namespace of the Helm release (typically,
     # kube-system).
     secretName: "antrea-ui-tls"
+
+auth:
+  basic:
+    # -- Enable password-based authentication.
+    enable: true
+  oidc:
+    # -- Enable OIDC-based authentication: the server connects to an OIDC provider to authenticate
+    # users. When enabling OIDC authentication, you will need to set the top-level url value.
+    enable: false
+    # -- Name of the OIDC provider (Dex, Github OAuth2, ...). This is used for user-facing messages,
+    # and does not have any impact on functionality.
+    providerName: ""
+    # -- URL of the OIDC provider. The server will use the URL to retrieve the OpenID Provider
+    # Configuration Document, which should be available at the /.well-known/openid-configuration
+    # endpoint.
+    issuerURL: ""
+    # -- Application (client) ID to be used by the Antrea UI server to identify itself to the OIDC
+    # provider.
+    clientID: ""
+    # -- Application (secret) ID to be used by the Antrea UI server to identify itself to the OIDC
+    # provider. Note that this secret will never be exposed to the UI frontend and to users. It
+    # should be base64-encoded.
+    clientSecret: ""
+    # -- URL to log out of the OIDC provider. It will be invoked when the user logs out of the
+    # Antrea UI. Some OIDC providers may not offer this capability. If this is empty, the user will
+    # stay signed into the identity provider even after logging out of the Antrea UI. The provided
+    # URL will be processed by a template engine, and the following template values are supported:
+    # {{Token}} (the ID token issued by the provider), {{ClientID}} (the application ID), {{URL}}
+    # (the URL at which Antrea UI is accessible), and {{LogoutReturnURL}} (useful if you want to
+    # redirect back to Antrea UI after signing out from the identity provider, with a helpful
+    # user-facing message).
+    logoutURL: ""
+
+dex:
+  # -- Enable built-in Dex for OIDC authentication.
+  enable: false
+  config:
+    # -- Dex connectors configuration (refer to https://dexidp.io/docs/connectors/).
+    connectors: []
+  # -- Container image to use for Dex.
+  image:
+    repository: "ghcr.io/dexidp/dex"
+    pullPolicy: "IfNotPresent"
+    tag: "v2.36.0-distroless"
+  # -- Resource requests and limits for the Dex container.
+  resources: {}
 
 # IPv6 configuration for the Antrea UI.
 ipv6:
