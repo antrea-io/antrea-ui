@@ -24,7 +24,7 @@ import (
 	"github.com/go-logr/logr"
 	"k8s.io/client-go/dynamic"
 
-	apisv1alpha1 "antrea.io/antrea-ui/apis/v1alpha1"
+	apisv1 "antrea.io/antrea-ui/apis/v1"
 	"antrea.io/antrea-ui/pkg/auth"
 	serverconfig "antrea.io/antrea-ui/pkg/config/server"
 	"antrea.io/antrea-ui/pkg/handlers/traceflow"
@@ -46,7 +46,7 @@ type Server struct {
 	passwordStore            password.Store
 	tokenManager             auth.TokenManager
 	config                   serverConfig
-	frontendSettings         *apisv1alpha1.FrontendSettings
+	frontendSettings         *apisv1.FrontendSettings
 }
 
 func NewServer(

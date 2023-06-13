@@ -19,15 +19,15 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	apisv1alpha1 "antrea.io/antrea-ui/apis/v1alpha1"
+	apisv1 "antrea.io/antrea-ui/apis/v1"
 	serverconfig "antrea.io/antrea-ui/pkg/config/server"
 	"antrea.io/antrea-ui/pkg/version"
 )
 
-func buildFrontendSettingsFromConfig(config *serverconfig.Config) *apisv1alpha1.FrontendSettings {
-	return &apisv1alpha1.FrontendSettings{
+func buildFrontendSettingsFromConfig(config *serverconfig.Config) *apisv1.FrontendSettings {
+	return &apisv1.FrontendSettings{
 		Version: version.GetFullVersion(),
-		Auth: apisv1alpha1.FrontendAuthSettings{
+		Auth: apisv1.FrontendAuthSettings{
 			BasicEnabled:     config.Auth.Basic.Enabled,
 			OIDCEnabled:      config.Auth.OIDC.Enabled,
 			OIDCProviderName: config.Auth.OIDC.ProviderName,

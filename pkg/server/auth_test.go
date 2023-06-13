@@ -26,7 +26,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	apisv1alpha1 "antrea.io/antrea-ui/apis/v1alpha1"
+	apisv1 "antrea.io/antrea-ui/apis/v1"
 )
 
 func getRefreshTokenCookie(response *http.Response) *http.Cookie {
@@ -69,7 +69,7 @@ func TestLogin(t *testing.T) {
 		assert.Equal(t, http.StatusOK, rr.Code)
 
 		// check body of response
-		var data apisv1alpha1.Token
+		var data apisv1.Token
 		require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &data))
 		assert.Equal(t, token.Raw, data.AccessToken)
 		assert.Equal(t, "Bearer", data.TokenType)
@@ -200,7 +200,7 @@ func TestRefreshToken(t *testing.T) {
 				assert.Equal(t, http.StatusOK, rr.Code)
 
 				// check body of response
-				var data apisv1alpha1.Token
+				var data apisv1.Token
 				require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &data))
 				assert.Equal(t, token.Raw, data.AccessToken)
 				assert.Equal(t, "Bearer", data.TokenType)
