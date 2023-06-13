@@ -17,7 +17,7 @@ In this document we will cover both methods.
 
 ## Method 1: Built-in Dex
 
-When installing Antrea UI usign Helm, you can choose to enable built-in support
+When installing Antrea UI using Helm, you can choose to enable built-in support
 for Dex, in which case an additional container named `dex` will be added to the
 `antrea-ui` Deployment, and the OIDC client in the Antrea UI backend will be
 configured automatically to access Dex.
@@ -33,7 +33,7 @@ with the following settings:
 * Set the Homepage URL to: `https://<ANTREA_UI_ADDRESS>`.
 * Set the Authorization callback URL to: `https://<ANTREA_UI_ADDRESS>/dex/callback`.
 
-After that, take note of the Client ID and generate a new new Client Secret.
+After that, take note of the Client ID and generate a new Client Secret.
 
 This is what the Antrea UI Helm configuration should look like:
 

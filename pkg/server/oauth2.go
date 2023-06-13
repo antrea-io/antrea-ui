@@ -366,7 +366,7 @@ func (s *Server) OAuth2Callback(c *gin.Context) {
 		if !ok {
 			return &errors.ServerError{
 				Code:    http.StatusBadRequest,
-				Message: "Missing state query param",
+				Message: "Missing code query param",
 			}
 		}
 
@@ -437,7 +437,7 @@ func (s *Server) OAuth2Callback(c *gin.Context) {
 			}
 		}
 
-		// at this point, it seems reasonable to delete the cookies used for aauth2
+		// at this point, it seems reasonable to delete the cookies used for oauth2
 		http.SetCookie(c.Writer, &http.Cookie{
 			Name:   "antrea-ui-oauth2-state",
 			Value:  "",
