@@ -26,7 +26,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	apisv1alpha1 "antrea.io/antrea-ui/apis/v1alpha1"
+	apisv1 "antrea.io/antrea-ui/apis/v1"
 )
 
 func TestUpdatePassword(t *testing.T) {
@@ -50,7 +50,7 @@ func TestUpdatePassword(t *testing.T) {
 			ts.passwordStore.EXPECT().Compare(gomock.Any(), currentPassword),
 			ts.passwordStore.EXPECT().Update(gomock.Any(), newPassword),
 		)
-		rr := sendAuthorizedRequest(ts, &apisv1alpha1.UpdatePassword{
+		rr := sendAuthorizedRequest(ts, &apisv1.UpdatePassword{
 			CurrentPassword: currentPassword,
 			NewPassword:     newPassword,
 		})
@@ -60,7 +60,7 @@ func TestUpdatePassword(t *testing.T) {
 	t.Run("wrong password", func(t *testing.T) {
 		ts := newTestServer(t)
 		ts.passwordStore.EXPECT().Compare(gomock.Any(), wrongPassword).Return(fmt.Errorf("bad password"))
-		rr := sendAuthorizedRequest(ts, &apisv1alpha1.UpdatePassword{
+		rr := sendAuthorizedRequest(ts, &apisv1.UpdatePassword{
 			CurrentPassword: wrongPassword,
 			NewPassword:     newPassword,
 		})

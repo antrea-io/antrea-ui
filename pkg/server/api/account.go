@@ -20,13 +20,13 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	apisv1alpha1 "antrea.io/antrea-ui/apis/v1alpha1"
+	apisv1 "antrea.io/antrea-ui/apis/v1"
 	"antrea.io/antrea-ui/pkg/server/errors"
 )
 
 func (s *Server) UpdatePassword(c *gin.Context) {
 	if sError := func() *errors.ServerError {
-		var updatePassword apisv1alpha1.UpdatePassword
+		var updatePassword apisv1.UpdatePassword
 		if err := c.BindJSON(&updatePassword); err != nil {
 			return &errors.ServerError{
 				Code:    http.StatusBadRequest,

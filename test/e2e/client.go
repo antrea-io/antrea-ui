@@ -23,11 +23,11 @@ import (
 	"net/url"
 	"time"
 
-	apisv1alpha1 "antrea.io/antrea-ui/apis/v1alpha1"
+	apisv1 "antrea.io/antrea-ui/apis/v1"
 )
 
 func parseAccessToken(body []byte) (string, error) {
-	var data apisv1alpha1.Token
+	var data apisv1.Token
 	if err := json.Unmarshal(body, &data); err != nil {
 		return "", fmt.Errorf("invalid response body format: %w", err)
 	}
@@ -162,7 +162,7 @@ func GetAccessToken(ctx context.Context, host string) (string, error) {
 	return authProvider.getAccessToken(ctx, host)
 }
 
-func GetFrontendSettings(ctx context.Context) (*apisv1alpha1.FrontendSettings, error) {
+func GetFrontendSettings(ctx context.Context) (*apisv1.FrontendSettings, error) {
 	resp, err := Request(ctx, host, "GET", "api/v1/settings", nil)
 	if err != nil {
 		return nil, err
@@ -175,7 +175,7 @@ func GetFrontendSettings(ctx context.Context) (*apisv1alpha1.FrontendSettings, e
 	if err != nil {
 		return nil, err
 	}
-	var settings apisv1alpha1.FrontendSettings
+	var settings apisv1.FrontendSettings
 	if err := json.Unmarshal(body, &settings); err != nil {
 		return nil, err
 	}

@@ -22,7 +22,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	apisv1alpha1 "antrea.io/antrea-ui/apis/v1alpha1"
+	apisv1 "antrea.io/antrea-ui/apis/v1"
 	"antrea.io/antrea-ui/pkg/server/errors"
 	"antrea.io/antrea-ui/pkg/server/ratelimit"
 	cookieutils "antrea.io/antrea-ui/pkg/server/utils/cookie"
@@ -66,7 +66,7 @@ func (s *Server) Login(c *gin.Context) {
 				Err:  fmt.Errorf("error when getting JWT token: %w", err),
 			}
 		}
-		resp := apisv1alpha1.Token{
+		resp := apisv1.Token{
 			AccessToken: token.Raw,
 			TokenType:   "Bearer",
 			ExpiresIn:   int64(token.ExpiresIn / time.Second),
@@ -116,7 +116,7 @@ func (s *Server) RefreshToken(c *gin.Context) {
 				Err:  fmt.Errorf("error when getting JWT token: %w", err),
 			}
 		}
-		resp := apisv1alpha1.Token{
+		resp := apisv1.Token{
 			AccessToken: token.Raw,
 			TokenType:   "Bearer",
 			ExpiresIn:   int64(token.ExpiresIn / time.Second),
