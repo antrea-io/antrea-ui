@@ -20,7 +20,7 @@ import { traceflowAPI, Traceflow, TraceflowSpec } from './traceflow';
 import { APIError } from './common';
 import { v4 as uuidv4 } from 'uuid';
 
-jest.mock('./axios');
+vi.mock('./axios');
 
 function getAxiosError(status: number, statusText: string, message: string): AxiosError {
     return new AxiosError(message, `${status}`, undefined /* config */, undefined /* request */, {
@@ -33,19 +33,17 @@ function getAxiosError(status: number, statusText: string, message: string): Axi
 describe('Traceflow API', () => {
     const tf = {} as TraceflowSpec;
     const reqId = uuidv4();
-    const mock = jest.mocked(api, true);
-    const consoleErrorMock = jest.spyOn(console, 'error').mockImplementation(() => {});
+    const mock = vi.mocked(api, true);
+    vi.spyOn(console, 'error').mockImplementation(() => {});
 
     afterAll(() => {
-        mock.mockRestore();
-        consoleErrorMock.mockRestore();
+        vi.restoreAllMocks();
     });
     afterEach(() => {
-        mock.mockReset();
-        consoleErrorMock.mockClear();
+        vi.clearAllMocks();
     });
 
-    test.each<boolean>([true, false])('with delete: %p', async (withDelete: boolean) => {
+    test.each<boolean>([true, false])('with delete: %s', async (withDelete: boolean) => {
         mock.post.mockResolvedValueOnce({
             data: {},
             status: 202,
@@ -88,10 +86,8 @@ describe('Traceflow API', () => {
             baseURL: '',
         }));
         if (withDelete) {
-            // eslint-disable-next-line jest/no-conditional-expect
             expect(mock.delete).toHaveBeenCalledWith(`/api/v1/traceflow/${reqId}`, expect.anything());
         } else {
-            // eslint-disable-next-line jest/no-conditional-expect
             expect(mock.delete).not.toHaveBeenCalled();
         }
     });

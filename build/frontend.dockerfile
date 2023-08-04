@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-FROM node:18-bullseye-slim as build-web
+FROM node:20-bullseye-slim as build-web
 
 WORKDIR /app
 

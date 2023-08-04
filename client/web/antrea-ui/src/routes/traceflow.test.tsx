@@ -14,31 +14,47 @@
  * limitations under the License.
  */
 
-import React from 'react';
+import { useLayoutEffect, useRef} from 'react';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
-import { mockIntersectionObserver } from 'jsdom-testing-mocks';
 import Traceflow from './traceflow';
 import { traceflowAPI, TraceflowSpec, TraceflowStatus } from '../api/traceflow';
 
-// required by Clarity
-mockIntersectionObserver();
+// This is a workaround for a known issue when using Clarity with React Testing Library.
+// See https://github.com/vmware-archive/clarity/issues/5985.
+vi.mock('@cds/react/select', () => ({
+  CdsSelect: (props: PropsWithChildren<ComponentProps<typeof CdsSelect>>) => {
+    const ref = useRef<HTMLDivElement>(null);
 
-jest.mock('../api/traceflow');
-const mockedTraceflowAPI = jest.mocked(traceflowAPI, true);
+    useLayoutEffect(() => {
+      const id = `id-${Math.trunc(Math.random() * 1000)}`;
+      ref.current?.querySelector('select')?.setAttribute('id', id);
+      ref.current?.querySelector('label')?.setAttribute('for', id);
+    }, []);
 
-const mockNavigate = jest.fn();
-jest.mock('react-router-dom', () => ({
-    ...jest.requireActual('react-router-dom') as any,
-    useNavigate: () => mockNavigate,
+    return <div ref={ref} {...(props as unknown)} />;
+  },
 }));
 
+vi.mock('../api/traceflow');
+const mockedTraceflowAPI = vi.mocked(traceflowAPI, true);
+
+const mockNavigate = vi.fn();
+
+vi.mock("react-router-dom", async () => {
+  const actual = await vi.importActual("react-router-dom");
+  return {
+    ...actual,
+    useNavigate: () => mockNavigate,
+  };
+});
+
 afterAll(() => {
-    jest.restoreAllMocks();
+    vi.restoreAllMocks();
 });
 afterEach(() => {
-    jest.resetAllMocks();
+    vi.clearAllMocks();
 });
 
 interface testInputs {
@@ -58,34 +74,34 @@ interface testInputs {
 }
 
 async function inputsToEvents(inputs: testInputs) {
-    if (inputs.liveTraffic) userEvent.click(await screen.findByLabelText('Live Traffic'));
-    if (inputs.droppedOnly) userEvent.click(await screen.findByLabelText('Dropped Traffic Only'));
-    if (inputs.proto) userEvent.selectOptions(await screen.findByLabelText('Protocol'), inputs.proto);
-    if (inputs.ipv6) userEvent.click(await screen.findByLabelText('Use IPv6'));
+    if (inputs.liveTraffic) await userEvent.click(await screen.findByLabelText('Live Traffic'));
+    if (inputs.droppedOnly) await userEvent.click(await screen.findByLabelText('Dropped Traffic Only'));
+    if (inputs.proto) await userEvent.selectOptions(await screen.findByLabelText('Protocol'), inputs.proto);
+    if (inputs.ipv6) await userEvent.click(await screen.findByLabelText('Use IPv6'));
     if (inputs.srcNamespace) {
         const srcNamespace = await screen.findByLabelText('Source Namespace');
         // clear needs to be called first, to remove the defaultValue
-        userEvent.clear(srcNamespace);
-        userEvent.type(srcNamespace, inputs.srcNamespace);
+        await userEvent.clear(srcNamespace);
+        await userEvent.type(srcNamespace, inputs.srcNamespace);
     }
-    if (inputs.src) userEvent.type(await screen.findByLabelText('Source'), inputs.src);
-    if (inputs.srcPort) userEvent.type(await screen.findByLabelText('Source Port'), `${inputs.srcPort}`);
-    if (inputs.destinationType) userEvent.click(await screen.findByLabelText(inputs.destinationType));
+    if (inputs.src) await userEvent.type(await screen.findByLabelText('Source'), inputs.src);
+    if (inputs.srcPort) await userEvent.type(await screen.findByLabelText('Source Port'), `${inputs.srcPort}`);
+    if (inputs.destinationType) await userEvent.click(await screen.findByLabelText(inputs.destinationType));
     if (inputs.dstNamespace) {
         const dstNamespace = await screen.findByLabelText('Destination Namespace');
-        userEvent.clear(dstNamespace);
-        userEvent.type(dstNamespace, inputs.dstNamespace);
+        await userEvent.clear(dstNamespace);
+        await userEvent.type(dstNamespace, inputs.dstNamespace);
     }
-    if (inputs.dst) userEvent.type(await screen.findByLabelText('Destination'), inputs.dst);
+    if (inputs.dst) await userEvent.type(await screen.findByLabelText('Destination'), inputs.dst);
     if (inputs.dstPort) {
         const dstPort = await screen.findByLabelText('Destination Port');
-        userEvent.clear(dstPort);
-        userEvent.type(dstPort, `${inputs.dstPort}`);
+        await userEvent.clear(dstPort);
+        await userEvent.type(dstPort, `${inputs.dstPort}`);
     }
     if (inputs.timeout) {
         const timeout = await screen.findByLabelText('Request Timeout');
-        userEvent.clear(timeout);
-        userEvent.type(timeout, `${inputs.timeout}`);
+        await userEvent.clear(timeout);
+        await userEvent.type(timeout, `${inputs.timeout}`);
     }
 }
 
@@ -245,7 +261,7 @@ describe('Traceflow request', () => {
 
         // unclear why this is needed, but without it the form is not submitted
         await userEvent.click(document.body);
-        userEvent.click(screen.getByRole('button', {name: 'Run Traceflow'}));
+        await userEvent.click(screen.getByRole('button', {name: 'Run Traceflow'}));
 
         await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith('/traceflow/result', expect.anything()));
 

@@ -19,7 +19,7 @@ jobs:
     - name: Set up Node
       uses: actions/setup-node@v3
       with:
-        node-version: 19
+        node-version: 20
     - run: yarn install
       working-directory: client/web/antrea-ui/
     - run: yarn lint

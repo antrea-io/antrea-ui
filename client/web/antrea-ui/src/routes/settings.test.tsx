@@ -18,7 +18,6 @@ import React from 'react';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
-import { mockIntersectionObserver } from 'jsdom-testing-mocks';
 import Settings from './settings';
 import { accountAPI } from '../api/account';
 import { APIError } from '../api/common';
@@ -27,18 +26,15 @@ import AppSettingsContext from '../components/settings';
 import { Provider } from 'react-redux';
 import { setupStore, AppStore } from '../store';
 
-// required by Clarity
-mockIntersectionObserver();
+vi.mock('../api/account');
 
-jest.mock('../api/account');
-
-const mockLogout = jest.fn();
-jest.mock('../components/logout', () => ({
+const mockLogout = vi.fn();
+vi.mock('../components/logout', () => ({
     useLogout: () => mockLogout,
 }));
 
-const mockAddError = jest.fn();
-jest.mock('../components/errors', () => ({
+const mockAddError = vi.fn();
+vi.mock('../components/errors', () => ({
     useAppError: () => {
         const addError = mockAddError;
         return { addError };
@@ -60,24 +56,24 @@ interface testInputs {
 }
 
 async function inputsToEvents(inputs: testInputs) {
-    if (inputs.currentPassword) userEvent.type(await screen.findByLabelText('Current Password'), inputs.currentPassword);
-    if (inputs.newPassword) userEvent.type(await screen.findByLabelText('New Password'), inputs.newPassword);
-    if (inputs.newPassword2) userEvent.type(await screen.findByLabelText('Confirm New Password'), inputs.newPassword2);
+    if (inputs.currentPassword) await userEvent.type(await screen.findByLabelText('Current Password'), inputs.currentPassword);
+    if (inputs.newPassword) await userEvent.type(await screen.findByLabelText('New Password'), inputs.newPassword);
+    if (inputs.newPassword2) await userEvent.type(await screen.findByLabelText('Confirm New Password'), inputs.newPassword2);
 }
 
 describe('Settings', () => {
-    const mockedAccountAPI = jest.mocked(accountAPI, true);
-    jest.spyOn(console, 'error').mockImplementation(() => {});
+    const mockedAccountAPI = vi.mocked(accountAPI, true);
+    vi.spyOn(console, 'error').mockImplementation(() => {});
     let store: AppStore;
 
     afterAll(() => {
-        jest.restoreAllMocks();
+        vi.restoreAllMocks();
     });
     beforeEach(() => {
         store = setupStore();
     });
     afterEach(() => {
-        jest.resetAllMocks();
+        vi.clearAllMocks();
     });
 
     const TestProviders = (props: React.PropsWithChildren<{ settings: AppSettings }>) => {
@@ -103,7 +99,7 @@ describe('Settings', () => {
             await inputsToEvents({currentPassword: currentPassword, newPassword: newPassword, newPassword2: newPassword});
             // unclear why this is needed, but without it the form is not submitted
             await userEvent.click(document.body);
-            userEvent.click(screen.getByRole('button', {name: 'Submit'}));
+            await userEvent.click(screen.getByRole('button', {name: 'Submit'}));
             await waitFor(() => expect(mockLogout).toHaveBeenCalledWith('Your password was successfully updated, please login again'));
             expect(mockedAccountAPI.updatePassword).toHaveBeenCalledWith(currentPassword, newPassword);
             expect(mockAddError).not.toHaveBeenCalled();
@@ -115,7 +111,7 @@ describe('Settings', () => {
             render(<TestProviders settings={defaultSettings}><Settings /></TestProviders>);
             await inputsToEvents({currentPassword: badPassword, newPassword: newPassword, newPassword2: newPassword});
             await userEvent.click(document.body);
-            userEvent.click(screen.getByRole('button', {name: 'Submit'}));
+            await userEvent.click(screen.getByRole('button', {name: 'Submit'}));
             await waitFor(() => expect(mockAddError).toHaveBeenCalledWith(err));
             expect(mockedAccountAPI.updatePassword).toHaveBeenCalledWith(badPassword, newPassword);
             expect(mockLogout).not.toHaveBeenCalled();

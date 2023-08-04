@@ -14,24 +14,19 @@
  * limitations under the License.
  */
 
-import React from 'react';
 import { render, screen, within } from '@testing-library/react';
 import { AgentInfo, ControllerInfo, K8sRef, Condition, agentInfoAPI, controllerInfoAPI } from '../api/info';
-import { mockIntersectionObserver } from 'jsdom-testing-mocks';
 import Summary from './summary';
 
-// required by Clarity
-mockIntersectionObserver();
-
-jest.mock('../api/info');
-const mockedAgentInfoAPI = jest.mocked(agentInfoAPI, true);
-const mockedControllerInfoAPI = jest.mocked(controllerInfoAPI, true);
+vi.mock('../api/info');
+const mockedAgentInfoAPI = vi.mocked(agentInfoAPI, true);
+const mockedControllerInfoAPI = vi.mocked(controllerInfoAPI, true);
 
 afterAll(() => {
-    jest.restoreAllMocks();
+    vi.restoreAllMocks();
 });
 afterEach(() => {
-    jest.resetAllMocks();
+    vi.clearAllMocks();
 });
 
 function makeMetadata(name: string) {

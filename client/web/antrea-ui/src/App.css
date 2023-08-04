@@ -14,12 +14,12 @@
  * limitations under the License.
  */
 
-@import '~modern-normalize/modern-normalize.css';
-@import '~@cds/core/global.min.css';
-@import '~@cds/city/css/bundles/default.min';
-@import '~@cds/core/styles/theme.dark.min.css';
-@import '~@cds/core/table/table.min.css';
-@import '~@cds/core/list/list.min.css';
+@import 'modern-normalize/modern-normalize.css';
+@import '@cds/core/global.min.css';
+@import '@cds/city/css/bundles/default.min';
+@import '@cds/core/styles/theme.dark.min.css';
+@import '@cds/core/table/table.min.css';
+@import '@cds/core/list/list.min.css';
 
 .App-logo {
     height: 2rem;

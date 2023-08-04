@@ -78,7 +78,7 @@ export function LoginBasic(props: { setToken: (token: string) => void }) {
             </CdsFormGroup>
         </form>
     );
-};
+}
 
 export function LoginOIDC(props: { providerName: string }) {
     function login() {
@@ -96,7 +96,7 @@ export function LoginOIDC(props: { providerName: string }) {
     return (
         <CdsButton role="button" type="button" onClick={() => login()}>Login with {props.providerName}</CdsButton>
     );
-};
+}
 
 export default function Login(props: { setToken: (token: string) => void, settings: Settings }) {
     const settings = props.settings;
