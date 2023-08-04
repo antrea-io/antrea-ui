@@ -10,7 +10,7 @@
     "@reduxjs/toolkit": "^1.9.3",
     "@testing-library/jest-dom": "^5.14.1",
     "@testing-library/react": "^13.0.0",
-    "@testing-library/user-event": "^13.2.1",
+    "@testing-library/user-event": "^14.4.3",
     "@types/base-64": "^1.0.0",
     "@types/d3": "^7.4.0",
     "@types/d3-graphviz": "^2.6.7",
