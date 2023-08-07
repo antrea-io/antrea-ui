@@ -27,9 +27,9 @@
 {{- end -}}
 
 {{- define "cookieSecure" -}}
-{{- if eq .Values.security.cookieSecure true }}
+{{- if eq (toString .Values.security.cookieSecure) "true" }}
 {{- true -}}
-{{- else if eq .Values.security.cookieSecure false }}
+{{- else if eq (toString .Values.security.cookieSecure) "false" }}
 {{- false -}}
 {{- else }}
 {{- .Values.https.enable -}}
