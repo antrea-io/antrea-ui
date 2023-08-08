@@ -122,7 +122,7 @@ export const traceflowAPI = {
                 },
                 validateStatus: (status: number) => status === 202,
             });
-            let location = response.headers["location"];
+            const location = response.headers["location"];
             if (!location) {
                 throw new APIError(0, "", "Missing Location after creating traceflow request");
             }

@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import React, { useEffect, useRef} from 'react';
+import { useEffect, useRef} from 'react';
 import { useLocation } from "react-router-dom";
 import { TraceflowSpec, TraceflowStatus, TraceflowNodeResult, TraceflowObservation } from '../api/traceflow';
 // eslint-disable-next-line

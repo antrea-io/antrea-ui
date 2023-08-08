@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import React, { useState, useEffect, useRef} from 'react';
+import { useState, useEffect, useRef} from 'react';
 import { useNavigate, Outlet } from "react-router-dom";
 import { useForm, SubmitHandler } from "react-hook-form";
 import { CdsAlertGroup, CdsAlert } from "@cds/react/alert";

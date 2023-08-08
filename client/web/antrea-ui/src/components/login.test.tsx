@@ -16,22 +16,18 @@
 
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { mockIntersectionObserver } from 'jsdom-testing-mocks';
 import Login, { LoginBasic, LoginOIDC } from './login';
 import { Settings } from '../api/settings';
 import { authAPI, Token } from '../api/auth';
 import { APIError } from '../api/common';
 
-// required by Clarity
-mockIntersectionObserver();
+vi.mock('../api/auth');
 
-jest.mock('../api/auth');
+const mockedAuthAPI = vi.mocked(authAPI, true);
+const consoleErrorMock = vi.spyOn(console, 'error');
 
-const mockedAuthAPI = jest.mocked(authAPI, true);
-const consoleErrorMock = jest.spyOn(console, 'error');
-
-const mockAddError = jest.fn();
-jest.mock('../components/errors', () => ({
+const mockAddError = vi.fn();
+vi.mock('../components/errors', () => ({
     useAppError: () => {
         const addError = mockAddError;
         return { addError };
@@ -49,11 +45,11 @@ beforeEach(() => {
 });
 
 afterAll(() => {
-    jest.restoreAllMocks();
+    vi.restoreAllMocks();
 });
 afterEach(() => {
     token = undefined;
-    jest.resetAllMocks();
+    vi.clearAllMocks();
 });
 
 describe('Login', () => {
@@ -140,8 +136,8 @@ describe('LoginBasic', () => {
     const inputsToEvents = async (inputs: testInputs) => {
         const username = await screen.findByLabelText('Username');
         userEvent.clear(username);
-        if (inputs.username) userEvent.type(username, inputs.username);
-        if (inputs.password) userEvent.type(await screen.findByLabelText('Password'), password);
+        if (inputs.username) await userEvent.type(username, inputs.username);
+        if (inputs.password) await userEvent.type(await screen.findByLabelText('Password'), password);
     };
 
     describe('Invalid form', () => {
@@ -172,7 +168,7 @@ describe('LoginBasic', () => {
             render(<LoginBasic setToken={setToken} />);
             await inputsToEvents(tc.inputs);
             await userEvent.click(document.body);
-            userEvent.click(screen.getByRole('button', {name: 'Login'}));
+            await userEvent.click(screen.getByRole('button', {name: 'Login'}));
             expect(await screen.findAllByText(tc.expectedError)).not.toHaveLength(0);
             expect(mockedAuthAPI.login).not.toHaveBeenCalled();
         });
@@ -185,7 +181,7 @@ describe('LoginBasic', () => {
         await userEvent.click(document.body);
         userEvent.click(screen.getByRole('button', {name: 'Login'}));
         await waitFor(() => expect(mockedAuthAPI.login).toHaveBeenCalled());
-        expect(token).toEqual('my token');
+        expect(token).toBe('my token');
         expect(mockAddError).not.toHaveBeenCalled();
     });
 
@@ -198,15 +194,15 @@ describe('LoginBasic', () => {
         userEvent.click(screen.getByRole('button', {name: 'Login'}));
         await waitFor(() => expect(mockedAuthAPI.login).toHaveBeenCalled());
         await waitFor(() => expect(mockAddError).toHaveBeenCalledWith(err));
-        expect(token).not.toBeDefined();
+        expect(token).toBeUndefined();
     });
 });
 
 describe('LoginOIDC', () => {
     const providerName = 'Dex';
 
-    const getHrefMock = jest.fn();
-    const setHrefMock = jest.fn();
+    const getHrefMock = vi.fn();
+    const setHrefMock = vi.fn();
     const oldLocation = Object.getOwnPropertyDescriptor(window, 'location');
 
     beforeAll(() => {
@@ -237,7 +233,7 @@ describe('LoginOIDC', () => {
 
     test('auto login', () => {
         getHrefMock.mockImplementation(() => 'http://localhost:3000/summary');
-        setHrefMock.mockImplementation((x) => {});
+        setHrefMock.mockImplementation((_) => {});
         localStorage.setItem('ui.antrea.io/use-oidc', 'yes');
         render(<LoginOIDC providerName={providerName} />);
         expect(getHrefMock).toHaveBeenCalledTimes(1);

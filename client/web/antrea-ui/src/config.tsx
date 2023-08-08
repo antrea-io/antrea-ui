@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-const apiServer = process.env.REACT_APP_API_SERVER || "";
+const apiServer = import.meta.env.VITE_API_SERVER || "";
 const apiVersion = "v1";
 
 const config = {

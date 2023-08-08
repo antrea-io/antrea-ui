@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { Link } from "react-router-dom";
 import { CdsNavigation, CdsNavigationStart, CdsNavigationItem } from "@cds/react/navigation";
 import { CdsIcon } from '@cds/react/icon';

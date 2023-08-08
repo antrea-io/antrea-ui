@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import React, { useState, useEffect} from 'react';
+import { useState, useEffect} from 'react';
 import { CdsCard } from '@cds/react/card';
 import { CdsDivider } from '@cds/react/divider';
 import { AgentInfo, ControllerInfo, Condition, K8sRef, agentInfoAPI, controllerInfoAPI } from '../api/info';

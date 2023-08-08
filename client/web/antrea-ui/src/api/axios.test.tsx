@@ -19,19 +19,19 @@ import api from './axios';
 import { setToken, getToken } from './token';
 import { APIError } from './common';
 
-jest.mock('./token');
+vi.mock('./token');
 
 describe('axios instance', () => {
     const token1 = 'token1';
     const token2 = 'token2';
-    const getTokenMock = jest.mocked(getToken);
-    const setTokenMock = jest.mocked(setToken);
+    const getTokenMock = vi.mocked(getToken);
+    const setTokenMock = vi.mocked(setToken);
 
     afterAll(() => {
-        jest.restoreAllMocks();
+        vi.restoreAllMocks();
     });
     afterEach(() => {
-        jest.resetAllMocks();
+        vi.resetAllMocks();
     });
 
     test('valid token', async () => {

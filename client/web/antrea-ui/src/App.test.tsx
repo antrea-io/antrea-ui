@@ -19,7 +19,6 @@ import { act, render, screen, waitFor, RenderOptions } from '@testing-library/re
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { Provider } from 'react-redux';
-import { mockIntersectionObserver } from 'jsdom-testing-mocks';
 import App, { LoginWall, WaitForSettings } from './App';
 import { setupStore, AppStore, setToken, store } from './store';
 import { authAPI } from './api/auth';
@@ -28,15 +27,12 @@ import { Settings, settingsAPI } from './api/settings';
 import SettingsContext from './components/settings';
 import { AppErrorProvider, AppErrorNotification } from './components/errors';
 
-// required by Clarity
-mockIntersectionObserver();
+vi.mock('./api/auth');
+vi.mock('./api/settings');
 
-jest.mock('./api/auth');
-jest.mock('./api/settings');
-
-const mockedAuthAPI = jest.mocked(authAPI, true);
-const mockedSettingsAPI = jest.mocked(settingsAPI, true);
-const consoleErrorMock = jest.spyOn(console, 'error');
+const mockedAuthAPI = vi.mocked(authAPI, true);
+const mockedSettingsAPI = vi.mocked(settingsAPI, true);
+const consoleErrorMock = vi.spyOn(console, 'error');
 
 let testStore: AppStore;
 
@@ -44,10 +40,10 @@ beforeEach(() => {
     consoleErrorMock.mockImplementation();
 });
 afterAll(() => {
-    jest.restoreAllMocks();
+    vi.restoreAllMocks();
 });
 afterEach(() => {
-    jest.resetAllMocks();
+    vi.clearAllMocks();
 });
 
 const defaultSettings = {
@@ -115,14 +111,14 @@ describe('LoginWall', () => {
         expect(console.error).toHaveBeenCalled();
     });
 
-    test('refresh success', () => {
+    test('refresh success', async () => {
         mockedAuthAPI.refreshToken.mockImplementationOnce(() => {
             testStore.dispatch(setToken('my token'));
             return Promise.resolve();
         });
         customRender(<LoginWall />, defaultSettings);
         expect(screen.queryByText('Please log in')).toBeNull();
-        expect(mockedAuthAPI.refreshToken).toHaveBeenCalledTimes(1);
+        await waitFor(() => expect(mockedAuthAPI.refreshToken).toHaveBeenCalledTimes(1));
     });
 
     test('already logged in', () => {
@@ -161,7 +157,7 @@ describe('LoginWall', () => {
 
         customRender(<LoginWall />, defaultSettings, '/summary?auth_method=oidc');
 
-        await waitFor(() => expect(localStorage.getItem('ui.antrea.io/use-oidc')).toEqual('yes'));
+        await waitFor(() => expect(localStorage.getItem('ui.antrea.io/use-oidc')).toBe('yes'));
     });
 });
 
@@ -261,8 +257,8 @@ describe('App', () => {
         await waitFor(() => expect(mockedAuthAPI.refreshToken).toHaveBeenCalledTimes(1));
         expect(screen.queryByText('Please log in')).toBeNull();
         // logout action
-        userEvent.click(screen.getByText('Logout'));
+        await userEvent.click(screen.getByText('Logout'));
         expect(await screen.findByText('Please log in')).toBeInTheDocument();
-        expect(store.getState().token).toEqual('');
+        expect(store.getState().token).toBe('');
     });
 });

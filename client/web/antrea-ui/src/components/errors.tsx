@@ -23,9 +23,9 @@ interface AppErrorContextType {
     removeError: () => void
 }
 
-export const AppErrorContext = React.createContext<AppErrorContextType>({
+const AppErrorContext = React.createContext<AppErrorContextType>({
     error: null,
-    addError: (error: Error) => {},
+    addError: (_: Error) => {},
     removeError: () => {},
 });
 
@@ -49,6 +49,7 @@ export function AppErrorProvider(props: React.PropsWithChildren) {
     );
 }
 
+// eslint-disable-next-line react-refresh/only-export-components
 export function useAppError() {
   const { error, addError, removeError } = useContext(AppErrorContext);
   return { error, addError, removeError };

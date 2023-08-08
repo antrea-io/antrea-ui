@@ -14,16 +14,23 @@
  * limitations under the License.
  */
 
-import axios from 'axios';
-// jest-dom adds custom jest matchers for asserting on DOM nodes.
-// allows you to do things like:
-// expect(element).toHaveTextContent(/react/i)
-// learn more: https://github.com/testing-library/jest-dom
-import '@testing-library/jest-dom';
-import { mockIntersectionObserver } from 'jsdom-testing-mocks';
+import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+import { visualizer } from "rollup-plugin-visualizer";
 
-// required by Clarity
-mockIntersectionObserver();
-
-// see https://github.com/nock/nock#axios
-axios.defaults.adapter = 'http';
+// https://vitejs.dev/config/
+export default defineConfig({
+    build: {
+        outDir: 'build',
+    },
+    plugins: [react(), visualizer()],
+    server: {
+        port: 3000,
+        strictPort: true,
+    },
+    test: {
+        environment: 'jsdom',
+        setupFiles: './src/setupTests.ts',
+        globals: true,
+    },
+})
