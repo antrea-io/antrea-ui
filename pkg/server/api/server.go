@@ -105,6 +105,7 @@ func (s *Server) checkBearerToken(c *gin.Context) {
 	}
 }
 
+//nolint:unused
 func announceDeprecationMiddleware(removalDate time.Time, message string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Header("Warning", fmt.Sprintf(`299 - "Deprecated API: %s"`, message))
@@ -119,7 +120,6 @@ func (s *Server) AddRoutes(r *gin.RouterGroup) {
 	})
 	apiv1.GET("/settings", s.FrontendSettings)
 	s.AddTraceflowRoutes(apiv1)
-	s.AddInfoRoutes(apiv1)
 	s.AddAccountRoutes(apiv1)
 	s.AddK8sRoutes(apiv1)
 }
