@@ -26,7 +26,6 @@ import (
 	"github.com/golang/mock/gomock"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 
@@ -76,7 +75,6 @@ func setMaxTraceflowsPerHour(v int) testServerOptions {
 func newTestServer(t *testing.T, options ...testServerOptions) *testServer {
 	logger := testr.New(t)
 	scheme := runtime.NewScheme()
-	scheme.AddKnownTypeWithName(agentInfoGVR.GroupVersion().WithKind("AntreaAgentInfoList"), &unstructured.UnstructuredList{})
 	k8sClient := dynamicfake.NewSimpleDynamicClient(scheme)
 	ctrl := gomock.NewController(t)
 	traceflowRequestsHandler := traceflowhandlertesting.NewMockRequestsHandler(ctrl)
