@@ -103,6 +103,9 @@ func TestInstall(t *testing.T) {
 			helm.Install(t, helmOptions, helmChartPath, releaseName)
 			defer helm.Delete(t, helmOptions, releaseName, true)
 
+			// workaround for https://github.com/gruntwork-io/terratest/issues/1329
+			time.Sleep(1 * time.Second)
+
 			// retry at most 60 times, with a 1s delay
 			// this is actually a no-op except for LoadBalancer Services
 			k8s.WaitUntilServiceAvailable(t, kubectlOptions, antreaUIServiceName, 60, 1*time.Second)
