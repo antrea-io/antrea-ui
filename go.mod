@@ -1,6 +1,6 @@
 module antrea.io/antrea-ui
 
-go 1.19
+go 1.21
 
 require (
 	github.com/blang/semver v3.5.1+incompatible
@@ -22,7 +22,6 @@ require (
 	github.com/tonglil/buflogr v1.0.1
 	go.uber.org/zap v1.25.0
 	golang.org/x/crypto v0.12.0
-	golang.org/x/exp v0.0.0-20230801115018-d63ba01acd4b
 	golang.org/x/net v0.14.0
 	golang.org/x/oauth2 v0.11.0
 	golang.org/x/time v0.3.0

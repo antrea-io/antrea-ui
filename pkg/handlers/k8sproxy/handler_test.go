@@ -38,15 +38,20 @@ func TestK8sProxyHandler(t *testing.T) {
 	require.NoError(t, err)
 	h := NewK8sProxyHandler(logger, serverURL, http.DefaultTransport)
 
-	req := httptest.NewRequest("GET", "/api/v1/k8s/api/v1/pods", nil)
+	req := httptest.NewRequest("GET", "/api/v1/pods", nil)
 	req.RemoteAddr = "127.0.0.1:32167"
+	req.Header.Add("X-Forwarded-For", "10.0.0.1")
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, req)
 	require.Equal(t, http.StatusOK, rr.Code)
 	require.NotNil(t, capturedReq)
 	assert.Equal(t, "GET", capturedReq.Method)
-	assert.Equal(t, "/api/v1/k8s/api/v1/pods", capturedReq.URL.String())
-	// TODO: after we improve the reverse proxy, we need to do more validation
+	assert.Equal(t, "/api/v1/pods", capturedReq.URL.String())
 	header := capturedReq.Header
-	assert.Equal(t, "127.0.0.1", header.Get("X-Forwarded-For"))
+	// original X-Forwarded-For value should have been preserved
+	assert.Equal(t, "10.0.0.1, 127.0.0.1", header.Get("X-Forwarded-For"))
+	// example.com is default for httptest.NewRequest
+	assert.Equal(t, "example.com", header.Get("X-Forwarded-Host"))
+	assert.Equal(t, "http", header.Get("X-Forwarded-Proto"))
+	assert.Equal(t, serverURL.Host, capturedReq.Host)
 }
