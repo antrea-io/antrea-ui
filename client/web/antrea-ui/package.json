@@ -31,7 +31,7 @@
     "react-dom": "^18.2.0",
     "react-hook-form": "^7.43.1",
     "react-redux": "^8.0.5",
-    "react-router-dom": "^6.8.1",
+    "react-router-dom": "^6.15.0",
     "typescript": "^5.1.6",
     "vite": "^4.4.8",
     "vitest": "^0.34.1",
