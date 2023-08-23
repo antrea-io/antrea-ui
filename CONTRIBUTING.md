@@ -60,7 +60,7 @@ contributions (it's your responsibility to check with your employer).
 
 ### Dependencies
 
-* [Go >= 1.19](https://golang.org/doc/install)
+* [Go >= 1.21](https://golang.org/doc/install)
 * [Yarn >= 1.22](https://classic.yarnpkg.com/lang/en/docs/install/)
 * After installing Yarn, install all the frontend dependencies with `cd
   client/web/antrea-ui/ && yarn install`. You will need to run this command

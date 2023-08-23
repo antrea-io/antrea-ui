@@ -17,8 +17,7 @@ package template
 import (
 	"fmt"
 	"regexp"
-
-	"golang.org/x/exp/slices"
+	"slices"
 )
 
 var (

@@ -115,12 +115,9 @@ func buildAttributes(cookie *http.Cookie) string {
 // We assume that <number-of-chunks> and <chunk-index> are represented with a single digit, which
 // holds true as long as maxChunksPerCookie < 10.
 func splitLargeCookie(cookie *http.Cookie) ([]string, error) {
-	// This can be uncommented when we switch to Go 1.20
-	// For now (with Go 1.19) it will fail because cookie.Expires is checked unconditionally,
-	// even when unset.
-	// if err := cookie.Valid(); err != nil {
-	// 	return nil, fmt.Errorf("invalid cookie: %v", err)
-	// }
+	if err := cookie.Valid(); err != nil {
+		return nil, fmt.Errorf("invalid cookie: %v", err)
+	}
 	if strings.ContainsAny(cookie.Value, " ,") {
 		return nil, fmt.Errorf("cookie value should not include spaces or commas")
 	}

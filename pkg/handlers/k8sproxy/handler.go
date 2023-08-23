@@ -15,6 +15,8 @@
 package k8sproxy
 
 import (
+	"errors"
+	"log"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -32,13 +34,30 @@ func (w *transportWrapper) RoundTrip(r *http.Request) (*http.Response, error) {
 	return w.t.RoundTrip(r)
 }
 
+type proxyErrorWriter struct {
+	logger logr.Logger
+}
+
+func (w *proxyErrorWriter) Write(p []byte) (n int, err error) {
+	w.logger.Error(errors.New(string(p)), "K8s proxy error")
+	return len(p), nil
+}
+
 func NewK8sProxyHandler(logger logr.Logger, k8sServerURL *url.URL, k8sHTTPTransport http.RoundTripper) http.Handler {
-	// TODO: the httputil.ReverseProxy is much improved in Go v1.20, but we currently use Go
-	// v1.19. When we upgrade, we should revisit this code.
-	k8sReverseProxy := httputil.NewSingleHostReverseProxy(k8sServerURL)
-	k8sReverseProxy.Transport = &transportWrapper{
+	errorLogger := log.New(&proxyErrorWriter{
 		logger: logger,
-		t:      k8sHTTPTransport,
+	}, "", 0)
+
+	return &httputil.ReverseProxy{
+		Rewrite: func(r *httputil.ProxyRequest) {
+			r.SetURL(k8sServerURL) // Also rewrites the Host header.
+			r.Out.Header["X-Forwarded-For"] = r.In.Header["X-Forwarded-For"]
+			r.SetXForwarded() // Set X-Forwarded-* headers.
+		},
+		Transport: &transportWrapper{
+			logger: logger,
+			t:      k8sHTTPTransport,
+		},
+		ErrorLog: errorLogger,
 	}
-	return k8sReverseProxy
 }

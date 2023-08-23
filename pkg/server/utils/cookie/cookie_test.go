@@ -131,6 +131,16 @@ func TestSplitLargeCookies(t *testing.T) {
 			expectedErr: "cookie is too large",
 		},
 		{
+			name: "invalid cookie path",
+			cookie: &http.Cookie{
+				Name:  cookieName,
+				Value: "aaa",
+				// ';' is not valid in Path
+				Path: "/foo/bar/a;/b",
+			},
+			expectedErr: "invalid cookie",
+		},
+		{
 			name: "large cookie with attributes",
 			cookie: &http.Cookie{
 				Name: cookieName,
