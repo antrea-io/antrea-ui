@@ -15,7 +15,7 @@
     "@types/d3-graphviz": "^2.6.7",
     "@types/echarts": "^4.9.16",
     "@types/node": "^20.5.0",
-    "@types/react": "^18.2.0",
+    "@types/react": "^18.2.21",
     "@types/react-dom": "^18.2.0",
     "@vitejs/plugin-react": "^4.0.4",
     "axios": "^1.5.0",
