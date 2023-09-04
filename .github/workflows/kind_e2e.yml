@@ -17,7 +17,7 @@ jobs:
     name: Check whether tests need to be run based on diff
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
       with:
         fetch-depth: 0
     - uses: antrea-io/has-changes@v2
@@ -33,7 +33,7 @@ jobs:
     if: ${{ needs.check-changes.outputs.has_changes == 'yes' }}
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
     - name: Build container images
       run: make
     - name: Install Kind
