@@ -11,6 +11,9 @@ updates:
         - "k8s.io/*"
         update-types:
         - "patch"
+      golang.org/x:
+        patterns:
+        - "golang.org/x/*"
     ignore:
     - dependency-name: "k8s.io/*"
       update-types: ["version-update:semver-major", "version-update:semver-minor"] # ignore all except for patch updates
