@@ -2823,10 +2823,10 @@ js-yaml@^4.1.0:
   dependencies:
     argparse "^2.0.1"
 
-jsdom-testing-mocks@^1.9.0:
-  version "1.9.0"
-  resolved "https://registry.yarnpkg.com/jsdom-testing-mocks/-/jsdom-testing-mocks-1.9.0.tgz#81ca7f5630cafe5d2084a02afaad8013f0df72db"
-  integrity sha512-NsuAqHFi0j4FcxIzSp8NOBNB+ln2T5PvJ0ShFgEXwMnTP2K68dRv5mJE/yJadbMAhzYqUL85Aj+cjhG9lHGapQ==
+jsdom-testing-mocks@^1.11.0:
+  version "1.11.0"
+  resolved "https://registry.yarnpkg.com/jsdom-testing-mocks/-/jsdom-testing-mocks-1.11.0.tgz#042f24f0e62463633a6f889f36a6e42678d49942"
+  integrity sha512-Od73jYGAl33C0aC7dRvhae2dlCEJ2cGa3j4797BHR/YoI1dJALxvEr2fZMfMZG4Tz/3c3C6xdwMnAXol5+HWZA==
   dependencies:
     bezier-easing "^2.1.0"
     css-mediaquery "^0.1.2"
