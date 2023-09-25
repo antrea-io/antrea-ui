@@ -5,6 +5,12 @@ updates:
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5
+    groups:
+      k8s:
+        patterns:
+        - "k8s.io/*"
+        update-types:
+        - "patch"
     ignore:
     - dependency-name: "k8s.io/*"
       update-types: ["version-update:semver-major", "version-update:semver-minor"] # ignore all except for patch updates
