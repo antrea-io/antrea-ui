@@ -20,10 +20,12 @@ import axios from 'axios';
 // expect(element).toHaveTextContent(/react/i)
 // learn more: https://github.com/testing-library/jest-dom
 import '@testing-library/jest-dom/vitest';
-import { mockIntersectionObserver } from 'jsdom-testing-mocks';
+import { mockIntersectionObserver,  mockResizeObserver } from 'jsdom-testing-mocks';
 
 // required by Clarity
 mockIntersectionObserver();
+
+mockResizeObserver()
 
 // see https://github.com/nock/nock#axios
 axios.defaults.adapter = 'http';
