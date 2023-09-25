@@ -717,10 +717,10 @@
   dependencies:
     "@types/geojson" "*"
 
-"@types/d3-graphviz@^2.6.7":
-  version "2.6.7"
-  resolved "https://registry.yarnpkg.com/@types/d3-graphviz/-/d3-graphviz-2.6.7.tgz#48fbec73fe0d5a2a0e2c48b66c9dfe0cd2633ea9"
-  integrity sha512-dKJjD5HiFvAmC0FL/c70VB1diie8FCpyiCZfxMlf6TwYBqUyFvS4XJt6MoxjIuQTJhKDBGzrIvDOgM8gYMLSVA==
+"@types/d3-graphviz@^2.6.8":
+  version "2.6.8"
+  resolved "https://registry.yarnpkg.com/@types/d3-graphviz/-/d3-graphviz-2.6.8.tgz#33195aeb5964aa9b07db9063b64897d3090e8f5e"
+  integrity sha512-SS5UA4PaT4Bo/AfbGEY8qji0QW20T/YW7/o+PAlTKc3ClKKTpeclPXniVEviQUUf1YQt/mA0VU4FNx7GoecCLw==
   dependencies:
     "@types/d3-selection" "^1"
     "@types/d3-transition" "^1"
