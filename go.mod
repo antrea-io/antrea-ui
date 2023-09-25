@@ -1,7 +1,6 @@
 module antrea.io/antrea-ui
 
 go 1.21
-
 require (
 	github.com/blang/semver v3.5.1+incompatible
 	github.com/coreos/go-oidc/v3 v3.6.0
@@ -12,7 +11,7 @@ require (
 	github.com/golang-jwt/jwt/v5 v5.0.0
 	github.com/golang/mock v1.6.0
 	github.com/google/uuid v1.3.1
-	github.com/gruntwork-io/terratest v0.43.12
+	github.com/gruntwork-io/terratest v0.44.0
 	github.com/hashicorp/golang-lru/v2 v2.0.6
 	github.com/oauth2-proxy/mockoidc v0.0.0-20220308204021-b9169deeb282
 	github.com/spf13/afero v1.10.0
