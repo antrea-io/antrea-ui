@@ -41,7 +41,7 @@
     "start": "vite",
     "build": "vite build",
     "test": "vitest",
-    "lint": "eslint 'src/**/*.ts{,x}'"
+    "lint": "eslint 'src/**/*.ts{,x}' --max-warnings=0"
   },
   "browserslist": {
     "production": [

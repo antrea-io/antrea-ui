@@ -25,7 +25,7 @@ import { mockIntersectionObserver,  mockResizeObserver } from 'jsdom-testing-moc
 // required by Clarity
 mockIntersectionObserver();
 
-mockResizeObserver()
+mockResizeObserver();
 
 // see https://github.com/nock/nock#axios
 axios.defaults.adapter = 'http';
