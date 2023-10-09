@@ -16,7 +16,7 @@
     "@types/echarts": "^4.9.19",
     "@types/node": "^20.6.5",
     "@types/react": "^18.2.21",
-    "@types/react-dom": "^18.2.8",
+    "@types/react-dom": "^18.2.11",
     "@vitejs/plugin-react": "^4.0.4",
     "axios": "^1.5.1",
     "axios-auth-refresh": "^3.3.6",
