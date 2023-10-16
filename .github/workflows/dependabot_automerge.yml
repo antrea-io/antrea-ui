@@ -15,6 +15,12 @@ jobs:
         uses: dependabot/fetch-metadata@v1
         with:
           github-token: "${{ secrets.GITHUB_TOKEN }}"
+      - name: Enable auto-approve for npm Dependabot PRs (except major updates)
+        if: ${{ steps.metadata.outputs.package-ecosystem == 'npm_and_yarn' && steps.metadata.outputs.update-type != 'version-update:semver-major' }}
+        run: gh pr review --approve "$PR_URL"
+        env:
+          PR_URL: ${{github.event.pull_request.html_url}}
+          GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
       - name: Enable auto-merge for npm Dependabot PRs (except major updates)
         if: ${{ steps.metadata.outputs.package-ecosystem == 'npm_and_yarn' && steps.metadata.outputs.update-type != 'version-update:semver-major' }}
         run: gh pr merge --auto --squash "$PR_URL"
