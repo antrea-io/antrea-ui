@@ -11,7 +11,7 @@ require (
 	github.com/go-logr/zapr v1.2.4
 	github.com/golang-jwt/jwt/v5 v5.0.0
 	github.com/golang/mock v1.6.0
-	github.com/google/uuid v1.3.1
+	github.com/google/uuid v1.4.0
 	github.com/gruntwork-io/terratest v0.46.1
 	github.com/hashicorp/golang-lru/v2 v2.0.7
 	github.com/oauth2-proxy/mockoidc v0.0.0-20220308204021-b9169deeb282
