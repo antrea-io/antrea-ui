@@ -66,7 +66,7 @@
     "eslint-plugin-react-refresh": "^0.4.3",
     "eslint-plugin-vitest": "^0.3.2",
     "jsdom": "^22.1.0",
-    "nock": "^13.3.3",
+    "nock": "^13.3.6",
     "rollup-plugin-visualizer": "^5.9.2",
     "uuid": "^9.0.1"
   }
