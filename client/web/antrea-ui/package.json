@@ -11,7 +11,7 @@
     "@testing-library/react": "^14.1.2",
     "@testing-library/user-event": "^14.5.1",
     "@vitejs/plugin-react": "^4.1.0",
-    "axios": "^1.6.0",
+    "axios": "^1.6.2",
     "axios-auth-refresh": "^3.3.6",
     "base-64": "^1.0.0",
     "d3": "^7.8.2",
