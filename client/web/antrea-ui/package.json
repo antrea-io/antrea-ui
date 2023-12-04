@@ -67,7 +67,7 @@
     "eslint-plugin-vitest": "^0.3.2",
     "jsdom": "^22.1.0",
     "nock": "^13.3.8",
-    "rollup-plugin-visualizer": "^5.9.3",
+    "rollup-plugin-visualizer": "^5.10.0",
     "uuid": "^9.0.1"
   }
 }
