@@ -15,7 +15,7 @@ require (
 	github.com/gruntwork-io/terratest v0.46.7
 	github.com/hashicorp/golang-lru/v2 v2.0.7
 	github.com/oauth2-proxy/mockoidc v0.0.0-20220308204021-b9169deeb282
-	github.com/spf13/afero v1.10.0
+	github.com/spf13/afero v1.11.0
 	github.com/spf13/pflag v1.0.5
 	github.com/spf13/viper v1.17.0
 	github.com/stretchr/testify v1.8.4
