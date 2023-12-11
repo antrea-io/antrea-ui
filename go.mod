@@ -4,7 +4,7 @@ go 1.21
 
 require (
 	github.com/blang/semver v3.5.1+incompatible
-	github.com/coreos/go-oidc/v3 v3.8.0
+	github.com/coreos/go-oidc/v3 v3.9.0
 	github.com/gin-contrib/cors v1.5.0
 	github.com/gin-gonic/gin v1.9.1
 	github.com/go-logr/logr v1.3.0
@@ -46,7 +46,7 @@ require (
 	github.com/ghodss/yaml v1.0.0 // indirect
 	github.com/gin-contrib/sse v0.1.0 // indirect
 	github.com/go-errors/errors v1.0.2-0.20180813162953-d98b870cc4e0 // indirect
-	github.com/go-jose/go-jose/v3 v3.0.0 // indirect
+	github.com/go-jose/go-jose/v3 v3.0.1 // indirect
 	github.com/go-openapi/jsonpointer v0.19.6 // indirect
 	github.com/go-openapi/jsonreference v0.20.1 // indirect
 	github.com/go-openapi/swag v0.22.3 // indirect
