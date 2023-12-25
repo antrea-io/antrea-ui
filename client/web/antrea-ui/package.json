@@ -64,7 +64,7 @@
     "eslint": "^8.54.0",
     "eslint-plugin-react": "^7.33.2",
     "eslint-plugin-react-refresh": "^0.4.5",
-    "eslint-plugin-vitest": "^0.3.2",
+    "eslint-plugin-vitest": "^0.3.20",
     "jsdom": "^23.0.1",
     "nock": "^13.4.0",
     "rollup-plugin-visualizer": "^5.10.0",
