@@ -7,7 +7,7 @@ require (
 	github.com/coreos/go-oidc/v3 v3.9.0
 	github.com/gin-contrib/cors v1.5.0
 	github.com/gin-gonic/gin v1.9.1
-	github.com/go-logr/logr v1.3.0
+	github.com/go-logr/logr v1.4.1
 	github.com/go-logr/zapr v1.3.0
 	github.com/golang-jwt/jwt/v5 v5.2.0
 	github.com/golang/mock v1.6.0
@@ -19,7 +19,7 @@ require (
 	github.com/spf13/pflag v1.0.5
 	github.com/spf13/viper v1.18.2
 	github.com/stretchr/testify v1.8.4
-	github.com/tonglil/buflogr v1.0.1
+	github.com/tonglil/buflogr v1.1.1
 	go.uber.org/zap v1.26.0
 	golang.org/x/crypto v0.17.0
 	golang.org/x/net v0.19.0
