@@ -494,10 +494,10 @@
   resolved "https://registry.yarnpkg.com/@hookform/error-message/-/error-message-2.0.1.tgz#6a37419106e13664ad6a29c9dae699ae6cd276b8"
   integrity sha512-U410sAr92xgxT1idlu9WWOVjndxLdgPUHEB8Schr27C9eh7/xUnITWpCMF93s+lGiG++D4JnbSnrb5A21AdSNg==
 
-"@hpcc-js/wasm@2.13.1":
-  version "2.13.1"
-  resolved "https://registry.yarnpkg.com/@hpcc-js/wasm/-/wasm-2.13.1.tgz#039e72e490d85a6f2c7090858a5ee5f07fb06a79"
-  integrity sha512-dJO0VQZFtUcqledAAU8b0yCw3HdkIVyrNjv8sAwdhDcOMRKdaNumi7Punj39u5h2CpdMN4g6I4gp584g/zVSzA==
+"@hpcc-js/wasm@^2.16.0":
+  version "2.16.0"
+  resolved "https://registry.yarnpkg.com/@hpcc-js/wasm/-/wasm-2.16.0.tgz#41f7a3073c0988c0b96e7ad509289515a11f7a78"
+  integrity sha512-e2aPTthjER80Kt/BZPHKksm6YjyMul4qUDDbIxhZYjbUvrxy9ogDr81P4pa1DSUIMzQ1f/7yCC22SBYIa3j5gg==
   dependencies:
     yargs "17.7.2"
 
@@ -1792,12 +1792,12 @@ d3-geo@3:
   dependencies:
     d3-array "2.5.0 - 3"
 
-d3-graphviz@^5.0.2:
-  version "5.1.0"
-  resolved "https://registry.yarnpkg.com/d3-graphviz/-/d3-graphviz-5.1.0.tgz#129b05879037b0368788c90c260ab841ab5df75c"
-  integrity sha512-PSUmKfbqhixVlTOsT9ziV/wxHAzf31rfq1POUrdfOseJQ3+GQmLTKMWNgyGc5QXtNZq3emsgQycs7W0Hr4wVvw==
+d3-graphviz@^5.3.0:
+  version "5.3.0"
+  resolved "https://registry.yarnpkg.com/d3-graphviz/-/d3-graphviz-5.3.0.tgz#bfad71bbb9f8414944f4e09ec70ad8644b346aac"
+  integrity sha512-esY291tZsn4NKxnJa1CVsgyc1KFUp1AlZz81GWyJadrM648iEnVpcXeGKqjyXbkLkeI59Dc2YmkuWE07eG+fYw==
   dependencies:
-    "@hpcc-js/wasm" "2.13.1"
+    "@hpcc-js/wasm" "^2.16.0"
     d3-dispatch "^3.0.1"
     d3-format "^3.1.0"
     d3-interpolate "^3.0.1"
