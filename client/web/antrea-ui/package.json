@@ -53,7 +53,7 @@
     "@testing-library/jest-dom": "^6.2.0",
     "@types/base-64": "^1.0.2",
     "@types/d3": "^7.4.3",
-    "@types/d3-graphviz": "^2.6.8",
+    "@types/d3-graphviz": "^2.6.10",
     "@types/echarts": "^4.9.22",
     "@types/node": "^20.11.20",
     "@types/react": "^18.2.58",
