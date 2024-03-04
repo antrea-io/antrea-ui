@@ -860,10 +860,10 @@
   dependencies:
     "@types/geojson" "*"
 
-"@types/d3-graphviz@^2.6.8":
-  version "2.6.8"
-  resolved "https://registry.yarnpkg.com/@types/d3-graphviz/-/d3-graphviz-2.6.8.tgz#33195aeb5964aa9b07db9063b64897d3090e8f5e"
-  integrity sha512-SS5UA4PaT4Bo/AfbGEY8qji0QW20T/YW7/o+PAlTKc3ClKKTpeclPXniVEviQUUf1YQt/mA0VU4FNx7GoecCLw==
+"@types/d3-graphviz@^2.6.10":
+  version "2.6.10"
+  resolved "https://registry.yarnpkg.com/@types/d3-graphviz/-/d3-graphviz-2.6.10.tgz#eb2c8284db768c6880ff9bb13db81689121dcece"
+  integrity sha512-YsCRqNqS8QLlsKtF0FGIz42Z47B0sBIxMMn7L4ZdqZcrdk4foJOEPwwMH50Qe2PuZmSSZcWbdgUnj5W68xK0Qw==
   dependencies:
     "@types/d3-selection" "^1"
     "@types/d3-transition" "^1"
