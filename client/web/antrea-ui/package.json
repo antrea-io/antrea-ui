@@ -57,7 +57,7 @@
     "@types/echarts": "^4.9.22",
     "@types/node": "^20.11.20",
     "@types/react": "^18.2.64",
-    "@types/react-dom": "^18.2.19",
+    "@types/react-dom": "^18.2.22",
     "@types/uuid": "^9.0.8",
     "@typescript-eslint/eslint-plugin": "^7.0.0",
     "@typescript-eslint/parser": "^6.21.0",
