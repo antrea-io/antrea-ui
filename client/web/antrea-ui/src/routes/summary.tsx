@@ -18,6 +18,7 @@ import { useState, useEffect} from 'react';
 import { CdsCard } from '@cds/react/card';
 import { CdsDivider } from '@cds/react/divider';
 import { AgentInfo, ControllerInfo, Condition, K8sRef, agentInfoAPI, controllerInfoAPI } from '../api/info';
+import { FeatureGate, featureGatesAPI } from '../api/featuregates';
 import { useAppError} from '../components/errors';
 import { WaitForAPIResource } from '../components/progress';
 
@@ -25,6 +26,7 @@ type Property = string
 
 const controllerProperties: Property[] = ['Name', 'Version', 'Pod Name', 'Node Name', 'Connected Agents', 'Healthy', 'Last Heartbeat'];
 const agentProperties: Property[] = ['Name', 'Version', 'Pod Name', 'Node Name', 'Local Pods', 'Node Subnets', 'OVS Version', 'Healthy', 'Last Heartbeat'];
+const featureGateProperties: Property[] = ['Name', 'Status', 'Version'];
 
 function refToString(ref: K8sRef | undefined): string {
     if (!ref) return 'Unknown';
@@ -51,6 +53,10 @@ function controllerPropertyValues(controller: ControllerInfo): string[] {
         healthy,
         lastHeartbeat,
     ];
+}
+
+function featureGatePropertyValues(featureGate: FeatureGate): string[] {
+    return [featureGate.name, featureGate.status, featureGate.version];
 }
 
 function agentPropertyValues(agent: AgentInfo): string[] {
@@ -114,6 +120,8 @@ function ComponentSummary<T>(props: {title: string, data: T[], propertyNames: Pr
 export default function Summary() {
     const [controllerInfo, setControllerInfo] = useState<ControllerInfo>();
     const [agentInfos, setAgentInfos] = useState<AgentInfo[]>();
+    const [controllerFeatureGates, setControllerFeatureGates] = useState<FeatureGate[]>();
+    const [agentFeatureGates, setAgentFeatureGates] = useState<FeatureGate[]>();
     const { addError, removeError } = useAppError();
 
     useEffect(() => {
@@ -137,14 +145,29 @@ export default function Summary() {
             }
         }
 
+        async function getFeatureGates() {
+            try {
+                const featureGates = await featureGatesAPI.fetch();
+                return featureGates;
+            } catch (e) {
+                if (e instanceof Error ) addError(e);
+                console.error(e);
+            }
+        }
+
         // Defining this functions inside of useEffect is recommended
         // https://reactjs.org/docs/hooks-faq.html#is-it-safe-to-omit-functions-from-the-list-of-dependencies
         async function getData() {
-            const [controllerInfo, agentInfos] = await Promise.all([getControllerInfo(), getAgentInfos()]);
+            const [controllerInfo, agentInfos, featureGates] = await Promise.all([getControllerInfo(), getAgentInfos(), getFeatureGates()]);
             setControllerInfo(controllerInfo);
             setAgentInfos(agentInfos);
 
-            if (controllerInfo !== undefined && agentInfos !== undefined) {
+            if (featureGates !== undefined) {
+                setControllerFeatureGates(featureGates.filter((fg) => fg.component === 'controller'));
+                setAgentFeatureGates(featureGates.filter((fg) => fg.component === 'agent'));
+            }
+
+            if (controllerInfo !== undefined && agentInfos !== undefined && featureGates !== undefined) {
                 removeError();
             }
         }
@@ -161,6 +184,12 @@ export default function Summary() {
                 </WaitForAPIResource>
                 <WaitForAPIResource ready={agentInfos !== undefined} text="Loading Agents Information">
                     <ComponentSummary title="Agents" data={agentInfos!} propertyNames={agentProperties} getProperties={agentPropertyValues} />
+                </WaitForAPIResource>
+                <WaitForAPIResource ready={controllerFeatureGates !== undefined} text="Loading Controller Feature Gates">
+                    <ComponentSummary title="Controller Feature Gates" data={controllerFeatureGates} propertyNames={featureGateProperties} getProperties={featureGatePropertyValues} />
+                </WaitForAPIResource>
+                <WaitForAPIResource ready={agentFeatureGates !== undefined} text="Loading Agent Feature Gates">
+                    <ComponentSummary title="Agent Feature Gates" data={agentFeatureGates!} propertyNames={featureGateProperties} getProperties={featureGatePropertyValues} />
                 </WaitForAPIResource>
             </div>
         </main>

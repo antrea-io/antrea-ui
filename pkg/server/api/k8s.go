@@ -23,9 +23,9 @@ import (
 	"antrea.io/antrea-ui/pkg/server/errors"
 )
 
-// allowedPaths contains the K8s api paths that we are proxying.
+// allowedK8sPaths contains the K8s api paths that we are proxying.
 // Note the leading slash, since the Gin "catch-all" parameter ("/*path") will include it.
-var allowedPaths = []string{
+var allowedK8sPaths = []string{
 	"/apis/crd.antrea.io/v1beta1/antreaagentinfos",
 	"/apis/crd.antrea.io/v1beta1/antreacontrollerinfos",
 }
@@ -43,7 +43,7 @@ func (s *Server) GetK8s(c *gin.Context) {
 func (s *Server) checkK8sPath(c *gin.Context) {
 	if sError := func() *errors.ServerError {
 		path := c.Param("path")
-		for _, allowedPath := range allowedPaths {
+		for _, allowedPath := range allowedK8sPaths {
 			if strings.HasPrefix(path, allowedPath) {
 				return nil
 			}

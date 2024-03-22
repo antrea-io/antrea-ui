@@ -27,6 +27,7 @@ import (
 	apisv1 "antrea.io/antrea-ui/apis/v1"
 	"antrea.io/antrea-ui/pkg/auth"
 	serverconfig "antrea.io/antrea-ui/pkg/config/server"
+	"antrea.io/antrea-ui/pkg/handlers/antreasvc"
 	"antrea.io/antrea-ui/pkg/handlers/traceflow"
 	"antrea.io/antrea-ui/pkg/password"
 	"antrea.io/antrea-ui/pkg/server/errors"
@@ -43,6 +44,7 @@ type Server struct {
 	k8sClient                dynamic.Interface
 	traceflowRequestsHandler traceflow.RequestsHandler
 	k8sProxyHandler          http.Handler
+	antreaSvcRequestsHandler antreasvc.RequestsHandler
 	passwordStore            password.Store
 	tokenManager             auth.TokenManager
 	config                   serverConfig
@@ -54,6 +56,7 @@ func NewServer(
 	k8sClient dynamic.Interface,
 	traceflowRequestsHandler traceflow.RequestsHandler,
 	k8sProxyHandler http.Handler,
+	antreaSvcRequestsHandler antreasvc.RequestsHandler,
 	passwordStore password.Store,
 	tokenManager auth.TokenManager,
 	config *serverconfig.Config,
@@ -67,6 +70,7 @@ func NewServer(
 		k8sClient:                k8sClient,
 		traceflowRequestsHandler: traceflowRequestsHandler,
 		k8sProxyHandler:          k8sProxyHandler,
+		antreaSvcRequestsHandler: antreaSvcRequestsHandler,
 		passwordStore:            passwordStore,
 		tokenManager:             tokenManager,
 		config:                   c,
@@ -122,6 +126,7 @@ func (s *Server) AddRoutes(r *gin.RouterGroup) {
 	s.AddTraceflowRoutes(apiv1)
 	s.AddAccountRoutes(apiv1)
 	s.AddK8sRoutes(apiv1)
+	apiv1.GET("/featuregates", s.checkBearerToken, s.GetFeatureGates)
 }
 
 func (s *Server) LogError(sError *errors.ServerError, msg string, keysAndValues ...interface{}) {

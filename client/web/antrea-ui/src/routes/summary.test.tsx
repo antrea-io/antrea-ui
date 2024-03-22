@@ -16,11 +16,14 @@
 
 import { render, screen, within } from '@testing-library/react';
 import { AgentInfo, ControllerInfo, K8sRef, Condition, agentInfoAPI, controllerInfoAPI } from '../api/info';
+import { FeatureGate, featureGatesAPI } from '../api/featuregates';
 import Summary from './summary';
 
 vi.mock('../api/info');
 const mockedAgentInfoAPI = vi.mocked(agentInfoAPI, true);
 const mockedControllerInfoAPI = vi.mocked(controllerInfoAPI, true);
+vi.mock('../api/featuregates');
+const mockedFeatureGatesAPI = vi.mocked(featureGatesAPI, true);
 
 afterAll(() => {
     vi.restoreAllMocks();
@@ -65,7 +68,7 @@ function arrayFrequencies<T>(data: T[]): Map<T, number> {
 }
 
 function checkControllerInfo(data: string[]) {
-    const section = screen.getByRole('region', { name: /controller/i });
+    const section = screen.getByRole('region', { name: /^controller$/i });
     expect(within(section).getByText('Controller')).toBeInTheDocument();
     if (!data) {
         expect(within(section).getAllByRole('row')).toHaveLength(1);
@@ -80,8 +83,23 @@ function checkControllerInfo(data: string[]) {
 }
 
 function checkAgentInfos(data: string[][] | undefined) {
-    const section = screen.getByRole('region', { name: /agents/i });
+    const section = screen.getByRole('region', { name: /^agents$/i });
     expect(within(section).getByText('Agents')).toBeInTheDocument();
+    if (!data) {
+        expect(within(section).getAllByRole('row')).toHaveLength(1);
+        return;
+    }
+    data.forEach(data => {
+        const row = within(section).getByRole('row', { name: data.join(' ') });
+        // some cells may have the same content / name, which is why we check that the count is correct
+        arrayFrequencies(data).forEach((count, c) => expect(within(row).getAllByRole('cell', { name: c })).toHaveLength(count));
+    });
+}
+
+function checkFeatureGates(component: string, data: string[][] | undefined) {
+    const re = new RegExp('^' + component + ' feature gates$', 'i');
+    const section = screen.getByRole('region', { name: re });
+    expect(within(section).getByText(component + ' Feature Gates')).toBeInTheDocument();
     if (!data) {
         expect(within(section).getAllByRole('row')).toHaveLength(1);
         return;
@@ -136,6 +154,22 @@ describe('Summary', () => {
     const agentData1 = ['antrea-agent-1', 'v1.0.0', 'kube-system/antrea-agent-1', 'nodeA', '0', '10.0.1.0/24,fd02::01/48', '2.17.5', 'True', d1.toLocaleString()];
     const agent2 = makeAgentInfo('antrea-agent-2', 'nodeB', 3, ['10.0.2.0/24', 'fd02::02/48'], [makeCondition('AgentHealthy', 'True', d1)]);
     const agentData2 = ['antrea-agent-2', 'v1.0.0', 'kube-system/antrea-agent-2', 'nodeB', '3', '10.0.2.0/24,fd02::02/48', '2.17.5', 'True', d1.toLocaleString()];
+    const featureGates: FeatureGate[] = [
+        {
+            component: 'controller',
+            name: 'AntreaPolicy',
+            status: 'Enabled',
+            version: 'BETA',
+        },
+        {
+            component: 'agent',
+            name: 'AntreaProxy',
+            status: 'Enabled',
+            version: 'BETA',
+        },
+    ];
+    const featureGatesControllerData = [['AntreaPolicy', 'Enabled', 'BETA']];
+    const featureGatesAgentData = [['AntreaProxy', 'Enabled', 'BETA']];
 
     const testCases: testCase[] = [
         {
@@ -189,13 +223,19 @@ describe('Summary', () => {
     test.each<testCase>(testCases)('$name', async (tc: testCase) => {
         mockedControllerInfoAPI.fetch.mockResolvedValueOnce(tc.controllerInfo);
         mockedAgentInfoAPI.fetchAll.mockResolvedValueOnce(tc.agentInfo || []);
+        mockedFeatureGatesAPI.fetch.mockResolvedValueOnce(featureGates);
         render(<Summary />);
         expect(await screen.findByText('Controller')).toBeInTheDocument();
         expect(await screen.findByText('Agents')).toBeInTheDocument();
-        // By the time the 2 assertions above are verified, API calls have been made
+        expect(await screen.findByText('Controller Feature Gates')).toBeInTheDocument();
+        expect(await screen.findByText('Agent Feature Gates')).toBeInTheDocument();
+        // By the time the assertions above are verified, API calls have been made
         expect(mockedControllerInfoAPI.fetch).toHaveBeenCalledTimes(1);
         expect(mockedAgentInfoAPI.fetchAll).toHaveBeenCalledTimes(1);
+        expect(mockedFeatureGatesAPI.fetch).toHaveBeenCalledTimes(1);
         checkControllerInfo(tc.expectedControllerData);
         checkAgentInfos(tc.expectedAgentData);
+        checkFeatureGates('Controller', featureGatesControllerData);
+        checkFeatureGates('Agent', featureGatesAgentData);
     });
 });

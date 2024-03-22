@@ -21,7 +21,7 @@ import (
 	"os"
 	"testing"
 
-	"antrea.io/antrea-ui/test/e2e/utils/portforwarder"
+	"antrea.io/antrea-ui/pkg/utils/portforwarder"
 )
 
 func startPortForwarding(ctx context.Context) (string, func(), error) {

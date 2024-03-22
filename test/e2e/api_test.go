@@ -91,6 +91,14 @@ func TestAPI(t *testing.T) {
 		})
 	})
 
+	t.Run("featuregates", func(t *testing.T) {
+		resp, err := Request(ctx, host, "GET", "api/v1/featuregates", nil, setAccessTokenMutator(token))
+		require.NoError(t, err)
+		var featureGates []any
+		require.NoError(t, getResponseBody(resp, &featureGates))
+		assert.NotEmpty(t, featureGates)
+	})
+
 	t.Run("traceflow", func(t *testing.T) {
 		// set-up: we create 2 Pods which we can use for a simple Traceflow request
 		ns, err := createTestNamespace(ctx)

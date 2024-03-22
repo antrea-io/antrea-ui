@@ -35,7 +35,8 @@ type Config struct {
 		MaxLoginsPerSecond   int
 		MaxTraceflowsPerHour int
 	}
-	LogVerbosity int
+	LogVerbosity    int
+	AntreaNamespace string
 }
 
 type AuthConfig struct {
@@ -109,6 +110,7 @@ func LoadConfig() (*Config, error) {
 	v.SetDefault("auth.cookieSecure", true)
 	v.SetDefault("auth.basic.enabled", true)
 	v.SetDefault("auth.oidc.enabled", false)
+	v.SetDefault("antreaNamespace", "kube-system")
 
 	// By default, look for a file named config (any supported extension) in the working directory.
 	v.AddConfigPath(".")

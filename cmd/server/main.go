@@ -33,6 +33,7 @@ import (
 	"antrea.io/antrea-ui/pkg/auth"
 	serverconfig "antrea.io/antrea-ui/pkg/config/server"
 	"antrea.io/antrea-ui/pkg/env"
+	antreasvchandler "antrea.io/antrea-ui/pkg/handlers/antreasvc"
 	"antrea.io/antrea-ui/pkg/handlers/k8sproxy"
 	traceflowhandler "antrea.io/antrea-ui/pkg/handlers/traceflow"
 	"antrea.io/antrea-ui/pkg/k8s"
@@ -97,7 +98,7 @@ func run() error {
 
 	k8sRESTConfig, k8sHTTPClient, k8sDynamicClient, err := k8s.Client()
 	if err != nil {
-		return fmt.Errorf("failed to create K8s client: %w", err)
+		return fmt.Errorf("failed to create K8s clients: %w", err)
 	}
 	k8sServerURL, err := url.Parse(k8sRESTConfig.Host)
 	if err != nil {
@@ -106,6 +107,11 @@ func run() error {
 
 	traceflowHandler := traceflowhandler.NewRequestsHandler(logger, k8sDynamicClient)
 	k8sProxyHandler := k8sproxy.NewK8sProxyHandler(logger, k8sServerURL, k8sHTTPClient.Transport)
+
+	antreaSvcHandler, err := antreasvchandler.NewRequestsHandler(logger, k8sRESTConfig, config.AntreaNamespace)
+	if err != nil {
+		return fmt.Errorf("failed to create handler for Antrea Service requests: %w", err)
+	}
 
 	var passwordStore password.Store
 	if config.Auth.Basic.Enabled {
@@ -164,6 +170,7 @@ func run() error {
 		k8sDynamicClient,
 		traceflowHandler,
 		k8sProxyHandler,
+		antreaSvcHandler,
 		passwordStore,
 		tokenManager,
 		oidcProvider,
@@ -196,6 +203,7 @@ func run() error {
 	stopCh := signals.RegisterSignalHandlers()
 
 	go traceflowHandler.Run(stopCh)
+	go antreaSvcHandler.Run(stopCh)
 	go tokenManager.Run(stopCh)
 
 	// Initializing the server in a goroutine so that

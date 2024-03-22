@@ -23,6 +23,7 @@ import (
 
 	"antrea.io/antrea-ui/pkg/auth"
 	serverconfig "antrea.io/antrea-ui/pkg/config/server"
+	"antrea.io/antrea-ui/pkg/handlers/antreasvc"
 	"antrea.io/antrea-ui/pkg/handlers/traceflow"
 	"antrea.io/antrea-ui/pkg/password"
 	"antrea.io/antrea-ui/pkg/server/api"
@@ -52,6 +53,7 @@ func NewServer(
 	k8sClient dynamic.Interface,
 	traceflowRequestsHandler traceflow.RequestsHandler,
 	k8sProxyHandler http.Handler,
+	antreaSvcRequestsHandler antreasvc.RequestsHandler,
 	passwordStore password.Store,
 	tokenManager auth.TokenManager,
 	oidcProvider *OIDCProvider,
@@ -73,6 +75,7 @@ func NewServer(
 			k8sClient,
 			traceflowRequestsHandler,
 			k8sProxyHandler,
+			antreaSvcRequestsHandler,
 			passwordStore,
 			tokenManager,
 			config,
