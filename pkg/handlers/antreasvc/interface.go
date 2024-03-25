@@ -1,4 +1,4 @@
-// Copyright 2023 Antrea Authors.
+// Copyright 2024 Antrea Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,24 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package env
+package antreasvc
 
 import (
-	"os"
+	"context"
+	"io"
 )
 
-func IsDevelopmentEnv() bool {
-	return os.Getenv("APP_ENV") == "dev" || os.Getenv("APP_ENV") == "development"
-}
+//go:generate mockgen -source=interface.go -package=testing -destination=testing/mock_interface.go -copyright_file=$MOCKGEN_COPYRIGHT_FILE
 
-func IsRunningInPod() bool {
-	return os.Getenv("POD_NAMESPACE") != "" && os.Getenv("KUBERNETES_SERVICE_HOST") != ""
-}
-
-func GetNamespace() string {
-	ns := os.Getenv("POD_NAMESPACE")
-	if ns == "" {
-		return "kube-system"
-	}
-	return ns
+type RequestsHandler interface {
+	Request(ctx context.Context, method string, path string, body io.Reader) ([]byte, error)
 }

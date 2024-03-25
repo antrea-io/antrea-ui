@@ -31,6 +31,7 @@ import (
 
 	authtesting "antrea.io/antrea-ui/pkg/auth/testing"
 	serverconfig "antrea.io/antrea-ui/pkg/config/server"
+	antreasvchandlertesting "antrea.io/antrea-ui/pkg/handlers/antreasvc/testing"
 	traceflowhandlertesting "antrea.io/antrea-ui/pkg/handlers/traceflow/testing"
 	passwordtesting "antrea.io/antrea-ui/pkg/password/testing"
 )
@@ -60,6 +61,7 @@ type testServer struct {
 	k8sClient                *dynamicfake.FakeDynamicClient
 	traceflowRequestsHandler *traceflowhandlertesting.MockRequestsHandler
 	k8sProxyHandler          *testk8sProxyHandler
+	antreaSvcRequestsHandler *antreasvchandlertesting.MockRequestsHandler
 	passwordStore            *passwordtesting.MockStore
 	tokenManager             *authtesting.MockTokenManager
 }
@@ -79,6 +81,7 @@ func newTestServer(t *testing.T, options ...testServerOptions) *testServer {
 	ctrl := gomock.NewController(t)
 	traceflowRequestsHandler := traceflowhandlertesting.NewMockRequestsHandler(ctrl)
 	k8sProxyHandler := &testk8sProxyHandler{}
+	antreaSvcRequestsHandler := antreasvchandlertesting.NewMockRequestsHandler(ctrl)
 	passwordStore := passwordtesting.NewMockStore(ctrl)
 	tokenManager := authtesting.NewMockTokenManager(ctrl)
 
@@ -94,6 +97,7 @@ func newTestServer(t *testing.T, options ...testServerOptions) *testServer {
 		k8sClient,
 		traceflowRequestsHandler,
 		k8sProxyHandler,
+		antreaSvcRequestsHandler,
 		passwordStore,
 		tokenManager,
 		config,
@@ -106,6 +110,7 @@ func newTestServer(t *testing.T, options ...testServerOptions) *testServer {
 		k8sClient:                k8sClient,
 		traceflowRequestsHandler: traceflowRequestsHandler,
 		k8sProxyHandler:          k8sProxyHandler,
+		antreaSvcRequestsHandler: antreaSvcRequestsHandler,
 		passwordStore:            passwordStore,
 		tokenManager:             tokenManager,
 	}

@@ -29,3 +29,18 @@ rules:
       - watch
       - create
       - delete
+  - apiGroups:
+      - ""
+    resources:
+      - configmaps
+    verbs:
+      - get
+      - watch
+      - list
+    resourceNames:
+      - antrea-config
+      - antrea-ca
+  - nonResourceURLs:
+      - /featuregates
+    verbs:
+      - get

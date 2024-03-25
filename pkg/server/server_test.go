@@ -105,7 +105,7 @@ func newTestServer(t *testing.T, options ...testServerOptions) *testServer {
 	}
 
 	// we use nil for parameters which are only used by the API server
-	s := NewServer(logger, nil, nil, nil, passwordStore, tokenManager, oidcProvider, config)
+	s := NewServer(logger, nil, nil, nil, nil, passwordStore, tokenManager, oidcProvider, config)
 	router := gin.Default()
 	s.AddRoutes(router)
 	return &testServer{

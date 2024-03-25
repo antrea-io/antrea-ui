@@ -65,9 +65,8 @@ func NewPortForwarder(
 	return pf, nil
 }
 
-// Start Port Forwarding channel
-func (p *PortForwarder) Start() (int, error) {
-	p.stopCh = make(chan struct{})
+// Run is recommended over Start / Stop
+func (p *PortForwarder) Run(stopCh <-chan struct{}, portCh chan<- int) error {
 	readyCh := make(chan struct{})
 	errCh := make(chan error)
 
@@ -79,13 +78,16 @@ func (p *PortForwarder) Start() (int, error) {
 
 	transport, upgrader, err := spdy.RoundTripperFor(p.config)
 	if err != nil {
-		return 0, fmt.Errorf("failed to create dialer: %w", err)
+		return fmt.Errorf("failed to create dialer: %w", err)
 	}
 
 	dialer := spdy.NewDialer(upgrader, &http.Client{Transport: transport}, "POST", url)
 
-	ports := []string{
-		fmt.Sprintf("%d:%d", p.listenPort, p.targetPort),
+	ports := []string{}
+	if p.listenPort > 0 {
+		ports = append(ports, fmt.Sprintf("%d:%d", p.listenPort, p.targetPort))
+	} else {
+		ports = append(ports, fmt.Sprintf(":%d", p.targetPort))
 	}
 
 	addresses := []string{
@@ -94,7 +96,7 @@ func (p *PortForwarder) Start() (int, error) {
 
 	pf, err := portforward.NewOnAddresses(dialer, addresses, ports, p.stopCh, readyCh, io.Discard, io.Discard)
 	if err != nil {
-		return 0, fmt.Errorf("port forward request failed: %w", err)
+		return fmt.Errorf("port forward request failed: %w", err)
 	}
 
 	go func() {
@@ -102,14 +104,42 @@ func (p *PortForwarder) Start() (int, error) {
 	}()
 
 	select {
-	case err = <-errCh:
-		return 0, fmt.Errorf("port forward request failed: %w", err)
+	case err := <-errCh:
+		return fmt.Errorf("port forward request failed: %w", err)
 	case <-readyCh:
 		ports, err := pf.GetPorts()
 		if err != nil {
-			return 0, fmt.Errorf("error when getting forwarded ports: %w", err)
+			return fmt.Errorf("error when getting forwarded ports: %w", err)
 		}
-		return int(ports[0].Local), nil
+		portCh <- int(ports[0].Local)
+	case <-stopCh:
+		return nil
+	}
+
+	select {
+	case err := <-errCh:
+		return err
+	case <-stopCh:
+		return nil
+	}
+}
+
+// Start Port Forwarding channel
+func (p *PortForwarder) Start() (int, error) {
+	stopCh := make(chan struct{})
+	p.stopCh = make(chan struct{})
+	portCh := make(chan int)
+	errCh := make(chan error)
+
+	go func() {
+		errCh <- p.Run(stopCh, portCh)
+	}()
+
+	select {
+	case err := <-errCh:
+		return 0, err
+	case port := <-portCh:
+		return port, nil
 	}
 }
 

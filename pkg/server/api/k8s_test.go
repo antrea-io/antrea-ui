@@ -67,6 +67,7 @@ func TestK8sProxyRequest(t *testing.T) {
 			resp := rr.Result()
 			if tc.expectedMessage != "" {
 				body, err := io.ReadAll(resp.Body)
+				resp.Body.Close()
 				require.NoError(t, err)
 				assert.Contains(t, string(body), tc.expectedMessage)
 			}
