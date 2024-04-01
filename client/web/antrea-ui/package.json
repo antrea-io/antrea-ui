@@ -15,7 +15,7 @@
     "axios": "^1.6.8",
     "axios-auth-refresh": "^3.3.6",
     "base-64": "^1.0.0",
-    "d3": "^7.8.2",
+    "d3": "^7.9.0",
     "d3-graphviz": "^5.3.0",
     "echarts": "^5.5.0",
     "echarts-for-react": "^3.0.1",
