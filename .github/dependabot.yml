@@ -28,3 +28,9 @@ updates:
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5
+    ignore:
+      # Starting with v0.5, only the new eslint flat config is supported.
+      # We cannot upgrade to flat config (eslint v9) until more of the ecosystem supports it, so we
+      # pin the version of eslint-plugin-vitest to v0.4.
+      - dependency-name: "eslint-plugin-vitest"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"] # ignore all except for patch updates
