@@ -27,7 +27,7 @@ updates:
     directory: "/client/web/antrea-ui"
     schedule:
       interval: "weekly"
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 10
     ignore:
       # Starting with v0.5, only the new eslint flat config is supported.
       # We cannot upgrade to flat config (eslint v9) until more of the ecosystem supports it, so we
