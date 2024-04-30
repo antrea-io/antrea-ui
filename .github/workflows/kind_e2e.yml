@@ -10,7 +10,7 @@ on:
     - release-*
 
 env:
-  KIND_VERSION: v0.18.0
+  KIND_VERSION: v0.22.0
 
 jobs:
   check-changes:
