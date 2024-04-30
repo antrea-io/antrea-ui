@@ -30,13 +30,11 @@ export interface TraceflowPacket {
     dstIP?: string
     length?: number
     ipHeader?: {
-        srcIP?: string
         protocol?: number
         ttl?: number
         flags?: number
     }
     ipv6Header?: {
-        srcIP?: string
         nextHeader?: number
         hopLimit?: number
     }
