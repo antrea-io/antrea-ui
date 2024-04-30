@@ -40,7 +40,7 @@ jobs:
         version=${TAG:10}
         echo "version=$version" >> $GITHUB_OUTPUT
     - name: Update Helm index with Antrea UI archive
-      uses: benc-uk/workflow-dispatch@v121
+      uses: benc-uk/workflow-dispatch@v1
       with:
         repo: antrea-io/website
         ref: refs/heads/main
