@@ -148,6 +148,7 @@ export const traceflowAPI = {
                 if (done) {
                     if (withDelete) {
                         await api.delete(reqURL, {
+                            baseURL: `${apiServer}`,
                             validateStatus: (status: number) => status === 200,
                         }).then(_ => console.log("Traceflow deleted successfully")).catch(_ => console.error("Unable to delete traceflow"));
                     }
