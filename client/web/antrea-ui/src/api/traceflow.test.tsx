@@ -86,7 +86,9 @@ describe('Traceflow API', () => {
             baseURL: '',
         }));
         if (withDelete) {
-            expect(mock.delete).toHaveBeenCalledWith(`/api/v1/traceflow/${reqId}`, expect.anything());
+            expect(mock.delete).toHaveBeenCalledWith(`/api/v1/traceflow/${reqId}`, expect.objectContaining({
+            baseURL: '',
+        }));
         } else {
             expect(mock.delete).not.toHaveBeenCalled();
         }
