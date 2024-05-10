@@ -196,7 +196,7 @@ export default function Traceflow() {
         let dstPort = 0;
         if (!liveTraffic) {
             if (protocol === "TCP") dstPort = 80;
-            else if (protocol === "UDP") dstPort = 43;
+            else if (protocol === "UDP") dstPort = 53;
         }
         let tcpFlags = 0;
         if (protocol === "TCP" && !liveTraffic) {
@@ -281,11 +281,11 @@ export default function Traceflow() {
         {
             min: {
                 value: 0,
-                message: "source port must be >= 0",
+                message: "Source port must be >= 0",
             },
             max: {
                 value: 65535,
-                message: "source port must be <= 65535",
+                message: "Source port must be <= 65535",
             },
             setValueAs: parseInt,
         },
@@ -302,14 +302,15 @@ export default function Traceflow() {
         "dstPort",
         {
             min: {
-                value: 0,
-                message: "destination port must be >= 0",
+                value: isLiveTraffic ? 0 : 1,
+                message: "Destination port must be >= " +  (isLiveTraffic ? 0 : 1).toString(),
             },
             max: {
                 value: 65535,
-                message: "destination port must be <= 65535",
+                message: "Destination port must be <= 65535",
             },
             setValueAs: parseInt,
+            required: !isLiveTraffic && "Destination port is required",
         },
     );
 
@@ -333,11 +334,11 @@ export default function Traceflow() {
         {
             min: {
                 value: 1,
-                message: "timeout must be >= 1",
+                message: "Timeout must be >= 1",
             },
             max: {
                 value: 120,
-                message: "timeout must be <= 120",
+                message: "Timeout must be <= 120",
             },
             setValueAs: parseInt,
         },

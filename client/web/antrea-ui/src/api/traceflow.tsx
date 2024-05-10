@@ -86,6 +86,8 @@ export interface TraceflowObservation {
     translatedDstIP: string
     tunnelDstIP: string
     egressIP: string
+    egressNode: string
+    srcPodIP: string
 }
 
 export interface TraceflowNodeResult {

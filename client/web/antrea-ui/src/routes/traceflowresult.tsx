@@ -261,6 +261,7 @@ class TraceflowGraphBuilder {
             if (obs.tunnelDstIP) label.push(`Tunnel Destination IP: ${obs.tunnelDstIP}`);
             if (obs.egressIP) label.push(`Egress IP: ${obs.egressIP}`);
             if (obs.egress) label.push(`Egress: ${obs.egress}`);
+            if (obs.egressNode) label.push(`Egress Node: ${obs.egressNode}`);
         }
         return label.join('\n');
     }
