@@ -207,7 +207,6 @@ describe('Traceflow request', () => {
                     },
                     transportHeader: {
                         tcp: {
-                            srcPort: 0,
                             dstPort: 80,
                             flags: 2,
                         },
@@ -239,10 +238,7 @@ describe('Traceflow request', () => {
                         protocol: 17,
                     },
                     transportHeader: {
-                        udp: {
-                            srcPort: 0,
-                            dstPort: 0,
-                        },
+                        udp: {},
                     },
                 },
                 liveTraffic: true,
