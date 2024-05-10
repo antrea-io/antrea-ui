@@ -64,18 +64,27 @@ function createTraceflowPacket(inputs: Inputs, useIPv6: boolean): TraceflowPacke
             case "TCP": {
                 protocol = 6;
                 packet.transportHeader.tcp = {
-                    srcPort: inputs.srcPort,
-                    dstPort: inputs.dstPort,
                     flags: inputs.tcpFlags,
                 };
+                // A srcPort or dstPort equal to 0 (which has a specific meaning) must be omitted
+                // from the Traceflow API request (since v1beta1), or the request will be rejected.
+                if (inputs.srcPort > 0) {
+                    packet.transportHeader.tcp.srcPort = inputs.srcPort;
+                }
+                if (inputs.dstPort > 0) {
+                    packet.transportHeader.tcp.dstPort = inputs.dstPort;
+                }
                 break;
             }
             case "UDP": {
                 protocol = 17;
-                packet.transportHeader.udp = {
-                    srcPort: inputs.srcPort,
-                    dstPort: inputs.dstPort,
-                };
+                packet.transportHeader.udp = {};
+                if (inputs.srcPort > 0) {
+                    packet.transportHeader.udp.srcPort = inputs.srcPort;
+                }
+                if (inputs.dstPort > 0) {
+                    packet.transportHeader.udp.dstPort = inputs.dstPort;
+                }
                 break;
             }
     }
