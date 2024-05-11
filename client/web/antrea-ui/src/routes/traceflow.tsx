@@ -298,19 +298,20 @@ export default function Traceflow() {
         },
     );
 
+    const dstPortRequired = !isLiveTraffic && (proto === "TCP" || proto === "UDP");
     const dstPort = register(
         "dstPort",
         {
             min: {
-                value: isLiveTraffic ? 0 : 1,
-                message: "Destination port must be >= " +  (isLiveTraffic ? 0 : 1).toString(),
+                value: dstPortRequired ? 1 : 0,
+                message: "Destination port must be >= " +  (dstPortRequired ? 1 : 0).toString(),
             },
             max: {
                 value: 65535,
                 message: "Destination port must be <= 65535",
             },
             setValueAs: parseInt,
-            required: !isLiveTraffic && "Destination port is required",
+            required: dstPortRequired && "Destination port is required",
         },
     );
 
