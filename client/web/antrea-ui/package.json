@@ -11,7 +11,7 @@
     "@reduxjs/toolkit": "^2.2.5",
     "@testing-library/react": "^15.0.7",
     "@testing-library/user-event": "^14.5.2",
-    "@vitejs/plugin-react": "^4.2.1",
+    "@vitejs/plugin-react": "^4.3.0",
     "axios": "^1.7.2",
     "axios-auth-refresh": "^3.3.6",
     "base-64": "^1.0.0",
