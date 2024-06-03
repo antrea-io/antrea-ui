@@ -18,7 +18,7 @@ require (
 	github.com/oauth2-proxy/mockoidc v0.0.0-20220308204021-b9169deeb282
 	github.com/spf13/afero v1.11.0
 	github.com/spf13/pflag v1.0.5
-	github.com/spf13/viper v1.18.2
+	github.com/spf13/viper v1.19.0
 	github.com/stretchr/testify v1.9.0
 	github.com/tonglil/buflogr v1.1.1
 	go.uber.org/zap v1.27.0
@@ -73,8 +73,8 @@ require (
 	github.com/google/go-cmp v0.6.0 // indirect
 	github.com/google/gofuzz v1.2.0 // indirect
 	github.com/gruntwork-io/go-commons v0.8.0 // indirect
-	github.com/hashicorp/errwrap v1.0.0 // indirect
-	github.com/hashicorp/go-multierror v1.1.0 // indirect
+	github.com/hashicorp/errwrap v1.1.0 // indirect
+	github.com/hashicorp/go-multierror v1.1.1 // indirect
 	github.com/hashicorp/hcl v1.0.0 // indirect
 	github.com/homeport/dyff v1.6.0 // indirect
 	github.com/imdario/mergo v0.3.11 // indirect
@@ -117,7 +117,7 @@ require (
 	go.uber.org/multierr v1.11.0 // indirect
 	golang.org/x/arch v0.8.0 // indirect
 	golang.org/x/exp v0.0.0-20230905200255-921286631fa9 // indirect
-	golang.org/x/sync v0.5.0 // indirect
+	golang.org/x/sync v0.6.0 // indirect
 	golang.org/x/sys v0.20.0 // indirect
 	golang.org/x/term v0.20.0 // indirect
 	golang.org/x/text v0.15.0 // indirect
