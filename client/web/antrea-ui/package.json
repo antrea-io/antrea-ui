@@ -69,6 +69,6 @@
     "jsdom": "^24.1.0",
     "nock": "^13.5.4",
     "rollup-plugin-visualizer": "^5.12.0",
-    "uuid": "^9.0.1"
+    "uuid": "^10.0.0"
   }
 }
