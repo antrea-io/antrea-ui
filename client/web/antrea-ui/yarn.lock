@@ -424,10 +424,10 @@
   resolved "https://registry.yarnpkg.com/@eslint-community/regexpp/-/regexpp-4.6.2.tgz#1816b5f6948029c5eaacb0703b850ee0cb37d8f8"
   integrity sha512-pPTNuaAG3QMH+buKyBIGJs3g/S5y0caxw0ygM3YyE6yJFySwiGGSzA+mM3KJ8QQvzeLh3blwgSonkFjgQdxzMw==
 
-"@eslint/create-config@^1.1.6":
-  version "1.1.6"
-  resolved "https://registry.yarnpkg.com/@eslint/create-config/-/create-config-1.1.6.tgz#acef7607af1610f6424a46421dd3dc67c3b389a3"
-  integrity sha512-8ryOSkG9Gck70tP4W/WmDhbHXiWuU2WB0ocZxZ0j8pnyoKMUkiqFo39IjKvR04UW5tyICz/PvsEDNITZtt4GDg==
+"@eslint/create-config@^1.2.0":
+  version "1.2.0"
+  resolved "https://registry.yarnpkg.com/@eslint/create-config/-/create-config-1.2.0.tgz#db532bb180455ed29828d1fdd32415e095fd05ba"
+  integrity sha512-5mEriBhHwqC6SDJurFEmYxrNpfkfHGiKfyhB0ll0a8tBQsEkO8aPU9o0gtyJ057FiFuzy8sLOW5CuEegevyQAA==
   dependencies:
     cross-spawn "^7.0.2"
     enquirer "^2.3.5"
