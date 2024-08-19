@@ -26,10 +26,10 @@ require (
 	golang.org/x/net v0.28.0
 	golang.org/x/oauth2 v0.22.0
 	golang.org/x/time v0.6.0
-	k8s.io/api v0.29.7
-	k8s.io/apimachinery v0.29.7
-	k8s.io/apiserver v0.29.7
-	k8s.io/client-go v0.29.7
+	k8s.io/api v0.29.8
+	k8s.io/apimachinery v0.29.8
+	k8s.io/apiserver v0.29.8
+	k8s.io/client-go v0.29.8
 	k8s.io/utils v0.0.0-20230726121419-3b25d923346b
 )
 
