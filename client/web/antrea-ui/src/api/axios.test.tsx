@@ -26,6 +26,8 @@ describe('axios instance', () => {
     const token2 = 'token2';
     const getTokenMock = vi.mocked(getToken);
     const setTokenMock = vi.mocked(setToken);
+    // Default base URL used by axios.
+    const origin = window.location.href;
 
     afterAll(() => {
         vi.restoreAllMocks();
@@ -35,7 +37,7 @@ describe('axios instance', () => {
     });
 
     test('valid token', async () => {
-        const scope = nock('http://localhost', {
+        const scope = nock(origin, {
             reqheaders: {
                 'Authorization': `Bearer ${token1}`,
             },
@@ -43,7 +45,7 @@ describe('axios instance', () => {
 
         getTokenMock.mockReturnValueOnce(token1);
 
-        await api.get('test');
+        await api.get('/test');
 
         // Assert that the expected request was made.
         scope.done();
@@ -52,7 +54,7 @@ describe('axios instance', () => {
     });
 
     test('expired token', async () => {
-        const scope = nock('http://localhost')
+        const scope = nock(origin)
             .get('/api/v1/test').matchHeader('Authorization', `Bearer ${token1}`).reply(401, 'expired token')
             .get('/auth/refresh_token').reply(200, JSON.stringify({
                 accessToken: token2,
@@ -76,7 +78,7 @@ describe('axios instance', () => {
     });
 
     test('failed refresh', async () => {
-        const scope = nock('http://localhost')
+        const scope = nock(origin)
             .get('/api/v1/test').matchHeader('Authorization', `Bearer ${token1}`).reply(401, 'expired token')
             .get('/auth/refresh_token').reply(500, 'unknown error');
 
@@ -91,7 +93,7 @@ describe('axios instance', () => {
     });
 
     test('failed refresh with unauthenticated', async () => {
-        const scope = nock('http://localhost')
+        const scope = nock(origin)
             .get('/api/v1/test').matchHeader('Authorization', `Bearer ${token1}`).reply(401, 'expired token')
             .get('/auth/refresh_token').reply(401, 'expired cookie');
 
