@@ -1,6 +1,6 @@
 GO                 ?= go
 # read Go version from go,mod file
-GO_VERSION         := $(shell grep '^go.*$$' go.mod | awk '{print $$2}')
+GO_VERSION         := $(shell grep '^go.*$$' go.mod | awk '{print $$2}' | cut -d '.' -f 1,2)
 LDFLAGS            :=
 GOFLAGS            :=
 BINDIR := $(CURDIR)/bin
@@ -8,7 +8,7 @@ BINDIR := $(CURDIR)/bin
 GOMOCK_VERSION := $(shell grep '^\s*github.com\/golang\/mock\sv\S*$$' go.mod | awk '{print $$2}')
 GOMOCK_BINDIR  := .mockgen-bin
 GOMOCK_BIN     := $(GOMOCK_BINDIR)/$(GOMOCK_VERSION)/mockgen
-GOLANGCI_LINT_VERSION := v1.54.0
+GOLANGCI_LINT_VERSION := v1.60.3
 GOLANGCI_LINT_BINDIR  := .golangci-bin
 GOLANGCI_LINT_BIN     := $(GOLANGCI_LINT_BINDIR)/$(GOLANGCI_LINT_VERSION)/golangci-lint
 

@@ -238,7 +238,8 @@ func main() {
 	}
 
 	zc := zap.NewProductionConfig()
-	zc.Level = zap.NewAtomicLevelAt(zapcore.Level(-1 * config.LogVerbosity))
+	// #nosec G115: when parsing config, we ensure that LogVerbosity is >= 0 and < 128.
+	zc.Level = zap.NewAtomicLevelAt(zapcore.Level(-1 * int8(config.LogVerbosity)))
 	zc.DisableStacktrace = true
 	zapLog, err := zc.Build()
 	if err != nil {
