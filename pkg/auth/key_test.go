@@ -22,6 +22,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// #nosec G101: test credentials
 const sampleKey = `-----BEGIN RSA PRIVATE KEY-----
 MIIJKQIBAAKCAgEAs1Z89g225tQIDPn2af1cdgeCDNv/84Sz2YpPQGAZp8Vrm2zC
 WTzX0wyFfugZIHIgYLYz1t0zf2XbbM+LfeTn9UuR2LsTIZp7GJmUHlibINH2woJA

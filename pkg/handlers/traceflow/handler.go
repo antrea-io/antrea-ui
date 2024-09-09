@@ -136,7 +136,8 @@ func (h *requestsHandler) doGC(ctx context.Context) {
 	}
 	expiredTraceflows := []string{}
 	now := h.clock.Now()
-	for _, tf := range list.Items {
+	for idx := range list.Items {
+		tf := &list.Items[idx]
 		creationTimestamp := tf.GetCreationTimestamp()
 		if now.Sub(creationTimestamp.Time) > traceflowExpiryTimeout {
 			expiredTraceflows = append(expiredTraceflows, tf.GetName())

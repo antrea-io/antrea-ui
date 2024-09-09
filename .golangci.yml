@@ -2,9 +2,6 @@
 run:
   tests: true
   timeout: 10m
-  skip-files:
-    - ".*\\.pb\\.go"
-  skip-dirs-use-default: true
 
 linters-settings:
   goimports:
@@ -30,7 +27,7 @@ linters:
     - staticcheck
     - gosec
     - goimports
-    - vet
+    - govet
     - revive
 
 issues:
