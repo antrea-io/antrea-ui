@@ -64,7 +64,7 @@
     "@typescript-eslint/parser": "^6.21.0",
     "eslint": "^8.57.0",
     "eslint-plugin-react": "^7.35.2",
-    "eslint-plugin-react-refresh": "^0.4.11",
+    "eslint-plugin-react-refresh": "^0.4.12",
     "eslint-plugin-vitest": "^0.4.1",
     "jsdom": "^25.0.0",
     "nock": "^13.5.5",
