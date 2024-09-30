@@ -14,7 +14,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/gruntwork-io/terratest v0.47.1
 	github.com/hashicorp/golang-lru/v2 v2.0.7
-	github.com/madflojo/testcerts v1.2.0
+	github.com/madflojo/testcerts v1.3.0
 	github.com/oauth2-proxy/mockoidc v0.0.0-20220308204021-b9169deeb282
 	github.com/spf13/afero v1.11.0
 	github.com/spf13/pflag v1.0.5
