@@ -25,7 +25,7 @@ COPY client/web/antrea-ui .
 ARG NODE_ENV=production
 RUN yarn build
 
-FROM nginxinc/nginx-unprivileged:1.25
+FROM nginxinc/nginx-unprivileged:1.27
 
 COPY --from=build-web /app/build /app
 COPY build/scripts/nginx-reloader.sh /docker-entrypoint.d/99-nginx-reloader.sh
