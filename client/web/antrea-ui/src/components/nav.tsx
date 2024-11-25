@@ -15,7 +15,7 @@
  */
 
 import { useState } from 'react';
-import { Link } from "react-router-dom";
+import { Link } from "react-router";
 import { CdsNavigation, CdsNavigationStart, CdsNavigationItem } from "@cds/react/navigation";
 import { CdsIcon } from '@cds/react/icon';
 import {

@@ -17,7 +17,7 @@
 import { useLayoutEffect, useRef} from 'react';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter } from 'react-router';
 import Traceflow from './traceflow';
 import { traceflowAPI, TraceflowSpec, TraceflowStatus } from '../api/traceflow';
 
@@ -42,8 +42,8 @@ const mockedTraceflowAPI = vi.mocked(traceflowAPI, true);
 
 const mockNavigate = vi.fn();
 
-vi.mock("react-router-dom", async () => {
-  const actual = await vi.importActual("react-router-dom");
+vi.mock("react-router", async () => {
+  const actual = await vi.importActual("react-router");
   return {
     ...actual,
     useNavigate: () => mockNavigate,

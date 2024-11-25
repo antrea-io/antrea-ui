@@ -17,7 +17,7 @@
 import React, { useEffect, useState, useContext } from 'react';
 import logo from './logo.svg';
 import './App.css';
-import { Outlet, Link, useSearchParams } from "react-router-dom";
+import { Outlet, Link, useSearchParams } from "react-router";
 import NavTab from './components/nav';
 import Login from './components/login';
 import { useLogout } from './components/logout';

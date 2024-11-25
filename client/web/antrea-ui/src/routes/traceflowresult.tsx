@@ -15,7 +15,7 @@
  */
 
 import { useEffect, useRef} from 'react';
-import { useLocation } from "react-router-dom";
+import { useLocation } from "react-router";
 import { TraceflowSpec, TraceflowStatus, TraceflowNodeResult, TraceflowObservation } from '../api/traceflow';
 // eslint-disable-next-line
 import * as d3 from 'd3';
