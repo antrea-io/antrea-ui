@@ -186,7 +186,7 @@ export default function Summary() {
                     <ComponentSummary title="Agents" data={agentInfos!} propertyNames={agentProperties} getProperties={agentPropertyValues} />
                 </WaitForAPIResource>
                 <WaitForAPIResource ready={controllerFeatureGates !== undefined} text="Loading Controller Feature Gates">
-                    <ComponentSummary title="Controller Feature Gates" data={controllerFeatureGates} propertyNames={featureGateProperties} getProperties={featureGatePropertyValues} />
+                    <ComponentSummary title="Controller Feature Gates" data={controllerFeatureGates!} propertyNames={featureGateProperties} getProperties={featureGatePropertyValues} />
                 </WaitForAPIResource>
                 <WaitForAPIResource ready={agentFeatureGates !== undefined} text="Loading Agent Feature Gates">
                     <ComponentSummary title="Agent Feature Gates" data={agentFeatureGates!} propertyNames={featureGateProperties} getProperties={featureGatePropertyValues} />

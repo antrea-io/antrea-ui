@@ -158,7 +158,7 @@ export const traceflowAPI = {
                     return tf.status;
                 }
             }
-            // eslint-disable-next-line no-unreachable
+            // @ts-expect-error keep this for now even though the only way to exit the loop is through a return
             throw new APIError(0, "", "Timeout when waiting for traceflow request to complete");
         } catch(err) {
             console.error("Unable to run traceflow");

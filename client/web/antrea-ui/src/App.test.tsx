@@ -37,7 +37,7 @@ const consoleErrorMock = vi.spyOn(console, 'error');
 let testStore: AppStore;
 
 beforeEach(() => {
-    consoleErrorMock.mockImplementation();
+    consoleErrorMock.mockImplementation(() => {});
 });
 afterAll(() => {
     vi.restoreAllMocks();
@@ -90,7 +90,7 @@ describe('LoginWall', () => {
         customRender(<LoginWall />, defaultSettings);
         expect(await screen.findByText('Please log in')).toBeInTheDocument();
         expect(mockedAuthAPI.refreshToken).toHaveBeenCalledTimes(1);
-        expect(console.error).not.toHaveBeenCalled();
+        expect(consoleErrorMock).not.toHaveBeenCalled();
     });
 
     test('refresh error - other API error', async () => {
@@ -99,7 +99,7 @@ describe('LoginWall', () => {
         expect(await screen.findByText('Please log in')).toBeInTheDocument();
         expect(await screen.findByText(/Not Found/)).toBeInTheDocument();
         expect(mockedAuthAPI.refreshToken).toHaveBeenCalledTimes(1);
-        expect(console.error).toHaveBeenCalled();
+        expect(consoleErrorMock).toHaveBeenCalled();
     });
 
     test('refresh error - other error', async () => {
@@ -108,7 +108,7 @@ describe('LoginWall', () => {
         expect(await screen.findByText('Please log in')).toBeInTheDocument();
         expect(await screen.findByText(/some error/)).toBeInTheDocument();
         expect(mockedAuthAPI.refreshToken).toHaveBeenCalledTimes(1);
-        expect(console.error).toHaveBeenCalled();
+        expect(consoleErrorMock).toHaveBeenCalled();
     });
 
     test('refresh success', async () => {
@@ -132,7 +132,7 @@ describe('LoginWall', () => {
 
     test('no log in screen during refresh', async () => {
         mockedAuthAPI.refreshToken.mockImplementation(async () => {
-            return new Promise((resolve, reject) => setTimeout(() => reject(new APIError(401, 'Unauthenticated', 'cookie expired')), 200));
+            return new Promise((_, reject) => setTimeout(() => reject(new APIError(401, 'Unauthenticated', 'cookie expired')), 200));
         });
 
         customRender(<LoginWall />, defaultSettings);
@@ -217,7 +217,7 @@ describe('WaitForSettings', () => {
 
         expect(await screen.findByText(/Not Found/)).toBeInTheDocument();
         expect(mockedSettingsAPI.fetch).toHaveBeenCalledTimes(1);
-        expect(console.error).toHaveBeenCalled();
+        expect(consoleErrorMock).toHaveBeenCalled();
     });
 });
 

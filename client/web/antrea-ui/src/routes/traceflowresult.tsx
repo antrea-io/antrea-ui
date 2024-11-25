@@ -17,6 +17,7 @@
 import { useEffect, useRef} from 'react';
 import { useLocation } from "react-router";
 import { TraceflowSpec, TraceflowStatus, TraceflowNodeResult, TraceflowObservation } from '../api/traceflow';
+// @ts-expect-error ignore unused reference to d3
 // eslint-disable-next-line
 import * as d3 from 'd3';
 import { graphviz } from "d3-graphviz";

@@ -33,7 +33,7 @@
   },
   "scripts": {
     "start": "vite",
-    "build": "vite build",
+    "build": "tsc -b --noEmit && vite build",
     "test": "vitest",
     "lint": "eslint 'src/**/*.ts{,x}' --max-warnings=0"
   },
@@ -60,15 +60,15 @@
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@types/uuid": "^10.0.0",
-    "@typescript-eslint/eslint-plugin": "^7.0.0",
-    "@typescript-eslint/parser": "^6.21.0",
-    "eslint": "^8.57.1",
+    "eslint": "^9.15.0",
     "eslint-plugin-react": "^7.37.2",
+    "eslint-plugin-react-hooks": "^5.0.0",
     "eslint-plugin-react-refresh": "^0.4.14",
-    "eslint-plugin-vitest": "^0.4.1",
+    "eslint-plugin-vitest": "^0.5.4",
     "jsdom": "^25.0.1",
     "nock": "^13.5.6",
     "rollup-plugin-visualizer": "^5.12.0",
+    "typescript-eslint": "^8.16.0",
     "uuid": "^11.0.3"
   }
 }
