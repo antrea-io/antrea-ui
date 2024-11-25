@@ -36,7 +36,7 @@ export interface Condition {
     message: string
 }
 
-export interface ControllerCondition extends Condition { }
+export type ControllerCondition = Condition;
 
 export interface ControllerInfo {
     metadata: {
@@ -58,7 +58,7 @@ interface OVSInfo {
     flowTable?: Map<string,number>
 }
 
-export interface AgentCondition extends Condition { }
+export type AgentCondition = Condition;
 
 export interface AgentInfo {
     metadata: {

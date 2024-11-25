@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { configureStore, createSlice, PayloadAction, PreloadedState } from '@reduxjs/toolkit';
+import { configureStore, createSlice, PayloadAction } from '@reduxjs/toolkit';
 
 interface state {
     // if token is undefined: we do not have a token in memory but we may have a
@@ -40,7 +40,7 @@ const authSlice = createSlice({
     }
 });
 
-export const setupStore = (preloadedState?: PreloadedState<RootState>) => {
+export const setupStore = (preloadedState?: RootState) => {
     return configureStore({
         reducer: authSlice.reducer,
         preloadedState,

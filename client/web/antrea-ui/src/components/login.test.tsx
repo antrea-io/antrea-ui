@@ -41,9 +41,8 @@ const setToken = (t: string) => {
 };
 
 beforeEach(() => {
-    consoleErrorMock.mockImplementation();
+    consoleErrorMock.mockImplementation(() => {});
 });
-
 afterAll(() => {
     vi.restoreAllMocks();
 });

@@ -1,5 +1,5 @@
 /**
- * Copyright 2023 Antrea Authors.
+ * Copyright 2024 Antrea Authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,18 +14,12 @@
  * limitations under the License.
  */
 
-import { MetricType } from "web-vitals";
+import { defineConfig } from 'vitest/config'
 
-const reportWebVitals = (onPerfEntry?: (metric: MetricType) => void) => {
-  if (onPerfEntry && onPerfEntry instanceof Function) {
-    import("web-vitals").then(({ onCLS, onINP, onFCP, onLCP, onTTFB }) => {
-      onCLS(onPerfEntry);
-      onINP(onPerfEntry);
-      onFCP(onPerfEntry);
-      onLCP(onPerfEntry);
-      onTTFB(onPerfEntry);
-    });
-  }
-};
-
-export default reportWebVitals;
+export default defineConfig({
+    test: {
+        environment: 'jsdom',
+        setupFiles: './src/setupTests.ts',
+        globals: true,
+    },
+})

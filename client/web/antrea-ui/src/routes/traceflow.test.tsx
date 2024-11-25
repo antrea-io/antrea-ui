@@ -14,10 +14,11 @@
  * limitations under the License.
  */
 
-import { useLayoutEffect, useRef} from 'react';
+import { useLayoutEffect, useRef, ComponentProps, PropsWithChildren } from 'react';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router';
+import { CdsSelect } from '@cds/react/select';
 import Traceflow from './traceflow';
 import { traceflowAPI, TraceflowSpec, TraceflowStatus } from '../api/traceflow';
 
@@ -33,7 +34,7 @@ vi.mock('@cds/react/select', () => ({
       ref.current?.querySelector('label')?.setAttribute('for', id);
     }, []);
 
-    return <div ref={ref} {...(props as unknown)} />;
+    return <div ref={ref} {...(props as Record<string, unknown>)} />;
   },
 }));
 
