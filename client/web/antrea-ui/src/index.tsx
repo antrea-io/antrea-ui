@@ -16,6 +16,8 @@
 
 import React from 'react';
 import ReactDOM from 'react-dom/client';
+import { createBrowserRouter } from 'react-router';
+import { RouterProvider } from 'react-router/dom';
 import './index.css';
 import App from './App';
 import Summary from './routes/summary';
@@ -23,10 +25,6 @@ import Traceflow from './routes/traceflow';
 import TraceflowResult from './routes/traceflowresult';
 import Settings from './routes/settings';
 import reportWebVitals from './reportWebVitals';
-import {
-  createBrowserRouter,
-  RouterProvider,
-} from "react-router-dom";
 
 const router = createBrowserRouter([
     {

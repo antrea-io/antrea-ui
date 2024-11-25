@@ -15,7 +15,7 @@
  */
 
 import { useState, useEffect, useRef} from 'react';
-import { useNavigate, Outlet } from "react-router-dom";
+import { useNavigate, Outlet } from "react-router";
 import { useForm, SubmitHandler } from "react-hook-form";
 import { CdsAlertGroup, CdsAlert } from "@cds/react/alert";
 import { CdsButton } from '@cds/react/button';

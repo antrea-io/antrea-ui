@@ -17,7 +17,7 @@
 import React, { ReactElement, useContext } from 'react';
 import { act, render, screen, waitFor, RenderOptions } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter } from 'react-router';
 import { Provider } from 'react-redux';
 import App, { LoginWall, WaitForSettings } from './App';
 import { setupStore, AppStore, setToken, store } from './store';
