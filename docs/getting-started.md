@@ -86,7 +86,7 @@ https:
   method: "auto"
 EOF
 
-helm install antrea-ui build/charts/antrea-ui --namespace kube-system -f values-auto.yml
+helm install antrea-ui antrea/antrea-ui --namespace kube-system -f values-auto.yml
 ```
 
 When the installation completes, the certificate PEM data will be displayed, in
@@ -108,7 +108,7 @@ https:
     key: "<base64-encoded PEM key>"
 EOF
 
-helm install antrea-ui build/charts/antrea-ui --namespace kube-system -f values-user.yml
+helm install antrea-ui antrea/antrea-ui --namespace kube-system -f values-user.yml
 ```
 
 The certificate should include `localhost` as a Subject Alternate Name (SAN).
@@ -128,7 +128,7 @@ https:
     key: "<base64-encoded PEM CA key>"
 EOF
 
-helm install antrea-ui build/charts/antrea-ui --namespace kube-system -f values-userCA.yml
+helm install antrea-ui antrea/antrea-ui --namespace kube-system -f values-userCA.yml
 ```
 
 #### `secret`: User provides a Secret of type kubernetes.io/tls
