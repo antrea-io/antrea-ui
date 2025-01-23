@@ -44,8 +44,8 @@ jobs:
     - name: Create Kind cluster
       run: |
         kind create cluster --config ci/kind-config.yml
-        kind load docker-image antrea/antrea-ui-frontend
-        kind load docker-image antrea/antrea-ui-backend
+        kind load docker-image antrea/antrea-ui-frontend:latest
+        kind load docker-image antrea/antrea-ui-backend:latest
     - name: Install Antrea
       run: |
         helm repo add antrea https://charts.antrea.io

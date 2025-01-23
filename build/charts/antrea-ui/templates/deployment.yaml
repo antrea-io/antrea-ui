@@ -73,6 +73,9 @@ spec:
               mountPath: /app/ssl
               readOnly: true
             {{- end }}
+            {{- with .Values.frontend.extraVolumeMounts }}
+            {{- toYaml . | trim | nindent 12 }}
+            {{- end }}
         - name: backend
           image: {{ include "backendImage" . | quote }}
           imagePullPolicy: {{ .Values.backend.image.pullPolicy }}
@@ -119,6 +122,9 @@ spec:
               mountPath: /app/jwt-key.pem
               subPath: key.pem
               readOnly: true
+            {{- with .Values.backend.extraVolumeMounts }}
+            {{- toYaml . | trim | nindent 12 }}
+            {{- end }}
         {{- if .Values.dex.enable }}
         - name: dex
           image: {{ .Values.dex.image.repository }}:{{ .Values.dex.image.tag | default "latest" }}
@@ -200,5 +206,8 @@ spec:
         - name: dex-conf
           configMap:
             name: antrea-ui-dex
+        {{- end }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | trim | nindent 8 }}
         {{- end }}
       terminationGracePeriodSeconds: 10

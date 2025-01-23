@@ -26,6 +26,7 @@ Kubernetes: `>= 1.16.0-0`
 | auth.oidc.issuerURL | string | `""` | URL of the OIDC provider. The server will use the URL to retrieve the OpenID Provider Configuration Document, which should be available at the /.well-known/openid-configuration endpoint. |
 | auth.oidc.logoutURL | string | `""` | URL to log out of the OIDC provider. It will be invoked when the user logs out of the Antrea UI. Some OIDC providers may not offer this capability. If this is empty, the user will stay signed into the identity provider even after logging out of the Antrea UI. The provided URL will be processed by a template engine, and the following template values are supported: {{Token}} (the ID token issued by the provider), {{ClientID}} (the application ID), {{URL}} (the URL at which Antrea UI is accessible), and {{LogoutReturnURL}} (useful if you want to redirect back to Antrea UI after signing out from the identity provider, with a helpful user-facing message). |
 | auth.oidc.providerName | string | `""` | Name of the OIDC provider (Dex, Github OAuth2, ...). This is used for user-facing messages, and does not have any impact on functionality. |
+| backend.extraVolumeMounts | list | `[]` | Additional volumeMounts. |
 | backend.image | object | `{"pullPolicy":"IfNotPresent","repository":"antrea/antrea-ui-backend","tag":""}` | Container image to use for the Antrea UI backend. |
 | backend.logVerbosity | int | `0` | Log verbosity switch for backend server. |
 | backend.port | int | `8080` | Container port on which the backend will listen. |
@@ -34,6 +35,8 @@ Kubernetes: `>= 1.16.0-0`
 | dex.enable | bool | `false` | Enable built-in Dex for OIDC authentication. |
 | dex.image | object | `{"pullPolicy":"IfNotPresent","repository":"ghcr.io/dexidp/dex","tag":"v2.36.0-distroless"}` | Container image to use for Dex. |
 | dex.resources | object | `{}` | Resource requests and limits for the Dex container. |
+| extraVolumes | list | `[]` | Additional volumes. |
+| frontend.extraVolumeMounts | list | `[]` | Additional volumeMounts. |
 | frontend.image | object | `{"pullPolicy":"IfNotPresent","repository":"antrea/antrea-ui-frontend","tag":""}` | Container image to use for the Antrea UI frontend. |
 | frontend.port | int | `3000` | Container port on which the frontend will listen. |
 | frontend.resources | object | `{}` | Resource requests and limits for the frontend container. |
