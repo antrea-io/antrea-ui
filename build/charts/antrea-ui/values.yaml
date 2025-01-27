@@ -9,6 +9,8 @@ frontend:
   port: 3000
   # -- Resource requests and limits for the frontend container.
   resources: {}
+  # -- Additional volumeMounts.
+  extraVolumeMounts: []
 
 # Configuration for the Antrea UI backend container.
 backend:
@@ -23,6 +25,8 @@ backend:
   resources: {}
   # -- Log verbosity switch for backend server.
   logVerbosity: 0
+  # -- Additional volumeMounts.
+  extraVolumeMounts: []
 
 # -- Address at which the Antrea UI is accessible. Not required for most configurations.
 url: ""
@@ -169,3 +173,6 @@ tolerations: {}
 podAnnotations: {}
 # -- Labels to be added to the Antrea UI Pod.
 podLabels: {}
+
+# -- Additional volumes.
+extraVolumes: []
