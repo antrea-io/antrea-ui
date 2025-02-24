@@ -401,10 +401,10 @@
   dependencies:
     "@types/json-schema" "^7.0.15"
 
-"@eslint/create-config@^1.4.0":
-  version "1.4.0"
-  resolved "https://registry.yarnpkg.com/@eslint/create-config/-/create-config-1.4.0.tgz#9fc2729026d3931e0b7d525fe900867bc7bb46b9"
-  integrity sha512-xzGBudH1Wb07K3VdA+vcpboBb1cJWSRSJkPzZ9xDo0yk/Inuc5BWmeZVqZqUs2iSr9NkFiN4isKv4QL+7qYlKQ==
+"@eslint/create-config@^1.5.0":
+  version "1.5.0"
+  resolved "https://registry.yarnpkg.com/@eslint/create-config/-/create-config-1.5.0.tgz#9840acf16f0c3b6c14cbb06895e6f31b0f1d22f6"
+  integrity sha512-lnvybfmjEpon4Qar+ODzzgdNp9HFvH6RJ8OxYG0gwX8vPVdQe3OmIeLEI7d+ITnIQoyz5tl1cxSUeScwLrd/kw==
   dependencies:
     cross-spawn "^7.0.2"
     enquirer "^2.3.5"
