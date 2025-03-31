@@ -1,39 +1,57 @@
-# golangci-lint configuration used for CI
+version: "2"
 run:
   tests: true
-  timeout: 10m
-
-linters-settings:
-  goimports:
-    local-prefixes: antrea.io/antrea-ui
-  revive:
-    ignore-generated-header: false
-    severity: warning
-    confidence: 0.8
-    rules:
-      - name: unreachable-code
-      - name: errorf
-      - name: range
-      - name: superfluous-else
-      - name: var-declaration
-      - name: duplicated-imports
-
 linters:
-  disable-all: true
+  default: none
   enable:
-    - misspell
-    - gofmt
-    - unused
-    - staticcheck
     - gosec
-    - goimports
     - govet
+    - misspell
     - revive
-
-issues:
-  exclude-rules:
-    # This is temporary
-    # Golangci-lint is no honoring the "lint:ignore" comments for staticcheck
-    - linters:
-        - staticcheck
-      text: "SA1019:"
+    - staticcheck
+    - unused
+  settings:
+    revive:
+      confidence: 0.8
+      severity: warning
+      rules:
+        - name: unreachable-code
+        - name: errorf
+        - name: range
+        - name: superfluous-else
+        - name: var-declaration
+        - name: duplicated-imports
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      # Golangci-lint is no honoring the "lint:ignore" comments for staticcheck.
+      - linters: [ staticcheck ]
+        text: 'SA1019:'
+      # Exclude ST1005 when it encounters errors starting with proper noun.
+      - linters: [ staticcheck ]
+        text: 'ST1005:'
+        path: pkg/handlers/antreasvc/client.go
+        source: return nil, fmt.Errorf\("Antrea
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - antrea.io/antrea-ui
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$

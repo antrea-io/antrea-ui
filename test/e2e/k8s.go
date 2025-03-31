@@ -27,7 +27,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
-	"k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 )
 
 func createK8sClient(kubeconfigPath string) (*rest.Config, kubernetes.Interface, error) {
@@ -127,7 +127,7 @@ func createTestDeployment(ctx context.Context, namespace string, name string, nu
 						},
 					},
 					// Set it to 1s for immediate shutdown to reduce test run time and to avoid affecting subsequent tests.
-					TerminationGracePeriodSeconds: pointer.Int64(1),
+					TerminationGracePeriodSeconds: ptr.To[int64](1),
 				},
 			},
 		},

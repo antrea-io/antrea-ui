@@ -113,8 +113,8 @@ func (p *antreaHTTPClientProvider) updateAntreaClient() error {
 		}
 	}
 	// name used in the server certificate
-	kubeConfig.TLSClientConfig.CAData = caBundle
-	kubeConfig.TLSClientConfig.ServerName = p.serverName
+	kubeConfig.CAData = caBundle
+	kubeConfig.ServerName = p.serverName
 
 	client, err := rest.HTTPClientFor(kubeConfig)
 	if err != nil {
