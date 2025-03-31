@@ -90,7 +90,7 @@ func TestCompare(t *testing.T) {
 		copy(otherHash, testHash)
 		otherHash[len(testHash)-1] ^= 0xff
 		h.EXPECT().Hash([]byte("password2"), testSalt).Return(otherHash, nil)
-		require.ErrorIs(t, s.Compare(ctx, []byte("password2")), InvalidPasswordErr)
+		require.ErrorIs(t, s.Compare(ctx, []byte("password2")), ErrInvalidPassword)
 	})
 
 	t.Run("hash error", func(t *testing.T) {
@@ -103,6 +103,6 @@ func TestCompare(t *testing.T) {
 
 	t.Run("uninitialized", func(t *testing.T) {
 		_, _, s := setup(t)
-		require.ErrorIs(t, s.Compare(ctx, []byte("password1")), NotInitializedErr)
+		require.ErrorIs(t, s.Compare(ctx, []byte("password1")), ErrNotInitialized)
 	})
 }

@@ -31,8 +31,8 @@ const (
 )
 
 var (
-	NotInitializedErr  = fmt.Errorf("not initialized")
-	InvalidPasswordErr = fmt.Errorf("invalid password")
+	ErrNotInitialized  = fmt.Errorf("not initialized")
+	ErrInvalidPassword = fmt.Errorf("invalid password")
 )
 
 type store struct {
@@ -82,7 +82,7 @@ func (s *store) Update(ctx context.Context, password []byte) error {
 	s.Lock()
 	defer s.Unlock()
 	if s.cachedSalt == nil {
-		return NotInitializedErr
+		return ErrNotInitialized
 	}
 	hash, err := s.hasher.Hash(password, s.cachedSalt)
 	if err != nil {
@@ -99,14 +99,14 @@ func (s *store) Compare(ctx context.Context, password []byte) error {
 	s.RLock()
 	defer s.RUnlock()
 	if s.cachedSalt == nil {
-		return NotInitializedErr
+		return ErrNotInitialized
 	}
 	hash, err := s.hasher.Hash(password, s.cachedSalt)
 	if err != nil {
 		return err
 	}
 	if !slices.Equal(hash, s.cachedHash) {
-		return InvalidPasswordErr
+		return ErrInvalidPassword
 	}
 	return nil
 }
