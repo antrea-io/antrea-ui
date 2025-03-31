@@ -2,6 +2,8 @@ module antrea.io/antrea-ui
 
 go 1.24.0
 
+toolchain go1.24.1
+
 require (
 	github.com/blang/semver v3.5.1+incompatible
 	github.com/coreos/go-oidc/v3 v3.13.0
@@ -18,7 +20,7 @@ require (
 	github.com/oauth2-proxy/mockoidc v0.0.0-20220308204021-b9169deeb282
 	github.com/spf13/afero v1.14.0
 	github.com/spf13/pflag v1.0.6
-	github.com/spf13/viper v1.20.0
+	github.com/spf13/viper v1.20.1
 	github.com/stretchr/testify v1.10.0
 	github.com/tonglil/buflogr v1.1.1
 	go.uber.org/zap v1.27.0
