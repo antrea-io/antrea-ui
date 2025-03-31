@@ -529,15 +529,16 @@
   dependencies:
     "@lit-labs/ssr-dom-shim" "^1.0.0"
 
-"@mswjs/interceptors@^0.37.3":
-  version "0.37.5"
-  resolved "https://registry.yarnpkg.com/@mswjs/interceptors/-/interceptors-0.37.5.tgz#9ce40c56be02b43fcbdb51b63f47e69fc4aaabe6"
-  integrity sha512-AAwRb5vXFcY4L+FvZ7LZusDuZ0vEe0Zm8ohn1FM6/X7A3bj4mqmkAcGRWuvC2JwSygNwHAAmMnAI73vPHeqsHA==
+"@mswjs/interceptors@^0.38.0":
+  version "0.38.0"
+  resolved "https://registry.yarnpkg.com/@mswjs/interceptors/-/interceptors-0.38.0.tgz#bd033abcc6a35fd6ecd575a3b5ddf2f773fe0a97"
+  integrity sha512-nPHVM+LUl4V1kXPXuTcNN5OMD//ltCQ0lccuEagvidJdpbig3hP3W6/ctWHx6mee7vZIWE0L+Mqj3vx0ASlm/w==
   dependencies:
     "@open-draft/deferred-promise" "^2.2.0"
     "@open-draft/logger" "^0.3.0"
     "@open-draft/until" "^2.0.0"
     is-node-process "^1.2.0"
+    jsdom "^26.0.0"
     outvariant "^1.4.3"
     strict-event-emitter "^0.5.1"
 
@@ -3509,12 +3510,12 @@ natural-compare@^1.4.0:
   resolved "https://registry.yarnpkg.com/natural-compare/-/natural-compare-1.4.0.tgz#4abebfeed7541f2c27acfb29bdbbd15c8d5ba4f7"
   integrity sha512-OWND8ei3VtNC9h7V60qff3SVobHr996CTwgxubgyQYEpg290h9J0buyECNNJexkFm5sOajh5G116RYA1c8ZMSw==
 
-nock@^14.0.1:
-  version "14.0.1"
-  resolved "https://registry.yarnpkg.com/nock/-/nock-14.0.1.tgz#62006248bbbc7637322c9fc73f90b93a431b4f5e"
-  integrity sha512-IJN4O9pturuRdn60NjQ7YkFt6Rwei7ZKaOwb1tvUIIqTgeD0SDDAX3vrqZD4wcXczeEy/AsUXxpGpP/yHqV7xg==
+nock@^14.0.2:
+  version "14.0.2"
+  resolved "https://registry.yarnpkg.com/nock/-/nock-14.0.2.tgz#94229de0242ab53f6a5bc3c78fe77fe653bfe83e"
+  integrity sha512-jDUBpCNY7KLyOF2FTiT4mLRxV2kpjo4YrcGtv3IMCIwqFKxOQFrmeXefvuEiWvS3ApPWQHAkakkkVpoOrDNCVg==
   dependencies:
-    "@mswjs/interceptors" "^0.37.3"
+    "@mswjs/interceptors" "^0.38.0"
     json-stringify-safe "^5.0.1"
     propagate "^2.0.0"
 
