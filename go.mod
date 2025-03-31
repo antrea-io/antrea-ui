@@ -1,7 +1,6 @@
 module antrea.io/antrea-ui
 
 go 1.24.0
-
 require (
 	github.com/blang/semver v3.5.1+incompatible
 	github.com/coreos/go-oidc/v3 v3.13.0
@@ -23,7 +22,7 @@ require (
 	github.com/tonglil/buflogr v1.1.1
 	go.uber.org/zap v1.27.0
 	golang.org/x/crypto v0.36.0
-	golang.org/x/net v0.37.0
+	golang.org/x/net v0.38.0
 	golang.org/x/oauth2 v0.28.0
 	golang.org/x/time v0.11.0
 	k8s.io/api v0.31.7
