@@ -1,11 +1,10 @@
 module antrea.io/antrea-ui
 
 go 1.24.0
-
 require (
 	github.com/blang/semver v3.5.1+incompatible
 	github.com/coreos/go-oidc/v3 v3.13.0
-	github.com/gin-contrib/cors v1.7.3
+	github.com/gin-contrib/cors v1.7.4
 	github.com/gin-gonic/gin v1.10.0
 	github.com/go-logr/logr v1.4.2
 	github.com/go-logr/zapr v1.3.0
