@@ -23,7 +23,7 @@ require (
 	github.com/tonglil/buflogr v1.1.1
 	go.uber.org/zap v1.27.0
 	golang.org/x/crypto v0.37.0
-	golang.org/x/net v0.38.0
+	golang.org/x/net v0.39.0
 	golang.org/x/oauth2 v0.29.0
 	golang.org/x/time v0.11.0
 	k8s.io/api v0.31.7
