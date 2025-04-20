@@ -14,15 +14,25 @@
  * limitations under the License.
  */
 
-import { useState, useEffect} from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { CdsCard } from '@cds/react/card';
 import { CdsDivider } from '@cds/react/divider';
+import { CdsButton } from '@cds/react/button';
+import { CdsIcon } from '@cds/react/icon';
+import { CdsInput } from '@cds/react/input';
+import '@cds/core/icon/register.js';
+import React from 'react';
 import { AgentInfo, ControllerInfo, Condition, K8sRef, agentInfoAPI, controllerInfoAPI } from '../api/info';
 import { FeatureGate, featureGatesAPI } from '../api/featuregates';
 import { useAppError} from '../components/errors';
 import { WaitForAPIResource } from '../components/progress';
 
 type Property = string
+
+type SortConfig = {
+    key: Property;
+    direction: 'ascending' | 'descending';
+};
 
 const controllerProperties: Property[] = ['Name', 'Version', 'Pod Name', 'Node Name', 'Connected Agents', 'Healthy', 'Last Heartbeat'];
 const agentProperties: Property[] = ['Name', 'Version', 'Pod Name', 'Node Name', 'Local Pods', 'Node Subnets', 'OVS Version', 'Healthy', 'Last Heartbeat'];
@@ -75,8 +85,134 @@ function agentPropertyValues(agent: AgentInfo): string[] {
 }
 
 function ComponentSummary<T>(props: {title: string, data: T[], propertyNames: Property[], getProperties: (x: T) => string[]}) {
+    const itemsPerPage = 10; // Display 10 items per page for Agents table
+    const isAgentTable = props.title === 'Agents';
+
+    const [currentPage, setCurrentPage] = useState(1);
+    const [sortConfig, setSortConfig] = useState<SortConfig | null>(null);
+    const [searchTerm, setSearchTerm] = useState('');
+    const [sortStatus, setSortStatus] = useState<'idle' | 'sorting' | 'completed'>('idle');
+    const [sortingColumn, setSortingColumn] = useState<string | null>(null);
+    const sortCompletionTimer = useRef<NodeJS.Timeout | null>(null);
+
     const propertyNames = props.propertyNames;
     const data = props.data;
+
+    const filteredData = useMemo(() => {
+        if (!isAgentTable || !searchTerm) {
+            return data;
+        }
+        // Simple search on the first property (usually Name)
+        const searchKeyIndex = 0; // Assuming the first column is the primary identifier (e.g., Name)
+        return data.filter(item => {
+            const value = props.getProperties(item)[searchKeyIndex];
+            return value.toLowerCase().includes(searchTerm.toLowerCase());
+        });
+    }, [data, searchTerm, isAgentTable, props.getProperties]);
+
+    const sortedData = useMemo(() => {
+        if (!isAgentTable || !sortConfig) {
+            return filteredData;
+        }
+        console.log(`useMemo running for sort: ${sortConfig.key}`);
+        const dataCopy = [...filteredData];
+        const sortKeyIndex = propertyNames.indexOf(sortConfig.key);
+        if (sortKeyIndex === -1) return dataCopy;
+
+        dataCopy.sort((a, b) => {
+            const aValue = props.getProperties(a)[sortKeyIndex];
+            const bValue = props.getProperties(b)[sortKeyIndex];
+
+            // Custom numerical sort for 'Name' column (agent-N)
+            if (sortConfig.key === 'Name') {
+                const numA = parseInt(aValue.split('-').pop() || '0', 10);
+                const numB = parseInt(bValue.split('-').pop() || '0', 10);
+
+                if (!isNaN(numA) && !isNaN(numB)) {
+                    const compareResult = numA - numB;
+                    return sortConfig.direction === 'ascending' ? compareResult : -compareResult;
+                }
+            }
+
+            // Default string comparison for other columns
+            if (aValue < bValue) {
+                return sortConfig.direction === 'ascending' ? -1 : 1;
+            }
+            if (aValue > bValue) {
+                return sortConfig.direction === 'ascending' ? 1 : -1;
+            }
+            return 0;
+        });
+        return dataCopy;
+    }, [filteredData, sortConfig, propertyNames, props.getProperties, isAgentTable]);
+
+    // Effect to handle completion and reset
+    // Effect 1: Detect sort completion
+    useEffect(() => {
+        if (sortStatus === 'sorting') {
+            console.log('Sort completed, setting status to completed'); // Debug log
+            setSortStatus('completed');
+        }
+    }, [sortedData, sortStatus]);
+
+    // Effect 2: Handle the 'Done!' message timeout
+    useEffect(() => {
+        // If the status becomes 'completed', start the timer to reset it
+        if (sortStatus === 'completed') {
+            // Clear any previous timer just in case
+            if (sortCompletionTimer.current) {
+                clearTimeout(sortCompletionTimer.current);
+            }
+            // Start the new timer
+            sortCompletionTimer.current = setTimeout(() => {
+                console.log('Timer finished, resetting status to idle'); // Debug log
+                setSortStatus('idle');
+                setSortingColumn(null);
+                sortCompletionTimer.current = null;
+            }, 3000); // 3 seconds
+        }
+
+        // Cleanup: Clear the timer if the component unmounts or if status changes away from 'completed'
+        return () => {
+            if (sortCompletionTimer.current) {
+                clearTimeout(sortCompletionTimer.current);
+                sortCompletionTimer.current = null;
+            }
+        };
+    // This effect watches sortStatus to trigger the timer when it becomes 'completed'
+    }, [sortStatus]);
+
+    const paginatedData = useMemo(() => {
+        if (!isAgentTable) {
+            return sortedData; // No pagination for non-agent tables
+        }
+        const startIndex = (currentPage - 1) * itemsPerPage;
+        return sortedData.slice(startIndex, startIndex + itemsPerPage);
+    }, [sortedData, currentPage, itemsPerPage, isAgentTable]);
+
+    const totalPages = isAgentTable ? Math.ceil(sortedData.length / itemsPerPage) : 1;
+
+    const handleSort = (key: Property) => {
+        if (!isAgentTable) return;
+        console.log(`handleSort called for: ${key}`);
+        let direction: 'ascending' | 'descending' = 'ascending';
+        if (sortConfig && sortConfig.key === key && sortConfig.direction === 'ascending') {
+            direction = 'descending';
+        }
+        setSortingColumn(key);
+        setSortStatus('sorting');
+        setSortConfig({ key, direction });
+        setCurrentPage(1);
+    };
+
+    const handleSearchChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+        setSearchTerm(event.target.value);
+        setCurrentPage(1);
+    };
+
+    const handlePageChange = (newPage: number) => {
+        setCurrentPage(newPage);
+    };
 
     return (
         <CdsCard title={props.title}>
@@ -84,20 +220,51 @@ function ComponentSummary<T>(props: {title: string, data: T[], propertyNames: Pr
                 <div cds-text="section" cds-layout="p-y:sm">
                     {props.title}
                 </div>
+                {isAgentTable && (
+                    <div cds-layout="p-b:sm">
+                        <CdsInput>
+                            <label>Search Agents</label>
+                            <input
+                                type="text"
+                                placeholder="Search by name..."
+                                value={searchTerm}
+                                onChange={handleSearchChange}
+                            />
+                        </CdsInput>
+                    </div>
+                )}
+                {isAgentTable && (
+                    <div cds-text="caption" style={{ minHeight: '20px', paddingBottom: '5px', textAlign: 'right' }}>
+                        {sortStatus === 'sorting' && (
+                            <span>Please wait, sorting by {sortingColumn}...</span>
+                        )}
+                        {sortStatus === 'completed' && (
+                            <span style={{ backgroundColor: 'black', padding: '2px 4px', borderRadius: '3px' }}>Done!</span>
+                        )}
+                        {sortStatus === 'idle' && (
+                            <span>Click table headers to sort</span>
+                        )}
+                    </div>
+                )}
                 <CdsDivider cds-card-remove-margin></CdsDivider>
                 <table cds-table="border:all" cds-text="center body">
                     <thead>
                         <tr>
                             {
                                 propertyNames.map(name => (
-                                    <th key={name}>{name}</th>
+                                    <th key={name} onClick={() => handleSort(name)} style={{ cursor: isAgentTable ? 'pointer' : 'default' }}>
+                                        {name}
+                                        {isAgentTable && sortConfig?.key === name && (
+                                            <CdsIcon shape="arrow" direction={sortConfig.direction === 'ascending' ? 'up' : 'down'} style={{ marginLeft: '5px' }} />
+                                        )}
+                                    </th>
                                 ))
                             }
                         </tr>
                     </thead>
                     <tbody>
                         {
-                            data.map((x: T, idx: number) => {
+                            paginatedData.map((x: T, idx: number) => {
                                 const values = props.getProperties(x);
                                 return (
                                     <tr key={idx}>
@@ -112,9 +279,37 @@ function ComponentSummary<T>(props: {title: string, data: T[], propertyNames: Pr
                         }
                     </tbody>
                 </table>
+                {isAgentTable && totalPages > 1 && (
+                    <div cds-layout="horizontal gap:sm align:center p-t:md">
+                        <CdsButton size="sm" action="outline" disabled={currentPage === 1} onClick={() => handlePageChange(currentPage - 1)}>Previous</CdsButton>
+                        <span cds-text="secondary">Page {currentPage} of {totalPages} ({filteredData.length} items)</span>
+                        <CdsButton size="sm" action="outline" disabled={currentPage === totalPages} onClick={() => handlePageChange(currentPage + 1)}>Next</CdsButton>
+                    </div>
+                )}
             </div>
         </CdsCard>
     );
+}
+
+function generateFakeAgents(n: number): AgentInfo[] {
+    return Array.from({ length: n }).map((_, i) => ({
+      metadata: { name: `agent-${i}` },
+      version: "v2.1.0",
+      podRef: { name: `antrea-agent-${i}`, namespace: "kube-system" },
+      nodeRef: { name: `node-${i}` },
+      localPodNum: Math.floor(Math.random() * 10),
+      nodeSubnets: [`10.10.${i}.0/24`],
+      ovsInfo: { version: "3.0.0" },
+      agentConditions: [
+        {
+          type: "AgentHealthy",
+          status: "True",
+          lastHeartbeatTime: new Date().toISOString(),
+          reason: "",
+          message: ""
+        }
+      ]
+    }));
 }
 
 export default function Summary() {
@@ -159,8 +354,16 @@ export default function Summary() {
         // https://reactjs.org/docs/hooks-faq.html#is-it-safe-to-omit-functions-from-the-list-of-dependencies
         async function getData() {
             const [controllerInfo, agentInfos, featureGates] = await Promise.all([getControllerInfo(), getAgentInfos(), getFeatureGates()]);
+
+            let finalAgentInfos = agentInfos;
+            // If in development mode, generate fake agent data for UI testing
+            if (import.meta.env.DEV) {
+                console.log('Development environment detected, generating fake agent data...');
+                finalAgentInfos = generateFakeAgents(150);
+            }
+
             setControllerInfo(controllerInfo);
-            setAgentInfos(agentInfos);
+            setAgentInfos(finalAgentInfos);
 
             if (featureGates !== undefined) {
                 setControllerFeatureGates(featureGates.filter((fg) => fg.component === 'controller'));
