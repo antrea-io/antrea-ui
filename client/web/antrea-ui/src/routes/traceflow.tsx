@@ -213,68 +213,112 @@ export default function Traceflow() {
             protocol: protocol,
             timeout: 20,
             tcpFlags: tcpFlags,
+            useIPv6: false,
+            liveTraffic: liveTraffic,
+            droppedOnly: false,
         };
     }
 
-    const { register, handleSubmit, reset, formState: { errors } } = useForm<Inputs>({
+    const { 
+        register, 
+        handleSubmit, 
+        reset, 
+        watch, 
+        unregister,
+        setValue,
+        formState: { errors },
+        trigger
+    } = useForm<Inputs>({
         defaultValues: defaultValues(false, "TCP"),
+        mode: "onChange"
     });
 
     const navigate = useNavigate();
-
     const [traceflowRunning, setTraceflowRunning] = useState<boolean>(false);
-    const [isLiveTraffic, setIsLiveTraffic] = useState<boolean>(false);
-    const [proto, setProto] = useState<string>("TCP");
-    const [ipv6, setIPv6] = useState<boolean>(false);
     const mountedRef = useRef<boolean>(false);
-
     const { addError, removeError } = useAppError();
 
-    async function runTraceflow(tf: TraceflowSpec, cb: () => void) {
-        try {
-            const tfStatus = await traceflowAPI.runTraceflow(tf, true);
-            if (tfStatus === undefined) {
-                throw new Error("missing Traceflow status");
-            }
-            navigate(`/traceflow/result`, {
-                state: {
-                    spec: tf,
-                    status: tfStatus,
-                },
-            });
-        } catch (e) {
-            // not sure whether this is the best way to do this, but we want to
-            // remove the graph if present
-            navigate(`/traceflow`);
-            if (e instanceof Error) addError(e);
-            console.error(e);
-        }
-        if (mountedRef.current) {
-            cb();
-        }
-    }
+    // Watch form values for dynamic updates
+    const protocol = watch("protocol");
+    const isLiveTraffic = watch("liveTraffic");
+    const useIPv6 = watch("useIPv6");
 
-    const onSubmit: SubmitHandler<Inputs> = data => {
-        removeError();
-        let tf: TraceflowSpec;
-        try {
-            tf = createTraceflowRequest(data);
-        } catch (e) {
-            addError(e as Error);
-            return;
+    // Custom validation function
+    const validateForm = (values: Inputs): Record<string, string> => {
+        const errors: Record<string, string> = {};
+        
+        if (values.droppedOnly && !values.liveTraffic) {
+            errors.droppedOnly = "Dropped traffic can only be used for live traffic Traceflow";
         }
-        setTraceflowRunning(true);
-        runTraceflow(tf, () => {
-            setTraceflowRunning(false);
-        });
+        
+        if (!values.src && !values.liveTraffic) {
+            errors.src = "Source is required for non-live traffic";
+        }
+
+        if (!values.dst && !values.liveTraffic) {
+            errors.dst = "Destination is required for non-live traffic";
+        }
+
+        if (!values.src && !values.dst) {
+            errors.src = "At least one of source and destination is required";
+            errors.dst = "At least one of source and destination is required";
+        }
+
+        const sourceType = isIP(values.src) ? "IP" : "Pod";
+        if (sourceType === "IP" && !values.liveTraffic) {
+            errors.src = "Source must be a Pod for a normal Traceflow";
+        }
+        if (sourceType !== "Pod" && values.destinationType !== "Pod") {
+            errors.src = "At least one of source and destination must be a Pod";
+            errors.destinationType = "At least one of source and destination must be a Pod";
+        }
+
+        const dstIPVersion = ipVersion(values.dst);
+        const srcIPVersion = ipVersion(values.src);
+        if (srcIPVersion && dstIPVersion && (srcIPVersion !== dstIPVersion)) {
+            errors.src = "IP version mismatch between source and destination";
+            errors.dst = "IP version mismatch between source and destination";
+        }
+        
+        if (srcIPVersion === 4 && values.useIPv6) {
+            errors.useIPv6 = "Do not check the 'Use IPv6' box when providing an IPv4 source address";
+        }
+        if (dstIPVersion === 4 && values.useIPv6) {
+            errors.useIPv6 = "Do not check the 'Use IPv6' box when providing an IPv4 destination address";
+        }
+
+        return errors;
     };
 
+    // Handle protocol changes
     useEffect(() => {
-        mountedRef.current = true;
-        return () => {
-            mountedRef.current = false;
-        };
-    }, []);
+        if (protocol === "TCP") {
+            setValue("dstPort", isLiveTraffic ? 0 : 80);
+            setValue("tcpFlags", isLiveTraffic ? 0 : 2);
+        } else if (protocol === "UDP") {
+            setValue("dstPort", isLiveTraffic ? 0 : 53);
+            setValue("tcpFlags", 0);
+        } else if (protocol === "ICMP") {
+            unregister(["srcPort", "dstPort", "tcpFlags"]);
+        }
+        trigger();
+    }, [protocol, isLiveTraffic]);
+
+    // Handle live traffic changes
+    useEffect(() => {
+        if (isLiveTraffic) {
+            setValue("dstPort", 0);
+            setValue("tcpFlags", 0);
+        } else {
+            if (protocol === "TCP") {
+                setValue("dstPort", 80);
+                setValue("tcpFlags", 2);
+            } else if (protocol === "UDP") {
+                setValue("dstPort", 53);
+            }
+        }
+        trigger();
+    }, [isLiveTraffic]);
 
     const srcPort = register(
         "srcPort",
@@ -298,7 +342,7 @@ export default function Traceflow() {
         },
     );
 
-    const dstPortRequired = !isLiveTraffic && (proto === "TCP" || proto === "UDP");
+    const dstPortRequired = !isLiveTraffic && (protocol === "TCP" || protocol === "UDP");
     const dstPort = register(
         "dstPort",
         {
@@ -345,11 +389,67 @@ export default function Traceflow() {
         },
     );
 
-    const protocol = register("protocol");
+    const handleReset = () => {
+        reset(defaultValues(false, "TCP"), {
+            keepDefaultValues: true,
+            keepDirty: false
+        });
+        navigate("/traceflow");
+    };
 
-    const useIPv6 = register("useIPv6");
+    async function runTraceflow(tf: TraceflowSpec, cb: () => void) {
+        try {
+            const tfStatus = await traceflowAPI.runTraceflow(tf, true);
+            if (tfStatus === undefined) {
+                throw new Error("missing Traceflow status");
+            }
+            navigate(`/traceflow/result`, {
+                state: {
+                    spec: tf,
+                    status: tfStatus,
+                },
+            });
+        } catch (e) {
+            // not sure whether this is the best way to do this, but we want to
+            // remove the graph if present
+            navigate(`/traceflow`);
+            if (e instanceof Error) addError(e);
+            console.error(e);
+        }
+        if (mountedRef.current) {
+            cb();
+        }
+    }
 
-    const liveTraffic = register("liveTraffic");
+    const onSubmit: SubmitHandler<Inputs> = async (data) => {
+        removeError();
+        const validationErrors = validateForm(data);
+        if (Object.keys(validationErrors).length > 0) {
+            Object.entries(validationErrors).forEach(([field, message]) => {
+                addError(new Error(`${field}: ${message}`));
+            });
+            return;
+        }
+
+        let tf: TraceflowSpec;
+        try {
+            tf = createTraceflowRequest(data);
+        } catch (e) {
+            addError(e as Error);
+            return;
+        }
+        setTraceflowRunning(true);
+        runTraceflow(tf, () => {
+            setTraceflowRunning(false);
+        });
+    };
+
+    useEffect(() => {
+        mountedRef.current = true;
+        return () => {
+            mountedRef.current = false;
+        };
+    }, []);
 
     return (
         <main>
@@ -364,7 +464,7 @@ export default function Traceflow() {
                         </CdsInput>
                         <CdsInput>
                             <label>Source</label>
-                            <input {...register("src", { required: (!isLiveTraffic) && "Source Pod is required" })} placeholder={isLiveTraffic ? "Pod Name, or IP" : "Pod Name"} />
+                            <input {...register("src")} placeholder={isLiveTraffic ? "Pod Name, or IP" : "Pod Name"} />
                         </CdsInput>
                         <ErrorMessage
                             errors={errors}
@@ -373,17 +473,13 @@ export default function Traceflow() {
                         />
                         <CdsSelect>
                             <label>Protocol</label>
-                            <select {...protocol} onChange={(event) => {
-                                protocol.onChange(event);
-                                setProto(event.target.value);
-                                reset(defaultValues(isLiveTraffic, event.target.value), { keepValues: false, keepDirtyValues: true});
-                            }}>
+                            <select {...register("protocol")}>
                                 <option value="TCP">TCP</option>
                                 <option value="UDP">UDP</option>
                                 <option value="ICMP">ICMP</option>
                             </select>
                         </CdsSelect>
-                        { (proto === "TCP" || proto === "UDP") && <>
+                        { (protocol === "TCP" || protocol === "UDP") && <>
                             <CdsInput>
                                 <label>Source Port</label>
                                 <input type="number" {...srcPort} />
@@ -411,20 +507,25 @@ export default function Traceflow() {
                                 <input {...destinationType} type="radio" value="IP" />
                             </CdsRadio>
                         </CdsRadioGroup>
+                        <ErrorMessage
+                            errors={errors}
+                            name="destinationType"
+                            as={<ErrorMessageContainer />}
+                        />
                         <CdsInput>
                             <label>Destination Namespace</label>
                             <input {...register("dstNamespace")} />
                         </CdsInput>
                         <CdsInput>
                             <label>Destination</label>
-                            <input {...register("dst", { required: (!isLiveTraffic) && "Destination is required" })} placeholder="Pod / Service Name, or IP" />
+                            <input {...register("dst")} placeholder="Pod / Service Name, or IP" />
                         </CdsInput>
                         <ErrorMessage
                             errors={errors}
                             name="dst"
                             as={<ErrorMessageContainer />}
                         />
-                        { (proto === "TCP" || proto === "UDP") && <>
+                        { (protocol === "TCP" || protocol === "UDP") && <>
                             <CdsInput>
                                 <label>Destination Port</label>
                                 <input type="number" {...dstPort} />
@@ -436,8 +537,7 @@ export default function Traceflow() {
                                 as={<ErrorMessageContainer />}
                             />
                         </> }
-                        {/* TCP flags have no meaning in Live Traceflow as they are ignored and we only match SYN packets */}
-                        { (proto === "TCP" && !isLiveTraffic) && <>
+                        { (protocol === "TCP" && !isLiveTraffic) && <>
                             <CdsInput>
                                 <label>TCP Flags</label>
                                 <input type="number" {...tcpFlags} />
@@ -456,18 +556,16 @@ export default function Traceflow() {
                         <div cds-layout="horizontal gap:lg">
                             <CdsCheckbox>
                                 <label>Use IPv6</label>
-                                <input type="checkbox" {...useIPv6} onChange={(event) => {
-                                    useIPv6.onChange(event);
-                                    setIPv6(event.currentTarget.checked);
-                                }} checked={ipv6} />
+                                <input type="checkbox" {...register("useIPv6")} />
                             </CdsCheckbox>
+                            <ErrorMessage
+                                errors={errors}
+                                name="useIPv6"
+                                as={<ErrorMessageContainer />}
+                            />
                             <CdsCheckbox>
                                 <label>Live Traffic</label>
-                                <input type="checkbox" {...liveTraffic} onChange={(event) => {
-                                    liveTraffic.onChange(event);
-                                    setIsLiveTraffic(event.currentTarget.checked);
-                                    reset(defaultValues(event.currentTarget.checked, proto), { keepValues: false, keepDirtyValues: true });
-                                }} checked={isLiveTraffic} />
+                                <input type="checkbox" {...register("liveTraffic")} />
                             </CdsCheckbox>
                             { isLiveTraffic &&
                                 <CdsCheckbox>
@@ -476,15 +574,14 @@ export default function Traceflow() {
                                 </CdsCheckbox>
                             }
                         </div>
+                        <ErrorMessage
+                            errors={errors}
+                            name="droppedOnly"
+                            as={<ErrorMessageContainer />}
+                        />
                         <div cds-layout="horizontal gap:lg">
                             <CdsButton role="button" type="submit">Run Traceflow</CdsButton>
-                            <CdsButton role="button" type="button" action="outline" onClick={()=> {
-                                setIsLiveTraffic(false);
-                                setProto("TCP");
-                                setIPv6(false);
-                                reset(defaultValues(false, "TCP"), { keepValues: false });
-                                navigate("/traceflow");
-                            }}>Reset</CdsButton>
+                            <CdsButton role="button" type="button" action="outline" onClick={handleReset}>Reset</CdsButton>
                         </div>
                         <TraceflowRunningAlert traceflowRunning={traceflowRunning} />
                     </CdsFormGroup>
