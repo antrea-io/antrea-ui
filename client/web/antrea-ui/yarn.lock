@@ -399,10 +399,10 @@
   dependencies:
     "@types/json-schema" "^7.0.15"
 
-"@eslint/create-config@^1.8.0":
-  version "1.8.0"
-  resolved "https://registry.yarnpkg.com/@eslint/create-config/-/create-config-1.8.0.tgz#cf1932183d45c73a8d2ef0e5ba82c3d4dc124948"
-  integrity sha512-a0q4dPcxHJUFqPIE7zi23RAgPm1+/965VF+iALKzi/h+ichkvnVus6eh4E4uln0bK+OAywtr79f/OtbSIsXVKg==
+"@eslint/create-config@^1.8.1":
+  version "1.8.1"
+  resolved "https://registry.yarnpkg.com/@eslint/create-config/-/create-config-1.8.1.tgz#f011d42c87005513b071f98168c451ec205d2c2b"
+  integrity sha512-UUzYPqTs3rmc7xaA7L3/9cY54fobqOzN0OyAt4Dx+t+hSUm+x8pBpUhvK6YX3Px/YmO2o8vsW0GQ+SIZnBn4Rg==
   dependencies:
     cross-spawn "^7.0.2"
     enquirer "^2.3.5"
