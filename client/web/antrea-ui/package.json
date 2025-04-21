@@ -50,7 +50,7 @@
     ]
   },
   "devDependencies": {
-    "@eslint/create-config": "^1.8.0",
+    "@eslint/create-config": "^1.8.1",
     "@testing-library/jest-dom": "^6.6.3",
     "@types/base-64": "^1.0.2",
     "@types/d3": "^7.4.3",
