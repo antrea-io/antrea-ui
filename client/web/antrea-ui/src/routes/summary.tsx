@@ -18,7 +18,6 @@ import { useState, useEffect, useRef, useMemo } from 'react';
 import { CdsCard } from '@cds/react/card';
 import { CdsDivider } from '@cds/react/divider';
 import { CdsButton } from '@cds/react/button';
-import { CdsIcon } from '@cds/react/icon';
 import { CdsInput } from '@cds/react/input';
 import '@cds/core/icon/register.js';
 import React from 'react';
@@ -26,6 +25,7 @@ import { AgentInfo, ControllerInfo, Condition, K8sRef, agentInfoAPI, controllerI
 import { FeatureGate, featureGatesAPI } from '../api/featuregates';
 import { useAppError} from '../components/errors';
 import { WaitForAPIResource } from '../components/progress';
+import { SortIcon } from '../components/SortIcon';
 
 type Property = string
 
@@ -91,9 +91,6 @@ function ComponentSummary<T>(props: {title: string, data: T[], propertyNames: Pr
     const [currentPage, setCurrentPage] = useState(1);
     const [sortConfig, setSortConfig] = useState<SortConfig | null>(null);
     const [searchTerm, setSearchTerm] = useState('');
-    const [sortStatus, setSortStatus] = useState<'idle' | 'sorting' | 'completed'>('idle');
-    const [sortingColumn, setSortingColumn] = useState<string | null>(null);
-    const sortCompletionTimer = useRef<NodeJS.Timeout | null>(null);
 
     const propertyNames = props.propertyNames;
     const data = props.data;
@@ -111,10 +108,9 @@ function ComponentSummary<T>(props: {title: string, data: T[], propertyNames: Pr
     }, [data, searchTerm, isAgentTable, props.getProperties]);
 
     const sortedData = useMemo(() => {
-        if (!isAgentTable || !sortConfig) {
+        if (!sortConfig) {
             return filteredData;
         }
-        console.log(`useMemo running for sort: ${sortConfig.key}`);
         const dataCopy = [...filteredData];
         const sortKeyIndex = propertyNames.indexOf(sortConfig.key);
         if (sortKeyIndex === -1) return dataCopy;
@@ -134,6 +130,24 @@ function ComponentSummary<T>(props: {title: string, data: T[], propertyNames: Pr
                 }
             }
 
+            // Custom numerical sort for numeric columns
+            if (['Connected Agents', 'Local Pods'].includes(sortConfig.key)) {
+                const numA = parseInt(aValue, 10);
+                const numB = parseInt(bValue, 10);
+                if (!isNaN(numA) && !isNaN(numB)) {
+                    return sortConfig.direction === 'ascending' ? numA - numB : numB - numA;
+                }
+            }
+
+            // Custom date sort for 'Last Heartbeat' column
+            if (sortConfig.key === 'Last Heartbeat') {
+                const dateA = new Date(aValue).getTime();
+                const dateB = new Date(bValue).getTime();
+                if (!isNaN(dateA) && !isNaN(dateB)) {
+                    return sortConfig.direction === 'ascending' ? dateA - dateB : dateB - dateA;
+                }
+            }
+
             // Default string comparison for other columns
             if (aValue < bValue) {
                 return sortConfig.direction === 'ascending' ? -1 : 1;
@@ -144,43 +158,7 @@ function ComponentSummary<T>(props: {title: string, data: T[], propertyNames: Pr
             return 0;
         });
         return dataCopy;
-    }, [filteredData, sortConfig, propertyNames, props.getProperties, isAgentTable]);
-
-    // Effect to handle completion and reset
-    // Effect 1: Detect sort completion
-    useEffect(() => {
-        if (sortStatus === 'sorting') {
-            console.log('Sort completed, setting status to completed'); // Debug log
-            setSortStatus('completed');
-        }
-    }, [sortedData, sortStatus]);
-
-    // Effect 2: Handle the 'Done!' message timeout
-    useEffect(() => {
-        // If the status becomes 'completed', start the timer to reset it
-        if (sortStatus === 'completed') {
-            // Clear any previous timer just in case
-            if (sortCompletionTimer.current) {
-                clearTimeout(sortCompletionTimer.current);
-            }
-            // Start the new timer
-            sortCompletionTimer.current = setTimeout(() => {
-                console.log('Timer finished, resetting status to idle'); // Debug log
-                setSortStatus('idle');
-                setSortingColumn(null);
-                sortCompletionTimer.current = null;
-            }, 3000); // 3 seconds
-        }
-
-        // Cleanup: Clear the timer if the component unmounts or if status changes away from 'completed'
-        return () => {
-            if (sortCompletionTimer.current) {
-                clearTimeout(sortCompletionTimer.current);
-                sortCompletionTimer.current = null;
-            }
-        };
-    // This effect watches sortStatus to trigger the timer when it becomes 'completed'
-    }, [sortStatus]);
+    }, [filteredData, sortConfig, propertyNames, props.getProperties]);
 
     const paginatedData = useMemo(() => {
         if (!isAgentTable) {
@@ -193,14 +171,10 @@ function ComponentSummary<T>(props: {title: string, data: T[], propertyNames: Pr
     const totalPages = isAgentTable ? Math.ceil(sortedData.length / itemsPerPage) : 1;
 
     const handleSort = (key: Property) => {
-        if (!isAgentTable) return;
-        console.log(`handleSort called for: ${key}`);
         let direction: 'ascending' | 'descending' = 'ascending';
         if (sortConfig && sortConfig.key === key && sortConfig.direction === 'ascending') {
             direction = 'descending';
         }
-        setSortingColumn(key);
-        setSortStatus('sorting');
         setSortConfig({ key, direction });
         setCurrentPage(1);
     };
@@ -233,30 +207,25 @@ function ComponentSummary<T>(props: {title: string, data: T[], propertyNames: Pr
                         </CdsInput>
                     </div>
                 )}
-                {isAgentTable && (
-                    <div cds-text="caption" style={{ minHeight: '20px', paddingBottom: '5px', textAlign: 'right' }}>
-                        {sortStatus === 'sorting' && (
-                            <span>Please wait, sorting by {sortingColumn}...</span>
-                        )}
-                        {sortStatus === 'completed' && (
-                            <span style={{ backgroundColor: 'black', padding: '2px 4px', borderRadius: '3px' }}>Done!</span>
-                        )}
-                        {sortStatus === 'idle' && (
-                            <span>Click table headers to sort</span>
-                        )}
-                    </div>
-                )}
                 <CdsDivider cds-card-remove-margin></CdsDivider>
                 <table cds-table="border:all" cds-text="center body">
                     <thead>
                         <tr>
                             {
                                 propertyNames.map(name => (
-                                    <th key={name} onClick={() => handleSort(name)} style={{ cursor: isAgentTable ? 'pointer' : 'default' }}>
-                                        {name}
-                                        {isAgentTable && sortConfig?.key === name && (
-                                            <CdsIcon shape="arrow" direction={sortConfig.direction === 'ascending' ? 'up' : 'down'} style={{ marginLeft: '5px' }} />
-                                        )}
+                                    <th 
+                                        key={name} 
+                                        onClick={() => handleSort(name)} 
+                                        style={{ cursor: 'pointer' }}
+                                        className={sortConfig?.key === name ? 'sort-active' : ''}
+                                    >
+                                        <div cds-layout="horizontal gap:xs align:center">
+                                            {name}
+                                            <SortIcon 
+                                                direction={sortConfig?.key === name ? sortConfig.direction : 'ascending'}
+                                                active={sortConfig?.key === name}
+                                            />
+                                        </div>
                                     </th>
                                 ))
                             }
@@ -292,24 +261,96 @@ function ComponentSummary<T>(props: {title: string, data: T[], propertyNames: Pr
 }
 
 function generateFakeAgents(n: number): AgentInfo[] {
-    return Array.from({ length: n }).map((_, i) => ({
-      metadata: { name: `agent-${i}` },
-      version: "v2.1.0",
-      podRef: { name: `antrea-agent-${i}`, namespace: "kube-system" },
-      nodeRef: { name: `node-${i}` },
-      localPodNum: Math.floor(Math.random() * 10),
-      nodeSubnets: [`10.10.${i}.0/24`],
-      ovsInfo: { version: "3.0.0" },
-      agentConditions: [
-        {
-          type: "AgentHealthy",
-          status: "True",
-          lastHeartbeatTime: new Date().toISOString(),
-          reason: "",
-          message: ""
+    // Helper function to generate random agent names
+    const generateAgentName = () => {
+        const prefixes = ['antrea', 'k8s', 'node', 'worker', 'master'];
+        const suffixes = ['-agent', '-node', '-vm', '-host', ''];
+        const prefix = prefixes[Math.floor(Math.random() * prefixes.length)];
+        const suffix = suffixes[Math.floor(Math.random() * suffixes.length)];
+        const id = Math.random() < 0.3 ? 
+            Math.random().toString(36).substring(2, 6) : // alphanumeric
+            Math.floor(Math.random() * 1000).toString(); // numeric
+        return `${prefix}${suffix}-${id}`;
+    };
+
+    // Helper function to generate random versions
+    const generateVersion = () => {
+        const major = Math.floor(Math.random() * 3);
+        const minor = Math.floor(Math.random() * 10);
+        const patch = Math.floor(Math.random() * 20);
+        return `v${major}.${minor}.${patch}`;
+    };
+
+    // Helper function to generate random timestamps within last 30 days
+    const generateTimestamp = () => {
+        const now = new Date();
+        const thirtyDaysAgo = new Date(now.getTime() - (30 * 24 * 60 * 60 * 1000));
+        const randomTime = new Date(
+            thirtyDaysAgo.getTime() + Math.random() * (now.getTime() - thirtyDaysAgo.getTime())
+        );
+        return randomTime.toISOString();
+    };
+
+    // Helper function to generate random subnets
+    const generateSubnets = () => {
+        const count = Math.floor(Math.random() * 3) + 1; // 1-3 subnets
+        const subnets = [];
+        for (let i = 0; i < count; i++) {
+            const ipv4 = `${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}.0`;
+            const ipv6 = `fd${Math.random().toString(16).substr(2, 2)}:${Math.random().toString(16).substr(2, 4)}::`;
+            subnets.push(Math.random() > 0.5 ? `${ipv4}/24` : `${ipv6}/64`);
         }
-      ]
-    }));
+        return subnets;
+    };
+
+    // Helper function to generate OVS version
+    const generateOVSVersion = () => {
+        const major = Math.floor(Math.random() * 3) + 2; // 2.x.x - 4.x.x
+        const minor = Math.floor(Math.random() * 20);
+        const patch = Math.floor(Math.random() * 10);
+        return `${major}.${minor}.${patch}`;
+    };
+
+    return Array.from({ length: n }).map(() => {
+        const name = generateAgentName();
+        const isHealthy = Math.random() > 0.2; // 80% chance of being healthy
+        const lastHeartbeat = generateTimestamp();
+
+        return {
+            metadata: { name },
+            version: generateVersion(),
+            podRef: { 
+                name: `antrea-agent-${name}`, 
+                namespace: Math.random() > 0.1 ? "kube-system" : "custom-namespace" 
+            },
+            nodeRef: { 
+                name: Math.random() > 0.3 ? name : `node-${Math.floor(Math.random() * 1000)}`
+            },
+            localPodNum: Math.floor(Math.random() * 100), // 0-99 pods
+            nodeSubnets: generateSubnets(),
+            ovsInfo: { 
+                version: generateOVSVersion(),
+                bridgeName: Math.random() > 0.5 ? "br-int" : "custom-bridge",
+                flowTable: new Map([["0", Math.floor(Math.random() * 1000)]])
+            },
+            agentConditions: [
+                {
+                    type: "AgentHealthy",
+                    status: isHealthy ? "True" : "False",
+                    lastHeartbeatTime: lastHeartbeat,
+                    reason: isHealthy ? "" : "AgentNotReady",
+                    message: isHealthy ? "" : "Agent failed health check"
+                },
+                {
+                    type: "TunnelReady",
+                    status: Math.random() > 0.1 ? "True" : "False", // 90% chance of tunnel being ready
+                    lastHeartbeatTime: lastHeartbeat,
+                    reason: "",
+                    message: ""
+                }
+            ]
+        };
+    });
 }
 
 export default function Summary() {
