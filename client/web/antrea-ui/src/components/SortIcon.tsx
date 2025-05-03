@@ -5,33 +5,52 @@ interface SortIconProps {
     active?: boolean;
 }
 
-export function SortIcon({ direction, active = false }: SortIconProps) {
-    const opacity = active ? 1 : 0.3;
-    
+export function SortIcon({ direction = 'ascending', active = false }: SortIconProps) {
+    if (!active) {
+        // Show a neutral sort icon when not active
+        return (
+            <svg 
+                width="14" 
+                height="14" 
+                viewBox="0 0 24 24" 
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                style={{ opacity: 0.3 }}
+                aria-label="Sortable column"
+            >
+                <path d="M8 9l4-4 4 4" />
+                <path d="M16 15l-4 4-4-4" />
+            </svg>
+        );
+    }
+
+    // Show directional arrow when active
     return (
         <svg 
-            width="16" 
-            height="16" 
+            width="14" 
+            height="14" 
             viewBox="0 0 24 24" 
-            style={{ opacity }}
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-label={`Sorted ${direction}`}
         >
-            <g stroke="none" strokeWidth="1" fill="none" fillRule="evenodd">
-                {direction === 'ascending' ? (
-                    <>
-                        <rect x="4" y="4" width="16" height="3" rx="1" fill="currentColor"/>
-                        <rect x="4" y="9" width="12" height="3" rx="1" fill="currentColor"/>
-                        <rect x="4" y="14" width="8" height="3" rx="1" fill="currentColor"/>
-                        <rect x="4" y="19" width="4" height="3" rx="1" fill="currentColor"/>
-                    </>
-                ) : (
-                    <>
-                        <rect x="4" y="4" width="4" height="3" rx="1" fill="currentColor"/>
-                        <rect x="4" y="9" width="8" height="3" rx="1" fill="currentColor"/>
-                        <rect x="4" y="14" width="12" height="3" rx="1" fill="currentColor"/>
-                        <rect x="4" y="19" width="16" height="3" rx="1" fill="currentColor"/>
-                    </>
-                )}
-            </g>
+            {direction === 'ascending' ? (
+                <>
+                    <path d="M12 19V5" />
+                    <path d="M5 12l7-7 7 7" />
+                </>
+            ) : (
+                <>
+                    <path d="M12 5v14" />
+                    <path d="M19 12l-7 7-7-7" />
+                </>
+            )}
         </svg>
     );
-} 
+}

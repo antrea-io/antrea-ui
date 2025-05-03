@@ -26,6 +26,7 @@ import { FeatureGate, featureGatesAPI } from '../api/featuregates';
 import { useAppError} from '../components/errors';
 import { WaitForAPIResource } from '../components/progress';
 import { SortIcon } from '../components/SortIcon';
+// Note: generateFakeAgents utility in utils/fakeData.ts - only used when VITE_USE_FAKE_AGENTS=true
 
 type Property = string
 
@@ -84,31 +85,46 @@ function agentPropertyValues(agent: AgentInfo): string[] {
     ];
 }
 
-function ComponentSummary<T>(props: {title: string, data: T[], propertyNames: Property[], getProperties: (x: T) => string[]}) {
-    const itemsPerPage = 10; // Display 10 items per page for Agents table
-    const isAgentTable = props.title === 'Agents';
+interface ComponentSummaryProps<T> {
+    title: string;
+    data: T[];
+    propertyNames: Property[];
+    getProperties: (x: T) => string[];
+    sortable?: boolean;
+    pageable?: boolean;
+    searchable?: boolean;
+}
 
+function ComponentSummary<T>(props: ComponentSummaryProps<T>) {
+    const { 
+        title, 
+        data, 
+        propertyNames, 
+        getProperties, 
+        sortable = false, 
+        pageable = false, 
+        searchable = false 
+    } = props;
+
+    const itemsPerPage = 10;
     const [currentPage, setCurrentPage] = useState(1);
     const [sortConfig, setSortConfig] = useState<SortConfig | null>(null);
     const [searchTerm, setSearchTerm] = useState('');
 
-    const propertyNames = props.propertyNames;
-    const data = props.data;
-
     const filteredData = useMemo(() => {
-        if (!isAgentTable || !searchTerm) {
+        if (!searchable || !searchTerm) {
             return data;
         }
         // Simple search on the first property (usually Name)
         const searchKeyIndex = 0; // Assuming the first column is the primary identifier (e.g., Name)
         return data.filter(item => {
-            const value = props.getProperties(item)[searchKeyIndex];
+            const value = getProperties(item)[searchKeyIndex];
             return value.toLowerCase().includes(searchTerm.toLowerCase());
         });
-    }, [data, searchTerm, isAgentTable, props.getProperties]);
+    }, [data, searchTerm, searchable, getProperties]);
 
     const sortedData = useMemo(() => {
-        if (!sortConfig) {
+        if (!sortable || !sortConfig) {
             return filteredData;
         }
         const dataCopy = [...filteredData];
@@ -116,8 +132,8 @@ function ComponentSummary<T>(props: {title: string, data: T[], propertyNames: Pr
         if (sortKeyIndex === -1) return dataCopy;
 
         dataCopy.sort((a, b) => {
-            const aValue = props.getProperties(a)[sortKeyIndex];
-            const bValue = props.getProperties(b)[sortKeyIndex];
+            const aValue = getProperties(a)[sortKeyIndex];
+            const bValue = getProperties(b)[sortKeyIndex];
 
             // Custom numerical sort for 'Name' column (agent-N)
             if (sortConfig.key === 'Name') {
@@ -158,19 +174,21 @@ function ComponentSummary<T>(props: {title: string, data: T[], propertyNames: Pr
             return 0;
         });
         return dataCopy;
-    }, [filteredData, sortConfig, propertyNames, props.getProperties]);
+    }, [filteredData, sortConfig, propertyNames, getProperties, sortable]);
 
     const paginatedData = useMemo(() => {
-        if (!isAgentTable) {
-            return sortedData; // No pagination for non-agent tables
+        if (!pageable) {
+            return sortedData;
         }
         const startIndex = (currentPage - 1) * itemsPerPage;
         return sortedData.slice(startIndex, startIndex + itemsPerPage);
-    }, [sortedData, currentPage, itemsPerPage, isAgentTable]);
+    }, [sortedData, currentPage, itemsPerPage, pageable]);
 
-    const totalPages = isAgentTable ? Math.ceil(sortedData.length / itemsPerPage) : 1;
+    const totalPages = pageable ? Math.ceil(sortedData.length / itemsPerPage) : 1;
 
     const handleSort = (key: Property) => {
+        if (!sortable) return;
+        
         let direction: 'ascending' | 'descending' = 'ascending';
         if (sortConfig && sortConfig.key === key && sortConfig.direction === 'ascending') {
             direction = 'descending';
@@ -189,15 +207,15 @@ function ComponentSummary<T>(props: {title: string, data: T[], propertyNames: Pr
     };
 
     return (
-        <CdsCard title={props.title}>
+        <CdsCard title={title}>
             <div cds-layout="vertical gap:md">
                 <div cds-text="section" cds-layout="p-y:sm">
-                    {props.title}
+                    {title}
                 </div>
-                {isAgentTable && (
+                {searchable && (
                     <div cds-layout="p-b:sm">
                         <CdsInput>
-                            <label>Search Agents</label>
+                            <label>Search {title}</label>
                             <input
                                 type="text"
                                 placeholder="Search by name..."
@@ -216,15 +234,17 @@ function ComponentSummary<T>(props: {title: string, data: T[], propertyNames: Pr
                                     <th 
                                         key={name} 
                                         onClick={() => handleSort(name)} 
-                                        style={{ cursor: 'pointer' }}
+                                        style={{ cursor: sortable ? 'pointer' : 'default' }}
                                         className={sortConfig?.key === name ? 'sort-active' : ''}
                                     >
                                         <div cds-layout="horizontal gap:xs align:center">
                                             {name}
-                                            <SortIcon 
-                                                direction={sortConfig?.key === name ? sortConfig.direction : 'ascending'}
-                                                active={sortConfig?.key === name}
-                                            />
+                                            {sortable && (
+                                                <SortIcon 
+                                                    direction={sortConfig?.key === name ? sortConfig.direction : 'ascending'}
+                                                    active={sortConfig?.key === name}
+                                                />
+                                            )}
                                         </div>
                                     </th>
                                 ))
@@ -234,7 +254,7 @@ function ComponentSummary<T>(props: {title: string, data: T[], propertyNames: Pr
                     <tbody>
                         {
                             paginatedData.map((x: T, idx: number) => {
-                                const values = props.getProperties(x);
+                                const values = getProperties(x);
                                 return (
                                     <tr key={idx}>
                                         {
@@ -248,7 +268,7 @@ function ComponentSummary<T>(props: {title: string, data: T[], propertyNames: Pr
                         }
                     </tbody>
                 </table>
-                {isAgentTable && totalPages > 1 && (
+                {pageable && totalPages > 1 && (
                     <div cds-layout="horizontal gap:sm align:center p-t:md">
                         <CdsButton size="sm" action="outline" disabled={currentPage === 1} onClick={() => handlePageChange(currentPage - 1)}>Previous</CdsButton>
                         <span cds-text="secondary">Page {currentPage} of {totalPages} ({filteredData.length} items)</span>
@@ -258,99 +278,6 @@ function ComponentSummary<T>(props: {title: string, data: T[], propertyNames: Pr
             </div>
         </CdsCard>
     );
-}
-
-function generateFakeAgents(n: number): AgentInfo[] {
-    // Helper function to generate random agent names
-    const generateAgentName = () => {
-        const prefixes = ['antrea', 'k8s', 'node', 'worker', 'master'];
-        const suffixes = ['-agent', '-node', '-vm', '-host', ''];
-        const prefix = prefixes[Math.floor(Math.random() * prefixes.length)];
-        const suffix = suffixes[Math.floor(Math.random() * suffixes.length)];
-        const id = Math.random() < 0.3 ? 
-            Math.random().toString(36).substring(2, 6) : // alphanumeric
-            Math.floor(Math.random() * 1000).toString(); // numeric
-        return `${prefix}${suffix}-${id}`;
-    };
-
-    // Helper function to generate random versions
-    const generateVersion = () => {
-        const major = Math.floor(Math.random() * 3);
-        const minor = Math.floor(Math.random() * 10);
-        const patch = Math.floor(Math.random() * 20);
-        return `v${major}.${minor}.${patch}`;
-    };
-
-    // Helper function to generate random timestamps within last 30 days
-    const generateTimestamp = () => {
-        const now = new Date();
-        const thirtyDaysAgo = new Date(now.getTime() - (30 * 24 * 60 * 60 * 1000));
-        const randomTime = new Date(
-            thirtyDaysAgo.getTime() + Math.random() * (now.getTime() - thirtyDaysAgo.getTime())
-        );
-        return randomTime.toISOString();
-    };
-
-    // Helper function to generate random subnets
-    const generateSubnets = () => {
-        const count = Math.floor(Math.random() * 3) + 1; // 1-3 subnets
-        const subnets = [];
-        for (let i = 0; i < count; i++) {
-            const ipv4 = `${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}.0`;
-            const ipv6 = `fd${Math.random().toString(16).substr(2, 2)}:${Math.random().toString(16).substr(2, 4)}::`;
-            subnets.push(Math.random() > 0.5 ? `${ipv4}/24` : `${ipv6}/64`);
-        }
-        return subnets;
-    };
-
-    // Helper function to generate OVS version
-    const generateOVSVersion = () => {
-        const major = Math.floor(Math.random() * 3) + 2; // 2.x.x - 4.x.x
-        const minor = Math.floor(Math.random() * 20);
-        const patch = Math.floor(Math.random() * 10);
-        return `${major}.${minor}.${patch}`;
-    };
-
-    return Array.from({ length: n }).map(() => {
-        const name = generateAgentName();
-        const isHealthy = Math.random() > 0.2; // 80% chance of being healthy
-        const lastHeartbeat = generateTimestamp();
-
-        return {
-            metadata: { name },
-            version: generateVersion(),
-            podRef: { 
-                name: `antrea-agent-${name}`, 
-                namespace: Math.random() > 0.1 ? "kube-system" : "custom-namespace" 
-            },
-            nodeRef: { 
-                name: Math.random() > 0.3 ? name : `node-${Math.floor(Math.random() * 1000)}`
-            },
-            localPodNum: Math.floor(Math.random() * 100), // 0-99 pods
-            nodeSubnets: generateSubnets(),
-            ovsInfo: { 
-                version: generateOVSVersion(),
-                bridgeName: Math.random() > 0.5 ? "br-int" : "custom-bridge",
-                flowTable: new Map([["0", Math.floor(Math.random() * 1000)]])
-            },
-            agentConditions: [
-                {
-                    type: "AgentHealthy",
-                    status: isHealthy ? "True" : "False",
-                    lastHeartbeatTime: lastHeartbeat,
-                    reason: isHealthy ? "" : "AgentNotReady",
-                    message: isHealthy ? "" : "Agent failed health check"
-                },
-                {
-                    type: "TunnelReady",
-                    status: Math.random() > 0.1 ? "True" : "False", // 90% chance of tunnel being ready
-                    lastHeartbeatTime: lastHeartbeat,
-                    reason: "",
-                    message: ""
-                }
-            ]
-        };
-    });
 }
 
 export default function Summary() {
@@ -391,15 +318,15 @@ export default function Summary() {
             }
         }
 
-        // Defining this functions inside of useEffect is recommended
-        // https://reactjs.org/docs/hooks-faq.html#is-it-safe-to-omit-functions-from-the-list-of-dependencies
         async function getData() {
             const [controllerInfo, agentInfos, featureGates] = await Promise.all([getControllerInfo(), getAgentInfos(), getFeatureGates()]);
 
             let finalAgentInfos = agentInfos;
-            // If in development mode, generate fake agent data for UI testing
-            if (import.meta.env.DEV) {
-                console.log('Development environment detected, generating fake agent data...');
+            // Use fake agent data if enabled via environment variable
+            if (import.meta.env.DEV && import.meta.env.VITE_USE_FAKE_AGENTS === 'true') {
+                console.log('Using fake agent data for development...');
+                // Dynamic import to avoid including fake data in production bundle
+                const { generateFakeAgents } = await import('../utils/fakeData');
                 finalAgentInfos = generateFakeAgents(150);
             }
 
@@ -424,16 +351,39 @@ export default function Summary() {
             <div cds-layout="vertical gap:lg">
                 <p cds-text="title">Summary</p>
                 <WaitForAPIResource ready={controllerInfo !== undefined} text="Loading Controller Information">
-                    <ComponentSummary title="Controller" data={new Array(controllerInfo!)} propertyNames={controllerProperties} getProperties={controllerPropertyValues} />
+                    <ComponentSummary 
+                        title="Controller" 
+                        data={new Array(controllerInfo!)} 
+                        propertyNames={controllerProperties} 
+                        getProperties={controllerPropertyValues} 
+                    />
                 </WaitForAPIResource>
                 <WaitForAPIResource ready={agentInfos !== undefined} text="Loading Agents Information">
-                    <ComponentSummary title="Agents" data={agentInfos!} propertyNames={agentProperties} getProperties={agentPropertyValues} />
+                    <ComponentSummary 
+                        title="Agents" 
+                        data={agentInfos!} 
+                        propertyNames={agentProperties} 
+                        getProperties={agentPropertyValues}
+                        sortable={true}
+                        pageable={true}
+                        searchable={true}
+                    />
                 </WaitForAPIResource>
                 <WaitForAPIResource ready={controllerFeatureGates !== undefined} text="Loading Controller Feature Gates">
-                    <ComponentSummary title="Controller Feature Gates" data={controllerFeatureGates!} propertyNames={featureGateProperties} getProperties={featureGatePropertyValues} />
+                    <ComponentSummary 
+                        title="Controller Feature Gates" 
+                        data={controllerFeatureGates!} 
+                        propertyNames={featureGateProperties} 
+                        getProperties={featureGatePropertyValues} 
+                    />
                 </WaitForAPIResource>
                 <WaitForAPIResource ready={agentFeatureGates !== undefined} text="Loading Agent Feature Gates">
-                    <ComponentSummary title="Agent Feature Gates" data={agentFeatureGates!} propertyNames={featureGateProperties} getProperties={featureGatePropertyValues} />
+                    <ComponentSummary 
+                        title="Agent Feature Gates" 
+                        data={agentFeatureGates!} 
+                        propertyNames={featureGateProperties} 
+                        getProperties={featureGatePropertyValues} 
+                    />
                 </WaitForAPIResource>
             </div>
         </main>
