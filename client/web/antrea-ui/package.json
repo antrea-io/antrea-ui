@@ -68,7 +68,7 @@
     "jsdom": "^26.1.0",
     "nock": "^14.0.4",
     "rollup-plugin-visualizer": "^5.14.0",
-    "typescript-eslint": "^8.31.0",
+    "typescript-eslint": "^8.31.1",
     "uuid": "^11.1.0"
   }
 }
