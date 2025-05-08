@@ -28,12 +28,15 @@ import { WaitForAPIResource } from '../components/progress';
 import { SortIcon } from '../components/SortIcon';
 // Note: generateFakeAgents utility in utils/fakeData.ts - only used when VITE_USE_FAKE_AGENTS=true
 
-type Property = string
+type Property = string;
 
 type SortConfig = {
     key: Property;
     direction: 'ascending' | 'descending';
 };
+
+// Define possible property value types
+type PropertyValue = string | number | Date | [string, number];
 
 const controllerProperties: Property[] = ['Name', 'Version', 'Pod Name', 'Node Name', 'Connected Agents', 'Healthy', 'Last Heartbeat'];
 const agentProperties: Property[] = ['Name', 'Version', 'Pod Name', 'Node Name', 'Local Pods', 'Node Subnets', 'OVS Version', 'Healthy', 'Last Heartbeat'];
@@ -53,35 +56,67 @@ function getConditionInfo(conditions: Condition[] | undefined, name: string): [s
     return [condition.status, new Date(condition.lastHeartbeatTime).toLocaleString()];
 }
 
-function controllerPropertyValues(controller: ControllerInfo): string[] {
+// Define functions that return both displayed value and sort value
+type PropertyValuePair = {
+    display: string;
+    sortValue: PropertyValue;
+};
+
+function controllerPropertyValues(controller: ControllerInfo): PropertyValuePair[] {
     const [healthy, lastHeartbeat] = getConditionInfo(controller.controllerConditions, 'ControllerHealthy');
+    const connectedAgents = controller.connectedAgentNum ?? 0;
+    
     return [
-        controller.metadata.name,
-        controller?.version ?? 'Unknown',
-        refToString(controller.podRef),
-        refToString(controller.nodeRef),
-        (controller.connectedAgentNum??0).toString(),
-        healthy,
-        lastHeartbeat,
+        { display: controller.metadata.name, sortValue: controller.metadata.name },
+        { display: controller?.version ?? 'Unknown', sortValue: controller?.version ?? 'Unknown' },
+        { display: refToString(controller.podRef), sortValue: refToString(controller.podRef) },
+        { display: refToString(controller.nodeRef), sortValue: refToString(controller.nodeRef) },
+        { display: connectedAgents.toString(), sortValue: connectedAgents },
+        { display: healthy, sortValue: healthy },
+        { display: lastHeartbeat, sortValue: new Date(lastHeartbeat) },
     ];
 }
 
-function featureGatePropertyValues(featureGate: FeatureGate): string[] {
-    return [featureGate.name, featureGate.status, featureGate.version];
+function featureGatePropertyValues(featureGate: FeatureGate): PropertyValuePair[] {
+    return [
+        { display: featureGate.name, sortValue: featureGate.name },
+        { display: featureGate.status, sortValue: featureGate.status },
+        { display: featureGate.version, sortValue: featureGate.version }
+    ];
 }
 
-function agentPropertyValues(agent: AgentInfo): string[] {
+// Helper function to extract node type and numeric suffix for proper sorting
+function getNodeNameSortValue(name: string): [string, number] {
+    // Match patterns like "k8s-node-worker-123" or "k8s-node-control-plane-1"
+    const match = name.match(/^(.*?)(control-plane|worker)-(\d+)$/);
+    if (match) {
+        // Extract the node type and number
+        const prefix = match[1];
+        const nodeType = match[2]; // 'control-plane' or 'worker'
+        const numericPart = parseInt(match[3], 10);
+        
+        // Return as tuple with nodeType first (for primary sorting) and number second
+        // This ensures control-plane comes before worker when sorting
+        return [nodeType, numericPart];
+    }
+    // Fall back to a default value if pattern doesn't match
+    return ['unknown', 0];
+}
+
+function agentPropertyValues(agent: AgentInfo): PropertyValuePair[] {
     const [healthy, lastHeartbeat] = getConditionInfo(agent.agentConditions, 'AgentHealthy');
+    const localPodNum = agent.localPodNum ?? 0;
+    
     return [
-        agent.metadata.name,
-        agent?.version ?? 'Unknown',
-        refToString(agent.podRef),
-        refToString(agent.nodeRef),
-        (agent.localPodNum??0).toString(),
-        agent.nodeSubnets?.join(',') ?? 'None',
-        agent?.ovsInfo?.version ?? 'Unknown',
-        healthy,
-        lastHeartbeat,
+        { display: agent.metadata.name, sortValue: getNodeNameSortValue(agent.metadata.name) },
+        { display: agent?.version ?? 'Unknown', sortValue: agent?.version ?? 'Unknown' },
+        { display: refToString(agent.podRef), sortValue: refToString(agent.podRef) },
+        { display: refToString(agent.nodeRef), sortValue: refToString(agent.nodeRef) },
+        { display: localPodNum.toString(), sortValue: localPodNum },
+        { display: agent.nodeSubnets?.join(',') ?? 'None', sortValue: agent.nodeSubnets?.join(',') ?? 'None' },
+        { display: agent?.ovsInfo?.version ?? 'Unknown', sortValue: agent?.ovsInfo?.version ?? 'Unknown' },
+        { display: healthy, sortValue: healthy },
+        { display: lastHeartbeat, sortValue: new Date(lastHeartbeat) },
     ];
 }
 
@@ -89,7 +124,7 @@ interface ComponentSummaryProps<T> {
     title: string;
     data: T[];
     propertyNames: Property[];
-    getProperties: (x: T) => string[];
+    getProperties: (x: T) => PropertyValuePair[];
     sortable?: boolean;
     pageable?: boolean;
     searchable?: boolean;
@@ -118,7 +153,7 @@ function ComponentSummary<T>(props: ComponentSummaryProps<T>) {
         // Simple search on the first property (usually Name)
         const searchKeyIndex = 0; // Assuming the first column is the primary identifier (e.g., Name)
         return data.filter(item => {
-            const value = getProperties(item)[searchKeyIndex];
+            const value = getProperties(item)[searchKeyIndex].display;
             return value.toLowerCase().includes(searchTerm.toLowerCase());
         });
     }, [data, searchTerm, searchable, getProperties]);
@@ -132,47 +167,51 @@ function ComponentSummary<T>(props: ComponentSummaryProps<T>) {
         if (sortKeyIndex === -1) return dataCopy;
 
         dataCopy.sort((a, b) => {
-            const aValue = getProperties(a)[sortKeyIndex];
-            const bValue = getProperties(b)[sortKeyIndex];
+            const aValue = getProperties(a)[sortKeyIndex].sortValue;
+            const bValue = getProperties(b)[sortKeyIndex].sortValue;
 
-            // Custom numerical sort for 'Name' column (agent-N)
-            if (sortConfig.key === 'Name') {
-                const numA = parseInt(aValue.split('-').pop() || '0', 10);
-                const numB = parseInt(bValue.split('-').pop() || '0', 10);
-
-                if (!isNaN(numA) && !isNaN(numB)) {
-                    const compareResult = numA - numB;
-                    return sortConfig.direction === 'ascending' ? compareResult : -compareResult;
+            // Handle special case for node name sorting (returns [nodeType, number] tuple)
+            if (Array.isArray(aValue) && Array.isArray(bValue) && 
+                aValue.length === 2 && bValue.length === 2) {
+                // First compare by node type (control-plane vs worker)
+                if (aValue[0] !== bValue[0]) {
+                    // Sort control-plane before worker
+                    const typeComparison = aValue[0].localeCompare(bValue[0]);
+                    return sortConfig.direction === 'ascending' ? typeComparison : -typeComparison;
+                }
+                // If node types are the same, compare by node number
+                if (typeof aValue[1] === 'number' && typeof bValue[1] === 'number') {
+                    return sortConfig.direction === 'ascending' ? 
+                        aValue[1] - bValue[1] : bValue[1] - aValue[1];
                 }
             }
 
-            // Custom numerical sort for numeric columns
-            if (['Connected Agents', 'Local Pods'].includes(sortConfig.key)) {
-                const numA = parseInt(aValue, 10);
-                const numB = parseInt(bValue, 10);
-                if (!isNaN(numA) && !isNaN(numB)) {
-                    return sortConfig.direction === 'ascending' ? numA - numB : numB - numA;
-                }
+            // Type-based sorting for other types
+            if (aValue instanceof Date && bValue instanceof Date) {
+                // Date sorting
+                return sortConfig.direction === 'ascending' 
+                    ? aValue.getTime() - bValue.getTime() 
+                    : bValue.getTime() - aValue.getTime();
             }
-
-            // Custom date sort for 'Last Heartbeat' column
-            if (sortConfig.key === 'Last Heartbeat') {
-                const dateA = new Date(aValue).getTime();
-                const dateB = new Date(bValue).getTime();
-                if (!isNaN(dateA) && !isNaN(dateB)) {
-                    return sortConfig.direction === 'ascending' ? dateA - dateB : dateB - dateA;
-                }
+            
+            if (typeof aValue === 'number' && typeof bValue === 'number') {
+                // Number sorting
+                return sortConfig.direction === 'ascending' ? aValue - bValue : bValue - aValue;
             }
-
-            // Default string comparison for other columns
-            if (aValue < bValue) {
+            
+            // String sorting (default)
+            const aString = String(aValue);
+            const bString = String(bValue);
+            
+            if (aString < bString) {
                 return sortConfig.direction === 'ascending' ? -1 : 1;
             }
-            if (aValue > bValue) {
+            if (aString > bString) {
                 return sortConfig.direction === 'ascending' ? 1 : -1;
             }
             return 0;
         });
+        
         return dataCopy;
     }, [filteredData, sortConfig, propertyNames, getProperties, sortable]);
 
@@ -258,8 +297,8 @@ function ComponentSummary<T>(props: ComponentSummaryProps<T>) {
                                 return (
                                     <tr key={idx}>
                                         {
-                                            values.map((v: string, idx: number) => (
-                                                <td key={idx}>{v}</td>
+                                            values.map((v: PropertyValuePair, idx: number) => (
+                                                <td key={idx}>{v.display}</td>
                                             ))
                                         }
                                     </tr>
@@ -323,7 +362,7 @@ export default function Summary() {
 
             let finalAgentInfos = agentInfos;
             // Use fake agent data if enabled via environment variable
-            if (import.meta.env.DEV && import.meta.env.VITE_USE_FAKE_AGENTS === 'true') {
+            if (import.meta.env.DEV && import.meta.env.VITE_USE_SYNTHETIC_DATA=== 'true') {
                 console.log('Using fake agent data for development...');
                 // Dynamic import to avoid including fake data in production bundle
                 const { generateFakeAgents } = await import('../utils/fakeData');
