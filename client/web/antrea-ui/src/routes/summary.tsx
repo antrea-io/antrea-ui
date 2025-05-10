@@ -23,7 +23,7 @@ import '@cds/core/icon/register.js';
 import React from 'react';
 import { AgentInfo, ControllerInfo, Condition, K8sRef, agentInfoAPI, controllerInfoAPI } from '../api/info';
 import { FeatureGate, featureGatesAPI } from '../api/featuregates';
-import { useAppError} from '../components/errors';
+import { useAppError } from '../components/errors';
 import { WaitForAPIResource } from '../components/progress';
 import { SortIcon } from '../components/SortIcon';
 // Note: generateFakeAgents utility in utils/fakeData.ts - only used when VITE_USE_FAKE_AGENTS=true
@@ -35,7 +35,7 @@ type SortConfig = {
     direction: 'ascending' | 'descending';
 };
 
-// Define possible property value types
+
 type PropertyValue = string | number | Date | [string, number];
 
 const controllerProperties: Property[] = ['Name', 'Version', 'Pod Name', 'Node Name', 'Connected Agents', 'Healthy', 'Last Heartbeat'];
@@ -48,7 +48,7 @@ function refToString(ref: K8sRef | undefined): string {
     return ref.name;
 }
 
-// returns status and last heartbeat time
+
 function getConditionInfo(conditions: Condition[] | undefined, name: string): [string, string] {
     if (!conditions) return ['False', 'None'];
     const condition = conditions.find(c => c.type === name);
@@ -56,16 +56,29 @@ function getConditionInfo(conditions: Condition[] | undefined, name: string): [s
     return [condition.status, new Date(condition.lastHeartbeatTime).toLocaleString()];
 }
 
-// Define functions that return both displayed value and sort value
 type PropertyValuePair = {
     display: string;
     sortValue: PropertyValue;
 };
 
+
+function getNodeNameSortValue(name: string): PropertyValue {
+
+    const numericMatch = name.match(/(\d+)$/);
+
+    if (numericMatch) {
+
+        const prefix = name.substring(0, name.length - numericMatch[0].length);
+        return [prefix, parseInt(numericMatch[1], 10)];
+    }
+
+    return name;
+}
+
 function controllerPropertyValues(controller: ControllerInfo): PropertyValuePair[] {
     const [healthy, lastHeartbeat] = getConditionInfo(controller.controllerConditions, 'ControllerHealthy');
     const connectedAgents = controller.connectedAgentNum ?? 0;
-    
+
     return [
         { display: controller.metadata.name, sortValue: controller.metadata.name },
         { display: controller?.version ?? 'Unknown', sortValue: controller?.version ?? 'Unknown' },
@@ -85,28 +98,10 @@ function featureGatePropertyValues(featureGate: FeatureGate): PropertyValuePair[
     ];
 }
 
-// Helper function to extract node type and numeric suffix for proper sorting
-function getNodeNameSortValue(name: string): [string, number] {
-    // Match patterns like "k8s-node-worker-123" or "k8s-node-control-plane-1"
-    const match = name.match(/^(.*?)(control-plane|worker)-(\d+)$/);
-    if (match) {
-        // Extract the node type and number
-        const prefix = match[1];
-        const nodeType = match[2]; // 'control-plane' or 'worker'
-        const numericPart = parseInt(match[3], 10);
-        
-        // Return as tuple with nodeType first (for primary sorting) and number second
-        // This ensures control-plane comes before worker when sorting
-        return [nodeType, numericPart];
-    }
-    // Fall back to a default value if pattern doesn't match
-    return ['unknown', 0];
-}
-
 function agentPropertyValues(agent: AgentInfo): PropertyValuePair[] {
     const [healthy, lastHeartbeat] = getConditionInfo(agent.agentConditions, 'AgentHealthy');
     const localPodNum = agent.localPodNum ?? 0;
-    
+
     return [
         { display: agent.metadata.name, sortValue: getNodeNameSortValue(agent.metadata.name) },
         { display: agent?.version ?? 'Unknown', sortValue: agent?.version ?? 'Unknown' },
@@ -131,14 +126,14 @@ interface ComponentSummaryProps<T> {
 }
 
 function ComponentSummary<T>(props: ComponentSummaryProps<T>) {
-    const { 
-        title, 
-        data, 
-        propertyNames, 
-        getProperties, 
-        sortable = false, 
-        pageable = false, 
-        searchable = false 
+    const {
+        title,
+        data,
+        propertyNames,
+        getProperties,
+        sortable = false,
+        pageable = false,
+        searchable = false
     } = props;
 
     const itemsPerPage = 10;
@@ -150,8 +145,8 @@ function ComponentSummary<T>(props: ComponentSummaryProps<T>) {
         if (!searchable || !searchTerm) {
             return data;
         }
-        // Simple search on the first property (usually Name)
-        const searchKeyIndex = 0; // Assuming the first column is the primary identifier (e.g., Name)
+
+        const searchKeyIndex = 0;
         return data.filter(item => {
             const value = getProperties(item)[searchKeyIndex].display;
             return value.toLowerCase().includes(searchTerm.toLowerCase());
@@ -170,39 +165,38 @@ function ComponentSummary<T>(props: ComponentSummaryProps<T>) {
             const aValue = getProperties(a)[sortKeyIndex].sortValue;
             const bValue = getProperties(b)[sortKeyIndex].sortValue;
 
-            // Handle special case for node name sorting (returns [nodeType, number] tuple)
-            if (Array.isArray(aValue) && Array.isArray(bValue) && 
+
+            if (Array.isArray(aValue) && Array.isArray(bValue) &&
                 aValue.length === 2 && bValue.length === 2) {
-                // First compare by node type (control-plane vs worker)
+
                 if (aValue[0] !== bValue[0]) {
-                    // Sort control-plane before worker
-                    const typeComparison = aValue[0].localeCompare(bValue[0]);
-                    return sortConfig.direction === 'ascending' ? typeComparison : -typeComparison;
+                    const prefixComparison = String(aValue[0]).localeCompare(String(bValue[0]));
+                    return sortConfig.direction === 'ascending' ? prefixComparison : -prefixComparison;
                 }
-                // If node types are the same, compare by node number
+
                 if (typeof aValue[1] === 'number' && typeof bValue[1] === 'number') {
-                    return sortConfig.direction === 'ascending' ? 
+                    return sortConfig.direction === 'ascending' ?
                         aValue[1] - bValue[1] : bValue[1] - aValue[1];
                 }
             }
 
-            // Type-based sorting for other types
+
             if (aValue instanceof Date && bValue instanceof Date) {
-                // Date sorting
-                return sortConfig.direction === 'ascending' 
-                    ? aValue.getTime() - bValue.getTime() 
+
+                return sortConfig.direction === 'ascending'
+                    ? aValue.getTime() - bValue.getTime()
                     : bValue.getTime() - aValue.getTime();
             }
-            
+
             if (typeof aValue === 'number' && typeof bValue === 'number') {
-                // Number sorting
+
                 return sortConfig.direction === 'ascending' ? aValue - bValue : bValue - aValue;
             }
-            
-            // String sorting (default)
+
+
             const aString = String(aValue);
             const bString = String(bValue);
-            
+
             if (aString < bString) {
                 return sortConfig.direction === 'ascending' ? -1 : 1;
             }
@@ -211,7 +205,7 @@ function ComponentSummary<T>(props: ComponentSummaryProps<T>) {
             }
             return 0;
         });
-        
+
         return dataCopy;
     }, [filteredData, sortConfig, propertyNames, getProperties, sortable]);
 
@@ -227,7 +221,7 @@ function ComponentSummary<T>(props: ComponentSummaryProps<T>) {
 
     const handleSort = (key: Property) => {
         if (!sortable) return;
-        
+
         let direction: 'ascending' | 'descending' = 'ascending';
         if (sortConfig && sortConfig.key === key && sortConfig.direction === 'ascending') {
             direction = 'descending';
@@ -270,16 +264,16 @@ function ComponentSummary<T>(props: ComponentSummaryProps<T>) {
                         <tr>
                             {
                                 propertyNames.map(name => (
-                                    <th 
-                                        key={name} 
-                                        onClick={() => handleSort(name)} 
+                                    <th
+                                        key={name}
+                                        onClick={() => handleSort(name)}
                                         style={{ cursor: sortable ? 'pointer' : 'default' }}
                                         className={sortConfig?.key === name ? 'sort-active' : ''}
                                     >
                                         <div cds-layout="horizontal gap:xs align:center">
                                             {name}
                                             {sortable && (
-                                                <SortIcon 
+                                                <SortIcon
                                                     direction={sortConfig?.key === name ? sortConfig.direction : 'ascending'}
                                                     active={sortConfig?.key === name}
                                                 />
@@ -332,7 +326,7 @@ export default function Summary() {
                 const controllerInfo = await controllerInfoAPI.fetch();
                 return controllerInfo;
             } catch (e) {
-                if (e instanceof Error ) addError(e);
+                if (e instanceof Error) addError(e);
                 console.error(e);
             }
         }
@@ -342,7 +336,7 @@ export default function Summary() {
                 const agentInfos = await agentInfoAPI.fetchAll();
                 return agentInfos;
             } catch (e) {
-                if (e instanceof Error ) addError(e);
+                if (e instanceof Error) addError(e);
                 console.error(e);
             }
         }
@@ -352,7 +346,7 @@ export default function Summary() {
                 const featureGates = await featureGatesAPI.fetch();
                 return featureGates;
             } catch (e) {
-                if (e instanceof Error ) addError(e);
+                if (e instanceof Error) addError(e);
                 console.error(e);
             }
         }
@@ -362,9 +356,9 @@ export default function Summary() {
 
             let finalAgentInfos = agentInfos;
             // Use fake agent data if enabled via environment variable
-            if (import.meta.env.DEV && import.meta.env.VITE_USE_SYNTHETIC_DATA=== 'true') {
+            if (import.meta.env.DEV && import.meta.env.VITE_USE_SYNTHETIC_DATA === 'true') {
                 console.log('Using fake agent data for development...');
-                // Dynamic import to avoid including fake data in production bundle
+
                 const { generateFakeAgents } = await import('../utils/fakeData');
                 finalAgentInfos = generateFakeAgents(150);
             }
@@ -390,18 +384,18 @@ export default function Summary() {
             <div cds-layout="vertical gap:lg">
                 <p cds-text="title">Summary</p>
                 <WaitForAPIResource ready={controllerInfo !== undefined} text="Loading Controller Information">
-                    <ComponentSummary 
-                        title="Controller" 
-                        data={new Array(controllerInfo!)} 
-                        propertyNames={controllerProperties} 
-                        getProperties={controllerPropertyValues} 
+                    <ComponentSummary
+                        title="Controller"
+                        data={new Array(controllerInfo!)}
+                        propertyNames={controllerProperties}
+                        getProperties={controllerPropertyValues}
                     />
                 </WaitForAPIResource>
                 <WaitForAPIResource ready={agentInfos !== undefined} text="Loading Agents Information">
-                    <ComponentSummary 
-                        title="Agents" 
-                        data={agentInfos!} 
-                        propertyNames={agentProperties} 
+                    <ComponentSummary
+                        title="Agents"
+                        data={agentInfos!}
+                        propertyNames={agentProperties}
                         getProperties={agentPropertyValues}
                         sortable={true}
                         pageable={true}
@@ -409,19 +403,19 @@ export default function Summary() {
                     />
                 </WaitForAPIResource>
                 <WaitForAPIResource ready={controllerFeatureGates !== undefined} text="Loading Controller Feature Gates">
-                    <ComponentSummary 
-                        title="Controller Feature Gates" 
-                        data={controllerFeatureGates!} 
-                        propertyNames={featureGateProperties} 
-                        getProperties={featureGatePropertyValues} 
+                    <ComponentSummary
+                        title="Controller Feature Gates"
+                        data={controllerFeatureGates!}
+                        propertyNames={featureGateProperties}
+                        getProperties={featureGatePropertyValues}
                     />
                 </WaitForAPIResource>
                 <WaitForAPIResource ready={agentFeatureGates !== undefined} text="Loading Agent Feature Gates">
-                    <ComponentSummary 
-                        title="Agent Feature Gates" 
-                        data={agentFeatureGates!} 
-                        propertyNames={featureGateProperties} 
-                        getProperties={featureGatePropertyValues} 
+                    <ComponentSummary
+                        title="Agent Feature Gates"
+                        data={agentFeatureGates!}
+                        propertyNames={featureGateProperties}
+                        getProperties={featureGatePropertyValues}
                     />
                 </WaitForAPIResource>
             </div>

@@ -1,6 +1,13 @@
 import { AgentInfo } from '../api/info';
 
 export function generateFakeAgents(n: number): AgentInfo[] {
+    // Limit the number of agents to prevent duplicate subnets
+    const maxAgents = 255; // Maximum allowed agents due to IPv4 subnet scheme
+    if (n > maxAgents) {
+        console.warn(`Number of agents limited to ${maxAgents} to prevent duplicate subnets`);
+        n = maxAgents;
+    }
+
     // Create node indices in sequential order
     const nodeIndices = Array.from({ length: n }, (_, i) => i);
     
@@ -21,10 +28,16 @@ export function generateFakeAgents(n: number): AgentInfo[] {
             return `k8s-node-${nodeType}-${nodeNumber}`;
         };
 
-        // Helper function to generate specific versions (only two possible versions)
-        const generateVersion = () => {
-            // Use only two possible versions to simulate a cluster during upgrade
-            return actualIndex % 3 === 0 ? 'v2.3.0' : 'v2.2.3';
+        // Helper function to generate version pairs (Antrea and OVS have consistent mapping)
+        const generateVersions = () => {
+            // Use only two possible version pairs to simulate a cluster during upgrade
+            const versionPairs = [
+                { antreaVersion: 'v2.3.0', ovsVersion: '3.0.0' },
+                { antreaVersion: 'v2.2.3', ovsVersion: '2.17.3' }
+            ];
+            
+            // Select version pair based on node index
+            return actualIndex % 3 === 0 ? versionPairs[0] : versionPairs[1];
         };
 
         // Helper function to generate recent timestamps within last 5 minutes
@@ -39,38 +52,29 @@ export function generateFakeAgents(n: number): AgentInfo[] {
 
         // Helper function to generate consecutive subnets
         const generateSubnets = () => {
-            const count = Math.min(actualIndex % 2 + 1, 2); // 1-2 subnets, more predictable
+            // Decide on subnet pattern: 80% have both IPv4+IPv6, 20% have only IPv4
+            const hasIPv6 = actualIndex % 5 !== 4;
             const subnets = [];
             
-            // Generate sequential IPv4 subnets
-            if (count > 0) {
-                // Base subnet with sequential third octet
-                subnets.push(`10.10.${actualIndex % 255}.0/24`);
-            }
+            // Always generate IPv4 subnet
+            subnets.push(`10.10.${actualIndex % 255}.0/24`);
             
             // Add IPv6 subnet for some nodes
-            if (count > 1) {
-                // Sequential IPv6 subnets
-                subnets.push(`fd00:10:10:${actualIndex % 100}::/64`);
+            if (hasIPv6) {
+                subnets.push(`fd00:10:10:${actualIndex % 255}::/64`);
             }
             
             return subnets;
         };
 
-        // Helper function to generate consistent OVS version
-        const generateOVSVersion = () => {
-            // Only two possible OVS versions to simulate a cluster during upgrade
-            return actualIndex % 4 === 0 ? '3.0.0' : '2.17.3';
-        };
-
         const name = generateAgentName();
         const isHealthy = actualIndex % 5 !== 4; // 80% chance of being healthy (more predictable)
         const lastHeartbeat = generateTimestamp();
-        const version = generateVersion();
+        const versions = generateVersions();
 
         return {
             metadata: { name },
-            version,
+            version: versions.antreaVersion,
             podRef: { 
                 name: `antrea-agent-${name}`, 
                 namespace: actualIndex % 10 !== 0 ? "kube-system" : "custom-namespace" 
@@ -81,7 +85,7 @@ export function generateFakeAgents(n: number): AgentInfo[] {
             localPodNum: 10 + (actualIndex * 3) % 90, // More predictable pod distribution
             nodeSubnets: generateSubnets(),
             ovsInfo: { 
-                version: generateOVSVersion(),
+                version: versions.ovsVersion,
                 bridgeName: actualIndex % 5 === 0 ? "custom-bridge" : "br-int", // Most use br-int
                 flowTable: new Map([["0", 100 + (actualIndex * 10) % 900]]) // More predictable flow counts
             },
