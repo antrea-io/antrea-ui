@@ -8,7 +8,7 @@
     "@cds/core": "^6.5.0",
     "@cds/react": "^6.5.0",
     "@hookform/error-message": "^2.0.1",
-    "@reduxjs/toolkit": "^2.7.0",
+    "@reduxjs/toolkit": "^2.8.1",
     "@testing-library/react": "^15.0.7",
     "@testing-library/user-event": "^14.6.1",
     "@vitejs/plugin-react": "^4.4.1",
