@@ -1,0 +1,86 @@
+{
+  $schema: "https://docs.renovatebot.com/renovate-schema.json",
+  extends: [
+    "config:base",
+    ":gitSignOff", // Add commit Sign-Off for renovate commits
+  ],
+
+  // Allow only certain package managers and implicitly disable all others
+  enabledManagers: ["gomod", "github-actions", "npm"],
+
+  // Monitored branches
+  baseBranches: ["main"],
+  prConcurrentLimit: 10,
+  prHourlyLimit: 0,
+
+  postUpdateOptions: ["gomodTidy"],
+
+  // Don't separate major, minor and patch in different PRs
+  separateMajorMinor: false,
+  separateMinorPatch: false,
+
+  // Labels to include in the PR
+  labels: ["dependencies"],
+
+  // Enabling security updates based on GitHub's Dependabot-style security alerts
+  vulnerabilityAlerts: {
+    enabled: true,
+  },
+
+  packageRules: [
+    {
+      matchManagers: ["npm"],
+      enabled: false,
+    },
+
+    {
+      matchManagers: ["npm"],
+      matchFileNames: ["/client/web/antrea-ui/*"],
+      addLabels: ["javascript"],
+      enabled: true,
+    },
+
+    {
+      matchManagers: ["npm"],
+      matchPackageNames: ["@types/node"],
+      matchUpdateTypes: ["major"],
+      enabled: false,
+    },
+
+    {
+      matchManagers: ["gomod"],
+      addLabels: ["go"],
+      enabled: true,
+    },
+
+    {
+      matchManagers: ["gomod"],
+      matchPackagePrefixes: ["k8s.io/"],
+      matchUpdateTypes: ["major", "minor"],
+      enabled: false, // only enable patch updates
+    },
+
+    {
+      matchManagers: ["gomod"],
+      matchPackagePrefixes: ["k8s.io/"],
+      matchUpdateTypes: ["patch"],
+      groupName: "k8s",
+      groupSlug: "k8s",
+      enabled: true,
+    },
+
+    {
+      matchManagers: ["gomod"],
+      matchPackagePrefixes: ["golang.org/x/"],
+      groupName: "go",
+      groupSlug: "go",
+      enabled: true,
+    },
+
+    {
+      matchManagers: ["github-actions"],
+      addLabels: ["github_actions"],
+      enabled: true,
+    },
+  ],
+}
