@@ -24,7 +24,7 @@ jobs:
     needs: get-version
     steps:
     - name: Check-out code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v5
     - name: Build container images
       env:
         # VERSION must be set for docker image to be tagged correctly
