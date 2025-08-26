@@ -77,9 +77,15 @@
 
     {
       matchManagers: ["gomod"],
+      matchPackageNames: ["k8s.io/utils"],
+      enabled: false, // k8s.io/utils digest should be updated when other k8s.io dependencies are updated, and not independently
+    },
+
+    {
+      matchManagers: ["gomod"],
       matchPackagePrefixes: ["golang.org/x/"],
-      groupName: "go",
-      groupSlug: "go",
+      groupName: "golang.org/x",
+      groupSlug: "golang.org/x",
     },
 
     {
