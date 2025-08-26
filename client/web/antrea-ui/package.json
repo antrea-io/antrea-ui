@@ -17,7 +17,7 @@
     "base-64": "^1.0.0",
     "d3": "^7.9.0",
     "d3-graphviz": "^5.6.0",
-    "echarts": "^5.6.0",
+    "echarts": "^6.0.0",
     "echarts-for-react": "^3.0.3",
     "is-ip": "^5.0.1",
     "jsdom-testing-mocks": "^1.13.1",
