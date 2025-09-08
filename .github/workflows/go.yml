@@ -17,7 +17,7 @@ jobs:
     - name: Check-out code
       uses: actions/checkout@v5
     - name: Set up Go using version from go.mod
-      uses: actions/setup-go@v5
+      uses: actions/setup-go@v6
       with:
         go-version-file: 'go.mod'
     - name: Build binaries
@@ -31,7 +31,7 @@ jobs:
     - name: Check-out code
       uses: actions/checkout@v5
     - name: Set up Go using version from go.mod
-      uses: actions/setup-go@v5
+      uses: actions/setup-go@v6
       with:
         go-version-file: 'go.mod'
     - name: Run unit tests
@@ -45,7 +45,7 @@ jobs:
     - name: Check-out code
       uses: actions/checkout@v5
     - name: Set up Go using version from go.mod
-      uses: actions/setup-go@v5
+      uses: actions/setup-go@v6
       with:
         go-version-file: 'go.mod'
     - name: Check tidiness
@@ -65,7 +65,7 @@ jobs:
     - name: Check-out code
       uses: actions/checkout@v5
     - name: Set up Go using version from go.mod
-      uses: actions/setup-go@v5
+      uses: actions/setup-go@v6
       with:
         go-version-file: 'go.mod'
     - name: Run code linters
