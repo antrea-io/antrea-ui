@@ -20,6 +20,8 @@ jobs:
       uses: actions/setup-node@v5
       with:
         node-version: 22
+    - name: Enable Corepack
+      run: corepack enable
     - run: yarn install
       working-directory: client/web/antrea-ui/
     - run: yarn lint
