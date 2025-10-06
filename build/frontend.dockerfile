@@ -18,8 +18,10 @@ WORKDIR /app
 
 COPY client/web/antrea-ui/package.json .
 COPY client/web/antrea-ui/yarn.lock .
+COPY client/web/antrea-ui/.yarnrc.yml .
+COPY client/web/antrea-ui/.yarn ./.yarn
 
-RUN yarn install --pure-lockfile
+RUN corepack enable && yarn install --immutable
 
 COPY client/web/antrea-ui .
 ARG NODE_ENV=production
