@@ -100,8 +100,8 @@ describe('Settings', () => {
             // unclear why this is needed, but without it the form is not submitted
             await userEvent.click(document.body);
             await userEvent.click(screen.getByRole('button', {name: 'Submit'}));
-            await waitFor(() => expect(mockLogout).toHaveBeenCalledWith('Your password was successfully updated, please login again'));
-            expect(mockedAccountAPI.updatePassword).toHaveBeenCalledWith(currentPassword, newPassword);
+            await waitFor(() => expect(mockLogout).toHaveBeenCalledExactlyOnceWith('Your password was successfully updated, please login again'));
+            expect(mockedAccountAPI.updatePassword).toHaveBeenCalledExactlyOnceWith(currentPassword, newPassword);
             expect(mockAddError).not.toHaveBeenCalled();
         });
 
@@ -112,8 +112,8 @@ describe('Settings', () => {
             await inputsToEvents({currentPassword: badPassword, newPassword: newPassword, newPassword2: newPassword});
             await userEvent.click(document.body);
             await userEvent.click(screen.getByRole('button', {name: 'Submit'}));
-            await waitFor(() => expect(mockAddError).toHaveBeenCalledWith(err));
-            expect(mockedAccountAPI.updatePassword).toHaveBeenCalledWith(badPassword, newPassword);
+            await waitFor(() => expect(mockAddError).toHaveBeenCalledExactlyOnceWith(err));
+            expect(mockedAccountAPI.updatePassword).toHaveBeenCalledExactlyOnceWith(badPassword, newPassword);
             expect(mockLogout).not.toHaveBeenCalled();
         });
 

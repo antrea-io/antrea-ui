@@ -77,16 +77,16 @@ describe('Traceflow API', () => {
 
         await traceflowAPI.runTraceflow(tf, withDelete);
 
-        expect(mock.post).toHaveBeenCalledWith(`traceflow`, {spec: tf}, expect.objectContaining({
+        expect(mock.post).toHaveBeenCalledExactlyOnceWith(`traceflow`, {spec: tf}, expect.objectContaining({
             headers: {
                 'content-type': 'application/json',
             },
         }));
-        expect(mock.get).toHaveBeenCalledWith(`/api/v1/traceflow/${reqId}/status`, expect.objectContaining({
+        expect(mock.get).toHaveBeenCalledExactlyOnceWith(`/api/v1/traceflow/${reqId}/status`, expect.objectContaining({
             baseURL: '',
         }));
         if (withDelete) {
-            expect(mock.delete).toHaveBeenCalledWith(`/api/v1/traceflow/${reqId}`, expect.objectContaining({
+            expect(mock.delete).toHaveBeenCalledExactlyOnceWith(`/api/v1/traceflow/${reqId}`, expect.objectContaining({
             baseURL: '',
         }));
         } else {
@@ -126,7 +126,7 @@ describe('Traceflow API', () => {
 
         await traceflowAPI.runTraceflow(tf, false);
 
-        expect(mock.post).toHaveBeenCalledWith(`traceflow`, {spec: tf}, expect.objectContaining({
+        expect(mock.post).toHaveBeenCalledExactlyOnceWith(`traceflow`, {spec: tf}, expect.objectContaining({
             headers: {
                 'content-type': 'application/json',
             },
@@ -145,7 +145,7 @@ describe('Traceflow API', () => {
 
         await expect(traceflowAPI.runTraceflow(tf, false)).rejects.toBeInstanceOf(APIError);
 
-        expect(mock.post).toHaveBeenCalledWith(`traceflow`, expect.anything(), expect.anything());
+        expect(mock.post).toHaveBeenCalledExactlyOnceWith(`traceflow`, expect.anything(), expect.anything());
         expect(console.error).toHaveBeenCalled();
     });
 
@@ -162,7 +162,7 @@ describe('Traceflow API', () => {
 
         await expect(traceflowAPI.runTraceflow(tf, false)).rejects.toBeInstanceOf(APIError);
 
-        expect(mock.post).toHaveBeenCalledWith(`traceflow`, expect.anything(), expect.anything());
+        expect(mock.post).toHaveBeenCalledExactlyOnceWith(`traceflow`, expect.anything(), expect.anything());
         expect(console.error).toHaveBeenCalled();
     });
 
