@@ -74,7 +74,7 @@ describe('axios instance', () => {
         //  * once by the auth refresh interceptor
         //  * once by the request interceptor when retrying the request
         expect(getTokenMock).toHaveBeenCalledTimes(3);
-        expect(setTokenMock).toHaveBeenCalledWith(token2);
+        expect(setTokenMock).toHaveBeenCalledExactlyOnceWith(token2);
     });
 
     test('failed refresh', async () => {
@@ -104,6 +104,6 @@ describe('axios instance', () => {
         scope.done();
 
         expect(getTokenMock).toHaveBeenCalled();
-        expect(setTokenMock).toHaveBeenCalledWith("");
+        expect(setTokenMock).toHaveBeenCalledExactlyOnceWith("");
     });
 });

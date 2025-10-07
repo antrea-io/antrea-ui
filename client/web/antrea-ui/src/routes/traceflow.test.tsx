@@ -260,8 +260,8 @@ describe('Traceflow request', () => {
         await userEvent.click(document.body);
         await userEvent.click(screen.getByRole('button', {name: 'Run Traceflow'}));
 
-        await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith('/traceflow/result', expect.anything()));
+        await waitFor(() => expect(mockNavigate).toHaveBeenCalledExactlyOnceWith('/traceflow/result', expect.anything()));
 
-        await waitFor(() => expect(mockedTraceflowAPI.runTraceflow).toHaveBeenCalledWith(tc.expectedTf, true));
+        await waitFor(() => expect(mockedTraceflowAPI.runTraceflow).toHaveBeenCalledExactlyOnceWith(tc.expectedTf, true));
     });
 });

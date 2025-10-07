@@ -192,7 +192,7 @@ describe('LoginBasic', () => {
         await userEvent.click(document.body);
         userEvent.click(screen.getByRole('button', {name: 'Login'}));
         await waitFor(() => expect(mockedAuthAPI.login).toHaveBeenCalled());
-        await waitFor(() => expect(mockAddError).toHaveBeenCalledWith(err));
+        await waitFor(() => expect(mockAddError).toHaveBeenCalledExactlyOnceWith(err));
         expect(token).toBeUndefined();
     });
 });
@@ -238,6 +238,6 @@ describe('LoginOIDC', () => {
         expect(getHrefMock).toHaveBeenCalledTimes(1);
         const params = new URLSearchParams();
         params.set('redirect_url', 'http://localhost:3000/summary');
-        expect(setHrefMock).toHaveBeenCalledWith(`/auth/oauth2/login?${params.toString()}`);
+        expect(setHrefMock).toHaveBeenCalledExactlyOnceWith(`/auth/oauth2/login?${params.toString()}`);
     });
 });
