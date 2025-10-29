@@ -16,6 +16,10 @@
 
 import { AxiosError } from 'axios';
 
+interface ErrorConstructorWithStackTrace extends ErrorConstructor {
+    captureStackTrace?: (targetObject: object, constructorOpt?: unknown) => void;
+}
+
 export class APIError extends Error {
     code: number;
     status: string;
@@ -25,8 +29,9 @@ export class APIError extends Error {
         super(...params);
 
         // Maintains proper stack trace for where our error was thrown (only available on V8)
-        if (Error.captureStackTrace) {
-            Error.captureStackTrace(this, APIError);
+        const ErrorWithStackTrace = Error as ErrorConstructorWithStackTrace;
+        if (ErrorWithStackTrace.captureStackTrace) {
+            ErrorWithStackTrace.captureStackTrace(this, APIError);
         }
 
         this.name = 'APIError';
