@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-FROM node:22-bullseye-slim as build-web
+FROM node:24-bullseye-slim as build-web
 
 WORKDIR /app
 
@@ -27,7 +27,7 @@ COPY client/web/antrea-ui .
 ARG NODE_ENV=production
 RUN yarn build
 
-FROM nginxinc/nginx-unprivileged:1.27
+FROM nginxinc/nginx-unprivileged:1.29
 
 COPY --from=build-web /app/build /app
 COPY build/scripts/nginx-reloader.sh /docker-entrypoint.d/99-nginx-reloader.sh

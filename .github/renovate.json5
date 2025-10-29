@@ -92,5 +92,12 @@
       matchManagers: ["github-actions"],
       addLabels: ["github_actions"],
     },
+
+    {
+      matchManagers: ["github-actions"],
+      matchPackageNames: ["actions/node-versions"],
+      matchUpdateTypes: ["major"],
+      enabled: false,
+    },
   ],
 }
