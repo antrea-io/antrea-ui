@@ -1,102 +1,143 @@
 {
-  $schema: "https://docs.renovatebot.com/renovate-schema.json",
+  $schema: 'https://docs.renovatebot.com/renovate-schema.json',
   extends: [
-    "config:base",
-    ":gitSignOff", // Add commit Sign-Off for renovate commits
+    'config:recommended',
+    ':gitSignOff',
   ],
-
-  // Allow only certain package managers and implicitly disable all others
-  enabledManagers: ["gomod", "github-actions", "npm"],
-
-  // Monitored branches
-  baseBranches: ["main"],
+  enabledManagers: [
+    'gomod',
+    'github-actions',
+    'npm',
+  ],
+  baseBranchPatterns: [
+    'main',
+  ],
   prConcurrentLimit: 10,
   prHourlyLimit: 0,
-
-  postUpdateOptions: ["gomodTidy"],
-
-  // Don't separate major, minor and patch in different PRs
+  postUpdateOptions: [
+    'gomodTidy',
+  ],
   separateMajorMinor: false,
   separateMinorPatch: false,
-
-  labels: ["dependencies"],
-
-  // Enabling security updates based on GitHub's Dependabot-style security alerts
+  labels: [
+    'dependencies',
+  ],
   vulnerabilityAlerts: {
     enabled: true,
   },
-
   packageRules: [
     {
-      matchManagers: ["npm"],
-      addLabels: ["javascript"],
+      matchManagers: [
+        'npm',
+      ],
+      addLabels: [
+        'javascript',
+      ],
     },
-
-    // Automerge npm non-major updates
     {
-      matchManagers: ["npm"],
-      matchUpdateTypes: ["minor", "patch"],
-      matchCurrentVersion: "!/^0/", // exclude pre-1.0.0 versions
+      matchManagers: [
+        'npm',
+      ],
+      matchUpdateTypes: [
+        'minor',
+        'patch',
+      ],
+      matchCurrentVersion: '!/^0/',
       automerge: true,
-      automergeType: "pr",
+      automergeType: 'pr',
     },
-
     {
-      matchManagers: ["npm"],
-      matchPackageNames: ["@types/node"],
-      matchUpdateTypes: ["major"],
+      matchManagers: [
+        'npm',
+      ],
+      matchPackageNames: [
+        '@types/node',
+      ],
+      matchUpdateTypes: [
+        'major',
+      ],
       enabled: false,
     },
-
-    // Disable indirect go dependencies updates, resource: https://github.com/renovatebot/renovate/discussions/35225#discussioncomment-13666269
     {
-      matchManagers: ["gomod"],
-      matchDepTypes: ["indirect"],
+      matchManagers: [
+        'gomod',
+      ],
+      matchDepTypes: [
+        'indirect',
+      ],
       enabled: false,
     },
-
     {
-      matchManagers: ["gomod"],
-      addLabels: ["go"],
+      matchManagers: [
+        'gomod',
+      ],
+      addLabels: [
+        'go',
+      ],
     },
-
     {
-      matchManagers: ["gomod"],
-      matchPackagePrefixes: ["k8s.io/"],
-      matchUpdateTypes: ["major", "minor"],
-      enabled: false, // only enable patch updates
+      matchManagers: [
+        'gomod',
+      ],
+      matchUpdateTypes: [
+        'major',
+        'minor',
+      ],
+      enabled: false,
+      matchPackageNames: [
+        'k8s.io/{/,}**',
+      ],
     },
-
     {
-      matchManagers: ["gomod"],
-      matchPackagePrefixes: ["k8s.io/"],
-      matchUpdateTypes: ["patch"],
-      groupName: "k8s",
-      groupSlug: "k8s",
+      matchManagers: [
+        'gomod',
+      ],
+      matchUpdateTypes: [
+        'patch',
+      ],
+      groupName: 'k8s',
+      groupSlug: 'k8s',
+      matchPackageNames: [
+        'k8s.io/{/,}**',
+      ],
     },
-
     {
-      matchManagers: ["gomod"],
-      matchPackageNames: ["k8s.io/utils"],
-      enabled: false, // k8s.io/utils digest should be updated when other k8s.io dependencies are updated, and not independently
+      matchManagers: [
+        'gomod',
+      ],
+      matchPackageNames: [
+        'k8s.io/utils',
+      ],
+      enabled: false,
     },
-
     {
-      matchManagers: ["gomod"],
-      matchPackagePrefixes: ["golang.org/x/"],
-      groupName: "golang.org/x",
-      groupSlug: "golang.org/x",
+      matchManagers: [
+        'gomod',
+      ],
+      groupName: 'golang.org/x',
+      groupSlug: 'golang.org/x',
+      matchPackageNames: [
+        'golang.org/x/{/,}**',
+      ],
     },
-
     {
-      matchManagers: ["github-actions"],
-      addLabels: ["github_actions"],
+      matchManagers: [
+        'github-actions',
+      ],
+      addLabels: [
+        'github_actions',
+      ],
     },
-
     {
-      matchManagers: ["github-actions"],
-      matchPackageNames: ["actions/node-versions"],
-      matchUpdateTypes: ["major"],
+      matchManagers: [
+        'github-actions',
+      ],
+      matchPackageNames: [
+        'actions/node-versions',
+      ],
+      matchUpdateTypes: [
+        'major',
+      ],
       enabled: false,
     },
   ],
