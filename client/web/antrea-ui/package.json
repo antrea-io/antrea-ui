@@ -28,7 +28,7 @@
     "react-router": "^7.6.3",
     "typescript": "^5.8.3",
     "vite": "^7.0.4",
-    "vitest": "^3.2.4",
+    "vitest": "^4.0.5",
     "web-vitals": "^5.0.3"
   },
   "scripts": {
