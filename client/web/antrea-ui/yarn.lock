@@ -887,8 +887,8 @@ __metadata:
   linkType: hard
 
 "@reduxjs/toolkit@npm:^2.8.2":
-  version: 2.10.0
-  resolution: "@reduxjs/toolkit@npm:2.10.0"
+  version: 2.10.1
+  resolution: "@reduxjs/toolkit@npm:2.10.1"
   dependencies:
     "@standard-schema/spec": "npm:^1.0.0"
     "@standard-schema/utils": "npm:^0.3.0"
@@ -904,7 +904,7 @@ __metadata:
       optional: true
     react-redux:
       optional: true
-  checksum: 10c0/413ccbce8caceaf458b2f3de10d36380beef34b017eec2482aba5b9953101a3c6a90b5a0c656b278e60ac97ef40c29385c94e8557fa6411007bf1c43e5b5b4ce
+  checksum: 10c0/0296a73c8dfbe8b2a14095cfaaf67a8e4c5537b164c021bdb81c43922d10042a2fe733fbdfc956f9233884a6db5491fbc6d950a8883e1cd6137251db392f6a9e
   languageName: node
   linkType: hard
 
