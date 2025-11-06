@@ -3191,15 +3191,15 @@ __metadata:
   linkType: hard
 
 "echarts-for-react@npm:^3.0.3":
-  version: 3.0.4
-  resolution: "echarts-for-react@npm:3.0.4"
+  version: 3.0.5
+  resolution: "echarts-for-react@npm:3.0.5"
   dependencies:
     fast-deep-equal: "npm:^3.1.3"
     size-sensor: "npm:^1.0.1"
   peerDependencies:
     echarts: ^3.0.0 || ^4.0.0 || ^5.0.0 || ^6.0.0
     react: ^15.0.0 || >=16.0.0
-  checksum: 10c0/2687e759bfeb9305b3f7c13848514855e9947e5b42087f6e6dba4bbb147ad3d4df50c18269b954bcdc9f62905bf549e5209f06c56fe3db80c5391adae2acea5f
+  checksum: 10c0/ca4a70fbcee0dbfde7410278167b82f8900163aa40ebc0a504c002c7555ce6cc3ffbfdc6b938cd66088c54b097ff2a37e9b4776f0e62fb08bb6136d3ccd12826
   languageName: node
   linkType: hard
 
