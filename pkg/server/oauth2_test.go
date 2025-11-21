@@ -262,7 +262,7 @@ func TestOAuth2DiscoveryURL(t *testing.T) {
 		var buf bytes.Buffer
 		logger := buflogr.NewWithBuffer(&buf)
 		require.Error(t, initProvider(logger, proxy.URL, ""))
-		assert.Contains(t, buf.String(), "issuer did not match the issuer returned by provider")
+		assert.Contains(t, buf.String(), "did not match the issuer URL returned by provider")
 	})
 
 	t.Run("with discovery URL", func(t *testing.T) {
