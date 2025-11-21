@@ -4,7 +4,7 @@ go 1.24.0
 
 require (
 	github.com/blang/semver v3.5.1+incompatible
-	github.com/coreos/go-oidc/v3 v3.16.0
+	github.com/coreos/go-oidc/v3 v3.17.0
 	github.com/gin-contrib/cors v1.7.6
 	github.com/gin-gonic/gin v1.11.0
 	github.com/go-logr/logr v1.4.3
