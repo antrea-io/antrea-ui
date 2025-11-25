@@ -8,7 +8,7 @@ BINDIR := $(CURDIR)/bin
 GOMOCK_VERSION := $(shell grep '^\s*github.com\/golang\/mock\sv\S*$$' go.mod | awk '{print $$2}')
 GOMOCK_BINDIR  := .mockgen-bin
 GOMOCK_BIN     := $(GOMOCK_BINDIR)/$(GOMOCK_VERSION)/mockgen
-GOLANGCI_LINT_VERSION := v2.0.2
+GOLANGCI_LINT_VERSION := v2.6.2
 GOLANGCI_LINT_BINDIR  := .golangci-bin
 GOLANGCI_LINT_BIN     := $(GOLANGCI_LINT_BINDIR)/$(GOLANGCI_LINT_VERSION)/golangci-lint
 
