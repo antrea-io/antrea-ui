@@ -86,10 +86,15 @@ describe('Traceflow API', () => {
             baseURL: '',
         }));
         if (withDelete) {
+            // The purpose of this rule is to make sure that expectations are not accidentally
+            // skipped. In our case, usage is pretty straightforward, based on the test parameter,
+            // and it seems better than duplicating the test case.
+            // eslint-disable-next-line vitest/no-conditional-expect
             expect(mock.delete).toHaveBeenCalledExactlyOnceWith(`/api/v1/traceflow/${reqId}`, expect.objectContaining({
             baseURL: '',
         }));
         } else {
+            // eslint-disable-next-line vitest/no-conditional-expect
             expect(mock.delete).not.toHaveBeenCalled();
         }
     });
