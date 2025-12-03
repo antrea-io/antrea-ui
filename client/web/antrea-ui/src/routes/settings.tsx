@@ -15,7 +15,7 @@
  */
 
 import { useContext } from 'react';
-import { useForm, SubmitHandler } from "react-hook-form";
+import { useForm, SubmitHandler, useWatch } from "react-hook-form";
 import { CdsCard } from '@cds/react/card';
 import { CdsDivider } from '@cds/react/divider';
 import { CdsButton } from '@cds/react/button';
@@ -35,7 +35,8 @@ type Inputs = {
 };
 
 function UpdatePassword() {
-    const { register, watch, handleSubmit, formState: { errors } } = useForm<Inputs>();
+    const { register, control, handleSubmit, formState: { errors } } = useForm<Inputs>();
+    const newPassword = useWatch({ control, name: "newPassword" });
 
     const logout = useLogout();
 
@@ -88,7 +89,7 @@ function UpdatePassword() {
                             <input type="password" {...register("newPassword2", {
                                 required: "Required field",
                                 validate: (value: string) => {
-                                    if (value !== watch("newPassword")) {
+                                    if (value !== newPassword) {
                                         return "Passwords don't match";
                                     }
                                 },

@@ -366,6 +366,14 @@ function TraceflowGraph(props: {spec: TraceflowSpec, status: TraceflowStatus}) {
     const divRef = useRef<HTMLDivElement>(null);
     const { addError } = useAppError();
 
+    function renderGraph(graph: Digraph | null) {
+        if (!graph) {
+            divRef.current?.replaceChildren();
+        } else {
+            graphviz(divRef.current).renderDot(graph.asDot());
+        }
+    }
+
     useEffect(() => {
         const graphBuilder = new TraceflowGraphBuilder(tfSpec, tfStatus);
         try {
@@ -376,16 +384,6 @@ function TraceflowGraph(props: {spec: TraceflowSpec, status: TraceflowStatus}) {
             if (e instanceof TraceflowResultError) addError(e);
         }
     }, [addError, tfSpec, tfStatus]);
-
-
-
-    function renderGraph(graph: Digraph | null) {
-        if (!graph) {
-            divRef.current?.replaceChildren();
-        } else {
-            graphviz(divRef.current).renderDot(graph.asDot());
-        }
-    }
 
     return (
         <div ref={divRef}></div>
