@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+import { useEffect } from 'react';
 import { useForm, SubmitHandler } from 'react-hook-form';
 import { ErrorMessage } from '@hookform/error-message';
 import { CdsButton } from '@cds/react/button';
@@ -88,10 +89,12 @@ export function LoginOIDC(props: { providerName: string }) {
         window.location.href=`${apiServer}/auth/oauth2/login?${params.toString()}`;
     }
 
-    if (localStorage.getItem('ui.antrea.io/use-oidc') === 'yes') {
-        localStorage.removeItem('ui.antrea.io/use-oidc');
-        login();
-    }
+    useEffect(() => {
+        if (localStorage.getItem('ui.antrea.io/use-oidc') === 'yes') {
+            localStorage.removeItem('ui.antrea.io/use-oidc');
+            login();
+        }
+    }, []);
 
     return (
         <CdsButton role="button" type="button" onClick={() => login()}>Login with {props.providerName}</CdsButton>
