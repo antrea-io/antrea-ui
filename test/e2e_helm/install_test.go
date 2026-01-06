@@ -70,6 +70,7 @@ func TestInstall(t *testing.T) {
 	testCases := []struct {
 		name          string
 		helmSetValues map[string]string
+		preInstall    func(t *testing.T, kubectlOptions *k8s.KubectlOptions)
 		checks        func(t *testing.T, endpoint string)
 	}{
 		{
@@ -90,6 +91,38 @@ func TestInstall(t *testing.T) {
 				},
 			),
 		},
+		{
+			name: "oidc - secret ref",
+			preInstall: func(t *testing.T, kubectlOptions *k8s.KubectlOptions) {
+				// Create a Secret with OIDC credentials
+				// From https://www.openidconnect.net/ (Auth0)
+				// #nosec G101: test credentials
+				secretManifest := `
+apiVersion: v1
+kind: Secret
+metadata:
+  name: test-oidc-credentials
+  namespace: kube-system
+stringData:
+  clientID: "kbyuFDidLLm280LIwVFiazOqjO3ty8KH"
+  clientSecret: "60Op4HFM0I8ajz0WdiStAbziZ-VFQttXuxixHHs2R7r7-CW8GR79l-mmLqMhc-Sa"
+`
+				k8s.KubectlApplyFromString(t, kubectlOptions, secretManifest)
+				t.Cleanup(func() {
+					k8s.RunKubectl(t, kubectlOptions, "delete", "secret", "test-oidc-credentials")
+				})
+			},
+			helmSetValues: map[string]string{
+				"url":                                  "https://example.com",
+				"auth.oidc.enable":                     "true",
+				"auth.oidc.issuerURL":                  "https://samples.auth0.com/",
+				"auth.oidc.clientIDSecretRef.name":     "test-oidc-credentials",
+				"auth.oidc.clientIDSecretRef.key":      "clientID",
+				"auth.oidc.clientSecretSecretRef.name": "test-oidc-credentials",
+				"auth.oidc.clientSecretSecretRef.key":  "clientSecret",
+			},
+			checks: checkAPIAccess("http", nil),
+		},
 	}
 
 	for _, tc := range testCases {
@@ -99,6 +132,12 @@ func TestInstall(t *testing.T) {
 				KubectlOptions: kubectlOptions,
 				SetValues:      tc.helmSetValues,
 			}
+
+			// Run pre-install setup if provided
+			if tc.preInstall != nil {
+				tc.preInstall(t, kubectlOptions)
+			}
+
 			// the test will fail immediately in case of error
 			helm.Install(t, helmOptions, helmChartPath, releaseName)
 			defer helm.Delete(t, helmOptions, releaseName, true)

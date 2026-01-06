@@ -109,10 +109,24 @@ auth:
     # -- Application (client) ID to be used by the Antrea UI server to identify itself to the OIDC
     # provider.
     clientID: ""
-    # -- Application (secret) ID to be used by the Antrea UI server to identify itself to the OIDC
+    clientIDSecretRef:
+      # -- Name of the secret containing the application (client) ID to be used by the Antrea UI
+      # server to identify itself to the OIDC provider. The secret must exist in the Namespace of
+      # the Helm release. It is mutually exclusive with the clientID value.
+      name: ""
+      # -- Name of the key field storing the application (client) ID in the referenced secret.
+      key: "clientID"
+    # -- Application secret to be used by the Antrea UI server to identify itself to the OIDC
     # provider. Note that this secret will never be exposed to the UI frontend and to users. It
     # should be base64-encoded.
     clientSecret: ""
+    clientSecretSecretRef:
+      # -- Name of the secret containing the application secret to be used by the Antrea UI
+      # server to identify itself to the OIDC provider. The secret must exist in the Namespace of
+      # the Helm release. It is mutually exclusive with the clientSecret value.
+      name: ""
+      # -- Name of the key field storing the application secret in the referenced secret.
+      key: "clientSecret"
     # -- URL to log out of the OIDC provider. It will be invoked when the user logs out of the
     # Antrea UI. Some OIDC providers may not offer this capability. If this is empty, the user will
     # stay signed into the identity provider even after logging out of the Antrea UI. The provided

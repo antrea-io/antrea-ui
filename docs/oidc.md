@@ -128,3 +128,54 @@ easily log back in without having to provide credentials.
 
 After installing Antrea UI with the correct configuration values, visit
 `https://<ANTREA_UI_ADDRESS>` and click on the `Login With Auth0` button.
+
+## Using Kubernetes Secrets for OIDC Credentials
+
+You can also provide OIDC client credentials from existing Kubernetes Secrets
+instead of embedding them directly in the Helm values. This is particularly
+useful when using external secret management solutions.
+
+### Creating the Secret
+
+First, create a Kubernetes Secret containing your OIDC credentials in the same
+namespace where Antrea UI will be installed:
+
+```bash
+kubectl create secret generic oidc-credentials \
+  --from-literal=clientID='<YOUR_CLIENT_ID>' \
+  --from-literal=clientSecret='<YOUR_BASE64_ENCODED_CLIENT_SECRET>' \
+  -n kube-system
+```
+
+Note: The client secret should be base64-encoded, just as it would be when
+provided directly via Helm values.
+
+### Using the Secret in Helm Configuration
+
+You can reference the Secret in your Helm values configuration:
+
+```yaml
+url: "https://<ANTREA_UI_ADDRESS>"
+auth:
+  basic:
+    enable: false
+  oidc:
+    enable: true
+    providerName: "Auth0"
+    issuerURL: "https://<AUTH0_DOMAIN>/"
+    # Reference existing Secret instead of providing values directly
+    clientIDSecretRef:
+      name: "oidc-credentials"
+      key: "clientID"
+    clientSecretSecretRef:
+      name: "oidc-credentials"
+      key: "clientSecret"
+    logoutURL: "https://<AUTH0_DOMAIN>/v2/logout?returnTo={{LogoutReturnURL}}&client_id={{ClientID}}"
+security:
+  cookieSecure: true
+```
+
+**Important:** When using Secret references, you cannot provide the `clientID`
+or `clientSecret` values directly - they are mutually exclusive. The referenced
+Secret(s) must exist in the same namespace as the Helm release before the
+deployment can start successfully.
