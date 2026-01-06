@@ -60,6 +60,38 @@ ready until OIDC discovery is successful. */ -}}
 {{- ternary (randAlphaNum 64 | b64enc) .Values.auth.oidc.clientSecret .Values.dex.enable -}}
 {{- end -}}
 
+{{- define "oidcClientIDSecretName" -}}
+{{- if not (empty .Values.auth.oidc.clientIDSecretRef.name) -}}
+{{- .Values.auth.oidc.clientIDSecretRef.name -}}
+{{- else -}}
+antrea-ui-oidc-client
+{{- end -}}
+{{- end -}}
+
+{{- define "oidcClientSecretSecretName" -}}
+{{- if not (empty .Values.auth.oidc.clientSecretSecretRef.name) -}}
+{{- .Values.auth.oidc.clientSecretSecretRef.name -}}
+{{- else -}}
+antrea-ui-oidc-client
+{{- end -}}
+{{- end -}}
+
+{{- define "oidcClientIDKey" -}}
+{{- if or (empty .Values.auth.oidc.clientIDSecretRef.name) (empty .Values.auth.oidc.clientIDSecretRef.key) -}}
+clientID
+{{- else -}}
+{{- .Values.auth.oidc.clientIDSecretRef.key -}}
+{{- end -}}
+{{- end -}}
+
+{{- define "oidcClientSecretKey" -}}
+{{- if or (empty .Values.auth.oidc.clientSecretSecretRef.name) (empty .Values.auth.oidc.clientSecretSecretRef.key) -}}
+clientSecret
+{{- else -}}
+{{- .Values.auth.oidc.clientSecretSecretRef.key -}}
+{{- end -}}
+{{- end -}}
+
 {{- /* -------------------------------- */}}
 
 {{- define "validateValues" -}}
@@ -86,11 +118,17 @@ ready until OIDC discovery is successful. */ -}}
 {{- if empty .Values.auth.oidc.issuerURL -}}
 {{- fail "auth.oidc.issuerURL is required when OIDC is enabled" -}}
 {{- end -}}
-{{- if empty .Values.auth.oidc.clientID -}}
-{{- fail "auth.oidc.clientID is required when OIDC is enabled" -}}
+{{- if and (empty .Values.auth.oidc.clientID) (empty .Values.auth.oidc.clientIDSecretRef.name) -}}
+{{- fail "either auth.oidc.clientID or auth.oidc.clientIDSecretRef.name is required when OIDC is enabled" -}}
 {{- end -}}
-{{- if empty .Values.auth.oidc.clientSecret -}}
-{{- fail "auth.oidc.clientSecret is required when OIDC is enabled" -}}
+{{- if and (not (empty .Values.auth.oidc.clientID)) (not (empty .Values.auth.oidc.clientIDSecretRef.name)) -}}
+{{- fail "auth.oidc.clientID and auth.oidc.clientIDSecretRef.name are mutually exclusive" -}}
+{{- end -}}
+{{- if and (empty .Values.auth.oidc.clientSecret) (empty .Values.auth.oidc.clientSecretSecretRef.name) -}}
+{{- fail "either auth.oidc.clientSecret or auth.oidc.clientSecretSecretRef.name is required when OIDC is enabled" -}}
+{{- end -}}
+{{- if and (not (empty .Values.auth.oidc.clientSecret)) (not (empty .Values.auth.oidc.clientSecretSecretRef.name)) -}}
+{{- fail "auth.oidc.clientSecret and auth.oidc.clientSecretSecretRef.name are mutually exclusive" -}}
 {{- end -}}
 {{- end -}}
 
