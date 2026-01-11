@@ -14,7 +14,8 @@
  * limitations under the License.
  */
 
-import { render, screen, within } from '@testing-library/react';
+import { render, screen, within, fireEvent, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { AgentInfo, ControllerInfo, K8sRef, Condition, agentInfoAPI, controllerInfoAPI } from '../api/info';
 import { FeatureGate, featureGatesAPI } from '../api/featuregates';
 import Summary from './summary';
@@ -237,5 +238,170 @@ describe('Summary', () => {
         checkAgentInfos(tc.expectedAgentData);
         checkFeatureGates('Controller', featureGatesControllerData);
         checkFeatureGates('Agent', featureGatesAgentData);
+    });
+
+    describe('Sorting functionality', () => {
+        it('sorts agents by name in ascending and descending order', async () => {
+            const user = userEvent.setup();
+            const agents = [
+                makeAgentInfo('node-3', 'nodeC', 10, ['10.0.3.0/24'], [makeCondition('AgentHealthy', 'True', d1)]),
+                makeAgentInfo('node-1', 'nodeA', 20, ['10.0.1.0/24'], [makeCondition('AgentHealthy', 'True', d1)]),
+                makeAgentInfo('node-2', 'nodeB', 15, ['10.0.2.0/24'], [makeCondition('AgentHealthy', 'True', d1)])
+            ];
+
+            mockedControllerInfoAPI.fetch.mockResolvedValueOnce(controller);
+            mockedAgentInfoAPI.fetchAll.mockResolvedValueOnce(agents);
+            mockedFeatureGatesAPI.fetch.mockResolvedValueOnce(featureGates);
+
+            render(<Summary />);
+            
+            await screen.findByText('Agents');
+            
+            // Find the Name header in the Agents section and click it
+            const agentsSection = screen.getByRole('region', { name: /^agents$/i });
+            const nameHeader = within(agentsSection).getByText('Name');
+            
+            // Click to sort ascending
+            await user.click(nameHeader);
+            
+            // Verify ascending order
+            const rows = within(agentsSection).getAllByRole('row');
+            expect(within(rows[1]).getByText('node-1')).toBeInTheDocument();
+            expect(within(rows[2]).getByText('node-2')).toBeInTheDocument();
+            expect(within(rows[3]).getByText('node-3')).toBeInTheDocument();
+            
+            // Click again to sort descending
+            await user.click(nameHeader);
+            
+            // Verify descending order
+            const rowsDesc = within(agentsSection).getAllByRole('row');
+            expect(within(rowsDesc[1]).getByText('node-3')).toBeInTheDocument();
+            expect(within(rowsDesc[2]).getByText('node-2')).toBeInTheDocument();
+            expect(within(rowsDesc[3]).getByText('node-1')).toBeInTheDocument();
+        });
+
+        it('sorts agents numerically by local pods', async () => {
+            const user = userEvent.setup();
+            const agents = [
+                makeAgentInfo('node-1', 'nodeA', 5, ['10.0.1.0/24'], [makeCondition('AgentHealthy', 'True', d1)]),
+                makeAgentInfo('node-2', 'nodeB', 20, ['10.0.2.0/24'], [makeCondition('AgentHealthy', 'True', d1)]),
+                makeAgentInfo('node-3', 'nodeC', 10, ['10.0.3.0/24'], [makeCondition('AgentHealthy', 'True', d1)])
+            ];
+
+            mockedControllerInfoAPI.fetch.mockResolvedValueOnce(controller);
+            mockedAgentInfoAPI.fetchAll.mockResolvedValueOnce(agents);
+            mockedFeatureGatesAPI.fetch.mockResolvedValueOnce(featureGates);
+
+            render(<Summary />);
+            
+            await screen.findByText('Agents');
+            
+            // Find the Local Pods header in the Agents section and click it
+            const agentsSection = screen.getByRole('region', { name: /^agents$/i });
+            const localPodsHeader = within(agentsSection).getByText('Local Pods');
+            
+            // Click to sort ascending
+            await user.click(localPodsHeader);
+            
+            // Verify numerical ascending order
+            const rows = within(agentsSection).getAllByRole('row');
+            expect(within(rows[1]).getByText('5')).toBeInTheDocument();
+            expect(within(rows[2]).getByText('10')).toBeInTheDocument();
+            expect(within(rows[3]).getByText('20')).toBeInTheDocument();
+        });
+    });
+
+    describe('Search functionality', () => {
+        it('filters agents by name search', async () => {
+            const user = userEvent.setup();
+            const agents = [
+                makeAgentInfo('node-1', 'nodeA', 10, ['10.0.1.0/24'], [makeCondition('AgentHealthy', 'True', d1)]),
+                makeAgentInfo('node-2', 'nodeB', 20, ['10.0.2.0/24'], [makeCondition('AgentHealthy', 'True', d1)]),
+                makeAgentInfo('special-node-1', 'nodeC', 15, ['10.0.3.0/24'], [makeCondition('AgentHealthy', 'True', d1)])
+            ];
+
+            mockedControllerInfoAPI.fetch.mockResolvedValueOnce(controller);
+            mockedAgentInfoAPI.fetchAll.mockResolvedValueOnce(agents);
+            mockedFeatureGatesAPI.fetch.mockResolvedValueOnce(featureGates);
+
+            render(<Summary />);
+            
+            await screen.findByText('Agents');
+            
+            // Find the search input
+            const searchInput = screen.getByPlaceholderText(/search by name/i);
+            
+            // Type "special" in the search input
+            await user.type(searchInput, 'special');
+            
+            // Verify only the matching agent is displayed
+            const agentsSection = screen.getByRole('region', { name: /^agents$/i });
+            const rows = within(agentsSection).getAllByRole('row');
+            
+            // Should have 2 rows: header + 1 matching agent
+            expect(rows).toHaveLength(2);
+            expect(within(rows[1]).getByText('special-node-1')).toBeInTheDocument();
+        });
+    });
+
+    describe('Pagination functionality', () => {
+        it('displays pagination controls when agents exceed page size', async () => {
+            // Create 15 agents to test pagination (more than itemsPerPage)
+            const manyAgents = Array.from({ length: 15 }, (_, i) => 
+                makeAgentInfo(`node-${i + 1}`, `node${i + 1}`, i * 5, ['10.0.1.0/24'], [makeCondition('AgentHealthy', 'True', d1)])
+            );
+
+            mockedControllerInfoAPI.fetch.mockResolvedValueOnce(controller);
+            mockedAgentInfoAPI.fetchAll.mockResolvedValueOnce(manyAgents);
+            mockedFeatureGatesAPI.fetch.mockResolvedValueOnce(featureGates);
+
+            render(<Summary />);
+            
+            await screen.findByText('Agents');
+            
+            // Verify pagination controls are displayed
+            expect(screen.getByText('Previous')).toBeInTheDocument();
+            expect(screen.getByText('Next')).toBeInTheDocument();
+            expect(screen.getByText(/Page 1 of 2/)).toBeInTheDocument();
+            
+            // Previous button should be disabled on first page
+            expect(screen.getByText('Previous')).toBeDisabled();
+            
+            // Next button should be enabled
+            expect(screen.getByText('Next')).not.toBeDisabled();
+        });
+
+        it('navigates through pages correctly', async () => {
+            const user = userEvent.setup();
+            const manyAgents = Array.from({ length: 15 }, (_, i) => 
+                makeAgentInfo(`node-${i + 1}`, `node${i + 1}`, i * 5, ['10.0.1.0/24'], [makeCondition('AgentHealthy', 'True', d1)])
+            );
+
+            mockedControllerInfoAPI.fetch.mockResolvedValueOnce(controller);
+            mockedAgentInfoAPI.fetchAll.mockResolvedValueOnce(manyAgents);
+            mockedFeatureGatesAPI.fetch.mockResolvedValueOnce(featureGates);
+
+            render(<Summary />);
+            
+            await screen.findByText('Agents');
+            
+            // Click Next button
+            const nextButton = screen.getByText('Next');
+            await user.click(nextButton);
+            
+            // Verify we're on page 2
+            expect(screen.getByText(/Page 2 of 2/)).toBeInTheDocument();
+            
+            // Next button should now be disabled
+            expect(nextButton).toBeDisabled();
+            
+            // Previous button should be enabled
+            const prevButton = screen.getByText('Previous');
+            expect(prevButton).not.toBeDisabled();
+            
+            // Click Previous to go back to page 1
+            await user.click(prevButton);
+            expect(screen.getByText(/Page 1 of 2/)).toBeInTheDocument();
+        });
     });
 });

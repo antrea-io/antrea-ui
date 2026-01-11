@@ -24,3 +24,49 @@
 .App-logo {
     height: 2rem;
 }
+
+/* Table sorting styles */
+th.sort-active {
+    background-color: var(--cds-alias-object-container-background-shade);
+}
+
+th:hover {
+    background-color: var(--cds-alias-object-container-background-tint);
+}
+
+th div {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+}
+
+/* Ensure table headers are properly aligned */
+table th {
+    text-align: center;
+    vertical-align: middle;
+    padding: 0.5rem;
+    cursor: pointer;
+    user-select: none;
+}
+
+/* Style for the sort icon */
+th svg {
+    transition: opacity 0.2s ease-in-out;
+    margin-left: 4px;
+}
+
+th:hover svg {
+    opacity: 1 !important;
+}
+
+/* Add a subtle transform on hover */
+th:hover svg {
+    transform: scale(1.1);
+    transition: transform 0.2s ease-in-out;
+}
+
+/* Add hover effect for sortable columns */
+th[style*="cursor: pointer"]:hover {
+    background-color: var(--cds-alias-object-container-background-tint);
+}
