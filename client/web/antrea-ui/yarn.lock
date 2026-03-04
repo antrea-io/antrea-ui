@@ -2236,7 +2236,7 @@ __metadata:
     "@vitejs/plugin-react": "npm:^5.0.0"
     "@vitest/eslint-plugin": "npm:^1.0.1"
     axios: "npm:^1.10.0"
-    axios-auth-refresh: "npm:^3.3.6"
+    axios-auth-refresh: "npm:^5.0.0"
     base-64: "npm:^1.0.0"
     d3: "npm:^7.9.0"
     d3-graphviz: "npm:^5.6.0"
@@ -2418,12 +2418,12 @@ __metadata:
   languageName: node
   linkType: hard
 
-"axios-auth-refresh@npm:^3.3.6":
-  version: 3.3.6
-  resolution: "axios-auth-refresh@npm:3.3.6"
+"axios-auth-refresh@npm:^5.0.0":
+  version: 5.0.1
+  resolution: "axios-auth-refresh@npm:5.0.1"
   peerDependencies:
-    axios: ">= 0.18 < 0.19.0 || >= 0.19.1"
-  checksum: 10c0/c0089eceeec697f239315ca0b3c79f95cf45831eac92c7f8a7475c776dfa2d64017450422981fbd39a6786fdf10e95c40b70fc70648ed5e2b7fe466ba1e1e4a8
+    axios: ">= 1.0.0"
+  checksum: 10c0/1f584ba4df6b887f9f65033212f6001087a69dd7006ace29cef5ccbecdd0bdb8b149e9147bd524fadc470d1dcbb5ffac7ec42ceb0127044b957a4e8588971652
   languageName: node
   linkType: hard
 
