@@ -2419,11 +2419,11 @@ __metadata:
   linkType: hard
 
 "axios-auth-refresh@npm:^5.0.0":
-  version: 5.0.1
-  resolution: "axios-auth-refresh@npm:5.0.1"
+  version: 5.0.2
+  resolution: "axios-auth-refresh@npm:5.0.2"
   peerDependencies:
     axios: ">= 1.0.0"
-  checksum: 10c0/1f584ba4df6b887f9f65033212f6001087a69dd7006ace29cef5ccbecdd0bdb8b149e9147bd524fadc470d1dcbb5ffac7ec42ceb0127044b957a4e8588971652
+  checksum: 10c0/d0f85bdd9afd099128618f1fd0446fbe792de6f05ff4ce1486ae65a39da29eec5d2c9844de6325d1ae3851d5194446350189e58b1bcd057befee55fcc86ad55a
   languageName: node
   linkType: hard
 
