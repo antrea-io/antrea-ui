@@ -34,6 +34,7 @@ import (
 	serverconfig "antrea.io/antrea-ui/pkg/config/server"
 	"antrea.io/antrea-ui/pkg/env"
 	antreasvchandler "antrea.io/antrea-ui/pkg/handlers/antreasvc"
+	"antrea.io/antrea-ui/pkg/handlers/flowstream"
 	"antrea.io/antrea-ui/pkg/handlers/k8sproxy"
 	traceflowhandler "antrea.io/antrea-ui/pkg/handlers/traceflow"
 	"antrea.io/antrea-ui/pkg/k8s"
@@ -165,12 +166,29 @@ func run() error {
 		}
 	}
 
+	var flowStreamHandler flowstream.FlowStreamHandler
+	if config.FlowAggregator.Enabled {
+		logger.Info("FlowAggregator integration enabled", "address", config.FlowAggregator.Address)
+		grpcHandler, err := flowstream.NewGRPCFlowStreamHandler(logger, flowstream.GRPCConfig{
+			Address:  config.FlowAggregator.Address,
+			CACert:   config.FlowAggregator.CACert,
+			CertFile: config.FlowAggregator.CertFile,
+			KeyFile:  config.FlowAggregator.KeyFile,
+		})
+		if err != nil {
+			return fmt.Errorf("failed to create gRPC flow stream handler: %w", err)
+		}
+		defer grpcHandler.Close()
+		flowStreamHandler = grpcHandler
+	}
+
 	s := server.NewServer(
 		logger,
 		k8sDynamicClient,
 		traceflowHandler,
 		k8sProxyHandler,
 		antreaSvcHandler,
+		flowStreamHandler,
 		passwordStore,
 		tokenManager,
 		oidcProvider,
