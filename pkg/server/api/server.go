@@ -28,6 +28,7 @@ import (
 	"antrea.io/antrea-ui/pkg/auth"
 	serverconfig "antrea.io/antrea-ui/pkg/config/server"
 	"antrea.io/antrea-ui/pkg/handlers/antreasvc"
+	"antrea.io/antrea-ui/pkg/handlers/flowstream"
 	"antrea.io/antrea-ui/pkg/handlers/traceflow"
 	"antrea.io/antrea-ui/pkg/password"
 	"antrea.io/antrea-ui/pkg/server/errors"
@@ -45,6 +46,7 @@ type Server struct {
 	traceflowRequestsHandler traceflow.RequestsHandler
 	k8sProxyHandler          http.Handler
 	antreaSvcRequestsHandler antreasvc.RequestsHandler
+	flowStreamSSEHandler     *flowstream.SSEHandler
 	passwordStore            password.Store
 	tokenManager             auth.TokenManager
 	config                   serverConfig
@@ -57,6 +59,7 @@ func NewServer(
 	traceflowRequestsHandler traceflow.RequestsHandler,
 	k8sProxyHandler http.Handler,
 	antreaSvcRequestsHandler antreasvc.RequestsHandler,
+	flowStreamHandler flowstream.FlowStreamHandler,
 	passwordStore password.Store,
 	tokenManager auth.TokenManager,
 	config *serverconfig.Config,
@@ -65,12 +68,17 @@ func NewServer(
 		MaxTraceflowsPerHour: config.Limits.MaxTraceflowsPerHour,
 	}
 	logger.Info("Created API server config", "config", c)
+	var flowSSEHandler *flowstream.SSEHandler
+	if flowStreamHandler != nil {
+		flowSSEHandler = flowstream.NewSSEHandler(logger, flowStreamHandler)
+	}
 	return &Server{
 		logger:                   logger,
 		k8sClient:                k8sClient,
 		traceflowRequestsHandler: traceflowRequestsHandler,
 		k8sProxyHandler:          k8sProxyHandler,
 		antreaSvcRequestsHandler: antreaSvcRequestsHandler,
+		flowStreamSSEHandler:     flowSSEHandler,
 		passwordStore:            passwordStore,
 		tokenManager:             tokenManager,
 		config:                   c,
@@ -127,6 +135,16 @@ func (s *Server) AddRoutes(r *gin.RouterGroup) {
 	s.AddAccountRoutes(apiv1)
 	s.AddK8sRoutes(apiv1)
 	apiv1.GET("/featuregates", s.checkBearerToken, s.GetFeatureGates)
+	s.AddFlowStreamRoutes(apiv1)
+}
+
+func (s *Server) AddFlowStreamRoutes(r *gin.RouterGroup) {
+	if s.flowStreamSSEHandler == nil {
+		return
+	}
+	flows := r.Group("/flows")
+	flows.Use(s.checkBearerToken)
+	flows.GET("/stream", s.flowStreamSSEHandler.StreamFlows)
 }
 
 func (s *Server) LogError(sError *errors.ServerError, msg string, keysAndValues ...interface{}) {

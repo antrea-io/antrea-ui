@@ -32,6 +32,9 @@ func buildFrontendSettingsFromConfig(config *serverconfig.Config) *apisv1.Fronte
 			OIDCEnabled:      config.Auth.OIDC.Enabled,
 			OIDCProviderName: config.Auth.OIDC.ProviderName,
 		},
+		Features: apisv1.FrontendFeatureSettings{
+			FlowVisibilityEnabled: config.FlowAggregator.Enabled,
+		},
 	}
 }
 
