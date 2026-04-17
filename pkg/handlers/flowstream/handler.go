@@ -72,11 +72,11 @@ func parseFlowStreamFilter(c *gin.Context) (*apisv1.FlowStreamFilter, error) {
 	if dir := c.Query("direction"); dir != "" {
 		switch strings.ToLower(dir) {
 		case "from":
-			filter.Direction = apisv1.FlowDirectionFrom
+			filter.Direction = apisv1.FlowFilterDirectionFrom
 		case "to":
-			filter.Direction = apisv1.FlowDirectionTo
+			filter.Direction = apisv1.FlowFilterDirectionTo
 		default:
-			filter.Direction = apisv1.FlowDirectionBoth
+			filter.Direction = apisv1.FlowFilterDirectionBoth
 		}
 	}
 	filter.Follow = c.DefaultQuery("follow", "true") == "true"

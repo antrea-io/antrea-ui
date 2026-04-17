@@ -3,9 +3,8 @@ module antrea.io/antrea-ui
 go 1.26.0
 
 require (
-	// FlowStreamService protos + gRPC stubs (until merged to antrea-io/antrea main).
-	// Tracks github.com/Dyanngg/antrea branch flow-ui-mock (Yang's PR #7937).
-	antrea.io/antrea v0.2.1-0.20260402004154-168214662cab
+	// Local copy of Yang's FlowStreamService protos for testing
+	// antrea.io/antrea-ui/pkg/apis/flow/v1alpha1
 	github.com/blang/semver v3.5.1+incompatible
 	github.com/coreos/go-oidc/v3 v3.18.0
 	github.com/gin-contrib/cors v1.7.7
@@ -37,7 +36,7 @@ require (
 	k8s.io/utils v0.0.0-20251002143259-bc988d571ff4
 )
 
-replace antrea.io/antrea => github.com/Dyanngg/antrea v0.2.1-0.20260402004154-168214662cab
+// Using Yang's fork directly instead of replace directive
 
 require google.golang.org/protobuf v1.36.11
 

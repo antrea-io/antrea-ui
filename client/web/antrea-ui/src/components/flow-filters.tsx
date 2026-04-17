@@ -18,7 +18,7 @@ import { useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import { CdsButton } from '@cds/react/button';
 import { CdsSelect } from '@cds/react/select';
 import { FlowType, flowTypeLabel } from '../api/flow-types';
-import { FlowStreamFilter, FlowDirection } from '../api/flow-stream';
+import { FlowStreamFilter, FlowFilterDirection } from '../api/flow-stream';
 import { FlowEntry } from '../api/flow-store';
 
 interface FlowFiltersProps {
@@ -160,7 +160,7 @@ export default function FlowFilters({
     const [selectedPods, setSelectedPods] = useState<string[]>([]);
     const [selectedServices, setSelectedServices] = useState<string[]>([]);
     const [flowType, setFlowType] = useState<string>('');
-    const [direction, setDirection] = useState<FlowDirection>('both');
+    const [direction, setDirection] = useState<FlowFilterDirection>('both');
     const [ipsText, setIpsText] = useState('');
     const [podLabelSelector, setPodLabelSelector] = useState('');
 
@@ -263,7 +263,7 @@ export default function FlowFilters({
                     <div style={{ minWidth: '120px' }}>
                         <CdsSelect>
                             <label>Direction</label>
-                            <select value={direction} onChange={e => setDirection(e.target.value as FlowDirection)}>
+                            <select value={direction} onChange={e => setDirection(e.target.value as FlowFilterDirection)}>
                                 <option value="both">Both</option>
                                 <option value="from">From</option>
                                 <option value="to">To</option>

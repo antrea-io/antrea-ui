@@ -20,6 +20,7 @@ import (
 	"crypto/x509"
 	"fmt"
 	"io"
+	"net"
 	"net/netip"
 	"os"
 	"time"
@@ -29,7 +30,7 @@ import (
 	"google.golang.org/grpc/credentials"
 
 	apisv1 "antrea.io/antrea-ui/apis/v1"
-	flowpb "antrea.io/antrea/pkg/apis/flow/v1alpha1"
+	flowpb "antrea.io/antrea-ui/pkg/apis/flow/v1alpha1"
 )
 
 // GRPCFlowStreamHandler connects to the FlowAggregator's FlowStreamService
@@ -133,10 +134,10 @@ func (h *GRPCFlowStreamHandler) Subscribe(ctx context.Context, filter *apisv1.Fl
 	return flowsCh, errCh
 }
 
-var directionToProto = map[apisv1.FlowDirection]flowpb.FlowFilterDirection{
-	apisv1.FlowDirectionBoth: flowpb.FlowFilterDirection_FLOW_FILTER_DIRECTION_BOTH,
-	apisv1.FlowDirectionFrom: flowpb.FlowFilterDirection_FLOW_FILTER_DIRECTION_FROM,
-	apisv1.FlowDirectionTo:   flowpb.FlowFilterDirection_FLOW_FILTER_DIRECTION_TO,
+var filterDirectionToProto = map[apisv1.FlowFilterDirection]flowpb.FlowFilterDirection{
+	apisv1.FlowFilterDirectionBoth: flowpb.FlowFilterDirection_FLOW_FILTER_DIRECTION_BOTH,
+	apisv1.FlowFilterDirectionFrom: flowpb.FlowFilterDirection_FLOW_FILTER_DIRECTION_FROM,
+	apisv1.FlowFilterDirectionTo:   flowpb.FlowFilterDirection_FLOW_FILTER_DIRECTION_TO,
 }
 
 // filterToGetFlowsRequest translates our internal filter type to the protobuf request.
@@ -147,7 +148,7 @@ func filterToGetFlowsRequest(filter *apisv1.FlowStreamFilter) *flowpb.GetFlowsRe
 		PodLabelSelector: filter.PodLabelSelector,
 		ServiceNames:     filter.ServiceNames,
 		Ips:              filter.IPs,
-		Direction:        directionToProto[filter.Direction],
+		Direction:        filterDirectionToProto[filter.Direction],
 	}
 	for _, ft := range filter.FlowTypes {
 		pbFilter.FlowTypes = append(pbFilter.FlowTypes, flowpb.FlowType(ft))
@@ -276,6 +277,19 @@ func buildTLSConfig(cfg GRPCConfig) (*tls.Config, error) {
 			return nil, fmt.Errorf("failed to parse CA cert %s", cfg.CACert)
 		}
 		tlsCfg.RootCAs = pool
+	} else {
+		// No CA bundle: dev-only (e.g. plain address without certs in config).
+		tlsCfg.InsecureSkipVerify = true
+	}
+
+	// When dialing via kubectl port-forward (127.0.0.1:14739), the server cert is for the
+	// in-cluster Service name, not for localhost. Set SNI so verification succeeds.
+	host, _, err := net.SplitHostPort(cfg.Address)
+	if err != nil {
+		host = cfg.Address
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() && tlsCfg.RootCAs != nil {
+		tlsCfg.ServerName = "flow-aggregator.flow-aggregator.svc.cluster.local"
 	}
 
 	if cfg.CertFile != "" && cfg.KeyFile != "" {

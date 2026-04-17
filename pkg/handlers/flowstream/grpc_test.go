@@ -24,7 +24,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	apisv1 "antrea.io/antrea-ui/apis/v1"
-	flowpb "antrea.io/antrea/pkg/apis/flow/v1alpha1"
+	flowpb "antrea.io/antrea-ui/pkg/apis/flow/v1alpha1"
 )
 
 // ---------------------------------------------------------------------------
@@ -103,7 +103,7 @@ func TestFilterToGetFlowsRequest(t *testing.T) {
 		{
 			name: "direction FROM",
 			filter: &apisv1.FlowStreamFilter{
-				Direction: apisv1.FlowDirectionFrom,
+				Direction: apisv1.FlowFilterDirectionFrom,
 				Follow:    true,
 			},
 			wantDirection: flowpb.FlowFilterDirection_FLOW_FILTER_DIRECTION_FROM,
@@ -112,14 +112,14 @@ func TestFilterToGetFlowsRequest(t *testing.T) {
 		{
 			name: "direction TO",
 			filter: &apisv1.FlowStreamFilter{
-				Direction: apisv1.FlowDirectionTo,
+				Direction: apisv1.FlowFilterDirectionTo,
 			},
 			wantDirection: flowpb.FlowFilterDirection_FLOW_FILTER_DIRECTION_TO,
 		},
 		{
 			name: "direction BOTH explicit",
 			filter: &apisv1.FlowStreamFilter{
-				Direction: apisv1.FlowDirectionBoth,
+				Direction: apisv1.FlowFilterDirectionBoth,
 			},
 			wantDirection: flowpb.FlowFilterDirection_FLOW_FILTER_DIRECTION_BOTH,
 		},
@@ -132,7 +132,7 @@ func TestFilterToGetFlowsRequest(t *testing.T) {
 				ServiceNames:     []string{"svc-a"},
 				IPs:              []string{"10.0.0.1", "10.0.0.0/24"},
 				FlowTypes:        []apisv1.FlowType{apisv1.FlowTypeIntraNode, apisv1.FlowTypeInterNode},
-				Direction:        apisv1.FlowDirectionFrom,
+				Direction:        apisv1.FlowFilterDirectionFrom,
 				Follow:           true,
 			},
 			wantDirection:  flowpb.FlowFilterDirection_FLOW_FILTER_DIRECTION_FROM,

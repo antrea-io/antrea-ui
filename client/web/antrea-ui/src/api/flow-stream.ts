@@ -20,7 +20,8 @@ import config from '../config';
 
 const { apiUri } = config;
 
-export type FlowDirection = 'both' | 'from' | 'to';
+/** Matches Antrea FlowFilter.direction (FlowFilterDirection in protos). */
+export type FlowFilterDirection = 'both' | 'from' | 'to';
 
 export interface FlowStreamFilter {
     namespaces?: string[];
@@ -29,7 +30,7 @@ export interface FlowStreamFilter {
     services?: string[];
     flowTypes?: number[];
     ips?: string[];
-    direction?: FlowDirection;
+    direction?: FlowFilterDirection;
     follow?: boolean;
 }
 
