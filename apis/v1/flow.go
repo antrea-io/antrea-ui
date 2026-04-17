@@ -162,23 +162,26 @@ type FlowStreamErrorEvent struct {
 	Message string `json:"message"`
 }
 
-type FlowDirection int
+// FlowFilterDirection matches antrea FlowFilter.direction (service.proto, FlowStreamService).
+// It is distinct from per-flow FlowDirection in flow.proto (ingress/egress), which is not
+// exposed on this JSON API yet.
+type FlowFilterDirection int
 
 const (
-	FlowDirectionBoth FlowDirection = 0
-	FlowDirectionFrom FlowDirection = 1
-	FlowDirectionTo   FlowDirection = 2
+	FlowFilterDirectionBoth FlowFilterDirection = 0
+	FlowFilterDirectionFrom FlowFilterDirection = 1
+	FlowFilterDirectionTo   FlowFilterDirection = 2
 )
 
 // FlowStreamFilter represents the query parameters for the flow stream endpoint.
 // All specified filters are AND-ed. Within each filter, values are OR-ed.
 type FlowStreamFilter struct {
-	Namespaces       []string      `json:"namespaces,omitempty"`
-	PodNames         []string      `json:"podNames,omitempty"`
-	PodLabelSelector string        `json:"podLabelSelector,omitempty"`
-	ServiceNames     []string      `json:"serviceNames,omitempty"`
-	FlowTypes        []FlowType    `json:"flowTypes,omitempty"`
-	IPs              []string      `json:"ips,omitempty"`
-	Direction        FlowDirection `json:"direction,omitempty"`
-	Follow           bool          `json:"follow"`
+	Namespaces       []string            `json:"namespaces,omitempty"`
+	PodNames         []string            `json:"podNames,omitempty"`
+	PodLabelSelector string              `json:"podLabelSelector,omitempty"`
+	ServiceNames     []string            `json:"serviceNames,omitempty"`
+	FlowTypes        []FlowType          `json:"flowTypes,omitempty"`
+	IPs              []string            `json:"ips,omitempty"`
+	Direction        FlowFilterDirection `json:"direction,omitempty"`
+	Follow           bool                `json:"follow"`
 }
