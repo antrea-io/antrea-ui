@@ -17,7 +17,7 @@
 import { useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import { CdsButton } from '@cds/react/button';
 import { CdsSelect } from '@cds/react/select';
-import { FlowType, flowTypeLabel } from '../api/flow-types';
+import { FlowType, flowTypeLabel, destinationK8sServiceFilterKey } from '../api/flow-types';
 import { FlowStreamFilter, FlowFilterDirection } from '../api/flow-stream';
 import { FlowEntry } from '../api/flow-store';
 
@@ -33,11 +33,13 @@ interface FlowFiltersProps {
     entries: FlowEntry[];
 }
 
-function MultiSelect({ label, options, selected, onChange }: {
+function MultiSelect({ label, options, selected, onChange, closeSignal }: {
     label: string;
     options: string[];
     selected: string[];
     onChange: (values: string[]) => void;
+    /** Increment after Apply Filters to force-close the dropdown. */
+    closeSignal?: number;
 }) {
     const [open, setOpen] = useState(false);
     const ref = useRef<HTMLDivElement>(null);
@@ -51,6 +53,21 @@ function MultiSelect({ label, options, selected, onChange }: {
         document.addEventListener('mousedown', handleClickOutside);
         return () => document.removeEventListener('mousedown', handleClickOutside);
     }, []);
+
+    useEffect(() => {
+        if (closeSignal !== undefined && closeSignal > 0) {
+            setOpen(false);
+        }
+    }, [closeSignal]);
+
+    // After Apply Filters the stream clears entries briefly; options can become empty while
+    // `open` is still true, which blocks sensible interaction. Close the panel when there is
+    // nothing to show.
+    useEffect(() => {
+        if (open && options.length === 0) {
+            setOpen(false);
+        }
+    }, [open, options.length]);
 
     const toggle = (value: string) => {
         if (selected.includes(value)) {
@@ -163,6 +180,7 @@ export default function FlowFilters({
     const [direction, setDirection] = useState<FlowFilterDirection>('both');
     const [ipsText, setIpsText] = useState('');
     const [podLabelSelector, setPodLabelSelector] = useState('');
+    const [menusCloseNonce, setMenusCloseNonce] = useState(0);
 
     const availableNamespaces = useMemo(() => {
         const ns = new Set<string>();
@@ -185,12 +203,28 @@ export default function FlowFilters({
     const availableServices = useMemo(() => {
         const svcs = new Set<string>();
         for (const e of entries) {
-            if (e.flow.k8s.destinationServicePortName) svcs.add(e.flow.k8s.destinationServicePortName);
+            const key = destinationK8sServiceFilterKey(e.flow.k8s.destinationServicePortName);
+            if (key) {
+                svcs.add(key);
+            }
         }
         return Array.from(svcs).sort();
     }, [entries]);
 
+    // Drop selections that are not real service names (e.g. legacy "http" from port-name-only UI).
+    useEffect(() => {
+        if (availableServices.length === 0) {
+            return;
+        }
+        const valid = new Set(availableServices);
+        setSelectedServices(prev => {
+            const next = prev.filter(s => valid.has(s));
+            return next.length === prev.length ? prev : next;
+        });
+    }, [availableServices]);
+
     const applyFilters = useCallback(() => {
+        setMenusCloseNonce(n => n + 1);
         const filter: FlowStreamFilter = { follow: true };
         if (selectedNamespaces.length > 0) {
             filter.namespaces = selectedNamespaces;
@@ -202,7 +236,16 @@ export default function FlowFilters({
             filter.podLabelSelector = podLabelSelector.trim();
         }
         if (selectedServices.length > 0) {
-            filter.services = selectedServices;
+            const names = new Set<string>();
+            for (const s of selectedServices) {
+                const k = destinationK8sServiceFilterKey(s);
+                if (k) {
+                    names.add(k);
+                }
+            }
+            if (names.size > 0) {
+                filter.services = Array.from(names);
+            }
         }
         if (flowType) {
             filter.flowTypes = [parseInt(flowType)];
@@ -237,18 +280,21 @@ export default function FlowFilters({
                         options={availableNamespaces}
                         selected={selectedNamespaces}
                         onChange={setSelectedNamespaces}
+                        closeSignal={menusCloseNonce}
                     />
                     <MultiSelect
                         label="Pod Names"
                         options={availablePods}
                         selected={selectedPods}
                         onChange={setSelectedPods}
+                        closeSignal={menusCloseNonce}
                     />
                     <MultiSelect
                         label="Service Names"
                         options={availableServices}
                         selected={selectedServices}
                         onChange={setSelectedServices}
+                        closeSignal={menusCloseNonce}
                     />
                     <div style={{ minWidth: '140px' }}>
                         <CdsSelect>

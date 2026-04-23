@@ -26,6 +26,7 @@ import {
     getProtocolName,
     formatEndpoint,
     formatPolicyInfo,
+    destinationK8sServiceFilterKey,
 } from './flow-types';
 
 function makeFlow(overrides: {
@@ -195,6 +196,41 @@ describe('formatEndpoint', () => {
         expect(formatEndpoint('', '', '')).toBe('unknown');
     });
 });
+
+describe('destinationK8sServiceFilterKey', () => {
+    test('strips named port from namespace/service', () => {
+        expect(destinationK8sServiceFilterKey('flow-demo-a/agnhost-server:http')).toBe(
+            'flow-demo-a/agnhost-server',
+        );
+    });
+
+    test('strips grpc port suffix', () => {
+        expect(destinationK8sServiceFilterKey('flow-aggregator/flow-aggregator:grpc')).toBe(
+            'flow-aggregator/flow-aggregator',
+        );
+    });
+
+    test('leaves namespace/service without port unchanged', () => {
+        expect(destinationK8sServiceFilterKey('default/frontend')).toBe('default/frontend');
+    });
+
+    test('no namespace returns empty string', () => {
+        expect(destinationK8sServiceFilterKey('agnhost-server:http')).toBe('');
+    });
+
+    test('empty namespace returns empty string', () => {
+        expect(destinationK8sServiceFilterKey('/agnhost-server:http')).toBe('');
+    });
+
+    test('service name only returns empty string', () => {
+        expect(destinationK8sServiceFilterKey('frontend')).toBe('');
+    });
+
+    test('empty input', () => {
+        expect(destinationK8sServiceFilterKey('')).toBe('');
+    });
+});
+
 
 describe('formatPolicyInfo', () => {
     test('empty name returns empty string', () => {

@@ -3,8 +3,6 @@ module antrea.io/antrea-ui
 go 1.26.0
 
 require (
-	// Local copy of Yang's FlowStreamService protos for testing
-	// antrea.io/antrea-ui/pkg/apis/flow/v1alpha1
 	github.com/blang/semver v3.5.1+incompatible
 	github.com/coreos/go-oidc/v3 v3.18.0
 	github.com/gin-contrib/cors v1.7.7
@@ -35,8 +33,6 @@ require (
 	k8s.io/client-go v0.35.0
 	k8s.io/utils v0.0.0-20251002143259-bc988d571ff4
 )
-
-// Using Yang's fork directly instead of replace directive
 
 require google.golang.org/protobuf v1.36.11
 

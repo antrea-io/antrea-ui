@@ -14,10 +14,11 @@
  * limitations under the License.
  */
 
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState, useCallback, useMemo, useContext } from 'react';
 import { Flow } from './flow-types';
 import { FlowStore, FlowEntry } from './flow-store';
-import { FlowStreamClient, FlowStreamFilter } from './flow-stream';
+import { FlowStreamClient, FlowStreamFilter, streamFilterKey } from './flow-stream';
+import SettingsContext from '../components/settings';
 
 export interface UseFlowStreamResult {
     entries: FlowEntry[];
@@ -28,7 +29,14 @@ export interface UseFlowStreamResult {
     clearFlows: () => void;
 }
 
+const flowVisibilityDisabledMessage =
+    'Flow visibility is disabled on this Antrea UI server. Install or upgrade the chart with ' +
+    '`--set flowAggregator.enabled=true` and a reachable `flowAggregator.address` (see antrea-ui/hack/deploy-kind.sh).';
+
 export function useFlowStream(filter: FlowStreamFilter, paused: boolean): UseFlowStreamResult {
+    const settings = useContext(SettingsContext);
+    const flowVisibilityOff = settings.features?.flowVisibilityEnabled === false;
+
     const storeRef = useRef(new FlowStore());
     const clientRef = useRef<FlowStreamClient | null>(null);
     const [entries, setEntries] = useState<FlowEntry[]>([]);
@@ -67,15 +75,27 @@ export function useFlowStream(filter: FlowStreamFilter, paused: boolean): UseFlo
         setDroppedCount(0);
     }, []);
 
-    const prevFilterRef = useRef(filter);
+    const filterKey = useMemo(() => streamFilterKey(filter), [filter]);
+    const filterRef = useRef(filter);
+    filterRef.current = filter;
+
+    const prevFilterKeyRef = useRef<string | null>(null);
 
     useEffect(() => {
-        if (filter !== prevFilterRef.current) {
-            prevFilterRef.current = filter;
+        if (prevFilterKeyRef.current !== filterKey) {
+            prevFilterKeyRef.current = filterKey;
             storeRef.current.clear();
             setEntries([]);
             setEvictionWarning(false);
             setDroppedCount(0);
+        }
+
+        if (flowVisibilityOff) {
+            clientRef.current?.stop();
+            clientRef.current = null;
+            setConnected(false);
+            setError(flowVisibilityDisabledMessage);
+            return;
         }
 
         if (paused) {
@@ -84,7 +104,7 @@ export function useFlowStream(filter: FlowStreamFilter, paused: boolean): UseFlo
             return;
         }
 
-        const client = new FlowStreamClient(filter, {
+        const client = new FlowStreamClient(filterRef.current, {
             onFlows: handleFlows,
             onError: handleError,
             onDropped: handleDropped,
@@ -97,7 +117,16 @@ export function useFlowStream(filter: FlowStreamFilter, paused: boolean): UseFlo
         return () => {
             client.stop();
         };
-    }, [filter, paused, handleFlows, handleError, handleDropped, handleConnected, handleDisconnected]);
+    }, [
+        filterKey,
+        paused,
+        flowVisibilityOff,
+        handleFlows,
+        handleError,
+        handleDropped,
+        handleConnected,
+        handleDisconnected,
+    ]);
 
     return {
         entries,

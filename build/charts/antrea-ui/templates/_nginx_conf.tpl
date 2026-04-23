@@ -22,52 +22,77 @@ server {
     ssl_certificate_key /app/ssl/tls.key;
     {{- end }}
 
-    location / {
+    # Use top-level locations only. Nested locations under "location /" are easy to misconfigure and
+    # can prevent /api and /auth from reaching the backend (browser sees axios "Network Error").
+    #
+    # Flow SSE can be idle for a long time when the Flow Aggregator ring buffer has no matching
+    # records; nginx's default proxy_read_timeout (~60s) then returns 504 to the browser.
+    location /api/v1/flows/stream {
+        proxy_http_version 1.1;
+        proxy_pass_request_headers on;
+        proxy_hide_header Access-Control-Allow-Origin;
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Real-IP $remote_addr;
-
-        location /api {
-            proxy_http_version 1.1;
-            proxy_pass_request_headers on;
-            proxy_hide_header Access-Control-Allow-Origin;
-            proxy_pass http://127.0.0.1:{{ .Values.backend.port }};
-            # ensure the correct flags are set, even though the api server should already be setting them
-            {{- $secure := include "cookieSecure" . -}}
-            {{- if eq $secure "true" }}
-            proxy_cookie_flags ~ httponly secure;
-            {{- else }}
-            proxy_cookie_flags ~ httponly;
-            {{- end }}
-        }
-
-        # at the moment, the config is the same as for /api
-        location /auth {
-            proxy_http_version 1.1;
-            proxy_pass_request_headers on;
-            proxy_hide_header Access-Control-Allow-Origin;
-            proxy_pass http://127.0.0.1:{{ .Values.backend.port }};
-            # ensure the correct flags are set, even though the api server should already be setting them
-            {{- $secure := include "cookieSecure" . -}}
-            {{- if eq $secure "true" }}
-            proxy_cookie_flags ~ httponly secure;
-            {{- else }}
-            proxy_cookie_flags ~ httponly;
-            {{- end }}
-        }
-
-        {{- if .Values.dex.enable }}
-        location /dex {
-            proxy_http_version 1.1;
-            proxy_pass_request_headers on;
-            proxy_hide_header Access-Control-Allow-Origin;
-            proxy_pass http://127.0.0.1:5556;
-        }
+        proxy_set_header Connection '';
+        proxy_buffering off;
+        proxy_read_timeout 86400s;
+        proxy_send_timeout 86400s;
+        proxy_pass http://127.0.0.1:{{ .Values.backend.port }};
+        {{- $secure := include "cookieSecure" . -}}
+        {{- if eq $secure "true" }}
+        proxy_cookie_flags ~ httponly secure;
+        {{- else }}
+        proxy_cookie_flags ~ httponly;
         {{- end }}
+    }
 
-        location / {
-            try_files $uri $uri/ /index.html;
-        }
+    location /api/ {
+        proxy_http_version 1.1;
+        proxy_pass_request_headers on;
+        proxy_hide_header Access-Control-Allow-Origin;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_pass http://127.0.0.1:{{ .Values.backend.port }};
+        {{- $secure := include "cookieSecure" . -}}
+        {{- if eq $secure "true" }}
+        proxy_cookie_flags ~ httponly secure;
+        {{- else }}
+        proxy_cookie_flags ~ httponly;
+        {{- end }}
+    }
+
+    location /auth/ {
+        proxy_http_version 1.1;
+        proxy_pass_request_headers on;
+        proxy_hide_header Access-Control-Allow-Origin;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_pass http://127.0.0.1:{{ .Values.backend.port }};
+        {{- $secure := include "cookieSecure" . -}}
+        {{- if eq $secure "true" }}
+        proxy_cookie_flags ~ httponly secure;
+        {{- else }}
+        proxy_cookie_flags ~ httponly;
+        {{- end }}
+    }
+
+    {{- if .Values.dex.enable }}
+    location /dex {
+        proxy_http_version 1.1;
+        proxy_pass_request_headers on;
+        proxy_hide_header Access-Control-Allow-Origin;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_pass http://127.0.0.1:5556;
+    }
+    {{- end }}
+
+    location / {
+        try_files $uri $uri/ /index.html;
     }
 }
 {{- end }}

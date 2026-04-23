@@ -25,6 +25,7 @@ import {
     formatPolicyInfo,
     formatBytes,
     Labels,
+    destinationK8sServiceFilterKey,
 } from '../api/flow-types';
 
 const WELL_KNOWN_APP_LABELS = [
@@ -131,13 +132,28 @@ function buildGraph(entries: FlowEntry[]): { nodes: WorkloadNode[]; edges: Workl
                 nodeMap.set(dstId, { id: dstId, shortName: 'External', namespace: '', isExternal: true });
             }
         } else {
-            dstId = flow.k8s.destinationServicePortName
-                ? `${flow.k8s.destinationPodNamespace}/${flow.k8s.destinationServicePortName}`
-                : getWorkloadName(
+            // When the flow hits a ClusterIP Service, destinationServicePortName is the full
+            // kube-proxy token (namespace/name:portName). Using it verbatim as part of the node id
+            // splits one logical Service into multiple graph nodes per port. Collapse to
+            // namespace/serviceName (same canonical token as the filter dropdown).
+            if (flow.k8s.destinationServicePortName) {
+                const key = destinationK8sServiceFilterKey(flow.k8s.destinationServicePortName);
+                if (key) {
+                    dstId = key;
+                } else {
+                    dstId = getWorkloadName(
+                        flow.k8s.destinationPodNamespace,
+                        flow.k8s.destinationPodName,
+                        flow.k8s.destinationPodLabels,
+                    );
+                }
+            } else {
+                dstId = getWorkloadName(
                     flow.k8s.destinationPodNamespace,
                     flow.k8s.destinationPodName,
                     flow.k8s.destinationPodLabels,
                 );
+            }
             if (!nodeMap.has(dstId)) {
                 nodeMap.set(dstId, {
                     id: dstId,

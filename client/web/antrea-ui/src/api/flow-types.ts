@@ -176,6 +176,29 @@ export function formatEndpoint(namespace: string, podName: string, ip: string): 
     return ip || "unknown";
 }
 
+
+/**
+ * Returns namespace/service with port suffix removed
+ * (e.g. flow-demo-a/agnhost-server:http → flow-demo-a/agnhost-server).
+ * Only returns values with namespace/service format, empty string otherwise.
+ */
+export function destinationK8sServiceFilterKey(destinationServicePortName: string): string {
+    const s = destinationServicePortName.trim();
+    if (!s) {
+        return '';
+    }
+    // Only handle valid namespace/service format
+    const slash = s.indexOf('/');
+    if (slash <= 0) {
+        return '';
+    }
+    const colon = s.indexOf(':', slash);
+    if (colon >= 0) {
+        return s.slice(0, colon);
+    }
+    return s;
+}
+
 export function formatBytes(bytes: number): string {
     if (bytes === 0) return '0 B';
     const units = ['B', 'KB', 'MB', 'GB', 'TB'];

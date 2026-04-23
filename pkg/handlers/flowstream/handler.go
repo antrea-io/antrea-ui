@@ -21,6 +21,8 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/go-logr/logr"
@@ -79,9 +81,31 @@ func parseFlowStreamFilter(c *gin.Context) (*apisv1.FlowStreamFilter, error) {
 			filter.Direction = apisv1.FlowFilterDirectionBoth
 		}
 	}
-	filter.Follow = c.DefaultQuery("follow", "true") == "true"
+	filter.Follow = parseFollowQuery(c)
 
 	return filter, nil
+}
+
+// parseFollowQuery returns whether the client wants follow mode (live stream).
+//
+// Gin's DefaultQuery("follow", "true") returns "" when the key is present but
+// empty (?follow=), and "" == "true" is false — that incorrectly disabled follow
+// and caused Flow Aggregator to close the gRPC stream immediately (!follow && n==0),
+// which showed up as SSE disconnect when applying an "empty" filter (minimal URL).
+func parseFollowQuery(c *gin.Context) bool {
+	v := strings.TrimSpace(c.DefaultQuery("follow", "true"))
+	if v == "" {
+		return true
+	}
+	switch strings.ToLower(v) {
+	case "true", "1", "yes":
+		return true
+	case "false", "0", "no":
+		return false
+	default:
+		// Be permissive: unknown values keep the stream open rather than snapping to one-shot mode.
+		return true
+	}
 }
 
 // StreamFlows handles GET /api/v1/flows/stream as an SSE endpoint.
@@ -100,10 +124,43 @@ func (h *SSEHandler) StreamFlows(c *gin.Context) {
 	c.Header("Connection", "keep-alive")
 	c.Header("X-Accel-Buffering", "no")
 
+	// Emit one SSE comment and flush before blocking on the first gRPC read. Otherwise, when the
+	// Flow Aggregator ring buffer is empty, the select below blocks indefinitely with no bytes
+	// written, so HTTP response headers are never flushed and clients (fetch, curl) see a hang
+	// or "Disconnected" even though mTLS and auth succeeded.
+	var preamble sync.Once
+	writePreamble := func(w io.Writer) {
+		preamble.Do(func() {
+			if _, err := w.Write([]byte(": stream-open\n\n")); err != nil {
+				h.logger.Error(err, "Failed to write SSE preamble")
+				return
+			}
+			if fl, ok := c.Writer.(http.Flusher); ok {
+				fl.Flush()
+			}
+		})
+	}
+
+	// The gRPC client only forwards non-empty flow batches (and dropped-count changes). When
+	// filtered streams match nothing for a long time, nothing is sent on flowsCh and this
+	// handler would block forever on the next select, stalling fetch() and freezing the UI.
+	// Periodic SSE comments keep the connection and ReadableStream alive.
+	keepAlive := time.NewTicker(5 * time.Second)
+	defer keepAlive.Stop()
+
 	c.Stream(func(w io.Writer) bool {
+		writePreamble(w)
 		select {
 		case <-ctx.Done():
 			return false
+		case <-keepAlive.C:
+			if _, err := w.Write([]byte(": keepalive\n\n")); err != nil {
+				return false
+			}
+			if fl, ok := c.Writer.(http.Flusher); ok {
+				fl.Flush()
+			}
+			return true
 		case event, ok := <-flowsCh:
 			if !ok {
 				return false

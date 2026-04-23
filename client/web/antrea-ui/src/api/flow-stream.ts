@@ -16,6 +16,7 @@
 
 import { Flow } from './flow-types';
 import { getToken } from './token';
+import { authAPI } from './auth';
 import config from '../config';
 
 const { apiUri } = config;
@@ -32,6 +33,30 @@ export interface FlowStreamFilter {
     ips?: string[];
     direction?: FlowFilterDirection;
     follow?: boolean;
+}
+
+/**
+ * Stable serialized key for a filter, matching the semantics of {@link buildStreamURL}.
+ * Used to avoid reconnecting the SSE when Apply builds a new object with the same values.
+ */
+export function streamFilterKey(f: FlowStreamFilter): string {
+    const namespaces = [...(f.namespaces ?? [])].sort();
+    const pods = [...(f.pods ?? [])].sort();
+    const services = [...(f.services ?? [])].sort();
+    const flowTypes = [...(f.flowTypes ?? [])].sort((a, b) => a - b);
+    const ips = [...(f.ips ?? [])].sort();
+    const direction =
+        f.direction && f.direction !== 'both' ? f.direction : 'both';
+    return JSON.stringify({
+        follow: f.follow !== false,
+        namespaces,
+        pods,
+        podLabelSelector: f.podLabelSelector ?? '',
+        services,
+        flowTypes,
+        ips,
+        direction,
+    });
 }
 
 export interface FlowStreamCallbacks {
@@ -170,13 +195,26 @@ export class FlowStreamClient {
         const url = buildStreamURL(this.filter);
 
         try {
-            const response = await fetch(url, {
+            let response = await fetch(url, {
                 headers: {
                     'Authorization': `Bearer ${getToken()}`,
                     'Accept': 'text/event-stream',
                 },
                 signal: this.abortController.signal,
             });
+
+            if (response.status === 401) {
+                // Access token expired; attempt a silent refresh and retry once.
+                await authAPI.refreshToken();
+                if (!this.running) return;
+                response = await fetch(url, {
+                    headers: {
+                        'Authorization': `Bearer ${getToken()}`,
+                        'Accept': 'text/event-stream',
+                    },
+                    signal: this.abortController.signal,
+                });
+            }
 
             if (!response.ok) {
                 throw new Error(`Flow stream request failed: ${response.status} ${response.statusText}`);

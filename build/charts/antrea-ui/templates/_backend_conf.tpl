@@ -1,6 +1,7 @@
 {{- define "antrea-ui.backend.conf" }}
 addr: ":{{ .Values.backend.port }}"
-url: {{ .Values.url }}
+url: {{ .Values.url | quote }}
+antreaNamespace: {{ .Values.antreaNamespace | quote }}
 auth:
   basic:
     enabled: {{ .Values.auth.basic.enable }}
@@ -12,5 +13,13 @@ auth:
     logoutURL: {{ .Values.auth.oidc.logoutURL | quote }}
   jwtKeyPath: "/app/jwt-key.pem"
   cookieSecure: {{ include "cookieSecure" . }}
-logVerbosity: {{ .Values.logVerbosity }}
+logVerbosity: {{ .Values.backend.logVerbosity }}
+flowAggregator:
+  enabled: {{ .Values.flowAggregator.enabled }}
+  address: {{ .Values.flowAggregator.address | quote }}
+{{- if and .Values.flowAggregator.enabled .Values.flowAggregator.mtls.enabled }}
+  caCert: "/etc/flow-aggregator-mtls/ca.crt"
+  certFile: "/etc/flow-aggregator-mtls/tls.crt"
+  keyFile: "/etc/flow-aggregator-mtls/tls.key"
+{{- end }}
 {{- end }}

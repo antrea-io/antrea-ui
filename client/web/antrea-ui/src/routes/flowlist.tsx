@@ -23,6 +23,7 @@ import {
     formatEndpoint,
     formatPolicyInfo,
     formatBytes,
+    destinationK8sServiceFilterKey,
 } from '../api/flow-types';
 
 type SortField =
@@ -60,7 +61,8 @@ function getSortValue(entry: FlowEntry, field: SortField): string | number {
         case 'destination':
             return formatEndpoint(flow.k8s.destinationPodNamespace, flow.k8s.destinationPodName, flow.ip.destination);
         case 'destinationService':
-            return flow.k8s.destinationServicePortName;
+            return destinationK8sServiceFilterKey(flow.k8s.destinationServicePortName)
+                || flow.k8s.destinationServicePortName;
         case 'protocol':
             return flow.transport.protocolNumber;
         case 'destPort':
@@ -92,6 +94,7 @@ function matchesTextFilter(entry: FlowEntry, filterText: string): boolean {
         flow.k8s.destinationPodName,
         flow.ip.destination,
         flow.k8s.destinationServicePortName,
+        destinationK8sServiceFilterKey(flow.k8s.destinationServicePortName),
         getProtocolName(flow.transport.protocolNumber),
         flow.transport.destinationPort.toString(),
         flow.transport.tcp?.stateName ?? '',
@@ -113,7 +116,13 @@ const FlowListRow = React.memo(function FlowListRow({ entry }: { entry: FlowEntr
             <td>{formatTimestamp(flow.endTs)}</td>
             <td>{formatEndpoint(flow.k8s.sourcePodNamespace, flow.k8s.sourcePodName, flow.ip.source)}</td>
             <td>{formatEndpoint(flow.k8s.destinationPodNamespace, flow.k8s.destinationPodName, flow.ip.destination)}</td>
-            <td>{flow.k8s.destinationServicePortName || '-'}</td>
+            <td
+                title={flow.k8s.destinationServicePortName || undefined}
+            >
+                {destinationK8sServiceFilterKey(flow.k8s.destinationServicePortName)
+                    || flow.k8s.destinationServicePortName
+                    || '-'}
+            </td>
             <td>{getProtocolName(flow.transport.protocolNumber)}</td>
             <td>{flow.transport.destinationPort}</td>
             <td>{formatBytes(flow.stats.octetTotalCount)}</td>

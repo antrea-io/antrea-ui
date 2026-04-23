@@ -139,12 +139,20 @@ func (s *Server) AddRoutes(r *gin.RouterGroup) {
 }
 
 func (s *Server) AddFlowStreamRoutes(r *gin.RouterGroup) {
-	if s.flowStreamSSEHandler == nil {
-		return
-	}
 	flows := r.Group("/flows")
 	flows.Use(s.checkBearerToken)
+	if s.flowStreamSSEHandler == nil {
+		flows.GET("/stream", s.flowStreamDisabled)
+		return
+	}
 	flows.GET("/stream", s.flowStreamSSEHandler.StreamFlows)
+}
+
+// flowStreamDisabled handles GET /api/v1/flows/stream when Flow Aggregator integration is off.
+func (s *Server) flowStreamDisabled(c *gin.Context) {
+	c.JSON(http.StatusServiceUnavailable, gin.H{
+		"error": "Flow Aggregator integration is not enabled for this Antrea UI instance (set flowAggregator.enabled in the Helm chart).",
+	})
 }
 
 func (s *Server) LogError(sError *errors.ServerError, msg string, keysAndValues ...interface{}) {
