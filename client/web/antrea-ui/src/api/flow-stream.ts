@@ -34,6 +34,30 @@ export interface FlowStreamFilter {
     follow?: boolean;
 }
 
+/**
+ * Stable serialized key for a filter, matching the semantics of {@link buildStreamURL}.
+ * Used to avoid reconnecting the SSE when Apply builds a new object with the same values.
+ */
+export function streamFilterKey(f: FlowStreamFilter): string {
+    const namespaces = [...(f.namespaces ?? [])].sort();
+    const pods = [...(f.pods ?? [])].sort();
+    const services = [...(f.services ?? [])].sort();
+    const flowTypes = [...(f.flowTypes ?? [])].sort((a, b) => a - b);
+    const ips = [...(f.ips ?? [])].sort();
+    const direction =
+        f.direction && f.direction !== 'both' ? f.direction : 'both';
+    return JSON.stringify({
+        follow: f.follow !== false,
+        namespaces,
+        pods,
+        podLabelSelector: f.podLabelSelector ?? '',
+        services,
+        flowTypes,
+        ips,
+        direction,
+    });
+}
+
 export interface FlowStreamCallbacks {
     onFlows: (flows: Flow[]) => void;
     onError: (error: Error) => void;

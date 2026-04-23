@@ -31,6 +31,30 @@ backend:
 # -- Address at which the Antrea UI is accessible. Not required for most configurations.
 url: ""
 
+# -- Namespace where Antrea is installed.
+antreaNamespace: "kube-system"
+
+# Flow Aggregator gRPC integration (live flow visibility in the UI).
+flowAggregator:
+  # -- When true, the backend connects to Flow Aggregator over gRPC.
+  enabled: false
+  # -- gRPC address (host:port) of the Flow Aggregator Service.
+  address: "flow-aggregator.flow-aggregator.svc:14739"
+  # -- Optional PEM CA bundle for verifying the Flow Aggregator server certificate.
+  caCert: ""
+  # -- Optional client certificate file for mTLS (mounted path inside the backend container).
+  certFile: ""
+  # -- Optional client private key for mTLS (mounted path inside the backend container).
+  keyFile: ""
+  # -- mTLS: mount CA + client cert from Flow Aggregator (same as Antrea Agents). The Flow Aggregator
+  # gRPC server requires a client certificate. When true, installs this chart in the
+  # `flow-aggregator` namespace (or copy flow-aggregator-ca and flow-aggregator-client-tls into the
+  # release namespace) and sets caCert/certFile/keyFile automatically.
+  mtls:
+    enabled: true
+    caConfigMap: flow-aggregator-ca
+    clientSecret: flow-aggregator-client-tls
+
 security:
   # -- (bool) Set the Secure attribute for Antrea UI cookies. The attribute is set by default when HTTPS is
   # enabled in Antrea UI (by setting https.enable to true). When using an Ingress to terminate TLS,

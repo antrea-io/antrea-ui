@@ -79,9 +79,31 @@ func parseFlowStreamFilter(c *gin.Context) (*apisv1.FlowStreamFilter, error) {
 			filter.Direction = apisv1.FlowFilterDirectionBoth
 		}
 	}
-	filter.Follow = c.DefaultQuery("follow", "true") == "true"
+	filter.Follow = parseFollowQuery(c)
 
 	return filter, nil
+}
+
+// parseFollowQuery returns whether the client wants follow mode (live stream).
+//
+// Gin's DefaultQuery("follow", "true") returns "" when the key is present but
+// empty (?follow=), and "" == "true" is false — that incorrectly disabled follow
+// and caused Flow Aggregator to close the gRPC stream immediately (!follow && n==0),
+// which showed up as SSE disconnect when applying an "empty" filter (minimal URL).
+func parseFollowQuery(c *gin.Context) bool {
+	v := strings.TrimSpace(c.DefaultQuery("follow", "true"))
+	if v == "" {
+		return true
+	}
+	switch strings.ToLower(v) {
+	case "true", "1", "yes":
+		return true
+	case "false", "0", "no":
+		return false
+	default:
+		// Be permissive: unknown values keep the stream open rather than snapping to one-shot mode.
+		return true
+	}
 }
 
 // StreamFlows handles GET /api/v1/flows/stream as an SSE endpoint.

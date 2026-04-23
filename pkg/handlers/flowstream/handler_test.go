@@ -88,10 +88,17 @@ func TestParseFlowStreamFilter(t *testing.T) {
 			},
 		},
 		{
-			name:  "follow defaults to true",
+			name:  "follow unknown value defaults to true",
 			query: "follow=anything",
 			expected: &apisv1.FlowStreamFilter{
-				Follow: false,
+				Follow: true,
+			},
+		},
+		{
+			name:  "follow empty value means true",
+			query: "follow=",
+			expected: &apisv1.FlowStreamFilter{
+				Follow: true,
 			},
 		},
 	}

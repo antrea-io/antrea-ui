@@ -95,10 +95,10 @@ func TestFilterToGetFlowsRequest(t *testing.T) {
 		wantFollow      bool
 	}{
 		{
-			name:          "empty filter maps to BOTH direction and follow=false",
+			name:          "empty filter maps to BOTH direction; gRPC follow is always true",
 			filter:        &apisv1.FlowStreamFilter{},
 			wantDirection: flowpb.FlowFilterDirection_FLOW_FILTER_DIRECTION_BOTH,
-			wantFollow:    false,
+			wantFollow:    true,
 		},
 		{
 			name: "direction FROM",
@@ -115,6 +115,7 @@ func TestFilterToGetFlowsRequest(t *testing.T) {
 				Direction: apisv1.FlowFilterDirectionTo,
 			},
 			wantDirection: flowpb.FlowFilterDirection_FLOW_FILTER_DIRECTION_TO,
+			wantFollow:    true,
 		},
 		{
 			name: "direction BOTH explicit",
@@ -122,6 +123,7 @@ func TestFilterToGetFlowsRequest(t *testing.T) {
 				Direction: apisv1.FlowFilterDirectionBoth,
 			},
 			wantDirection: flowpb.FlowFilterDirection_FLOW_FILTER_DIRECTION_BOTH,
+			wantFollow:    true,
 		},
 		{
 			name: "all filter fields populated",
@@ -143,6 +145,14 @@ func TestFilterToGetFlowsRequest(t *testing.T) {
 			wantLabelSel:   "app=frontend",
 			wantFlowTypes:  []flowpb.FlowType{flowpb.FlowType_FLOW_TYPE_INTRA_NODE, flowpb.FlowType_FLOW_TYPE_INTER_NODE},
 			wantFollow:     true,
+		},
+		{
+			name: "Follow false on filter is overridden — SSE always streams",
+			filter: &apisv1.FlowStreamFilter{
+				Follow: false,
+			},
+			wantDirection: flowpb.FlowFilterDirection_FLOW_FILTER_DIRECTION_BOTH,
+			wantFollow:    true,
 		},
 	}
 

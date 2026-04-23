@@ -155,7 +155,11 @@ func filterToGetFlowsRequest(filter *apisv1.FlowStreamFilter) *flowpb.GetFlowsRe
 	}
 	return &flowpb.GetFlowsRequest{
 		Filter: pbFilter,
-		Follow: filter.Follow,
+		// This handler only backs the SSE flow stream, which must stay in follow mode so Flow
+		// Aggregator does not close the gRPC stream on the first empty ring-buffer read
+		// (!follow && n==0). Always set true regardless of filter.Follow so a zero Go value or
+		// query parsing edge case cannot disable follow.
+		Follow: true,
 	}
 }
 
@@ -288,8 +292,10 @@ func buildTLSConfig(cfg GRPCConfig) (*tls.Config, error) {
 	if err != nil {
 		host = cfg.Address
 	}
+	// Flow Aggregator's serving cert uses the short in-cluster Service DNS name (SAN), not
+	// *.cluster.local — match that when dialing via port-forward to loopback.
 	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() && tlsCfg.RootCAs != nil {
-		tlsCfg.ServerName = "flow-aggregator.flow-aggregator.svc.cluster.local"
+		tlsCfg.ServerName = "flow-aggregator.flow-aggregator.svc"
 	}
 
 	if cfg.CertFile != "" && cfg.KeyFile != "" {

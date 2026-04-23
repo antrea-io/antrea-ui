@@ -14,10 +14,10 @@
  * limitations under the License.
  */
 
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { Flow } from './flow-types';
 import { FlowStore, FlowEntry } from './flow-store';
-import { FlowStreamClient, FlowStreamFilter } from './flow-stream';
+import { FlowStreamClient, FlowStreamFilter, streamFilterKey } from './flow-stream';
 
 export interface UseFlowStreamResult {
     entries: FlowEntry[];
@@ -67,11 +67,15 @@ export function useFlowStream(filter: FlowStreamFilter, paused: boolean): UseFlo
         setDroppedCount(0);
     }, []);
 
-    const prevFilterRef = useRef(filter);
+    const filterKey = useMemo(() => streamFilterKey(filter), [filter]);
+    const filterRef = useRef(filter);
+    filterRef.current = filter;
+
+    const prevFilterKeyRef = useRef<string | null>(null);
 
     useEffect(() => {
-        if (filter !== prevFilterRef.current) {
-            prevFilterRef.current = filter;
+        if (prevFilterKeyRef.current !== filterKey) {
+            prevFilterKeyRef.current = filterKey;
             storeRef.current.clear();
             setEntries([]);
             setEvictionWarning(false);
@@ -84,7 +88,7 @@ export function useFlowStream(filter: FlowStreamFilter, paused: boolean): UseFlo
             return;
         }
 
-        const client = new FlowStreamClient(filter, {
+        const client = new FlowStreamClient(filterRef.current, {
             onFlows: handleFlows,
             onError: handleError,
             onDropped: handleDropped,
@@ -97,7 +101,7 @@ export function useFlowStream(filter: FlowStreamFilter, paused: boolean): UseFlo
         return () => {
             client.stop();
         };
-    }, [filter, paused, handleFlows, handleError, handleDropped, handleConnected, handleDisconnected]);
+    }, [filterKey, paused, handleFlows, handleError, handleDropped, handleConnected, handleDisconnected]);
 
     return {
         entries,
