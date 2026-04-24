@@ -98,6 +98,7 @@ func newTestServer(t *testing.T, options ...testServerOptions) *testServer {
 		traceflowRequestsHandler,
 		k8sProxyHandler,
 		antreaSvcRequestsHandler,
+		nil, // flowStreamHandler
 		passwordStore,
 		tokenManager,
 		config,
