@@ -66,13 +66,11 @@ interface WorkloadEdge {
     connectionCount: number;
     totalBytesForward: number;
     totalBytesReverse: number;
-    protocols: Set<number>;
-    destPorts: Set<number>;
+    protoPorts: Map<number, Set<number>>;
     ingressPolicies: Set<string>;
     egressPolicies: Set<string>;
     ingressActions: Set<NetworkPolicyRuleAction>;
     egressActions: Set<NetworkPolicyRuleAction>;
-    latestTcpState: string;
     flowTypes: Set<FlowType>;
     firstSeen: number;
     lastSeen: number;
@@ -86,11 +84,9 @@ interface EdgeDetails {
     totalBytesForward: number;
     totalBytesReverse: number;
     bitRate: number;
-    protocols: string[];
-    destPorts: number[];
+    destPortsStr: string;
     ingressPolicies: string[];
     egressPolicies: string[];
-    latestTcpState: string;
     flowTypes: string[];
 }
 
@@ -175,13 +171,11 @@ function buildGraph(entries: FlowEntry[]): { nodes: WorkloadNode[]; edges: Workl
                 connectionCount: 0,
                 totalBytesForward: 0,
                 totalBytesReverse: 0,
-                protocols: new Set(),
-                destPorts: new Set(),
+                protoPorts: new Map(),
                 ingressPolicies: new Set(),
                 egressPolicies: new Set(),
                 ingressActions: new Set(),
                 egressActions: new Set(),
-                latestTcpState: '',
                 flowTypes: new Set(),
                 firstSeen: entry.firstSeen,
                 lastSeen: entry.lastSeen,
@@ -193,8 +187,12 @@ function buildGraph(entries: FlowEntry[]): { nodes: WorkloadNode[]; edges: Workl
         if (entry.lastSeen > edge.lastSeen) edge.lastSeen = entry.lastSeen;
         edge.totalBytesForward += flow.stats.octetTotalCount;
         edge.totalBytesReverse += flow.reverseStats.octetTotalCount;
-        edge.protocols.add(flow.transport.protocolNumber);
-        if (flow.transport.destinationPort) edge.destPorts.add(flow.transport.destinationPort);
+        let protoSet = edge.protoPorts.get(flow.transport.protocolNumber);
+        if (!protoSet) {
+            protoSet = new Set();
+            edge.protoPorts.set(flow.transport.protocolNumber, protoSet);
+        }
+        if (flow.transport.destinationPort) protoSet.add(flow.transport.destinationPort);
         if (flow.k8s.ingressNetworkPolicyName) {
             edge.ingressPolicies.add(formatPolicyInfo(flow.k8s.ingressNetworkPolicyName, flow.k8s.ingressNetworkPolicyRuleAction));
             edge.ingressActions.add(flow.k8s.ingressNetworkPolicyRuleAction);
@@ -203,7 +201,6 @@ function buildGraph(entries: FlowEntry[]): { nodes: WorkloadNode[]; edges: Workl
             edge.egressPolicies.add(formatPolicyInfo(flow.k8s.egressNetworkPolicyName, flow.k8s.egressNetworkPolicyRuleAction));
             edge.egressActions.add(flow.k8s.egressNetworkPolicyRuleAction);
         }
-        if (flow.transport.tcp?.stateName) edge.latestTcpState = flow.transport.tcp.stateName;
         edge.flowTypes.add(flowType);
     }
 
@@ -235,6 +232,16 @@ function formatBitRate(bitsPerSec: number): string {
 
 function edgeToDetails(edge: WorkloadEdge): EdgeDetails {
     const { connectionRate, bitRate } = computeRates(edge);
+    const destPortsList: string[] = [];
+    Array.from(edge.protoPorts.entries()).forEach(([proto, ports]) => {
+        const protoName = getProtocolName(proto);
+        if (ports.size > 0) {
+            const sortedPorts = Array.from(ports).sort((a, b) => a - b).join(', ');
+            destPortsList.push(`${protoName}(${sortedPorts})`);
+        } else {
+            destPortsList.push(protoName);
+        }
+    });
     return {
         source: edge.source,
         target: edge.target,
@@ -243,11 +250,9 @@ function edgeToDetails(edge: WorkloadEdge): EdgeDetails {
         totalBytesForward: edge.totalBytesForward,
         totalBytesReverse: edge.totalBytesReverse,
         bitRate,
-        protocols: Array.from(edge.protocols).map(getProtocolName),
-        destPorts: Array.from(edge.destPorts).sort((a, b) => a - b),
+        destPortsStr: destPortsList.join(', '),
         ingressPolicies: Array.from(edge.ingressPolicies),
         egressPolicies: Array.from(edge.egressPolicies),
-        latestTcpState: edge.latestTcpState,
         flowTypes: Array.from(edge.flowTypes).map(ft => flowTypeLabel[ft] ?? 'Unknown'),
     };
 }
@@ -268,8 +273,8 @@ function getEdgeColor(edge: WorkloadEdge): string {
 }
 
 function getEdgeLabel(edge: WorkloadEdge): string {
-    const protocols = Array.from(edge.protocols).map(getProtocolName);
-    const ports = Array.from(edge.destPorts).sort((a, b) => a - b);
+    const protocols = Array.from(edge.protoPorts.keys()).map(getProtocolName);
+    const ports = Array.from(edge.protoPorts.values()).flatMap(s => Array.from(s)).sort((a, b) => a - b);
     if (protocols.length === 0 && ports.length === 0) return '';
     const proto = protocols[0] || '?';
     const port = ports[0];
@@ -321,7 +326,7 @@ function EdgeDetailsPanel({ details, onClose }: { details: EdgeDetails; onClose:
             zIndex: 10,
         }}>
             <div cds-layout="horizontal justify:space-between align:vertical-center" style={{ marginBottom: '12px' }}>
-                <span cds-text="section">Edge Details</span>
+                <span cds-text="section">Connection Stats</span>
                 <button
                     onClick={onClose}
                     style={{
@@ -344,16 +349,12 @@ function EdgeDetailsPanel({ details, onClose }: { details: EdgeDetails; onClose:
                 {details.bitRate > 0 && (
                     <div><strong>Bit Rate:</strong> {formatBitRate(details.bitRate)}</div>
                 )}
-                <div><strong>Protocols:</strong> {details.protocols.join(', ') || '-'}</div>
-                <div><strong>Dest Ports:</strong> {details.destPorts.join(', ') || '-'}</div>
+                <div><strong>Dest Ports:</strong> {details.destPortsStr || '-'}</div>
                 {details.ingressPolicies.length > 0 && (
                     <div><strong>Ingress Policies:</strong> {details.ingressPolicies.join(', ')}</div>
                 )}
                 {details.egressPolicies.length > 0 && (
                     <div><strong>Egress Policies:</strong> {details.egressPolicies.join(', ')}</div>
-                )}
-                {details.latestTcpState && (
-                    <div><strong>TCP State:</strong> {details.latestTcpState}</div>
                 )}
                 <div><strong>Flow Types:</strong> {details.flowTypes.join(', ') || '-'}</div>
             </div>
@@ -410,11 +411,17 @@ export default function ServiceMap({ entries }: ServiceMapProps) {
         const tip = tooltipRef.current;
         if (!tip) return;
 
-        const protocols = Array.from(edge.protocols).map(getProtocolName);
-        const ports = Array.from(edge.destPorts).sort((a, b) => a - b);
-        const protoPort = ports.length > 0
-            ? protocols.map(p => ports.map(port => `${p}/${port}`).join(', ')).join(', ')
-            : protocols.join(', ') || '-';
+        const protoPortParts: string[] = [];
+        edge.protoPorts.forEach((pSet, proto) => {
+            const pName = getProtocolName(proto);
+            if (pSet.size > 0) {
+                const sortedPorts = Array.from(pSet).sort((a, b) => a - b);
+                protoPortParts.push(`${pName}(${sortedPorts.join(', ')})`);
+            } else {
+                protoPortParts.push(pName);
+            }
+        });
+        const protoPort = protoPortParts.join(', ') || '-';
 
         const policyLines: string[] = [];
         for (const p of edge.ingressPolicies) {
@@ -437,7 +444,6 @@ export default function ServiceMap({ entries }: ServiceMapProps) {
             <div>&#8593; ${formatBytes(edge.totalBytesForward)} &nbsp; &#8595; ${formatBytes(edge.totalBytesReverse)}</div>
             ${bitRateInfo}
             ${policyLines.length > 0 ? '<hr style="border-color:#555;margin:4px 0"/>' + policyLines.join('<br/>') : ''}
-            ${edge.latestTcpState ? `<div style="margin-top:4px;color:#aaa">TCP: ${edge.latestTcpState}</div>` : ''}
         `;
         tip.style.left = `${event.pageX + 12}px`;
         tip.style.top = `${event.pageY + 12}px`;
