@@ -33,10 +33,10 @@ import (
 // SSEHandler handles the SSE endpoint for flow streaming.
 type SSEHandler struct {
 	logger  logr.Logger
-	handler FlowStreamHandler
+	handler FlowStreamSubscriber
 }
 
-func NewSSEHandler(logger logr.Logger, handler FlowStreamHandler) *SSEHandler {
+func NewSSEHandler(logger logr.Logger, handler FlowStreamSubscriber) *SSEHandler {
 	return &SSEHandler{
 		logger:  logger,
 		handler: handler,
@@ -119,6 +119,12 @@ func (h *SSEHandler) StreamFlows(c *gin.Context) {
 	ctx := c.Request.Context()
 	flowsCh, errCh := h.handler.Subscribe(ctx, filter)
 
+	// Set headers required for Server-Sent Events (SSE).
+	// Content-Type must be text/event-stream for browsers to process the stream.
+	// Cache-Control: no-cache prevents intermediary proxies from caching the stream data.
+	// Connection: keep-alive keeps the connection open for continuous data flow.
+	// X-Accel-Buffering: no instructs Nginx and other proxies to disable response buffering,
+	// ensuring events are sent to the client immediately instead of waiting for a buffer to fill.
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")

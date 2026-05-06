@@ -59,7 +59,7 @@ func NewServer(
 	traceflowRequestsHandler traceflow.RequestsHandler,
 	k8sProxyHandler http.Handler,
 	antreaSvcRequestsHandler antreasvc.RequestsHandler,
-	flowStreamHandler flowstream.FlowStreamHandler,
+	flowStreamSubscriber flowstream.FlowStreamSubscriber,
 	passwordStore password.Store,
 	tokenManager auth.TokenManager,
 	config *serverconfig.Config,
@@ -69,8 +69,8 @@ func NewServer(
 	}
 	logger.Info("Created API server config", "config", c)
 	var flowSSEHandler *flowstream.SSEHandler
-	if flowStreamHandler != nil {
-		flowSSEHandler = flowstream.NewSSEHandler(logger, flowStreamHandler)
+	if flowStreamSubscriber != nil {
+		flowSSEHandler = flowstream.NewSSEHandler(logger, flowStreamSubscriber)
 	}
 	return &Server{
 		logger:                   logger,

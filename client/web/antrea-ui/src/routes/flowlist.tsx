@@ -37,7 +37,6 @@ type SortField =
     | 'bytesRev'
     | 'ingressPolicy'
     | 'egressPolicy'
-    | 'tcpState'
     | 'flowType';
 
 type SortDirection = 'asc' | 'desc';
@@ -75,8 +74,6 @@ function getSortValue(entry: FlowEntry, field: SortField): string | number {
             return flow.k8s.ingressNetworkPolicyName;
         case 'egressPolicy':
             return flow.k8s.egressNetworkPolicyName;
-        case 'tcpState':
-            return flow.transport.tcp?.stateName ?? '';
         case 'flowType':
             return flow.k8s.flowType;
     }
@@ -97,7 +94,6 @@ function matchesTextFilter(entry: FlowEntry, filterText: string): boolean {
         destinationK8sServiceFilterKey(flow.k8s.destinationServicePortName),
         getProtocolName(flow.transport.protocolNumber),
         flow.transport.destinationPort.toString(),
-        flow.transport.tcp?.stateName ?? '',
         flowTypeLabel[flow.k8s.flowType as FlowType] ?? '',
         flow.k8s.ingressNetworkPolicyName,
         flow.k8s.egressNetworkPolicyName,
@@ -129,7 +125,6 @@ const FlowListRow = React.memo(function FlowListRow({ entry }: { entry: FlowEntr
             <td>{formatBytes(flow.reverseStats.octetTotalCount)}</td>
             <td>{formatPolicyInfo(flow.k8s.ingressNetworkPolicyName, flow.k8s.ingressNetworkPolicyRuleAction) || '-'}</td>
             <td>{formatPolicyInfo(flow.k8s.egressNetworkPolicyName, flow.k8s.egressNetworkPolicyRuleAction) || '-'}</td>
-            <td>{flow.transport.tcp?.stateName || '-'}</td>
             <td>{flowTypeLabel[flow.k8s.flowType as FlowType] ?? 'Unknown'}</td>
         </tr>
     );
@@ -146,7 +141,6 @@ const columns: { field: SortField; label: string }[] = [
     { field: 'bytesRev', label: 'Bytes (Rev)' },
     { field: 'ingressPolicy', label: 'Ingress Policy' },
     { field: 'egressPolicy', label: 'Egress Policy' },
-    { field: 'tcpState', label: 'TCP State' },
     { field: 'flowType', label: 'Flow Type' },
 ];
 

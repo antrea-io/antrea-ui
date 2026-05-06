@@ -122,11 +122,6 @@ spec:
               mountPath: /app/jwt-key.pem
               subPath: key.pem
               readOnly: true
-            {{- if and .Values.flowAggregator.enabled .Values.flowAggregator.mtls.enabled }}
-            - name: flow-aggregator-mtls
-              mountPath: /etc/flow-aggregator-mtls
-              readOnly: true
-            {{- end }}
             {{- with .Values.backend.extraVolumeMounts }}
             {{- toYaml . | trim | nindent 12 }}
             {{- end }}
@@ -197,23 +192,6 @@ spec:
           secret:
             secretName: antrea-ui-jwt-key
             defaultMode: 0400
-        {{- if and .Values.flowAggregator.enabled .Values.flowAggregator.mtls.enabled }}
-        - name: flow-aggregator-mtls
-          projected:
-            sources:
-              - configMap:
-                  name: {{ .Values.flowAggregator.mtls.caConfigMap }}
-                  items:
-                    - key: ca.crt
-                      path: ca.crt
-              - secret:
-                  name: {{ .Values.flowAggregator.mtls.clientSecret }}
-                  items:
-                    - key: tls.crt
-                      path: tls.crt
-                    - key: tls.key
-                      path: tls.key
-        {{- end }}
         {{- if .Values.https.enable }}
         {{- $secretName := "antrea-ui-tls-helm" }}
         {{- if eq .Values.https.method "secret" }}

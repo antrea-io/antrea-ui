@@ -22,10 +22,10 @@ import (
 
 //go:generate mockgen -source=interface.go -package=testing -destination=testing/mock_interface.go -copyright_file=$MOCKGEN_COPYRIGHT_FILE
 
-// FlowStreamHandler provides a channel-based interface for streaming flow data.
+// FlowStreamSubscriber provides a channel-based interface for streaming flow data.
 // Implementations connect to the FlowAggregator's gRPC FlowStreamService (see grpc.go)
 // and relay flow events to the caller.
-type FlowStreamHandler interface {
+type FlowStreamSubscriber interface {
 	// Subscribe starts streaming flows matching the given filter.
 	// It returns a channel of FlowStreamEvent and a channel of errors.
 	// The caller should read from both channels until they are closed.

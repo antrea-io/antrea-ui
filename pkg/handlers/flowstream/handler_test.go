@@ -120,13 +120,13 @@ func TestParseFlowStreamFilter(t *testing.T) {
 	}
 }
 
-// stubFlowStreamHandler is a minimal FlowStreamHandler for testing the SSE handler.
-type stubFlowStreamHandler struct {
+// stubFlowStreamSubscriber is a minimal FlowStreamHandler for testing the SSE handler.
+type stubFlowStreamSubscriber struct {
 	events []apisv1.FlowStreamEvent
 	err    error
 }
 
-func (s *stubFlowStreamHandler) Subscribe(_ context.Context, _ *apisv1.FlowStreamFilter) (<-chan apisv1.FlowStreamEvent, <-chan error) {
+func (s *stubFlowStreamSubscriber) Subscribe(_ context.Context, _ *apisv1.FlowStreamFilter) (<-chan apisv1.FlowStreamEvent, <-chan error) {
 	flowsCh := make(chan apisv1.FlowStreamEvent, len(s.events)+1)
 	errCh := make(chan error, 1)
 
@@ -151,7 +151,7 @@ func newTestRouter(handler *SSEHandler) *gin.Engine {
 
 func TestStreamFlowsHappyPath(t *testing.T) {
 	logger := testr.New(t)
-	stub := &stubFlowStreamHandler{
+	stub := &stubFlowStreamSubscriber{
 		events: []apisv1.FlowStreamEvent{
 			{
 				Flows: []apisv1.Flow{
@@ -206,7 +206,7 @@ func TestStreamFlowsHappyPath(t *testing.T) {
 
 func TestStreamFlowsErrorPath(t *testing.T) {
 	logger := testr.New(t)
-	stub := &stubFlowStreamHandler{
+	stub := &stubFlowStreamSubscriber{
 		err: fmt.Errorf("upstream connection lost"),
 	}
 
@@ -232,7 +232,7 @@ func TestStreamFlowsErrorPath(t *testing.T) {
 
 func TestStreamFlowsBadFilter(t *testing.T) {
 	logger := testr.New(t)
-	stub := &stubFlowStreamHandler{}
+	stub := &stubFlowStreamSubscriber{}
 
 	sseHandler := NewSSEHandler(logger, stub)
 	ts := httptest.NewServer(newTestRouter(sseHandler))

@@ -40,16 +40,17 @@ flowAggregator:
   enabled: false
   # -- gRPC address (host:port) of the Flow Aggregator Service.
   address: "flow-aggregator.flow-aggregator.svc:14739"
-  # -- Mount the Flow Aggregator CA and client TLS credentials from the ConfigMap/Secret below,
-  # and configure the backend to use them for mTLS. When installing in the `flow-aggregator`
-  # namespace (the default), the required resources are created automatically by the Flow
-  # Aggregator chart. When installing in a different namespace, copy `flow-aggregator-ca`
-  # (ConfigMap) and `flow-aggregator-client-tls` (Secret) from the `flow-aggregator` namespace
-  # into the release namespace, or override the names below to match your deployment.
-  mtls:
-    enabled: true
-    caConfigMap: flow-aggregator-ca
-    clientSecret: flow-aggregator-client-tls
+  # -- The backend uses the ConfigMap and Secret below to configure mTLS for the gRPC connection.
+  # The Flow Aggregator gRPC server always requires a client certificate.
+  # The `caConfigMap` specifies the name of the ConfigMap containing the CA cert (e.g. ca.crt),
+  # and `clientSecret` specifies the name of the Secret containing the client cert and key
+  # (e.g. tls.crt and tls.key).
+  # The backend dynamically fetches these credentials from the Kubernetes API.
+  # The UI automatically creates a RoleBinding to access these resources, provided the namespace
+  # below is correct.
+  caConfigMap: flow-aggregator-ca
+  clientSecret: flow-aggregator-client-tls
+  namespace: flow-aggregator
 
 security:
   # -- (bool) Set the Secure attribute for Antrea UI cookies. The attribute is set by default when HTTPS is

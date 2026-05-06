@@ -17,9 +17,9 @@ logVerbosity: {{ .Values.backend.logVerbosity }}
 flowAggregator:
   enabled: {{ .Values.flowAggregator.enabled }}
   address: {{ .Values.flowAggregator.address | quote }}
-{{- if and .Values.flowAggregator.enabled .Values.flowAggregator.mtls.enabled }}
-  caCert: "/etc/flow-aggregator-mtls/ca.crt"
-  certFile: "/etc/flow-aggregator-mtls/tls.crt"
-  keyFile: "/etc/flow-aggregator-mtls/tls.key"
+{{- if .Values.flowAggregator.enabled }}
+  caConfigMap: {{ .Values.flowAggregator.caConfigMap | quote }}
+  clientSecret: {{ .Values.flowAggregator.clientSecret | quote }}
+  namespace: {{ .Values.flowAggregator.namespace | default "flow-aggregator" | quote }}
 {{- end }}
 {{- end }}

@@ -28,11 +28,11 @@ const (
 )
 
 type FlowAggregatorConfig struct {
-	Enabled  bool
-	Address  string
-	CACert   string
-	CertFile string
-	KeyFile  string
+	Enabled      bool
+	Address      string
+	CAConfigMap  string
+	ClientSecret string
+	Namespace    string
 }
 
 type Config struct {

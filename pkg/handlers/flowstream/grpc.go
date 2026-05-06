@@ -22,7 +22,6 @@ import (
 	"io"
 	"net"
 	"net/netip"
-	"os"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -33,9 +32,9 @@ import (
 	flowpb "antrea.io/antrea-ui/pkg/apis/flow/v1alpha1"
 )
 
-// GRPCFlowStreamHandler connects to the FlowAggregator's FlowStreamService
-// over gRPC and implements the FlowStreamHandler interface.
-type GRPCFlowStreamHandler struct {
+// GRPCFlowStreamSubscriber connects to the FlowAggregator's FlowStreamService
+// over gRPC and implements the FlowStreamSubscriber interface.
+type GRPCFlowStreamSubscriber struct {
 	logger logr.Logger
 	client flowpb.FlowStreamServiceClient
 	conn   *grpc.ClientConn
@@ -44,12 +43,12 @@ type GRPCFlowStreamHandler struct {
 // GRPCConfig holds the connection parameters for the FlowAggregator gRPC server.
 type GRPCConfig struct {
 	Address  string
-	CACert   string
-	CertFile string
-	KeyFile  string
+	CACert   []byte
+	CertData []byte
+	KeyData  []byte
 }
 
-func NewGRPCFlowStreamHandler(logger logr.Logger, cfg GRPCConfig) (*GRPCFlowStreamHandler, error) {
+func NewGRPCFlowStreamSubscriber(logger logr.Logger, cfg GRPCConfig) (*GRPCFlowStreamSubscriber, error) {
 	tlsCfg, err := buildTLSConfig(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build TLS config: %w", err)
@@ -66,21 +65,21 @@ func NewGRPCFlowStreamHandler(logger logr.Logger, cfg GRPCConfig) (*GRPCFlowStre
 	client := flowpb.NewFlowStreamServiceClient(conn)
 	logger.Info("Connected to FlowAggregator gRPC service", "address", cfg.Address)
 
-	return &GRPCFlowStreamHandler{
+	return &GRPCFlowStreamSubscriber{
 		logger: logger,
 		client: client,
 		conn:   conn,
 	}, nil
 }
 
-func (h *GRPCFlowStreamHandler) Close() error {
+func (h *GRPCFlowStreamSubscriber) Close() error {
 	if h.conn != nil {
 		return h.conn.Close()
 	}
 	return nil
 }
 
-func (h *GRPCFlowStreamHandler) Subscribe(ctx context.Context, filter *apisv1.FlowStreamFilter) (<-chan apisv1.FlowStreamEvent, <-chan error) {
+func (h *GRPCFlowStreamSubscriber) Subscribe(ctx context.Context, filter *apisv1.FlowStreamFilter) (<-chan apisv1.FlowStreamEvent, <-chan error) {
 	flowsCh := make(chan apisv1.FlowStreamEvent, 16)
 	errCh := make(chan error, 1)
 
@@ -271,14 +270,10 @@ func buildTLSConfig(cfg GRPCConfig) (*tls.Config, error) {
 		MinVersion: tls.VersionTLS12,
 	}
 
-	if cfg.CACert != "" {
-		caCert, err := os.ReadFile(cfg.CACert)
-		if err != nil {
-			return nil, fmt.Errorf("failed to read CA cert %s: %w", cfg.CACert, err)
-		}
+	if len(cfg.CACert) > 0 {
 		pool := x509.NewCertPool()
-		if !pool.AppendCertsFromPEM(caCert) {
-			return nil, fmt.Errorf("failed to parse CA cert %s", cfg.CACert)
+		if !pool.AppendCertsFromPEM(cfg.CACert) {
+			return nil, fmt.Errorf("failed to parse CA cert data")
 		}
 		tlsCfg.RootCAs = pool
 	} else {
@@ -298,8 +293,8 @@ func buildTLSConfig(cfg GRPCConfig) (*tls.Config, error) {
 		tlsCfg.ServerName = "flow-aggregator.flow-aggregator.svc"
 	}
 
-	if cfg.CertFile != "" && cfg.KeyFile != "" {
-		cert, err := tls.LoadX509KeyPair(cfg.CertFile, cfg.KeyFile)
+	if len(cfg.CertData) > 0 && len(cfg.KeyData) > 0 {
+		cert, err := tls.X509KeyPair(cfg.CertData, cfg.KeyData)
 		if err != nil {
 			return nil, fmt.Errorf("failed to load client cert/key: %w", err)
 		}
