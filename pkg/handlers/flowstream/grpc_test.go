@@ -83,16 +83,16 @@ func TestIPBytesToString(t *testing.T) {
 
 func TestFilterToGetFlowsRequest(t *testing.T) {
 	tests := []struct {
-		name            string
-		filter          *apisv1.FlowStreamFilter
-		wantDirection   flowpb.FlowFilterDirection
-		wantNamespaces  []string
-		wantPodNames    []string
-		wantServices    []string
-		wantIPs         []string
-		wantLabelSel    string
-		wantFlowTypes   []flowpb.FlowType
-		wantFollow      bool
+		name           string
+		filter         *apisv1.FlowStreamFilter
+		wantDirection  flowpb.FlowFilterDirection
+		wantNamespaces []string
+		wantPodNames   []string
+		wantServices   []string
+		wantIPs        []string
+		wantLabelSel   string
+		wantFlowTypes  []flowpb.FlowType
+		wantFollow     bool
 	}{
 		{
 			name:          "empty filter maps to BOTH direction; gRPC follow is always true",
@@ -285,21 +285,21 @@ func TestProtoFlowToAPI_Kubernetes(t *testing.T) {
 	pb := &flowpb.Flow{
 		Id: "flow-k8s",
 		K8S: &flowpb.Kubernetes{
-			FlowType:             flowpb.FlowType_FLOW_TYPE_INTER_NODE,
-			SourcePodNamespace:   "default",
-			SourcePodName:        "frontend-abc",
-			SourcePodUid:         "uid-src",
-			SourcePodLabels:      &flowpb.Labels{Labels: map[string]string{"app": "frontend"}},
-			SourceNodeName:       "node-1",
-			DestinationPodNamespace: "default",
-			DestinationPodName:   "backend-xyz",
-			DestinationPodUid:    "uid-dst",
-			DestinationPodLabels: &flowpb.Labels{Labels: map[string]string{"app": "backend"}},
-			DestinationNodeName:  "node-2",
-			DestinationClusterIp: net.ParseIP("10.96.0.10").To4(),
-			DestinationServicePort:     8080,
-			DestinationServicePortName: "http",
-			DestinationServiceUid:      "svc-uid",
+			FlowType:                       flowpb.FlowType_FLOW_TYPE_INTER_NODE,
+			SourcePodNamespace:             "default",
+			SourcePodName:                  "frontend-abc",
+			SourcePodUid:                   "uid-src",
+			SourcePodLabels:                &flowpb.Labels{Labels: map[string]string{"app": "frontend"}},
+			SourceNodeName:                 "node-1",
+			DestinationPodNamespace:        "default",
+			DestinationPodName:             "backend-xyz",
+			DestinationPodUid:              "uid-dst",
+			DestinationPodLabels:           &flowpb.Labels{Labels: map[string]string{"app": "backend"}},
+			DestinationNodeName:            "node-2",
+			DestinationClusterIp:           net.ParseIP("10.96.0.10").To4(),
+			DestinationServicePort:         8080,
+			DestinationServicePortName:     "http",
+			DestinationServiceUid:          "svc-uid",
 			IngressNetworkPolicyType:       flowpb.NetworkPolicyType_NETWORK_POLICY_TYPE_K8S,
 			IngressNetworkPolicyNamespace:  "default",
 			IngressNetworkPolicyName:       "allow-ingress",
@@ -435,12 +435,12 @@ func TestProtoFlowToAPI_FullFlow(t *testing.T) {
 			},
 		},
 		K8S: &flowpb.Kubernetes{
-			FlowType:             flowpb.FlowType_FLOW_TYPE_INTRA_NODE,
-			SourcePodNamespace:   "prod",
-			SourcePodName:        "web-pod",
+			FlowType:                flowpb.FlowType_FLOW_TYPE_INTRA_NODE,
+			SourcePodNamespace:      "prod",
+			SourcePodName:           "web-pod",
 			DestinationPodNamespace: "prod",
-			DestinationPodName:   "db-pod",
-			DestinationClusterIp: net.ParseIP("10.96.1.1").To4(),
+			DestinationPodName:      "db-pod",
+			DestinationClusterIp:    net.ParseIP("10.96.1.1").To4(),
 		},
 		Stats: &flowpb.Stats{
 			PacketTotalCount: 200,

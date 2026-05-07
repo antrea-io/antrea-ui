@@ -76,8 +76,10 @@ export function useFlowStream(filter: FlowStreamFilter, paused: boolean): UseFlo
     }, []);
 
     const filterKey = useMemo(() => streamFilterKey(filter), [filter]);
+    // Store filter in a ref so we can use the latest filter when instantiating the client
+    // without triggering effect re-runs on every filter object identity change.
     const filterRef = useRef(filter);
-    filterRef.current = filter;
+    useEffect(() => { filterRef.current = filter; }, [filter]);
 
     const prevFilterKeyRef = useRef<string | null>(null);
 
@@ -85,17 +87,22 @@ export function useFlowStream(filter: FlowStreamFilter, paused: boolean): UseFlo
         if (prevFilterKeyRef.current !== filterKey) {
             prevFilterKeyRef.current = filterKey;
             storeRef.current.clear();
-            setEntries([]);
-            setEvictionWarning(false);
-            setDroppedCount(0);
+            const timer = setTimeout(() => {
+                setEntries([]);
+                setEvictionWarning(false);
+                setDroppedCount(0);
+            }, 0);
+            return () => clearTimeout(timer);
         }
 
         if (flowVisibilityOff) {
             clientRef.current?.stop();
             clientRef.current = null;
-            setConnected(false);
-            setError(flowVisibilityDisabledMessage);
-            return;
+            const timer = setTimeout(() => {
+                setConnected(false);
+                setError(flowVisibilityDisabledMessage);
+            }, 0);
+            return () => clearTimeout(timer);
         }
 
         if (paused) {

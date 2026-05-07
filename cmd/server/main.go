@@ -183,7 +183,7 @@ func run() error {
 			if ns == "" {
 				ns = "flow-aggregator"
 			}
-			
+
 			logger.Info("Fetching FlowAggregator certificates from K8s API", "namespace", ns, "caConfigMap", config.FlowAggregator.CAConfigMap, "clientSecret", config.FlowAggregator.ClientSecret)
 			cm, err := k8sClient.CoreV1().ConfigMaps(ns).Get(context.Background(), config.FlowAggregator.CAConfigMap, metav1.GetOptions{})
 			if err != nil {

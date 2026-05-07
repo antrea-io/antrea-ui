@@ -30,9 +30,9 @@ type NetworkPolicyType int
 
 const (
 	NetworkPolicyTypeUnspecified NetworkPolicyType = 0
-	NetworkPolicyTypeK8s        NetworkPolicyType = 1
-	NetworkPolicyTypeANP        NetworkPolicyType = 2
-	NetworkPolicyTypeACNP       NetworkPolicyType = 3
+	NetworkPolicyTypeK8s         NetworkPolicyType = 1
+	NetworkPolicyTypeANP         NetworkPolicyType = 2
+	NetworkPolicyTypeACNP        NetworkPolicyType = 3
 )
 
 type NetworkPolicyRuleAction int
@@ -48,8 +48,8 @@ type IPVersion int
 
 const (
 	IPVersionUnspecified IPVersion = 0
-	IPVersionIPv4       IPVersion = 4
-	IPVersionIPv6       IPVersion = 6
+	IPVersionIPv4        IPVersion = 4
+	IPVersionIPv6        IPVersion = 6
 )
 
 type FlowEndReason int
@@ -106,7 +106,7 @@ type FlowKubernetes struct {
 	DestinationNodeName string `json:"destinationNodeName"`
 	DestinationNodeUid  string `json:"destinationNodeUid"`
 
-	DestinationClusterIp      string `json:"destinationClusterIp"`
+	DestinationClusterIp       string `json:"destinationClusterIp"`
 	DestinationServicePort     uint32 `json:"destinationServicePort"`
 	DestinationServicePortName string `json:"destinationServicePortName"`
 	DestinationServiceUid      string `json:"destinationServiceUid"`
@@ -133,15 +133,15 @@ type FlowKubernetes struct {
 }
 
 type Flow struct {
-	ID           string          `json:"id"`
-	StartTs      string          `json:"startTs"`
-	EndTs        string          `json:"endTs"`
-	EndReason    FlowEndReason   `json:"endReason"`
-	IP           FlowIP          `json:"ip"`
-	Transport    FlowTransport   `json:"transport"`
-	K8s          FlowKubernetes  `json:"k8s"`
-	Stats        FlowStats       `json:"stats"`
-	ReverseStats FlowStats       `json:"reverseStats"`
+	ID           string         `json:"id"`
+	StartTs      string         `json:"startTs"`
+	EndTs        string         `json:"endTs"`
+	EndReason    FlowEndReason  `json:"endReason"`
+	IP           FlowIP         `json:"ip"`
+	Transport    FlowTransport  `json:"transport"`
+	K8s          FlowKubernetes `json:"k8s"`
+	Stats        FlowStats      `json:"stats"`
+	ReverseStats FlowStats      `json:"reverseStats"`
 }
 
 // FlowStreamEvent carries flow data and/or a dropped count from the stream.

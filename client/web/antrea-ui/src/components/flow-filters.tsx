@@ -56,6 +56,7 @@ function MultiSelect({ label, options, selected, onChange, closeSignal }: {
 
     useEffect(() => {
         if (closeSignal !== undefined && closeSignal > 0) {
+            // eslint-disable-next-line react-hooks/set-state-in-effect
             setOpen(false);
         }
     }, [closeSignal]);
@@ -65,6 +66,7 @@ function MultiSelect({ label, options, selected, onChange, closeSignal }: {
     // nothing to show.
     useEffect(() => {
         if (open && options.length === 0) {
+            // eslint-disable-next-line react-hooks/set-state-in-effect
             setOpen(false);
         }
     }, [open, options.length]);
@@ -217,6 +219,7 @@ export default function FlowFilters({
             return;
         }
         const valid = new Set(availableServices);
+        // eslint-disable-next-line react-hooks/set-state-in-effect
         setSelectedServices(prev => {
             const next = prev.filter(s => valid.has(s));
             return next.length === prev.length ? prev : next;
