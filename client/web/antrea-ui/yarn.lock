@@ -4779,13 +4779,13 @@ __metadata:
   linkType: hard
 
 "nock@npm:^14.0.5":
-  version: 14.0.14
-  resolution: "nock@npm:14.0.14"
+  version: 14.0.15
+  resolution: "nock@npm:14.0.15"
   dependencies:
     "@mswjs/interceptors": "npm:^0.41.0"
     json-stringify-safe: "npm:^5.0.1"
     propagate: "npm:^2.0.0"
-  checksum: 10c0/64e201b0781c742a6c5eca8cff849e59a47577d14c22a4b7a0cc3486aea2ce722e8c2cb06122bd72946290a1df49cf6d4465a49835ed1beb9c8c24ebad247eee
+  checksum: 10c0/f3bac19b3173d37e2f730ffac1ec2bd5c0bff153cae2f81e68504310a7830d765749908e3fe40eeab70de4adcb82fcb514a4fcef1ffdc8e7710ab070e92d879d
   languageName: node
   linkType: hard
 
