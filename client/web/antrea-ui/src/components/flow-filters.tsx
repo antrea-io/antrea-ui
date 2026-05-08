@@ -226,6 +226,18 @@ export default function FlowFilters({
         });
     }, [availableServices]);
 
+    const resetFilters = useCallback(() => {
+        setSelectedNamespaces([]);
+        setSelectedPods([]);
+        setSelectedServices([]);
+        setFlowType('');
+        setDirection('both');
+        setIpsText('');
+        setPodLabelSelector('');
+        setMenusCloseNonce(n => n + 1);
+        onFilterChange({ follow: true });
+    }, [onFilterChange]);
+
     const applyFilters = useCallback(() => {
         setMenusCloseNonce(n => n + 1);
         const filter: FlowStreamFilter = { follow: true };
@@ -372,11 +384,14 @@ export default function FlowFilters({
                     <CdsButton type="button" action="solid" size="sm" onClick={applyFilters}>
                         Apply Filters
                     </CdsButton>
+                    <CdsButton type="button" action="outline" size="sm" onClick={resetFilters}>
+                        Reset Filters
+                    </CdsButton>
                     <CdsButton type="button" action="outline" size="sm" onClick={onPauseToggle}>
                         {paused ? 'Resume' : 'Pause'}
                     </CdsButton>
                     <CdsButton type="button" action="outline" size="sm" onClick={onClear}>
-                        Clear
+                        Clear Flows
                     </CdsButton>
                 </div>
             </div>
