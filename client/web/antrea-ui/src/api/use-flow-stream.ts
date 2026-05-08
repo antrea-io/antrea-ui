@@ -87,12 +87,14 @@ export function useFlowStream(filter: FlowStreamFilter, paused: boolean): UseFlo
         if (prevFilterKeyRef.current !== filterKey) {
             prevFilterKeyRef.current = filterKey;
             storeRef.current.clear();
-            const timer = setTimeout(() => {
+            // Stop and discard the old client so a new one is created below.
+            clientRef.current?.stop();
+            clientRef.current = null;
+            setTimeout(() => {
                 setEntries([]);
                 setEvictionWarning(false);
                 setDroppedCount(0);
             }, 0);
-            return () => clearTimeout(timer);
         }
 
         if (flowVisibilityOff) {
