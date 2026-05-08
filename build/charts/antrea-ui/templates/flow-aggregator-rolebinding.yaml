@@ -1,0 +1,21 @@
+{{- if .Values.flowAggregator.enabled -}}
+kind: RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  labels:
+    app: antrea-ui
+  name: antrea-ui-flow-aggregator-exporter-role-binding
+  # This RoleBinding MUST be created in the flow-aggregator namespace to grant access
+  # to the flow-aggregator-exporter-role which resides there.
+  namespace: {{ .Values.flowAggregator.namespace | default "flow-aggregator" }}
+subjects:
+- kind: ServiceAccount
+  name: antrea-ui
+  namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: Role
+  # Assuming the flow-aggregator Helm release creates a Role with this exact name
+  # (which is the default when installing flow-aggregator with default names).
+  name: flow-aggregator-exporter-role
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}

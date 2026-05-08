@@ -27,11 +27,20 @@ const (
 	DefaultMaxTraceflowsPerHour = 100
 )
 
+type FlowAggregatorConfig struct {
+	Enabled      bool
+	Address      string
+	CAConfigMap  string
+	ClientSecret string
+	Namespace    string
+}
+
 type Config struct {
-	Addr   string
-	URL    string
-	Auth   AuthConfig
-	Limits struct {
+	Addr           string
+	URL            string
+	Auth           AuthConfig
+	FlowAggregator FlowAggregatorConfig
+	Limits         struct {
 		MaxLoginsPerSecond   int
 		MaxTraceflowsPerHour int
 	}
@@ -111,6 +120,8 @@ func LoadConfig() (*Config, error) {
 	v.SetDefault("auth.basic.enabled", true)
 	v.SetDefault("auth.oidc.enabled", false)
 	v.SetDefault("antreaNamespace", "kube-system")
+	v.SetDefault("flowAggregator.enabled", false)
+	v.SetDefault("flowAggregator.address", "flow-aggregator.flow-aggregator.svc:14739")
 
 	// By default, look for a file named config (any supported extension) in the working directory.
 	v.AddConfigPath(".")

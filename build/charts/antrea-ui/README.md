@@ -19,6 +19,7 @@ Kubernetes: `>= 1.16.0-0`
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | affinity | object | `{}` | Affinity for the Antrea UI Pod. |
+| antreaNamespace | string | `"kube-system"` | Namespace where Antrea is installed. |
 | auth.basic.enable | bool | `true` | Enable password-based authentication. |
 | auth.oidc.clientID | string | `""` | Application (client) ID to be used by the Antrea UI server to identify itself to the OIDC provider. |
 | auth.oidc.clientIDSecretRef.key | string | `"clientID"` | Name of the key field storing the application (client) ID in the referenced secret. |
@@ -40,6 +41,11 @@ Kubernetes: `>= 1.16.0-0`
 | dex.image | object | `{"pullPolicy":"IfNotPresent","repository":"ghcr.io/dexidp/dex","tag":"v2.36.0-distroless"}` | Container image to use for Dex. |
 | dex.resources | object | `{}` | Resource requests and limits for the Dex container. |
 | extraVolumes | list | `[]` | Additional volumes. |
+| flowAggregator.address | string | `"flow-aggregator.flow-aggregator.svc:14739"` | gRPC address (host:port) of the Flow Aggregator Service. |
+| flowAggregator.caConfigMap | string | `"flow-aggregator-ca"` | The backend uses the ConfigMap and Secret below to configure mTLS for the gRPC connection. The Flow Aggregator gRPC server always requires a client certificate. The `caConfigMap` specifies the name of the ConfigMap containing the CA cert (e.g. ca.crt), and `clientSecret` specifies the name of the Secret containing the client cert and key (e.g. tls.crt and tls.key). The backend dynamically fetches these credentials from the Kubernetes API. The UI automatically creates a RoleBinding to access these resources, provided the namespace below is correct. |
+| flowAggregator.clientSecret | string | `"flow-aggregator-client-tls"` |  |
+| flowAggregator.enabled | bool | `false` | When true, the backend connects to Flow Aggregator over gRPC. |
+| flowAggregator.namespace | string | `"flow-aggregator"` |  |
 | frontend.extraVolumeMounts | list | `[]` | Additional volumeMounts. |
 | frontend.image | object | `{"pullPolicy":"IfNotPresent","repository":"antrea/antrea-ui-frontend","tag":""}` | Container image to use for the Antrea UI frontend. |
 | frontend.port | int | `3000` | Container port on which the frontend will listen. |

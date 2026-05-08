@@ -23,6 +23,9 @@ import (
 	"os"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
+
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"github.com/go-logr/logr"
@@ -34,6 +37,7 @@ import (
 	serverconfig "antrea.io/antrea-ui/pkg/config/server"
 	"antrea.io/antrea-ui/pkg/env"
 	antreasvchandler "antrea.io/antrea-ui/pkg/handlers/antreasvc"
+	"antrea.io/antrea-ui/pkg/handlers/flowstream"
 	"antrea.io/antrea-ui/pkg/handlers/k8sproxy"
 	traceflowhandler "antrea.io/antrea-ui/pkg/handlers/traceflow"
 	"antrea.io/antrea-ui/pkg/k8s"
@@ -165,12 +169,56 @@ func run() error {
 		}
 	}
 
+	var flowStreamSubscriber flowstream.FlowStreamSubscriber
+	if config.FlowAggregator.Enabled {
+		logger.Info("FlowAggregator integration enabled", "address", config.FlowAggregator.Address)
+
+		var caData, certData, keyData []byte
+		if config.FlowAggregator.CAConfigMap != "" && config.FlowAggregator.ClientSecret != "" {
+			k8sClient, err := kubernetes.NewForConfig(k8sRESTConfig)
+			if err != nil {
+				return fmt.Errorf("failed to create k8s client for FlowAggregator certs: %w", err)
+			}
+			ns := config.FlowAggregator.Namespace
+			if ns == "" {
+				ns = "flow-aggregator"
+			}
+
+			logger.Info("Fetching FlowAggregator certificates from K8s API", "namespace", ns, "caConfigMap", config.FlowAggregator.CAConfigMap, "clientSecret", config.FlowAggregator.ClientSecret)
+			cm, err := k8sClient.CoreV1().ConfigMaps(ns).Get(context.Background(), config.FlowAggregator.CAConfigMap, metav1.GetOptions{})
+			if err != nil {
+				return fmt.Errorf("failed to get FlowAggregator CA configmap: %w", err)
+			}
+			caData = []byte(cm.Data["ca.crt"])
+
+			sec, err := k8sClient.CoreV1().Secrets(ns).Get(context.Background(), config.FlowAggregator.ClientSecret, metav1.GetOptions{})
+			if err != nil {
+				return fmt.Errorf("failed to get FlowAggregator client secret: %w", err)
+			}
+			certData = sec.Data["tls.crt"]
+			keyData = sec.Data["tls.key"]
+		}
+
+		grpcSubscriber, err := flowstream.NewGRPCFlowStreamSubscriber(logger, flowstream.GRPCConfig{
+			Address:  config.FlowAggregator.Address,
+			CACert:   caData,
+			CertData: certData,
+			KeyData:  keyData,
+		})
+		if err != nil {
+			return fmt.Errorf("failed to create gRPC flow stream handler: %w", err)
+		}
+		defer grpcSubscriber.Close()
+		flowStreamSubscriber = grpcSubscriber
+	}
+
 	s := server.NewServer(
 		logger,
 		k8sDynamicClient,
 		traceflowHandler,
 		k8sProxyHandler,
 		antreaSvcHandler,
+		flowStreamSubscriber,
 		passwordStore,
 		tokenManager,
 		oidcProvider,

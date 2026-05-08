@@ -31,6 +31,27 @@ backend:
 # -- Address at which the Antrea UI is accessible. Not required for most configurations.
 url: ""
 
+# -- Namespace where Antrea is installed.
+antreaNamespace: "kube-system"
+
+# Flow Aggregator gRPC integration (live flow visibility in the UI).
+flowAggregator:
+  # -- When true, the backend connects to Flow Aggregator over gRPC.
+  enabled: false
+  # -- gRPC address (host:port) of the Flow Aggregator Service.
+  address: "flow-aggregator.flow-aggregator.svc:14739"
+  # -- The backend uses the ConfigMap and Secret below to configure mTLS for the gRPC connection.
+  # The Flow Aggregator gRPC server always requires a client certificate.
+  # The `caConfigMap` specifies the name of the ConfigMap containing the CA cert (e.g. ca.crt),
+  # and `clientSecret` specifies the name of the Secret containing the client cert and key
+  # (e.g. tls.crt and tls.key).
+  # The backend dynamically fetches these credentials from the Kubernetes API.
+  # The UI automatically creates a RoleBinding to access these resources, provided the namespace
+  # below is correct.
+  caConfigMap: flow-aggregator-ca
+  clientSecret: flow-aggregator-client-tls
+  namespace: flow-aggregator
+
 security:
   # -- (bool) Set the Secure attribute for Antrea UI cookies. The attribute is set by default when HTTPS is
   # enabled in Antrea UI (by setting https.enable to true). When using an Ingress to terminate TLS,

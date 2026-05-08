@@ -23,6 +23,7 @@ import App from './App';
 import Summary from './routes/summary';
 import Traceflow from './routes/traceflow';
 import TraceflowResult from './routes/traceflowresult';
+import FlowVisibility from './routes/flowvisibility';
 import Settings from './routes/settings';
 import reportWebVitals from './reportWebVitals';
 
@@ -49,6 +50,10 @@ const router = createBrowserRouter([
                         element: <TraceflowResult />,
                     }
                 ]
+            },
+            {
+                path: "flows",
+                element: <FlowVisibility />,
             },
             {
                 path: "settings",

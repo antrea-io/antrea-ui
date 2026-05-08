@@ -20,27 +20,17 @@ import { CdsNavigation, CdsNavigationStart, CdsNavigationItem } from "@cds/react
 import { CdsIcon } from '@cds/react/icon';
 import {
     ClarityIcons,
-    // cloudIcon, cloudIconName,
     cogIcon, cogIconName,
-    // containerIcon, containerIconName,
     dashboardIcon, dashboardIconName,
-    // powerIcon, powerIconName,
-    // userIcon, userIconName,
-    // eyeIcon, eyeIconName,
     bugIcon, bugIconName,
-    // firewallIcon, firewallIconName,
+    eyeIcon, eyeIconName,
  } from '@cds/core/icon';
 
 ClarityIcons.addIcons(
-    // cloudIcon,
     cogIcon,
-    // containerIcon,
     dashboardIcon,
-    // powerIcon,
-    // userIcon,
-    // eyeIcon,
     bugIcon,
-    // firewallIcon,
+    eyeIcon,
 );
 
 export default function NavTab() {
@@ -59,6 +49,12 @@ export default function NavTab() {
                 <Link to="/traceflow">
                     <CdsIcon shape={bugIconName} solid size="sm"></CdsIcon>
                     Traceflow
+                </Link>
+            </CdsNavigationItem>
+            <CdsNavigationItem>
+                <Link to="/flows">
+                    <CdsIcon shape={eyeIconName} solid size="sm"></CdsIcon>
+                    Flow Visibility
                 </Link>
             </CdsNavigationItem>
             <CdsNavigationItem>
