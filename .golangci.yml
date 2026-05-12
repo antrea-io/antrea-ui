@@ -11,6 +11,12 @@ linters:
     - staticcheck
     - unused
   settings:
+    gosec:
+      excludes:
+        # G124: http.Cookie missing or has insecure Secure, HttpOnly, or SameSite attribute
+        # Some cookie attributes are intentionally configurable (e.g., Secure), and this rule
+        # creates a lot of noise (it would require a lot of nosec overrides).
+        - G124
     revive:
       confidence: 0.8
       severity: warning

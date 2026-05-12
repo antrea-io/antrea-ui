@@ -117,9 +117,9 @@ stringData:
 				"auth.oidc.enable":                     "true",
 				"auth.oidc.issuerURL":                  "https://samples.auth0.com/",
 				"auth.oidc.clientIDSecretRef.name":     "test-oidc-credentials",
-				"auth.oidc.clientIDSecretRef.key":      "clientID",
+				"auth.oidc.clientIDSecretRef.key":      "clientID", // #nosec G101: secret ref key name, not a credential
 				"auth.oidc.clientSecretSecretRef.name": "test-oidc-credentials",
-				"auth.oidc.clientSecretSecretRef.key":  "clientSecret",
+				"auth.oidc.clientSecretSecretRef.key":  "clientSecret", // #nosec G101: secret ref key name, not a credential
 			},
 			checks: checkAPIAccess("http", nil),
 		},
