@@ -1,0 +1,22 @@
+{{- if .Values.flowAggregator.enabled -}}
+kind: RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  labels:
+    app: antrea-ui
+  name: antrea-ui-flow-aggregator-ca-reader
+  # This RoleBinding is in the flow-aggregator namespace so the antrea-ui
+  # ServiceAccount can read the flow-aggregator-ca ConfigMap across namespaces.
+  # It references flow-aggregator-exporter-role which is created by the
+  # flow-aggregator Helm chart. The flow-aggregator chart must be installed
+  # before (or alongside) antrea-ui for this RoleBinding to be effective.
+  namespace: {{ .Values.flowAggregator.namespace | default "flow-aggregator" }}
+subjects:
+- kind: ServiceAccount
+  name: antrea-ui
+  namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: Role
+  name: flow-aggregator-exporter-role
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}

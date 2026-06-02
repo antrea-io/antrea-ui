@@ -27,6 +27,9 @@ export interface Settings {
         oidcEnabled: boolean
         oidcProviderName?: string
     }
+    features?: {
+        flowVisibilityEnabled?: boolean
+    }
 }
 
 const api = axios.create({

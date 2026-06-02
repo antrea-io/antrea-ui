@@ -27,11 +27,23 @@ const (
 	DefaultMaxTraceflowsPerHour = 100
 )
 
+type FlowAggregatorConfig struct {
+	Enabled bool
+	Address string
+	// CAConfigMap is the name of the ConfigMap (in Namespace) containing the CA
+	// certificate (key: ca.crt) used to verify the FlowStreamService server cert.
+	// When empty, server certificate verification is skipped (dev/test only).
+	CAConfigMap string
+	// Namespace is the Kubernetes namespace where the Flow Aggregator is installed.
+	Namespace string
+}
+
 type Config struct {
-	Addr   string
-	URL    string
-	Auth   AuthConfig
-	Limits struct {
+	Addr           string
+	URL            string
+	Auth           AuthConfig
+	FlowAggregator FlowAggregatorConfig
+	Limits         struct {
 		MaxLoginsPerSecond   int
 		MaxTraceflowsPerHour int
 	}
@@ -111,6 +123,10 @@ func LoadConfig() (*Config, error) {
 	v.SetDefault("auth.basic.enabled", true)
 	v.SetDefault("auth.oidc.enabled", false)
 	v.SetDefault("antreaNamespace", "kube-system")
+	v.SetDefault("flowAggregator.enabled", false)
+	v.SetDefault("flowAggregator.address", "flow-aggregator.flow-aggregator.svc:14740")
+	v.SetDefault("flowAggregator.caConfigMap", "flow-aggregator-ca")
+	v.SetDefault("flowAggregator.namespace", "flow-aggregator")
 
 	// By default, look for a file named config (any supported extension) in the working directory.
 	v.AddConfigPath(".")
