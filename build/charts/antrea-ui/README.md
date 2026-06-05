@@ -45,6 +45,7 @@ Kubernetes: `>= 1.16.0-0`
 | flowAggregator.caConfigMap | string | `"flow-aggregator-ca"` | Name of the ConfigMap (in namespace below) containing the CA certificate (key: ca.crt) used to verify the FlowStreamService server certificate. The FlowStreamService uses server-side TLS only (no client authentication). Leave empty to skip server certificate verification (dev/test only). |
 | flowAggregator.enabled | bool | `false` | When true, the backend connects to Flow Aggregator's FlowStreamService over gRPC. |
 | flowAggregator.namespace | string | `"flow-aggregator"` | Namespace where the Flow Aggregator is installed. |
+| flowAggregator.serverName | string | `""` | Override the TLS server name used for certificate verification. Useful when dialing via kubectl port-forward (loopback address) while the server cert is issued for the in-cluster Service DNS name (e.g. flow-aggregator.flow-aggregator.svc). Leave empty to use the hostname from the address field. |
 | frontend.extraVolumeMounts | list | `[]` | Additional volumeMounts. |
 | frontend.image | object | `{"pullPolicy":"IfNotPresent","repository":"antrea/antrea-ui-frontend","tag":""}` | Container image to use for the Antrea UI frontend. |
 | frontend.port | int | `3000` | Container port on which the frontend will listen. |

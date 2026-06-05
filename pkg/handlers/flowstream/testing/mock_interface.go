@@ -24,6 +24,7 @@ import (
 	reflect "reflect"
 
 	v1 "antrea.io/antrea-ui/apis/v1"
+	flowstream "antrea.io/antrea-ui/pkg/handlers/flowstream"
 	gomock "github.com/golang/mock/gomock"
 )
 
@@ -51,7 +52,7 @@ func (m *MockFlowStreamSubscriber) EXPECT() *MockFlowStreamSubscriberMockRecorde
 }
 
 // Subscribe mocks base method.
-func (m *MockFlowStreamSubscriber) Subscribe(ctx context.Context, filter *v1.FlowStreamFilter) (<-chan v1.FlowStreamEvent, <-chan error) {
+func (m *MockFlowStreamSubscriber) Subscribe(ctx context.Context, filter *flowstream.FlowStreamFilter) (<-chan v1.FlowStreamEvent, <-chan error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "Subscribe", ctx, filter)
 	ret0, _ := ret[0].(<-chan v1.FlowStreamEvent)

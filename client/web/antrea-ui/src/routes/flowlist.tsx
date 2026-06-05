@@ -15,7 +15,7 @@
  */
 
 import React, { useState, useMemo, useCallback } from 'react';
-import { FlowEntry } from '../api/flow-store';
+import { FlowEntry } from '../store/flow-store';
 import {
     FlowType,
     flowTypeLabel,

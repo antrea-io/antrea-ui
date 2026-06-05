@@ -32,7 +32,6 @@ export interface FlowStreamFilter {
     flowTypes?: number[];
     ips?: string[];
     direction?: FlowFilterDirection;
-    follow?: boolean;
 }
 
 /**
@@ -48,7 +47,6 @@ export function streamFilterKey(f: FlowStreamFilter): string {
     const direction =
         f.direction && f.direction !== 'both' ? f.direction : 'both';
     return JSON.stringify({
-        follow: f.follow !== false,
         namespaces,
         pods,
         podLabelSelector: f.podLabelSelector ?? '',
@@ -102,7 +100,6 @@ function buildStreamURL(filter: FlowStreamFilter): string {
     if (filter.direction && filter.direction !== 'both') {
         params.set('direction', filter.direction);
     }
-    params.set('follow', filter.follow !== false ? 'true' : 'false');
     return `${apiUri}/flows/stream?${params.toString()}`;
 }
 

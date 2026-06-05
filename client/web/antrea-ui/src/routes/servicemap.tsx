@@ -16,7 +16,7 @@
 
 import { useRef, useEffect, useMemo, useState, useCallback } from 'react';
 import * as d3 from 'd3';
-import { FlowEntry } from '../api/flow-store';
+import { FlowEntry } from '../store/flow-store';
 import {
     FlowType,
     NetworkPolicyRuleAction,

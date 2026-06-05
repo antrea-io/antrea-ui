@@ -29,6 +29,27 @@ import (
 	apisv1 "antrea.io/antrea-ui/apis/v1"
 )
 
+// FlowFilterDirection controls which endpoint of a flow the directional filters are matched against.
+type FlowFilterDirection int
+
+const (
+	FlowFilterDirectionBoth FlowFilterDirection = 0
+	FlowFilterDirectionFrom FlowFilterDirection = 1
+	FlowFilterDirectionTo   FlowFilterDirection = 2
+)
+
+// FlowStreamFilter represents the parsed query parameters for the flow stream endpoint.
+// All specified filters are AND-ed. Within each filter, values are OR-ed.
+type FlowStreamFilter struct {
+	Namespaces       []string
+	PodNames         []string
+	PodLabelSelector string
+	ServiceNames     []string
+	FlowTypes        []apisv1.FlowType
+	IPs              []string
+	Direction        FlowFilterDirection
+}
+
 // SSEHandler handles the SSE endpoint for flow streaming.
 type SSEHandler struct {
 	logger  logr.Logger
@@ -42,8 +63,8 @@ func NewSSEHandler(logger logr.Logger, handler FlowStreamSubscriber) *SSEHandler
 	}
 }
 
-func parseFlowStreamFilter(c *gin.Context) (*apisv1.FlowStreamFilter, error) {
-	filter := &apisv1.FlowStreamFilter{}
+func parseFlowStreamFilter(c *gin.Context) (*FlowStreamFilter, error) {
+	filter := &FlowStreamFilter{}
 
 	if ns := c.Query("namespaces"); ns != "" {
 		filter.Namespaces = strings.Split(ns, ",")
@@ -73,38 +94,14 @@ func parseFlowStreamFilter(c *gin.Context) (*apisv1.FlowStreamFilter, error) {
 	if dir := c.Query("direction"); dir != "" {
 		switch strings.ToLower(dir) {
 		case "from":
-			filter.Direction = apisv1.FlowFilterDirectionFrom
+			filter.Direction = FlowFilterDirectionFrom
 		case "to":
-			filter.Direction = apisv1.FlowFilterDirectionTo
+			filter.Direction = FlowFilterDirectionTo
 		default:
-			filter.Direction = apisv1.FlowFilterDirectionBoth
+			filter.Direction = FlowFilterDirectionBoth
 		}
 	}
-	filter.Follow = parseFollowQuery(c)
-
 	return filter, nil
-}
-
-// parseFollowQuery returns whether the client wants follow mode (live stream).
-//
-// Gin's DefaultQuery("follow", "true") returns "" when the key is present but
-// empty (?follow=), and "" == "true" is false — that incorrectly disabled follow
-// and caused Flow Aggregator to close the gRPC stream immediately (!follow && n==0),
-// which showed up as SSE disconnect when applying an "empty" filter (minimal URL).
-func parseFollowQuery(c *gin.Context) bool {
-	v := strings.TrimSpace(c.DefaultQuery("follow", "true"))
-	if v == "" {
-		return true
-	}
-	switch strings.ToLower(v) {
-	case "true", "1", "yes":
-		return true
-	case "false", "0", "no":
-		return false
-	default:
-		// Be permissive: unknown values keep the stream open rather than snapping to one-shot mode.
-		return true
-	}
 }
 
 // StreamFlows handles GET /api/v1/flows/stream as an SSE endpoint.

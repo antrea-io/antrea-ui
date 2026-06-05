@@ -19,7 +19,7 @@ import { CdsButton } from '@cds/react/button';
 import { CdsSelect } from '@cds/react/select';
 import { FlowType, flowTypeLabel, destinationK8sServiceFilterKey } from '../api/flow-types';
 import { FlowStreamFilter, FlowFilterDirection } from '../api/flow-stream';
-import { FlowEntry } from '../api/flow-store';
+import { FlowEntry } from '../store/flow-store';
 
 interface FlowFiltersProps {
     onFilterChange: (filter: FlowStreamFilter) => void;
@@ -235,12 +235,12 @@ export default function FlowFilters({
         setIpsText('');
         setPodLabelSelector('');
         setMenusCloseNonce(n => n + 1);
-        onFilterChange({ follow: true });
+        onFilterChange({});
     }, [onFilterChange]);
 
     const applyFilters = useCallback(() => {
         setMenusCloseNonce(n => n + 1);
-        const filter: FlowStreamFilter = { follow: true };
+        const filter: FlowStreamFilter = {};
         if (selectedNamespaces.length > 0) {
             filter.namespaces = selectedNamespaces;
         }

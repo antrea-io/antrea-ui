@@ -36,6 +36,11 @@ type FlowAggregatorConfig struct {
 	CAConfigMap string
 	// Namespace is the Kubernetes namespace where the Flow Aggregator is installed.
 	Namespace string
+	// ServerName overrides the TLS server name used for certificate verification.
+	// Useful when dialing via kubectl port-forward, where the address is loopback
+	// but the server cert is issued for the in-cluster Service DNS name.
+	// If empty, the hostname from Address is used.
+	ServerName string
 }
 
 type Config struct {
@@ -127,6 +132,7 @@ func LoadConfig() (*Config, error) {
 	v.SetDefault("flowAggregator.address", "flow-aggregator.flow-aggregator.svc:14740")
 	v.SetDefault("flowAggregator.caConfigMap", "flow-aggregator-ca")
 	v.SetDefault("flowAggregator.namespace", "flow-aggregator")
+	v.SetDefault("flowAggregator.serverName", "")
 
 	// By default, look for a file named config (any supported extension) in the working directory.
 	v.AddConfigPath(".")

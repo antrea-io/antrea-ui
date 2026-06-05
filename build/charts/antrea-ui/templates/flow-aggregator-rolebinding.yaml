@@ -4,7 +4,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 metadata:
   labels:
     app: antrea-ui
-  name: antrea-ui-flow-aggregator-ca-reader
+  name: {{ .Release.Name }}-flow-aggregator-ca-reader
   # This RoleBinding is in the flow-aggregator namespace so the antrea-ui
   # ServiceAccount can read the flow-aggregator-ca ConfigMap across namespaces.
   # It references flow-aggregator-exporter-role which is created by the

@@ -21,16 +21,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/netip"
 	"time"
 
-	flowpb "antrea.io/antrea/v2/pkg/apis/flow/v1alpha1"
 	"github.com/go-logr/logr"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 
 	apisv1 "antrea.io/antrea-ui/apis/v1"
+	flowpb "antrea.io/antrea-ui/pkg/flowpb"
 )
 
 // GRPCFlowStreamSubscriber connects to the FlowAggregator's FlowStreamService
@@ -48,6 +47,11 @@ type GRPCConfig struct {
 	// CACert is the PEM-encoded CA certificate used to verify the FlowStreamService
 	// server certificate. If empty, server verification is skipped (dev only).
 	CACert []byte
+	// ServerName overrides the TLS server name used for certificate verification.
+	// Useful when dialing via kubectl port-forward, where the address is loopback
+	// but the server cert is issued for the in-cluster Service DNS name.
+	// If empty, the hostname from Address is used.
+	ServerName string
 }
 
 func NewGRPCFlowStreamSubscriber(logger logr.Logger, cfg GRPCConfig) (*GRPCFlowStreamSubscriber, error) {
@@ -83,7 +87,7 @@ func (h *GRPCFlowStreamSubscriber) Close() error {
 	return nil
 }
 
-func (h *GRPCFlowStreamSubscriber) Subscribe(ctx context.Context, filter *apisv1.FlowStreamFilter) (<-chan apisv1.FlowStreamEvent, <-chan error) {
+func (h *GRPCFlowStreamSubscriber) Subscribe(ctx context.Context, filter *FlowStreamFilter) (<-chan apisv1.FlowStreamEvent, <-chan error) {
 	flowsCh := make(chan apisv1.FlowStreamEvent, 16)
 	errCh := make(chan error, 1)
 
@@ -114,24 +118,23 @@ func (h *GRPCFlowStreamSubscriber) Subscribe(ctx context.Context, filter *apisv1
 				return
 			}
 
+			evt := apisv1.FlowStreamEvent{}
 			if resp.DroppedCount > lastDroppedCount {
 				lastDroppedCount = resp.DroppedCount
-				select {
-				case <-ctx.Done():
-					return
-				case flowsCh <- apisv1.FlowStreamEvent{DroppedCount: lastDroppedCount}:
-				}
+				evt.DroppedCount = lastDroppedCount
 			}
-
 			if len(resp.Flows) > 0 {
 				converted := make([]apisv1.Flow, 0, len(resp.Flows))
 				for _, pbFlow := range resp.Flows {
 					converted = append(converted, protoFlowToAPI(pbFlow))
 				}
+				evt.Flows = converted
+			}
+			if evt.DroppedCount > 0 || len(evt.Flows) > 0 {
 				select {
 				case <-ctx.Done():
 					return
-				case flowsCh <- apisv1.FlowStreamEvent{Flows: converted}:
+				case flowsCh <- evt:
 				}
 			}
 		}
@@ -140,14 +143,14 @@ func (h *GRPCFlowStreamSubscriber) Subscribe(ctx context.Context, filter *apisv1
 	return flowsCh, errCh
 }
 
-var filterDirectionToProto = map[apisv1.FlowFilterDirection]flowpb.FlowFilterDirection{
-	apisv1.FlowFilterDirectionBoth: flowpb.FlowFilterDirection_FLOW_FILTER_DIRECTION_BOTH,
-	apisv1.FlowFilterDirectionFrom: flowpb.FlowFilterDirection_FLOW_FILTER_DIRECTION_FROM,
-	apisv1.FlowFilterDirectionTo:   flowpb.FlowFilterDirection_FLOW_FILTER_DIRECTION_TO,
+var filterDirectionToProto = map[FlowFilterDirection]flowpb.FlowFilterDirection{
+	FlowFilterDirectionBoth: flowpb.FlowFilterDirection_FLOW_FILTER_DIRECTION_BOTH,
+	FlowFilterDirectionFrom: flowpb.FlowFilterDirection_FLOW_FILTER_DIRECTION_FROM,
+	FlowFilterDirectionTo:   flowpb.FlowFilterDirection_FLOW_FILTER_DIRECTION_TO,
 }
 
 // filterToGetFlowsRequest translates our internal filter type to the protobuf request.
-func filterToGetFlowsRequest(filter *apisv1.FlowStreamFilter) *flowpb.GetFlowsRequest {
+func filterToGetFlowsRequest(filter *FlowStreamFilter) *flowpb.GetFlowsRequest {
 	pbFilter := &flowpb.FlowFilter{
 		Namespaces:       filter.Namespaces,
 		PodNames:         filter.PodNames,
@@ -161,10 +164,8 @@ func filterToGetFlowsRequest(filter *apisv1.FlowStreamFilter) *flowpb.GetFlowsRe
 	}
 	return &flowpb.GetFlowsRequest{
 		Filters: []*flowpb.FlowFilter{pbFilter},
-		// This handler only backs the SSE flow stream, which must stay in follow mode so Flow
-		// Aggregator does not close the gRPC stream on the first empty ring-buffer read
-		// (!follow && n==0). Always set true regardless of filter.Follow so a zero Go value or
-		// query parsing edge case cannot disable follow.
+		// The SSE flow stream always requires follow mode so the Flow Aggregator does not
+		// close the gRPC stream on the first empty ring-buffer read (!follow && n==0).
 		Follow: true,
 	}
 }
@@ -288,21 +289,8 @@ func buildTLSConfig(cfg GRPCConfig) (*tls.Config, error) {
 		tlsCfg.InsecureSkipVerify = true //nolint:gosec
 	}
 
-	// When dialing via kubectl port-forward the address resolves to loopback or "localhost",
-	// but the server cert is issued for the in-cluster Service DNS name.
-	// Set ServerName so TLS verification succeeds in that case.
-	// Note: this override assumes the default Flow Aggregator service name and namespace
-	// (flow-aggregator.flow-aggregator.svc). If a non-default name/namespace is used,
-	// port-forward verification will fail; users should configure a non-loopback address.
-	host, _, err := net.SplitHostPort(cfg.Address)
-	if err != nil {
-		host = cfg.Address
-	}
-	isLocalhost := host == "localhost" || host == "localhost."
-	if ip := net.ParseIP(host); (ip != nil && ip.IsLoopback()) || isLocalhost {
-		if tlsCfg.RootCAs != nil {
-			tlsCfg.ServerName = "flow-aggregator.flow-aggregator.svc"
-		}
+	if cfg.ServerName != "" {
+		tlsCfg.ServerName = cfg.ServerName
 	}
 
 	return tlsCfg, nil

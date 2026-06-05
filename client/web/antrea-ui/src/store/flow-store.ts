@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { Flow, connectionKey } from './flow-types';
+import { Flow, connectionKey } from '../api/flow-types';
 
 const DEFAULT_MAX_ENTRIES = 10_000;
 

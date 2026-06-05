@@ -34,10 +34,7 @@ require (
 	k8s.io/utils v0.0.0-20260210185600-b8788abfbbc2
 )
 
-require (
-	antrea.io/antrea/v2 v2.2.0-alpha.2.0.20260601173307-61ff7467511e
-	google.golang.org/protobuf v1.36.12-0.20260120151049-f2248ac996af
-)
+require google.golang.org/protobuf v1.36.12-0.20260120151049-f2248ac996af
 
 require (
 	filippo.io/edwards25519 v1.1.0 // indirect

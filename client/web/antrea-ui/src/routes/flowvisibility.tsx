@@ -20,14 +20,14 @@ import FlowFilters from '../components/flow-filters';
 import FlowList from './flowlist';
 import ServiceMap from './servicemap';
 import { FlowStreamFilter } from '../api/flow-stream';
-import { useFlowStream } from '../api/use-flow-stream';
+import { useFlowStream } from '../hooks/use-flow-stream';
 
 type ViewMode = 'list' | 'map';
 
 export default function FlowVisibility() {
     const [viewMode, setViewMode] = useState<ViewMode>('list');
     const [paused, setPaused] = useState(false);
-    const [filter, setFilter] = useState<FlowStreamFilter>({ follow: true });
+    const [filter, setFilter] = useState<FlowStreamFilter>({});
 
     const {
         entries,

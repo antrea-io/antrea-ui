@@ -23,7 +23,7 @@ import {
     NetworkPolicyType,
     NetworkPolicyRuleAction,
     connectionKey,
-} from './flow-types';
+} from '../api/flow-types';
 
 function makeFlow(dstIP: string, dstPort: number, proto: number = 6): Flow {
     return {

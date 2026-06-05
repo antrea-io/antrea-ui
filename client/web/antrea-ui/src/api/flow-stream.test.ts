@@ -15,24 +15,24 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { streamFilterKey } from './flow-stream';
+import { streamFilterKey, FlowStreamFilter } from './flow-stream';
 
 describe('streamFilterKey', () => {
     it('matches for different object instances with the same filter', () => {
-        const a = { follow: true as const };
-        const b = { follow: true as const };
+        const a: FlowStreamFilter = {};
+        const b: FlowStreamFilter = {};
         expect(streamFilterKey(a)).toBe(streamFilterKey(b));
     });
 
     it('normalizes array field order', () => {
-        const a = { follow: true as const, namespaces: ['z', 'a'] };
-        const b = { follow: true as const, namespaces: ['a', 'z'] };
+        const a: FlowStreamFilter = { namespaces: ['z', 'a'] };
+        const b: FlowStreamFilter = { namespaces: ['a', 'z'] };
         expect(streamFilterKey(a)).toBe(streamFilterKey(b));
     });
 
     it('changes when a filter field changes', () => {
-        const empty = { follow: true as const };
-        const withNs = { follow: true as const, namespaces: ['default'] };
+        const empty: FlowStreamFilter = {};
+        const withNs: FlowStreamFilter = { namespaces: ['default'] };
         expect(streamFilterKey(empty)).not.toBe(streamFilterKey(withNs));
     });
 });

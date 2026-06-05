@@ -40,66 +40,40 @@ func TestParseFlowStreamFilter(t *testing.T) {
 	tests := []struct {
 		name        string
 		query       string
-		expected    *apisv1.FlowStreamFilter
+		expected    *FlowStreamFilter
 		expectError bool
 	}{
 		{
-			name:  "empty query defaults",
-			query: "",
-			expected: &apisv1.FlowStreamFilter{
-				Follow: true,
-			},
+			name:     "empty query defaults",
+			query:    "",
+			expected: &FlowStreamFilter{},
 		},
 		{
 			name:  "namespaces comma-separated",
 			query: "namespaces=default,kube-system",
-			expected: &apisv1.FlowStreamFilter{
+			expected: &FlowStreamFilter{
 				Namespaces: []string{"default", "kube-system"},
-				Follow:     true,
 			},
 		},
 		{
 			name:  "pods and services",
 			query: "pods=pod-a,pod-b&services=svc-a",
-			expected: &apisv1.FlowStreamFilter{
+			expected: &FlowStreamFilter{
 				PodNames:     []string{"pod-a", "pod-b"},
 				ServiceNames: []string{"svc-a"},
-				Follow:       true,
 			},
 		},
 		{
 			name:  "flowTypes parsed as ints",
 			query: "flowTypes=1,2",
-			expected: &apisv1.FlowStreamFilter{
+			expected: &FlowStreamFilter{
 				FlowTypes: []apisv1.FlowType{apisv1.FlowTypeIntraNode, apisv1.FlowTypeInterNode},
-				Follow:    true,
 			},
 		},
 		{
 			name:        "invalid flowType returns error",
 			query:       "flowTypes=abc",
 			expectError: true,
-		},
-		{
-			name:  "follow=false",
-			query: "follow=false",
-			expected: &apisv1.FlowStreamFilter{
-				Follow: false,
-			},
-		},
-		{
-			name:  "follow unknown value defaults to true",
-			query: "follow=anything",
-			expected: &apisv1.FlowStreamFilter{
-				Follow: true,
-			},
-		},
-		{
-			name:  "follow empty value means true",
-			query: "follow=",
-			expected: &apisv1.FlowStreamFilter{
-				Follow: true,
-			},
 		},
 	}
 
@@ -126,7 +100,7 @@ type stubFlowStreamSubscriber struct {
 	err    error
 }
 
-func (s *stubFlowStreamSubscriber) Subscribe(_ context.Context, _ *apisv1.FlowStreamFilter) (<-chan apisv1.FlowStreamEvent, <-chan error) {
+func (s *stubFlowStreamSubscriber) Subscribe(_ context.Context, _ *FlowStreamFilter) (<-chan apisv1.FlowStreamEvent, <-chan error) {
 	flowsCh := make(chan apisv1.FlowStreamEvent, len(s.events)+1)
 	errCh := make(chan error, 1)
 
@@ -179,7 +153,7 @@ func TestStreamFlowsHappyPath(t *testing.T) {
 	ts := httptest.NewServer(newTestRouter(sseHandler))
 	defer ts.Close()
 
-	resp, err := http.Get(ts.URL + "/api/v1/flows/stream?follow=false")
+	resp, err := http.Get(ts.URL + "/api/v1/flows/stream")
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
@@ -214,7 +188,7 @@ func TestStreamFlowsErrorPath(t *testing.T) {
 	ts := httptest.NewServer(newTestRouter(sseHandler))
 	defer ts.Close()
 
-	resp, err := http.Get(ts.URL + "/api/v1/flows/stream?follow=false")
+	resp, err := http.Get(ts.URL + "/api/v1/flows/stream")
 	require.NoError(t, err)
 	defer resp.Body.Close()
 

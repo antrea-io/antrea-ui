@@ -15,9 +15,9 @@
  */
 
 import { useEffect, useRef, useState, useCallback, useMemo, useContext } from 'react';
-import { Flow } from './flow-types';
-import { FlowStore, FlowEntry } from './flow-store';
-import { FlowStreamClient, FlowStreamFilter, streamFilterKey } from './flow-stream';
+import { Flow } from '../api/flow-types';
+import { FlowStore, FlowEntry } from '../store/flow-store';
+import { FlowStreamClient, FlowStreamFilter, streamFilterKey } from '../api/flow-stream';
 import SettingsContext from '../components/settings';
 
 export interface UseFlowStreamResult {

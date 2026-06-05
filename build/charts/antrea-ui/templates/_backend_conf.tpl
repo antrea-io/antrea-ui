@@ -20,5 +20,6 @@ flowAggregator:
 {{- if .Values.flowAggregator.enabled }}
   caConfigMap: {{ .Values.flowAggregator.caConfigMap | quote }}
   namespace: {{ .Values.flowAggregator.namespace | default "flow-aggregator" | quote }}
+  serverName: {{ .Values.flowAggregator.serverName | quote }}
 {{- end }}
 {{- end }}

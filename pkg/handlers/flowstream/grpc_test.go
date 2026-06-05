@@ -19,12 +19,12 @@ import (
 	"testing"
 	"time"
 
-	flowpb "antrea.io/antrea/v2/pkg/apis/flow/v1alpha1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	apisv1 "antrea.io/antrea-ui/apis/v1"
+	flowpb "antrea.io/antrea-ui/pkg/flowpb"
 )
 
 // ---------------------------------------------------------------------------
@@ -84,7 +84,7 @@ func TestIPBytesToString(t *testing.T) {
 func TestFilterToGetFlowsRequest(t *testing.T) {
 	tests := []struct {
 		name           string
-		filter         *apisv1.FlowStreamFilter
+		filter         *FlowStreamFilter
 		wantDirection  flowpb.FlowFilterDirection
 		wantNamespaces []string
 		wantPodNames   []string
@@ -92,50 +92,43 @@ func TestFilterToGetFlowsRequest(t *testing.T) {
 		wantIPs        []string
 		wantLabelSel   string
 		wantFlowTypes  []flowpb.FlowType
-		wantFollow     bool
 	}{
 		{
 			name:          "empty filter maps to BOTH direction; gRPC follow is always true",
-			filter:        &apisv1.FlowStreamFilter{},
+			filter:        &FlowStreamFilter{},
 			wantDirection: flowpb.FlowFilterDirection_FLOW_FILTER_DIRECTION_BOTH,
-			wantFollow:    true,
 		},
 		{
 			name: "direction FROM",
-			filter: &apisv1.FlowStreamFilter{
-				Direction: apisv1.FlowFilterDirectionFrom,
-				Follow:    true,
+			filter: &FlowStreamFilter{
+				Direction: FlowFilterDirectionFrom,
 			},
 			wantDirection: flowpb.FlowFilterDirection_FLOW_FILTER_DIRECTION_FROM,
-			wantFollow:    true,
 		},
 		{
 			name: "direction TO",
-			filter: &apisv1.FlowStreamFilter{
-				Direction: apisv1.FlowFilterDirectionTo,
+			filter: &FlowStreamFilter{
+				Direction: FlowFilterDirectionTo,
 			},
 			wantDirection: flowpb.FlowFilterDirection_FLOW_FILTER_DIRECTION_TO,
-			wantFollow:    true,
 		},
 		{
 			name: "direction BOTH explicit",
-			filter: &apisv1.FlowStreamFilter{
-				Direction: apisv1.FlowFilterDirectionBoth,
+			filter: &FlowStreamFilter{
+				Direction: FlowFilterDirectionBoth,
 			},
 			wantDirection: flowpb.FlowFilterDirection_FLOW_FILTER_DIRECTION_BOTH,
-			wantFollow:    true,
 		},
 		{
 			name: "all filter fields populated",
-			filter: &apisv1.FlowStreamFilter{
+			filter: &FlowStreamFilter{
 				Namespaces:       []string{"default", "kube-system"},
 				PodNames:         []string{"pod-a", "pod-b"},
 				PodLabelSelector: "app=frontend",
 				ServiceNames:     []string{"svc-a"},
 				IPs:              []string{"10.0.0.1", "10.0.0.0/24"},
 				FlowTypes:        []apisv1.FlowType{apisv1.FlowTypeIntraNode, apisv1.FlowTypeInterNode},
-				Direction:        apisv1.FlowFilterDirectionFrom,
-				Follow:           true,
+				Direction:        FlowFilterDirectionFrom,
 			},
 			wantDirection:  flowpb.FlowFilterDirection_FLOW_FILTER_DIRECTION_FROM,
 			wantNamespaces: []string{"default", "kube-system"},
@@ -144,15 +137,6 @@ func TestFilterToGetFlowsRequest(t *testing.T) {
 			wantIPs:        []string{"10.0.0.1", "10.0.0.0/24"},
 			wantLabelSel:   "app=frontend",
 			wantFlowTypes:  []flowpb.FlowType{flowpb.FlowType_FLOW_TYPE_INTRA_NODE, flowpb.FlowType_FLOW_TYPE_INTER_NODE},
-			wantFollow:     true,
-		},
-		{
-			name: "Follow false on filter is overridden — SSE always streams",
-			filter: &apisv1.FlowStreamFilter{
-				Follow: false,
-			},
-			wantDirection: flowpb.FlowFilterDirection_FLOW_FILTER_DIRECTION_BOTH,
-			wantFollow:    true,
 		},
 	}
 
@@ -169,7 +153,7 @@ func TestFilterToGetFlowsRequest(t *testing.T) {
 			assert.Equal(t, tt.wantIPs, req.Filters[0].Ips)
 			assert.Equal(t, tt.wantLabelSel, req.Filters[0].PodLabelSelector)
 			assert.Equal(t, tt.wantFlowTypes, req.Filters[0].FlowTypes)
-			assert.Equal(t, tt.wantFollow, req.Follow)
+			assert.True(t, req.Follow, "gRPC follow must always be true")
 		})
 	}
 }

@@ -47,6 +47,11 @@ flowAggregator:
   caConfigMap: flow-aggregator-ca
   # -- Namespace where the Flow Aggregator is installed.
   namespace: flow-aggregator
+  # -- Override the TLS server name used for certificate verification. Useful when dialing
+  # via kubectl port-forward (loopback address) while the server cert is issued for the
+  # in-cluster Service DNS name (e.g. flow-aggregator.flow-aggregator.svc).
+  # Leave empty to use the hostname from the address field.
+  serverName: ""
 
 security:
   # -- (bool) Set the Secure attribute for Antrea UI cookies. The attribute is set by default when HTTPS is

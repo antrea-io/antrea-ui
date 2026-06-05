@@ -30,5 +30,5 @@ type FlowStreamSubscriber interface {
 	// It returns a channel of FlowStreamEvent and a channel of errors.
 	// The caller should read from both channels until they are closed.
 	// Cancel the context to stop the stream.
-	Subscribe(ctx context.Context, filter *apisv1.FlowStreamFilter) (<-chan apisv1.FlowStreamEvent, <-chan error)
+	Subscribe(ctx context.Context, filter *FlowStreamFilter) (<-chan apisv1.FlowStreamEvent, <-chan error)
 }
