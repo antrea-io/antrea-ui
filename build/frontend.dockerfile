@@ -21,6 +21,13 @@ COPY client/web/antrea-ui/yarn.lock .
 COPY client/web/antrea-ui/.yarnrc.yml .
 COPY client/web/antrea-ui/.yarn ./.yarn
 
+# Optional: override the npm registry (e.g., for corporate proxies).
+# Leave unset to use the default registry (npmjs.org).
+ARG NPM_REGISTRY=""
+RUN if [ -n "$NPM_REGISTRY" ]; then \
+      echo "npmRegistryServer: \"$NPM_REGISTRY\"" >> .yarnrc.yml; \
+    fi
+
 RUN corepack enable && yarn install --immutable
 
 COPY client/web/antrea-ui .
