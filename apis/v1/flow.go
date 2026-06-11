@@ -68,6 +68,7 @@ type FlowStats struct {
 	PacketDeltaCount uint64 `json:"packetDeltaCount"`
 	OctetTotalCount  uint64 `json:"octetTotalCount"`
 	OctetDeltaCount  uint64 `json:"octetDeltaCount"`
+	Throughput       uint64 `json:"throughput,omitempty"`
 }
 
 type FlowTCP struct {

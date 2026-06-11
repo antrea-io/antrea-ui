@@ -18,11 +18,88 @@ import { Flow, connectionKey } from '../api/flow-types';
 
 const DEFAULT_MAX_ENTRIES = 10_000;
 
+// RATE_WINDOW_MS is the length of the sliding window used to compute the bit rate.
+// It is measured against each flow's own endTs (cluster clock), not the wall-clock time
+// at which records are received, so the gRPC stream backfilling many historical records
+// at once on connect does not distort the rate. It is deliberately larger than the Flow
+// Aggregator's active flow timeout (~60s) so a steady flow keeps at least two samples in
+// the window.
+const RATE_WINDOW_MS = 120_000;
+
+// MAX_SAMPLES caps the per-connection sample history to bound memory.
+const MAX_SAMPLES = 32;
+
+// FlowSample is a point-in-time observation of a connection's cumulative byte count,
+// timestamped by the flow record's endTs (in ms).
+export interface FlowSample {
+    t: number;
+    bytes: number;
+}
+
 export interface FlowEntry {
     key: string;
     flow: Flow;
     firstSeen: number;
     lastSeen: number;
+    // samples holds recent (endTs, cumulative-bytes) observations within RATE_WINDOW_MS,
+    // used to derive the sliding-window bit rate (see entryBitRate).
+    samples: FlowSample[];
+}
+
+// entryBitRate returns the connection's throughput in bits/sec over the sliding window,
+// computed as the change in cumulative bytes between the oldest and newest samples in the
+// window divided by the elapsed time between them. Returns 0 when there is not yet enough
+// history (fewer than two samples) or no traffic in the window.
+export function entryBitRate(entry: FlowEntry): number {
+    const samples = entry.samples;
+    if (samples.length < 2) {
+        return 0;
+    }
+    const oldest = samples[0];
+    const newest = samples[samples.length - 1];
+    const dtSec = (newest.t - oldest.t) / 1000;
+    if (dtSec <= 0) {
+        return 0;
+    }
+    const dBytes = newest.bytes - oldest.bytes;
+    if (dBytes <= 0) {
+        return 0;
+    }
+    return (dBytes * 8) / dtSec;
+}
+
+// nextSamples appends a new observation to the existing sample history, handling counter
+// resets (a new connection reusing the same masked 5-tuple key) and pruning anything older
+// than the sliding window relative to the newest sample.
+function nextSamples(existing: FlowSample[], flow: Flow): FlowSample[] {
+    const endMs = Date.parse(flow.endTs);
+    if (!Number.isFinite(endMs)) {
+        return existing;
+    }
+    const bytes = flow.stats.octetTotalCount + flow.reverseStats.octetTotalCount;
+
+    let samples = existing;
+    const last = samples[samples.length - 1];
+    if (last && (bytes < last.bytes || endMs < last.t)) {
+        // Cumulative counter went backwards in value or time: treat as a new flow and
+        // restart the history.
+        samples = [];
+    }
+
+    const tail = samples[samples.length - 1];
+    if (!tail || endMs > tail.t) {
+        samples = [...samples, { t: endMs, bytes }];
+    } else {
+        // Same endTs as the last sample (duplicate/updated record): replace it.
+        samples = [...samples.slice(0, -1), { t: endMs, bytes }];
+    }
+
+    const newestT = samples[samples.length - 1].t;
+    samples = samples.filter((s) => newestT - s.t <= RATE_WINDOW_MS);
+    if (samples.length > MAX_SAMPLES) {
+        samples = samples.slice(samples.length - MAX_SAMPLES);
+    }
+    return samples;
 }
 
 /**
@@ -53,6 +130,7 @@ export class FlowStore {
             flow,
             firstSeen: existing ? existing.firstSeen : now,
             lastSeen: now,
+            samples: nextSamples(existing ? existing.samples : [], flow),
         };
         this.entries.set(key, entry);
 

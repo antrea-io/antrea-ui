@@ -75,6 +75,19 @@ export function useFlowStream(filter: FlowStreamFilter, paused: boolean): UseFlo
         setDroppedCount(0);
     }, []);
 
+    // Periodically refresh entries so derived stats (e.g. the sliding-window bit rate)
+    // stay up-to-date between flow record arrivals. The Flow Aggregator only pushes a new
+    // record per active flow every ~60s, but the bit-rate window is continuously recalculated
+    // from the stored samples, so the UI needs to re-render even when no new data arrives.
+    useEffect(() => {
+        const timer = setInterval(() => {
+            if (storeRef.current.size() > 0) {
+                setEntries(storeRef.current.getAll());
+            }
+        }, 5000);
+        return () => clearInterval(timer);
+    }, []);
+
     const filterKey = useMemo(() => streamFilterKey(filter), [filter]);
     // Store filter in a ref so we can use the latest filter when instantiating the client
     // without triggering effect re-runs on every filter object identity change.

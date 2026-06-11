@@ -56,6 +56,7 @@ export interface Stats {
     packetDeltaCount: number;
     octetTotalCount: number;
     octetDeltaCount: number;
+    throughput?: number;
 }
 
 export interface TCP {

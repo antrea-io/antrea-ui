@@ -259,6 +259,9 @@ func protoFlowToAPI(pb *flowpb.Flow) apisv1.Flow {
 			OctetTotalCount:  s.GetOctetTotalCount(),
 			OctetDeltaCount:  s.GetOctetDeltaCount(),
 		}
+		if agg := pb.GetAggregation(); agg != nil {
+			f.Stats.Throughput = agg.GetThroughput()
+		}
 	}
 
 	if rs := pb.GetReverseStats(); rs != nil {
@@ -267,6 +270,9 @@ func protoFlowToAPI(pb *flowpb.Flow) apisv1.Flow {
 			PacketDeltaCount: rs.GetPacketDeltaCount(),
 			OctetTotalCount:  rs.GetOctetTotalCount(),
 			OctetDeltaCount:  rs.GetOctetDeltaCount(),
+		}
+		if agg := pb.GetAggregation(); agg != nil {
+			f.ReverseStats.Throughput = agg.GetReverseThroughput()
 		}
 	}
 

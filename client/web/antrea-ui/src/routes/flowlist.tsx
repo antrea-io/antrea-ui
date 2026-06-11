@@ -187,7 +187,7 @@ export default function FlowList({ entries }: FlowListProps) {
     };
 
     return (
-        <div cds-layout="vertical gap:md">
+        <div cds-layout="vertical gap:md" style={{ maxWidth: '100%' }}>
             <div cds-layout="horizontal gap:md align:vertical-center">
                 <input
                     type="text"
@@ -205,8 +205,8 @@ export default function FlowList({ entries }: FlowListProps) {
                 />
                 <span cds-text="secondary">{sortedEntries.length} connections</span>
             </div>
-            <div style={{ maxHeight: '70vh', overflow: 'auto' }}>
-                <table cds-table="border:all" cds-text="center body" style={{ width: '100%' }}>
+            <div style={{ maxHeight: '70vh', overflowX: 'auto', overflowY: 'auto' }}>
+                <table cds-table="border:all" cds-text="center body" style={{ width: '100%', minWidth: '1200px' }}>
                     <thead>
                         <tr>
                             {columns.map(col => (

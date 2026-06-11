@@ -16,7 +16,7 @@
 
 import { useRef, useEffect, useMemo, useState, useCallback } from 'react';
 import * as d3 from 'd3';
-import { FlowEntry } from '../store/flow-store';
+import { FlowEntry, entryBitRate } from '../store/flow-store';
 import {
     FlowType,
     NetworkPolicyRuleAction,
@@ -66,21 +66,21 @@ interface WorkloadEdge {
     connectionCount: number;
     totalBytesForward: number;
     totalBytesReverse: number;
+    // bitRate is the aggregate throughput of the edge in bits/sec: the sum of the
+    // per-connection sliding-window bit rates (see entryBitRate).
+    bitRate: number;
     protoPorts: Map<number, Set<number>>;
     ingressPolicies: Set<string>;
     egressPolicies: Set<string>;
     ingressActions: Set<NetworkPolicyRuleAction>;
     egressActions: Set<NetworkPolicyRuleAction>;
     flowTypes: Set<FlowType>;
-    firstSeen: number;
-    lastSeen: number;
 }
 
 interface EdgeDetails {
     source: string;
     target: string;
     connectionCount: number;
-    connectionRate: number;
     totalBytesForward: number;
     totalBytesReverse: number;
     bitRate: number;
@@ -171,22 +171,20 @@ function buildGraph(entries: FlowEntry[]): { nodes: WorkloadNode[]; edges: Workl
                 connectionCount: 0,
                 totalBytesForward: 0,
                 totalBytesReverse: 0,
+                bitRate: 0,
                 protoPorts: new Map(),
                 ingressPolicies: new Set(),
                 egressPolicies: new Set(),
                 ingressActions: new Set(),
                 egressActions: new Set(),
                 flowTypes: new Set(),
-                firstSeen: entry.firstSeen,
-                lastSeen: entry.lastSeen,
             };
             edgeMap.set(edgeKey, edge);
         }
         edge.connectionCount++;
-        if (entry.firstSeen < edge.firstSeen) edge.firstSeen = entry.firstSeen;
-        if (entry.lastSeen > edge.lastSeen) edge.lastSeen = entry.lastSeen;
         edge.totalBytesForward += flow.stats.octetTotalCount;
         edge.totalBytesReverse += flow.reverseStats.octetTotalCount;
+        edge.bitRate += entryBitRate(entry);
         let protoSet = edge.protoPorts.get(flow.transport.protocolNumber);
         if (!protoSet) {
             protoSet = new Set();
@@ -210,18 +208,6 @@ function buildGraph(entries: FlowEntry[]): { nodes: WorkloadNode[]; edges: Workl
     };
 }
 
-function computeRates(edge: WorkloadEdge): { connectionRate: number; bitRate: number } {
-    const windowMs = edge.lastSeen - edge.firstSeen;
-    if (windowMs <= 0) {
-        return { connectionRate: 0, bitRate: 0 };
-    }
-    const windowSec = windowMs / 1000;
-    return {
-        connectionRate: edge.connectionCount / windowSec,
-        bitRate: (edge.totalBytesForward + edge.totalBytesReverse) * 8 / windowSec,
-    };
-}
-
 function formatBitRate(bitsPerSec: number): string {
     if (bitsPerSec === 0) return '0 bps';
     const units = ['bps', 'Kbps', 'Mbps', 'Gbps'];
@@ -231,7 +217,6 @@ function formatBitRate(bitsPerSec: number): string {
 }
 
 function edgeToDetails(edge: WorkloadEdge): EdgeDetails {
-    const { connectionRate, bitRate } = computeRates(edge);
     const destPortsList: string[] = [];
     Array.from(edge.protoPorts.entries()).forEach(([proto, ports]) => {
         const protoName = getProtocolName(proto);
@@ -246,10 +231,9 @@ function edgeToDetails(edge: WorkloadEdge): EdgeDetails {
         source: edge.source,
         target: edge.target,
         connectionCount: edge.connectionCount,
-        connectionRate,
         totalBytesForward: edge.totalBytesForward,
         totalBytesReverse: edge.totalBytesReverse,
-        bitRate,
+        bitRate: edge.bitRate,
         destPortsStr: destPortsList.join(', '),
         ingressPolicies: Array.from(edge.ingressPolicies),
         egressPolicies: Array.from(edge.egressPolicies),
@@ -343,7 +327,7 @@ function EdgeDetailsPanel({ details, onClose }: { details: EdgeDetails; onClose:
             <div cds-layout="vertical gap:sm">
                 <div><strong>Source:</strong> {getWorkloadShortName(details.source)}</div>
                 <div><strong>Target:</strong> {getWorkloadShortName(details.target)}</div>
-                <div><strong>Connections:</strong> {details.connectionCount}{details.connectionRate > 0 ? ` (${details.connectionRate.toFixed(2)}/s)` : ''}</div>
+                <div><strong>Connections:</strong> {details.connectionCount}</div>
                 <div><strong>Bytes (Fwd):</strong> {formatBytes(details.totalBytesForward)}</div>
                 <div><strong>Bytes (Rev):</strong> {formatBytes(details.totalBytesReverse)}</div>
                 {details.bitRate > 0 && (
@@ -387,6 +371,47 @@ function quadMidpoint(sx: number, sy: number, tx: number, ty: number, offset: nu
         (sx + tx) / 2 + nx * offset,
         (sy + ty) / 2 + ny * offset,
     ];
+}
+
+function nodeHalfSize(d: D3Node): { halfW: number; halfH: number } {
+    if (d.isExternal) {
+        return { halfW: EXTERNAL_SIZE, halfH: EXTERNAL_SIZE };
+    }
+    const nameW = computeTextWidth(d.shortName, 12);
+    const nsW = computeTextWidth(d.namespace, 9);
+    const w = Math.max(nameW, nsW) + NODE_PADDING_X * 2;
+    const h = 38 + NODE_PADDING_Y;
+    return { halfW: w / 2, halfH: h / 2 };
+}
+
+// nodeBoundaryPoint returns the point on the node's border (rectangle for
+// workloads, diamond for external) along the direction toward (towardX, towardY),
+// offset outward by gap so the edge/arrowhead touches the border without overlapping it.
+function nodeBoundaryPoint(d: D3Node, towardX: number, towardY: number, gap: number): [number, number] {
+    const cx = d.x ?? 0;
+    const cy = d.y ?? 0;
+    const dx = towardX - cx;
+    const dy = towardY - cy;
+    const len = Math.sqrt(dx * dx + dy * dy);
+    if (len === 0) return [cx, cy];
+    const ux = dx / len;
+    const uy = dy / len;
+    const absUx = Math.abs(ux);
+    const absUy = Math.abs(uy);
+    const { halfW, halfH } = nodeHalfSize(d);
+    let scale: number;
+    if (d.isExternal) {
+        // Diamond boundary: |x| + |y| = EXTERNAL_SIZE.
+        scale = halfW / (absUx + absUy);
+    } else if (absUx * halfH > absUy * halfW) {
+        // Line exits through the left/right edge of the rectangle.
+        scale = halfW / absUx;
+    } else {
+        // Line exits through the top/bottom edge of the rectangle.
+        scale = halfH / absUy;
+    }
+    scale += gap;
+    return [cx + ux * scale, cy + uy * scale];
 }
 
 export default function ServiceMap({ entries }: ServiceMapProps) {
@@ -433,14 +458,12 @@ export default function ServiceMap({ entries }: ServiceMapProps) {
             policyLines.push(`<span style="color:${isAllow ? EDGE_COLOR_ALLOW : EDGE_COLOR_DROP}">${isAllow ? '&#10003;' : '&#10007;'}</span> Egress: ${p}`);
         }
 
-        const { connectionRate, bitRate } = computeRates(edge);
-        const rateInfo = connectionRate > 0 ? ` (${connectionRate.toFixed(2)}/s)` : '';
-        const bitRateInfo = bitRate > 0 ? `<div>Throughput: ${formatBitRate(bitRate)}</div>` : '';
+        const bitRateInfo = edge.bitRate > 0 ? `<div>Throughput: ${formatBitRate(edge.bitRate)}</div>` : '';
 
         tip.innerHTML = `
             <div style="font-weight:600;margin-bottom:4px">${getWorkloadShortName(edge.source)} &rarr; ${getWorkloadShortName(edge.target)}</div>
             <div>${protoPort}</div>
-            <div>${edge.connectionCount} connection${edge.connectionCount !== 1 ? 's' : ''}${rateInfo}</div>
+            <div>${edge.connectionCount} connection${edge.connectionCount !== 1 ? 's' : ''}</div>
             <div>&#8593; ${formatBytes(edge.totalBytesForward)} &nbsp; &#8595; ${formatBytes(edge.totalBytesReverse)}</div>
             ${bitRateInfo}
             ${policyLines.length > 0 ? '<hr style="border-color:#555;margin:4px 0"/>' + policyLines.join('<br/>') : ''}
@@ -479,14 +502,14 @@ export default function ServiceMap({ entries }: ServiceMapProps) {
             [EDGE_COLOR_ALLOW, EDGE_COLOR_DROP, EDGE_COLOR_DEFAULT].forEach(color => {
                 defs.append('marker')
                     .attr('id', `arrowhead-${color.replace('#', '')}`)
-                    .attr('viewBox', '0 -5 10 10')
-                    .attr('refX', 10)
+                    .attr('viewBox', '-10 -5 10 10')
+                    .attr('refX', 0)
                     .attr('refY', 0)
                     .attr('markerWidth', 7)
                     .attr('markerHeight', 7)
                     .attr('orient', 'auto')
                     .append('path')
-                    .attr('d', 'M0,-4L10,0L0,4')
+                    .attr('d', 'M-10,-4L0,0L-10,4')
                     .attr('fill', color);
             });
 
@@ -720,15 +743,6 @@ export default function ServiceMap({ entries }: ServiceMapProps) {
                 return Math.max(nameW, nsW) / 2 + NODE_PADDING_X + 4;
             }
 
-            function shortenEdge(sx: number, sy: number, tx: number, ty: number, shrink: number): [number, number, number, number] {
-                const dx = tx - sx;
-                const dy = ty - sy;
-                const len = Math.sqrt(dx * dx + dy * dy) || 1;
-                const ux = dx / len;
-                const uy = dy / len;
-                return [sx + ux * shrink, sy + uy * shrink, tx - ux * shrink, ty - uy * shrink];
-            }
-
             const simulation = d3.forceSimulation(d3Nodes)
                 .force('link', d3.forceLink<D3Node, D3Link>(d3Links).id(d => d.id).distance(220))
                 .force('charge', d3.forceManyBody().strength(-800))
@@ -738,10 +752,8 @@ export default function ServiceMap({ entries }: ServiceMapProps) {
                     linkPaths.attr('d', d => {
                         const s = d.source as D3Node;
                         const t = d.target as D3Node;
-                        const sR = nodeRadius(s);
-                        const tR = nodeRadius(t);
-                        const [sx, sy] = shortenEdge(s.x!, s.y!, t.x!, t.y!, Math.min(sR, 20));
-                        const [, , tx2, ty2] = shortenEdge(s.x!, s.y!, t.x!, t.y!, tR);
+                        const [sx, sy] = nodeBoundaryPoint(s, t.x!, t.y!, 1);
+                        const [tx2, ty2] = nodeBoundaryPoint(t, s.x!, s.y!, 3);
                         return curvedPath(sx, sy, tx2, ty2, d.curveOffset);
                     });
 

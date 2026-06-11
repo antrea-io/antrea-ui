@@ -287,9 +287,9 @@ export default function FlowFilters({
     ], []);
 
     return (
-        <div cds-layout="vertical gap:md">
-            <div cds-layout="horizontal gap:lg align:vertical-center wrap:wrap">
-                <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', alignItems: 'flex-end' }}>
+        <div cds-layout="vertical gap:md" style={{ maxWidth: '100%' }}>
+            <div cds-layout="horizontal gap:lg align:vertical-center wrap:wrap" style={{ maxWidth: '100%' }}>
+                <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', alignItems: 'flex-end', flex: '1 1 auto', minWidth: 0 }}>
                     <MultiSelect
                         label="Namespaces"
                         options={availableNamespaces}
@@ -380,7 +380,7 @@ export default function FlowFilters({
                         />
                     </div>
                 </div>
-                <div cds-layout="horizontal gap:sm" style={{ alignSelf: 'flex-end' }}>
+                <div cds-layout="horizontal gap:sm" style={{ alignSelf: 'flex-end', flexShrink: 0 }}>
                     <CdsButton type="button" action="solid" size="sm" onClick={applyFilters}>
                         Apply Filters
                     </CdsButton>
@@ -395,7 +395,7 @@ export default function FlowFilters({
                     </CdsButton>
                 </div>
             </div>
-            <div cds-layout="horizontal gap:lg align:vertical-center" cds-text="secondary">
+            <div cds-layout="horizontal gap:lg align:vertical-center" cds-text="secondary" style={{ flexWrap: 'wrap' }}>
                 <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
                     <span style={{
                         width: '8px',
