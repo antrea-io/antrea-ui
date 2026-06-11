@@ -90,7 +90,7 @@ interface EdgeDetails {
     flowTypes: string[];
 }
 
-function buildGraph(entries: FlowEntry[]): { nodes: WorkloadNode[]; edges: WorkloadEdge[] } {
+function buildGraph(entries: FlowEntry[]): { nodes: WorkloadNode[]; edges: WorkloadEdge[]; edgeMap: Map<string, WorkloadEdge> } {
     const nodeMap = new Map<string, WorkloadNode>();
     const edgeMap = new Map<string, WorkloadEdge>();
 
@@ -205,6 +205,7 @@ function buildGraph(entries: FlowEntry[]): { nodes: WorkloadNode[]; edges: Workl
     return {
         nodes: Array.from(nodeMap.values()),
         edges: Array.from(edgeMap.values()),
+        edgeMap,
     };
 }
 
@@ -448,14 +449,16 @@ export default function ServiceMap({ entries }: ServiceMapProps) {
         });
         const protoPort = protoPortParts.join(', ') || '-';
 
+        const ingressAllow = !edge.ingressActions.has(NetworkPolicyRuleAction.Drop) &&
+            !edge.ingressActions.has(NetworkPolicyRuleAction.Reject);
+        const egressAllow = !edge.egressActions.has(NetworkPolicyRuleAction.Drop) &&
+            !edge.egressActions.has(NetworkPolicyRuleAction.Reject);
         const policyLines: string[] = [];
         for (const p of edge.ingressPolicies) {
-            const isAllow = !p.includes('Drop') && !p.includes('Reject');
-            policyLines.push(`<span style="color:${isAllow ? EDGE_COLOR_ALLOW : EDGE_COLOR_DROP}">${isAllow ? '&#10003;' : '&#10007;'}</span> Ingress: ${p}`);
+            policyLines.push(`<span style="color:${ingressAllow ? EDGE_COLOR_ALLOW : EDGE_COLOR_DROP}">${ingressAllow ? '&#10003;' : '&#10007;'}</span> Ingress: ${p}`);
         }
         for (const p of edge.egressPolicies) {
-            const isAllow = !p.includes('Drop') && !p.includes('Reject');
-            policyLines.push(`<span style="color:${isAllow ? EDGE_COLOR_ALLOW : EDGE_COLOR_DROP}">${isAllow ? '&#10003;' : '&#10007;'}</span> Egress: ${p}`);
+            policyLines.push(`<span style="color:${egressAllow ? EDGE_COLOR_ALLOW : EDGE_COLOR_DROP}">${egressAllow ? '&#10003;' : '&#10007;'}</span> Egress: ${p}`);
         }
 
         const bitRateInfo = edge.bitRate > 0 ? `<div>Throughput: ${formatBitRate(edge.bitRate)}</div>` : '';
@@ -590,7 +593,7 @@ export default function ServiceMap({ entries }: ServiceMapProps) {
                     d3.select(this)
                         .attr('stroke-opacity', 1)
                         .attr('stroke-width', Math.min(1.5 + Math.log2(d.connectionCount + 1), 6) + 1.5);
-                    const edgeData = graph.edges.find(e => `${e.source}|${e.target}` === d.edgeKey);
+                    const edgeData = graph.edgeMap.get(d.edgeKey);
                     if (edgeData) showTooltip(event, edgeData);
                 })
                 .on('mousemove', function (event) {
@@ -607,7 +610,7 @@ export default function ServiceMap({ entries }: ServiceMapProps) {
                     hideTooltip();
                 })
                 .on('click', (_event, d) => {
-                    const edgeData = graph.edges.find(e => `${e.source}|${e.target}` === d.edgeKey);
+                    const edgeData = graph.edgeMap.get(d.edgeKey);
                     if (edgeData) setSelectedEdge(edgeToDetails(edgeData));
                 });
 
@@ -791,7 +794,7 @@ export default function ServiceMap({ entries }: ServiceMapProps) {
                 })
                 .attr('stroke-width', d => {
                     if (!d) return 1;
-                    const edgeData = graph.edges.find(e => `${e.source}|${e.target}` === (d as D3Link).edgeKey);
+                    const edgeData = graph.edgeMap.get((d as D3Link).edgeKey);
                     return edgeData ? Math.min(1.5 + Math.log2(edgeData.connectionCount + 1), 6) : 1;
                 });
         }

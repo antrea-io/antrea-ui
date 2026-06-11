@@ -73,7 +73,7 @@ export function entryBitRate(entry: FlowEntry): number {
 // than the sliding window relative to the newest sample.
 function nextSamples(existing: FlowSample[], flow: Flow): FlowSample[] {
     const endMs = Date.parse(flow.endTs);
-    if (!Number.isFinite(endMs)) {
+    if (isNaN(endMs)) {
         return existing;
     }
     const bytes = flow.stats.octetTotalCount + flow.reverseStats.octetTotalCount;
