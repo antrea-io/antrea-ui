@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { useRef, useEffect, useMemo, useState, useCallback } from 'react';
+import { useRef, useEffect, useMemo, useState, useCallback, useLayoutEffect } from 'react';
 import * as d3 from 'd3';
 import { FlowEntry, entryBitRate } from '../store/flow-store';
 import {
@@ -285,8 +285,7 @@ interface D3Link extends d3.SimulationLinkDatum<D3Node> {
     curveOffset: number;
 }
 
-const WIDTH = 1100;
-const HEIGHT = 700;
+const HEIGHT = 900;
 const NODE_RX = 8;
 const NODE_PADDING_X = 14;
 const NODE_PADDING_Y = 8;
@@ -310,20 +309,26 @@ function EdgeDetailsPanel({ details, onClose }: { details: EdgeDetails; onClose:
             maxWidth: '350px',
             zIndex: 10,
         }}>
-            <div cds-layout="horizontal justify:space-between align:vertical-center" style={{ marginBottom: '12px' }}>
+            <button
+                onClick={onClose}
+                title="Close"
+                style={{
+                    position: 'absolute',
+                    top: '8px',
+                    right: '8px',
+                    background: 'none',
+                    border: 'none',
+                    color: 'var(--cds-alias-object-border-color, #565656)',
+                    cursor: 'pointer',
+                    fontSize: '14px',
+                    lineHeight: 1,
+                    padding: '2px',
+                }}
+            >
+                ✕
+            </button>
+            <div style={{ marginBottom: '12px' }}>
                 <span cds-text="section">Connection Stats</span>
-                <button
-                    onClick={onClose}
-                    style={{
-                        background: 'none',
-                        border: 'none',
-                        color: 'var(--cds-global-typography-color-400, #fff)',
-                        cursor: 'pointer',
-                        fontSize: '18px',
-                    }}
-                >
-                    ✕
-                </button>
             </div>
             <div cds-layout="vertical gap:sm">
                 <div><strong>Source:</strong> {getWorkloadShortName(details.source)}</div>
@@ -416,20 +421,52 @@ function nodeBoundaryPoint(d: D3Node, towardX: number, towardY: number, gap: num
 }
 
 export default function ServiceMap({ entries }: ServiceMapProps) {
+    const containerRef = useRef<HTMLDivElement>(null);
     const svgRef = useRef<SVGSVGElement>(null);
     const tooltipRef = useRef<HTMLDivElement>(null);
     const simulationRef = useRef<d3.Simulation<D3Node, D3Link> | null>(null);
-    const [selectedEdge, setSelectedEdge] = useState<EdgeDetails | null>(null);
+    const [selectedEdgeKey, setSelectedEdgeKey] = useState<string | null>(null);
+    const [svgWidth, setSvgWidth] = useState(1100);
+
+    useLayoutEffect(() => {
+        const el = containerRef.current;
+        if (!el) return;
+        // Measure a guaranteed full-width block ancestor (the page <main>) rather
+        // than the container itself. The container lives inside a Clarity
+        // cds-layout="vertical" flex column whose cross-axis sizing can shrink-wrap
+        // the container to the SVG's own pixel width, which would pin svgWidth near
+        // its default (a feedback loop). <main> is display:block and always fills
+        // its flex:1 parent, so its clientWidth is the true available width.
+        const measureTarget: HTMLElement = el.closest('main') ?? el.parentElement ?? el;
+        const measure = () => {
+            const w = measureTarget.clientWidth;
+            if (w && w > 0) setSvgWidth(Math.floor(w));
+        };
+        const ro = new ResizeObserver(measure);
+        ro.observe(measureTarget);
+        measure();
+        return () => ro.disconnect();
+    }, []);
 
     const graph = useMemo(() => buildGraph(entries), [entries]);
+
+    // Keep a ref to the latest graph so D3 event handlers (bound once at
+    // topology-build time) always read fresh edge data without needing to be
+    // re-registered on every flow update.
+    const graphRef = useRef(graph);
+    graphRef.current = graph;
+
+    const selectedEdge = selectedEdgeKey !== null
+        ? (graph.edgeMap.has(selectedEdgeKey) ? edgeToDetails(graph.edgeMap.get(selectedEdgeKey)!) : null)
+        : null;
 
     const prevTopologyRef = useRef<string>('');
 
     const topologyKey = useMemo(() => {
         const nodeIds = graph.nodes.map(n => n.id).sort().join(',');
         const edgeIds = graph.edges.map(e => `${e.source}|${e.target}`).sort().join(',');
-        return `${nodeIds}::${edgeIds}`;
-    }, [graph]);
+        return `${nodeIds}::${edgeIds}::${svgWidth}`;
+    }, [graph, svgWidth]);
 
     const topologyChanged = topologyKey !== prevTopologyRef.current;
 
@@ -481,6 +518,16 @@ export default function ServiceMap({ entries }: ServiceMapProps) {
         const tip = tooltipRef.current;
         if (tip) tip.style.opacity = '0';
     }, []);
+
+    // Dismiss the hover tooltip and the click-selected edge panel whenever the
+    // flow store is cleared (filter applied/reset/clear), so stale data from the
+    // previous filter is not shown alongside the new results.
+    useEffect(() => {
+        if (entries.length === 0) {
+            hideTooltip();
+            setSelectedEdgeKey(null);
+        }
+    }, [entries.length, hideTooltip]);
 
     useEffect(() => {
         if (!svgRef.current) return;
@@ -593,7 +640,7 @@ export default function ServiceMap({ entries }: ServiceMapProps) {
                     d3.select(this)
                         .attr('stroke-opacity', 1)
                         .attr('stroke-width', Math.min(1.5 + Math.log2(d.connectionCount + 1), 6) + 1.5);
-                    const edgeData = graph.edgeMap.get(d.edgeKey);
+                    const edgeData = graphRef.current.edgeMap.get(d.edgeKey);
                     if (edgeData) showTooltip(event, edgeData);
                 })
                 .on('mousemove', function (event) {
@@ -610,8 +657,8 @@ export default function ServiceMap({ entries }: ServiceMapProps) {
                     hideTooltip();
                 })
                 .on('click', (_event, d) => {
-                    const edgeData = graph.edgeMap.get(d.edgeKey);
-                    if (edgeData) setSelectedEdge(edgeToDetails(edgeData));
+                    const edgeData = graphRef.current.edgeMap.get(d.edgeKey);
+                    if (edgeData) setSelectedEdgeKey(d.edgeKey);
                 });
 
             const edgeLabelGroup = container.append('g');
@@ -653,10 +700,18 @@ export default function ServiceMap({ entries }: ServiceMapProps) {
                     })
                     .on('end', (event, d) => {
                         if (!event.active) simulation.alphaTarget(0);
-                        d.fx = null;
-                        d.fy = null;
+                        // Keep fx/fy set so the node stays where the user placed it.
+                        // Double-click releases the pin.
+                        d.fx = d.x;
+                        d.fy = d.y;
                     })
-                );
+                )
+                .on('dblclick', (_event, d) => {
+                    d.fx = null;
+                    d.fy = null;
+                    simulation.alphaTarget(0.3).restart();
+                    setTimeout(() => simulation.alphaTarget(0), 1500);
+                });
 
             node.each(function (d) {
                 const g = d3.select(this);
@@ -746,11 +801,40 @@ export default function ServiceMap({ entries }: ServiceMapProps) {
                 return Math.max(nameW, nsW) / 2 + NODE_PADDING_X + 4;
             }
 
+            // Custom force: pull same-namespace nodes toward their namespace centroid.
+            function forceNamespaceClustering(alpha: number) {
+                const centroids = new Map<string, { x: number; y: number; count: number }>();
+                for (const n of d3Nodes) {
+                    if (!n.namespace || n.isExternal) continue;
+                    const c = centroids.get(n.namespace);
+                    if (c) {
+                        c.x += n.x!;
+                        c.y += n.y!;
+                        c.count++;
+                    } else {
+                        centroids.set(n.namespace, { x: n.x!, y: n.y!, count: 1 });
+                    }
+                }
+                for (const [ns, c] of centroids) {
+                    c.x /= c.count;
+                    c.y /= c.count;
+                    centroids.set(ns, c);
+                }
+                const strength = 0.15 * alpha;
+                for (const n of d3Nodes) {
+                    if (!n.namespace || n.isExternal) continue;
+                    const c = centroids.get(n.namespace)!;
+                    n.vx! += (c.x - n.x!) * strength;
+                    n.vy! += (c.y - n.y!) * strength;
+                }
+            }
+
             const simulation = d3.forceSimulation(d3Nodes)
-                .force('link', d3.forceLink<D3Node, D3Link>(d3Links).id(d => d.id).distance(220))
-                .force('charge', d3.forceManyBody().strength(-800))
-                .force('center', d3.forceCenter(WIDTH / 2, HEIGHT / 2))
-                .force('collision', d3.forceCollide<D3Node>().radius(d => nodeRadius(d) + 30))
+                .force('link', d3.forceLink<D3Node, D3Link>(d3Links).id(d => d.id).distance(120))
+                .force('charge', d3.forceManyBody().strength(-400))
+                .force('center', d3.forceCenter(svgWidth / 2, HEIGHT / 2))
+                .force('collision', d3.forceCollide<D3Node>().radius(d => nodeRadius(d) + 20))
+                .force('cluster', forceNamespaceClustering as unknown as d3.Force<D3Node, D3Link>)
                 .on('tick', () => {
                     linkPaths.attr('d', d => {
                         const s = d.source as D3Node;
@@ -798,7 +882,7 @@ export default function ServiceMap({ entries }: ServiceMapProps) {
                     return edgeData ? Math.min(1.5 + Math.log2(edgeData.connectionCount + 1), 6) : 1;
                 });
         }
-    }, [graph, topologyChanged, topologyKey, showTooltip, hideTooltip]);
+    }, [graph, topologyChanged, topologyKey, showTooltip, hideTooltip, svgWidth]);
 
     useEffect(() => {
         return () => {
@@ -806,15 +890,16 @@ export default function ServiceMap({ entries }: ServiceMapProps) {
         };
     }, []);
 
-    const handleCloseDetails = useCallback(() => setSelectedEdge(null), []);
+    const handleCloseDetails = useCallback(() => setSelectedEdgeKey(null), []);
 
     return (
-        <div style={{ position: 'relative' }}>
+        <div ref={containerRef} style={{ position: 'relative', width: '100%' }}>
             <svg
                 ref={svgRef}
-                width={WIDTH}
+                width={svgWidth}
                 height={HEIGHT}
                 style={{
+                    display: 'block',
                     border: '1px solid var(--cds-alias-object-border-color, #565656)',
                     borderRadius: '4px',
                     background: 'var(--cds-alias-object-container-background-dark, #17242b)',

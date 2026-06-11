@@ -51,8 +51,8 @@ export default function FlowVisibility() {
     }, [clearFlows]);
 
     return (
-        <main style={{ maxWidth: '100%', overflowX: 'auto' }}>
-            <div cds-layout="vertical gap:lg" style={{ maxWidth: '100%' }}>
+        <main style={{ width: '100%', maxWidth: '100%', overflowX: 'auto' }}>
+            <div cds-layout="vertical gap:lg" style={{ width: '100%', maxWidth: '100%' }}>
                 <div cds-layout="horizontal gap:md align:vertical-center">
                     <p cds-text="title">Flow Visibility</p>
                     <div cds-layout="horizontal gap:xs">
