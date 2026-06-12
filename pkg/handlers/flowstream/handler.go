@@ -63,17 +63,30 @@ func NewSSEHandler(logger logr.Logger, handler FlowStreamSubscriber) *SSEHandler
 	}
 }
 
+// splitTrimmed splits s by comma and trims whitespace from each element,
+// omitting any elements that are empty after trimming.
+func splitTrimmed(s string) []string {
+	parts := strings.Split(s, ",")
+	result := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if t := strings.TrimSpace(p); t != "" {
+			result = append(result, t)
+		}
+	}
+	return result
+}
+
 func parseFlowStreamFilter(c *gin.Context) (*FlowStreamFilter, error) {
 	filter := &FlowStreamFilter{}
 
 	if ns := c.Query("namespaces"); ns != "" {
-		filter.Namespaces = strings.Split(ns, ",")
+		filter.Namespaces = splitTrimmed(ns)
 	}
 	if pods := c.Query("pods"); pods != "" {
-		filter.PodNames = strings.Split(pods, ",")
+		filter.PodNames = splitTrimmed(pods)
 	}
 	if svcs := c.Query("services"); svcs != "" {
-		filter.ServiceNames = strings.Split(svcs, ",")
+		filter.ServiceNames = splitTrimmed(svcs)
 	}
 	if selector := c.Query("podLabelSelector"); selector != "" {
 		filter.PodLabelSelector = selector
@@ -89,7 +102,7 @@ func parseFlowStreamFilter(c *gin.Context) (*FlowStreamFilter, error) {
 		}
 	}
 	if ips := c.Query("ips"); ips != "" {
-		filter.IPs = strings.Split(ips, ",")
+		filter.IPs = splitTrimmed(ips)
 	}
 	if dir := c.Query("direction"); dir != "" {
 		switch strings.ToLower(dir) {
@@ -190,7 +203,11 @@ func (h *SSEHandler) StreamFlows(c *gin.Context) {
 			return true
 		case streamErr, ok := <-errCh:
 			if !ok {
-				return false
+				// No more errors will be sent; keep streaming until flowsCh is
+				// closed or ctx is done. Setting errCh to nil disables this case
+				// in future select iterations so we don't spin on a closed channel.
+				errCh = nil
+				return true
 			}
 			errEvent := apisv1.FlowStreamErrorEvent{Message: streamErr.Error()}
 			data, err := json.Marshal(errEvent)

@@ -92,8 +92,10 @@ func (h *GRPCFlowStreamSubscriber) Subscribe(ctx context.Context, filter *FlowSt
 	errCh := make(chan error, 1)
 
 	go func() {
-		defer close(flowsCh)
+		// Defers run LIFO: flowsCh is closed first so the SSE handler can drain
+		// all buffered flow events before errCh closes and terminates the stream.
 		defer close(errCh)
+		defer close(flowsCh)
 
 		req := filterToGetFlowsRequest(filter)
 		stream, err := h.client.GetFlows(ctx, req)
@@ -187,9 +189,13 @@ func ipBytesToString(b []byte) string {
 func protoFlowToAPI(pb *flowpb.Flow) apisv1.Flow {
 	f := apisv1.Flow{
 		ID:        pb.GetId(),
-		StartTs:   pb.GetStartTs().AsTime().Format(time.RFC3339Nano),
-		EndTs:     pb.GetEndTs().AsTime().Format(time.RFC3339Nano),
 		EndReason: apisv1.FlowEndReason(pb.GetEndReason()),
+	}
+	if ts := pb.GetStartTs(); ts != nil {
+		f.StartTs = ts.AsTime().Format(time.RFC3339Nano)
+	}
+	if ts := pb.GetEndTs(); ts != nil {
+		f.EndTs = ts.AsTime().Format(time.RFC3339Nano)
 	}
 
 	if ip := pb.GetIp(); ip != nil {
