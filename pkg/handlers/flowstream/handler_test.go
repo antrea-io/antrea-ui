@@ -64,15 +64,22 @@ func TestParseFlowStreamFilter(t *testing.T) {
 			},
 		},
 		{
-			name:  "flowTypes parsed as ints",
-			query: "flowTypes=1,2",
+			name:  "flowTypes parsed from string names",
+			query: "flowTypes=intra-node,inter-node",
 			expected: &FlowStreamFilter{
 				FlowTypes: []apisv1.FlowType{apisv1.FlowTypeIntraNode, apisv1.FlowTypeInterNode},
 			},
 		},
 		{
+			name:  "flowTypes case-insensitive",
+			query: "flowTypes=To-External,FROM-EXTERNAL",
+			expected: &FlowStreamFilter{
+				FlowTypes: []apisv1.FlowType{apisv1.FlowTypeToExternal, apisv1.FlowTypeFromExternal},
+			},
+		},
+		{
 			name:        "invalid flowType returns error",
-			query:       "flowTypes=abc",
+			query:       "flowTypes=unknown-type",
 			expectError: true,
 		},
 	}

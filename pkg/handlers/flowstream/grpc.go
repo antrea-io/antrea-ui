@@ -45,16 +45,23 @@ type GRPCFlowStreamSubscriber struct {
 type GRPCConfig struct {
 	Address string
 	// CACert is the PEM-encoded CA certificate used to verify the FlowStreamService
-	// server certificate. If empty, server verification is skipped (dev only).
+	// server certificate. When empty and InsecureSkipVerify is false, the system
+	// certificate pool is used.
 	CACert []byte
 	// ServerName overrides the TLS server name used for certificate verification.
 	// Useful when dialing via kubectl port-forward, where the address is loopback
 	// but the server cert is issued for the in-cluster Service DNS name.
 	// If empty, the hostname from Address is used.
 	ServerName string
+	// InsecureSkipVerify disables TLS server certificate verification.
+	// This should only be used for development/testing and must never be enabled in production.
+	InsecureSkipVerify bool
 }
 
 func NewGRPCFlowStreamSubscriber(logger logr.Logger, cfg GRPCConfig) (*GRPCFlowStreamSubscriber, error) {
+	if cfg.InsecureSkipVerify {
+		logger.Info("WARNING: TLS certificate verification is disabled for the FlowAggregator gRPC connection. This should only be used for development/testing.")
+	}
 	tlsCfg, err := buildTLSConfig(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build TLS config: %w", err)
@@ -290,15 +297,14 @@ func buildTLSConfig(cfg GRPCConfig) (*tls.Config, error) {
 		MinVersion: tls.VersionTLS12,
 	}
 
-	if len(cfg.CACert) > 0 {
+	if cfg.InsecureSkipVerify {
+		tlsCfg.InsecureSkipVerify = true //nolint:gosec
+	} else if len(cfg.CACert) > 0 {
 		pool := x509.NewCertPool()
 		if !pool.AppendCertsFromPEM(cfg.CACert) {
 			return nil, fmt.Errorf("failed to parse FlowAggregator CA cert")
 		}
 		tlsCfg.RootCAs = pool
-	} else {
-		// No CA provided: skip verification (dev/test only).
-		tlsCfg.InsecureSkipVerify = true //nolint:gosec
 	}
 
 	if cfg.ServerName != "" {

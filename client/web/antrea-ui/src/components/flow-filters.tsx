@@ -18,6 +18,7 @@ import { useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import { CdsButton } from '@cds/react/button';
 import { CdsSelect } from '@cds/react/select';
 import { FlowType, flowTypeLabel, destinationK8sServiceFilterKey } from '../api/flow-types';
+import { FlowTypeName } from '../api/flow-stream';
 import { FlowStreamFilter, FlowFilterDirection } from '../api/flow-stream';
 import { FlowEntry } from '../store/flow-store';
 
@@ -263,7 +264,7 @@ export default function FlowFilters({
             }
         }
         if (flowType) {
-            filter.flowTypes = [parseInt(flowType)];
+            filter.flowTypes = [flowType as FlowTypeName];
         }
         const parsedIPs = ipsText.split(',').map(s => s.trim()).filter(Boolean);
         if (parsedIPs.length > 0) {
@@ -280,10 +281,10 @@ export default function FlowFilters({
 
     const flowTypeOptions = useMemo(() => [
         { value: '', label: 'All' },
-        { value: String(FlowType.IntraNode), label: flowTypeLabel[FlowType.IntraNode] },
-        { value: String(FlowType.InterNode), label: flowTypeLabel[FlowType.InterNode] },
-        { value: String(FlowType.ToExternal), label: flowTypeLabel[FlowType.ToExternal] },
-        { value: String(FlowType.FromExternal), label: flowTypeLabel[FlowType.FromExternal] },
+        { value: 'intra-node' as FlowTypeName, label: flowTypeLabel[FlowType.IntraNode] },
+        { value: 'inter-node' as FlowTypeName, label: flowTypeLabel[FlowType.InterNode] },
+        { value: 'to-external' as FlowTypeName, label: flowTypeLabel[FlowType.ToExternal] },
+        { value: 'from-external' as FlowTypeName, label: flowTypeLabel[FlowType.FromExternal] },
     ], []);
 
     return (

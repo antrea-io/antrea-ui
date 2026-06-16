@@ -24,12 +24,15 @@ const { apiUri } = config;
 /** Matches Antrea FlowFilter.direction (FlowFilterDirection in protos). */
 export type FlowFilterDirection = 'both' | 'from' | 'to';
 
+/** String names for flow types, matching the backend query parameter values. */
+export type FlowTypeName = 'intra-node' | 'inter-node' | 'to-external' | 'from-external';
+
 export interface FlowStreamFilter {
     namespaces?: string[];
     pods?: string[];
     podLabelSelector?: string;
     services?: string[];
-    flowTypes?: number[];
+    flowTypes?: FlowTypeName[];
     ips?: string[];
     direction?: FlowFilterDirection;
 }
@@ -42,7 +45,7 @@ export function streamFilterKey(f: FlowStreamFilter): string {
     const namespaces = [...(f.namespaces ?? [])].sort();
     const pods = [...(f.pods ?? [])].sort();
     const services = [...(f.services ?? [])].sort();
-    const flowTypes = [...(f.flowTypes ?? [])].sort((a, b) => a - b);
+    const flowTypes = [...(f.flowTypes ?? [])].sort();
     const ips = [...(f.ips ?? [])].sort();
     const direction =
         f.direction && f.direction !== 'both' ? f.direction : 'both';

@@ -21,5 +21,6 @@ flowAggregator:
   caConfigMap: {{ .Values.flowAggregator.caConfigMap | quote }}
   namespace: {{ .Values.flowAggregator.namespace | default "flow-aggregator" | quote }}
   serverName: {{ .Values.flowAggregator.serverName | quote }}
+  insecureSkipVerify: {{ .Values.flowAggregator.insecureSkipVerify }}
 {{- end }}
 {{- end }}

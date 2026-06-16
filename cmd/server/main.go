@@ -198,9 +198,10 @@ func run() error {
 		}
 
 		grpcSubscriber, err := flowstream.NewGRPCFlowStreamSubscriber(logger, flowstream.GRPCConfig{
-			Address:    config.FlowAggregator.Address,
-			CACert:     caData,
-			ServerName: config.FlowAggregator.ServerName,
+			Address:            config.FlowAggregator.Address,
+			CACert:             caData,
+			ServerName:         config.FlowAggregator.ServerName,
+			InsecureSkipVerify: config.FlowAggregator.InsecureSkipVerify,
 		})
 		if err != nil {
 			return fmt.Errorf("failed to create gRPC flow stream handler: %w", err)

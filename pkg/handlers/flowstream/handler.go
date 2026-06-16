@@ -19,7 +19,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -76,6 +75,20 @@ func splitTrimmed(s string) []string {
 	return result
 }
 
+var flowTypeByName = map[string]apisv1.FlowType{
+	"intra-node":    apisv1.FlowTypeIntraNode,
+	"inter-node":    apisv1.FlowTypeInterNode,
+	"to-external":   apisv1.FlowTypeToExternal,
+	"from-external": apisv1.FlowTypeFromExternal,
+}
+
+func parseFlowType(s string) (apisv1.FlowType, error) {
+	if v, ok := flowTypeByName[strings.ToLower(s)]; ok {
+		return v, nil
+	}
+	return 0, fmt.Errorf("invalid flowType value %q: expected one of intra-node, inter-node, to-external, from-external", s)
+}
+
 func parseFlowStreamFilter(c *gin.Context) (*FlowStreamFilter, error) {
 	filter := &FlowStreamFilter{}
 
@@ -92,13 +105,12 @@ func parseFlowStreamFilter(c *gin.Context) (*FlowStreamFilter, error) {
 		filter.PodLabelSelector = selector
 	}
 	if ft := c.Query("flowTypes"); ft != "" {
-		parts := strings.Split(ft, ",")
-		for _, p := range parts {
-			v, err := strconv.Atoi(strings.TrimSpace(p))
+		for _, p := range splitTrimmed(ft) {
+			v, err := parseFlowType(p)
 			if err != nil {
-				return nil, fmt.Errorf("invalid flowType value %q: %w", p, err)
+				return nil, err
 			}
-			filter.FlowTypes = append(filter.FlowTypes, apisv1.FlowType(v))
+			filter.FlowTypes = append(filter.FlowTypes, v)
 		}
 	}
 	if ips := c.Query("ips"); ips != "" {

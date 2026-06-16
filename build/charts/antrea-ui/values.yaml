@@ -52,6 +52,9 @@ flowAggregator:
   # in-cluster Service DNS name (e.g. flow-aggregator.flow-aggregator.svc).
   # Leave empty to use the hostname from the address field.
   serverName: ""
+  # -- Disable TLS server certificate verification. Should only be used for development
+  # or testing; never enable this in production.
+  insecureSkipVerify: false
 
 security:
   # -- (bool) Set the Secure attribute for Antrea UI cookies. The attribute is set by default when HTTPS is

@@ -41,6 +41,9 @@ type FlowAggregatorConfig struct {
 	// but the server cert is issued for the in-cluster Service DNS name.
 	// If empty, the hostname from Address is used.
 	ServerName string
+	// InsecureSkipVerify disables TLS server certificate verification.
+	// This should only be used for development/testing and must never be enabled in production.
+	InsecureSkipVerify bool
 }
 
 type Config struct {
@@ -133,6 +136,7 @@ func LoadConfig() (*Config, error) {
 	v.SetDefault("flowAggregator.caConfigMap", "flow-aggregator-ca")
 	v.SetDefault("flowAggregator.namespace", "flow-aggregator")
 	v.SetDefault("flowAggregator.serverName", "")
+	v.SetDefault("flowAggregator.insecureSkipVerify", false)
 
 	// By default, look for a file named config (any supported extension) in the working directory.
 	v.AddConfigPath(".")
