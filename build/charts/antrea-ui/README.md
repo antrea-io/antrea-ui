@@ -19,6 +19,7 @@ Kubernetes: `>= 1.16.0-0`
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | affinity | object | `{}` | Affinity for the Antrea UI Pod. |
+| antreaNamespace | string | `"kube-system"` | Namespace where Antrea is installed. |
 | auth.basic.enable | bool | `true` | Enable password-based authentication. |
 | auth.oidc.clientID | string | `""` | Application (client) ID to be used by the Antrea UI server to identify itself to the OIDC provider. |
 | auth.oidc.clientIDSecretRef.key | string | `"clientID"` | Name of the key field storing the application (client) ID in the referenced secret. |
@@ -40,6 +41,12 @@ Kubernetes: `>= 1.16.0-0`
 | dex.image | object | `{"pullPolicy":"IfNotPresent","repository":"ghcr.io/dexidp/dex","tag":"v2.36.0-distroless"}` | Container image to use for Dex. |
 | dex.resources | object | `{}` | Resource requests and limits for the Dex container. |
 | extraVolumes | list | `[]` | Additional volumes. |
+| flowAggregator.address | string | `"flow-aggregator.flow-aggregator.svc:14740"` | gRPC address (host:port) of the FlowStreamService. |
+| flowAggregator.caConfigMap | string | `"flow-aggregator-ca"` | Name of the ConfigMap (in namespace below) containing the CA certificate (key: ca.crt) used to verify the FlowStreamService server certificate. The FlowStreamService uses server-side TLS only (no client authentication). Leave empty to skip server certificate verification (dev/test only). |
+| flowAggregator.enabled | bool | `false` | When true, the backend connects to Flow Aggregator's FlowStreamService over gRPC. |
+| flowAggregator.insecureSkipVerify | bool | `false` | Disable TLS server certificate verification. Should only be used for development or testing; never enable this in production. |
+| flowAggregator.namespace | string | `"flow-aggregator"` | Namespace where the Flow Aggregator is installed. |
+| flowAggregator.serverName | string | `""` | Override the TLS server name used for certificate verification. Useful when dialing via kubectl port-forward (loopback address) while the server cert is issued for the in-cluster Service DNS name (e.g. flow-aggregator.flow-aggregator.svc). Leave empty to use the hostname from the address field. |
 | frontend.extraVolumeMounts | list | `[]` | Additional volumeMounts. |
 | frontend.image | object | `{"pullPolicy":"IfNotPresent","repository":"antrea/antrea-ui-frontend","tag":""}` | Container image to use for the Antrea UI frontend. |
 | frontend.port | int | `3000` | Container port on which the frontend will listen. |

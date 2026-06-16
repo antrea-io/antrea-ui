@@ -23,6 +23,9 @@ import (
 	"os"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
+
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"github.com/go-logr/logr"
@@ -34,6 +37,7 @@ import (
 	serverconfig "antrea.io/antrea-ui/pkg/config/server"
 	"antrea.io/antrea-ui/pkg/env"
 	antreasvchandler "antrea.io/antrea-ui/pkg/handlers/antreasvc"
+	"antrea.io/antrea-ui/pkg/handlers/flowstream"
 	"antrea.io/antrea-ui/pkg/handlers/k8sproxy"
 	traceflowhandler "antrea.io/antrea-ui/pkg/handlers/traceflow"
 	"antrea.io/antrea-ui/pkg/k8s"
@@ -165,12 +169,54 @@ func run() error {
 		}
 	}
 
+	var flowStreamSubscriber flowstream.FlowStreamSubscriber
+	if config.FlowAggregator.Enabled {
+		logger.Info("FlowAggregator integration enabled", "address", config.FlowAggregator.Address)
+
+		var caData []byte
+		if config.FlowAggregator.CAConfigMap != "" {
+			ns := config.FlowAggregator.Namespace
+			if ns == "" {
+				ns = "flow-aggregator"
+			}
+			k8sClient, err := kubernetes.NewForConfig(k8sRESTConfig)
+			if err != nil {
+				return fmt.Errorf("failed to create k8s client for FlowAggregator CA cert: %w", err)
+			}
+			fetchCtx, fetchCancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer fetchCancel()
+			logger.Info("Fetching FlowAggregator CA cert", "namespace", ns, "configMap", config.FlowAggregator.CAConfigMap)
+			cm, err := k8sClient.CoreV1().ConfigMaps(ns).Get(fetchCtx, config.FlowAggregator.CAConfigMap, metav1.GetOptions{})
+			if err != nil {
+				return fmt.Errorf("failed to get FlowAggregator CA configmap %s/%s: %w", ns, config.FlowAggregator.CAConfigMap, err)
+			}
+			caCert, ok := cm.Data["ca.crt"]
+			if !ok || caCert == "" {
+				return fmt.Errorf("FlowAggregator CA configmap %s/%s is missing or has empty 'ca.crt' key", ns, config.FlowAggregator.CAConfigMap)
+			}
+			caData = []byte(caCert)
+		}
+
+		grpcSubscriber, err := flowstream.NewGRPCFlowStreamSubscriber(logger, flowstream.GRPCConfig{
+			Address:            config.FlowAggregator.Address,
+			CACert:             caData,
+			ServerName:         config.FlowAggregator.ServerName,
+			InsecureSkipVerify: config.FlowAggregator.InsecureSkipVerify,
+		})
+		if err != nil {
+			return fmt.Errorf("failed to create gRPC flow stream handler: %w", err)
+		}
+		defer grpcSubscriber.Close()
+		flowStreamSubscriber = grpcSubscriber
+	}
+
 	s := server.NewServer(
 		logger,
 		k8sDynamicClient,
 		traceflowHandler,
 		k8sProxyHandler,
 		antreaSvcHandler,
+		flowStreamSubscriber,
 		passwordStore,
 		tokenManager,
 		oidcProvider,

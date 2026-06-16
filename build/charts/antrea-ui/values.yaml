@@ -31,6 +31,31 @@ backend:
 # -- Address at which the Antrea UI is accessible. Not required for most configurations.
 url: ""
 
+# -- Namespace where Antrea is installed.
+antreaNamespace: "kube-system"
+
+# Flow Aggregator gRPC integration (live flow visibility in the UI).
+flowAggregator:
+  # -- When true, the backend connects to Flow Aggregator's FlowStreamService over gRPC.
+  enabled: false
+  # -- gRPC address (host:port) of the FlowStreamService.
+  address: "flow-aggregator.flow-aggregator.svc:14740"
+  # -- Name of the ConfigMap (in namespace below) containing the CA certificate (key: ca.crt)
+  # used to verify the FlowStreamService server certificate.
+  # The FlowStreamService uses server-side TLS only (no client authentication).
+  # Leave empty to skip server certificate verification (dev/test only).
+  caConfigMap: flow-aggregator-ca
+  # -- Namespace where the Flow Aggregator is installed.
+  namespace: flow-aggregator
+  # -- Override the TLS server name used for certificate verification. Useful when dialing
+  # via kubectl port-forward (loopback address) while the server cert is issued for the
+  # in-cluster Service DNS name (e.g. flow-aggregator.flow-aggregator.svc).
+  # Leave empty to use the hostname from the address field.
+  serverName: ""
+  # -- Disable TLS server certificate verification. Should only be used for development
+  # or testing; never enable this in production.
+  insecureSkipVerify: false
+
 security:
   # -- (bool) Set the Secure attribute for Antrea UI cookies. The attribute is set by default when HTTPS is
   # enabled in Antrea UI (by setting https.enable to true). When using an Ingress to terminate TLS,

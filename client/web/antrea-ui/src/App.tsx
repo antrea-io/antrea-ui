@@ -176,7 +176,7 @@ function App() {
                     </header>
                     <div cds-layout="horizontal align:top wrap:none" style={{ height: "100%" }}>
                         <NavTab />
-                        <div cds-layout="vertical p:md gap:md">
+                        <div cds-layout="vertical p:md gap:md" style={{ minWidth: 0, flex: 1 }}>
                             <AppErrorProvider>
                                 <WaitForSettings>
                                     <LoginWall>
