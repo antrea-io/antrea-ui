@@ -16,7 +16,7 @@ package v1
 
 // JSON-serializable flow types for the SSE API, mirroring the protobuf Flow message.
 
-type FlowType int
+type FlowType int32
 
 const (
 	FlowTypeUnspecified  FlowType = 0
@@ -26,7 +26,7 @@ const (
 	FlowTypeFromExternal FlowType = 4
 )
 
-type NetworkPolicyType int
+type NetworkPolicyType int32
 
 const (
 	NetworkPolicyTypeUnspecified NetworkPolicyType = 0
@@ -35,7 +35,7 @@ const (
 	NetworkPolicyTypeACNP        NetworkPolicyType = 3
 )
 
-type NetworkPolicyRuleAction int
+type NetworkPolicyRuleAction int32
 
 const (
 	NetworkPolicyRuleActionNoAction NetworkPolicyRuleAction = 0
@@ -44,7 +44,7 @@ const (
 	NetworkPolicyRuleActionReject   NetworkPolicyRuleAction = 3
 )
 
-type IPVersion int
+type IPVersion int32
 
 const (
 	IPVersionUnspecified IPVersion = 0
@@ -52,7 +52,7 @@ const (
 	IPVersionIPv6        IPVersion = 6
 )
 
-type FlowEndReason int
+type FlowEndReason int32
 
 const (
 	FlowEndReasonUnspecified     FlowEndReason = 0

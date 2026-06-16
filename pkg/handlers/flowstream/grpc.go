@@ -169,7 +169,7 @@ func filterToGetFlowsRequest(filter *FlowStreamFilter) *flowpb.GetFlowsRequest {
 		Direction:        filterDirectionToProto[filter.Direction],
 	}
 	for _, ft := range filter.FlowTypes {
-		pbFilter.FlowTypes = append(pbFilter.FlowTypes, flowpb.FlowType(ft)) //nolint:gosec // FlowType values are small constants, no overflow risk
+		pbFilter.FlowTypes = append(pbFilter.FlowTypes, flowpb.FlowType(ft))
 	}
 	return &flowpb.GetFlowsRequest{
 		Filters: []*flowpb.FlowFilter{pbFilter},

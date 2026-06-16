@@ -29,7 +29,7 @@ import (
 )
 
 // FlowFilterDirection controls which endpoint of a flow the directional filters are matched against.
-type FlowFilterDirection int
+type FlowFilterDirection int32
 
 const (
 	FlowFilterDirectionBoth FlowFilterDirection = 0
