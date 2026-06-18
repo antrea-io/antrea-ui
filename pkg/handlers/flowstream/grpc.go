@@ -17,7 +17,6 @@ package flowstream
 import (
 	"context"
 	"crypto/tls"
-	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
@@ -44,31 +43,14 @@ type GRPCFlowStreamSubscriber struct {
 // The FlowStreamService uses server-side TLS only (no client authentication).
 type GRPCConfig struct {
 	Address string
-	// CACert is the PEM-encoded CA certificate used to verify the FlowStreamService
-	// server certificate. When empty and InsecureSkipVerify is false, the system
-	// certificate pool is used.
-	CACert []byte
-	// ServerName overrides the TLS server name used for certificate verification.
-	// Useful when dialing via kubectl port-forward, where the address is loopback
-	// but the server cert is issued for the in-cluster Service DNS name.
-	// If empty, the hostname from Address is used.
-	ServerName string
-	// InsecureSkipVerify disables TLS server certificate verification.
-	// This should only be used for development/testing and must never be enabled in production.
-	InsecureSkipVerify bool
+	// TLSConfig is the TLS configuration used for the gRPC connection.
+	TLSConfig *tls.Config
 }
 
 func NewGRPCFlowStreamSubscriber(logger logr.Logger, cfg GRPCConfig) (*GRPCFlowStreamSubscriber, error) {
-	if cfg.InsecureSkipVerify {
-		logger.Info("WARNING: TLS certificate verification is disabled for the FlowAggregator gRPC connection. This should only be used for development/testing.")
-	}
-	tlsCfg, err := buildTLSConfig(cfg)
-	if err != nil {
-		return nil, fmt.Errorf("failed to build TLS config: %w", err)
-	}
 	conn, err := grpc.NewClient(
 		cfg.Address,
-		grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg)),
+		grpc.WithTransportCredentials(credentials.NewTLS(cfg.TLSConfig)),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create gRPC connection to %s: %w", cfg.Address, err)
@@ -290,26 +272,4 @@ func protoFlowToAPI(pb *flowpb.Flow) apisv1.Flow {
 	}
 
 	return f
-}
-
-func buildTLSConfig(cfg GRPCConfig) (*tls.Config, error) {
-	tlsCfg := &tls.Config{
-		MinVersion: tls.VersionTLS12,
-	}
-
-	if cfg.InsecureSkipVerify {
-		tlsCfg.InsecureSkipVerify = true //nolint:gosec
-	} else if len(cfg.CACert) > 0 {
-		pool := x509.NewCertPool()
-		if !pool.AppendCertsFromPEM(cfg.CACert) {
-			return nil, fmt.Errorf("failed to parse FlowAggregator CA cert")
-		}
-		tlsCfg.RootCAs = pool
-	}
-
-	if cfg.ServerName != "" {
-		tlsCfg.ServerName = cfg.ServerName
-	}
-
-	return tlsCfg, nil
 }
