@@ -17,6 +17,8 @@ package main
 import (
 	"context"
 	"crypto/rsa"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -197,11 +199,13 @@ func run() error {
 			caData = []byte(caCert)
 		}
 
+		tlsCfg, err := buildFlowAggregatorTLSConfig(logger, config.FlowAggregator, caData)
+		if err != nil {
+			return fmt.Errorf("failed to build TLS config for FlowAggregator: %w", err)
+		}
 		grpcSubscriber, err := flowstream.NewGRPCFlowStreamSubscriber(logger, flowstream.GRPCConfig{
-			Address:            config.FlowAggregator.Address,
-			CACert:             caData,
-			ServerName:         config.FlowAggregator.ServerName,
-			InsecureSkipVerify: config.FlowAggregator.InsecureSkipVerify,
+			Address:   config.FlowAggregator.Address,
+			TLSConfig: tlsCfg,
 		})
 		if err != nil {
 			return fmt.Errorf("failed to create gRPC flow stream handler: %w", err)
@@ -273,6 +277,28 @@ func run() error {
 	}
 
 	return nil
+}
+
+func buildFlowAggregatorTLSConfig(logger logr.Logger, cfg serverconfig.FlowAggregatorConfig, caData []byte) (*tls.Config, error) {
+	if cfg.InsecureSkipVerify {
+		logger.Info("WARNING: TLS certificate verification is disabled for the FlowAggregator gRPC connection. This should only be used for development/testing.")
+	}
+	tlsCfg := &tls.Config{
+		MinVersion: tls.VersionTLS12,
+	}
+	if cfg.InsecureSkipVerify {
+		tlsCfg.InsecureSkipVerify = true
+	} else if len(caData) > 0 {
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(caData) {
+			return nil, fmt.Errorf("failed to parse FlowAggregator CA cert")
+		}
+		tlsCfg.RootCAs = pool
+	}
+	if cfg.ServerName != "" {
+		tlsCfg.ServerName = cfg.ServerName
+	}
+	return tlsCfg, nil
 }
 
 func main() {
