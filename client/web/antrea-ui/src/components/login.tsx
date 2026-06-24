@@ -14,18 +14,12 @@
  * limitations under the License.
  */
 
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { useForm, SubmitHandler } from 'react-hook-form';
-import { ErrorMessage } from '@hookform/error-message';
-import { CdsButton } from '@cds/react/button';
-import { CdsFormGroup } from '@cds/react/forms';
-import { CdsInput } from '@cds/react/input';
-import { CdsPassword } from '@cds/react/password';
-import { CdsDivider } from '@cds/react/divider';
+import '@antrea/ui-components';
 import { authAPI } from '../api/auth';
 import { Settings } from '../api/settings';
-import { useAppError} from './errors';
-import { ErrorMessageContainer } from './form-errors';
+import { useAppError } from './errors';
 import config from '../config';
 
 const { apiServer } = config;
@@ -36,47 +30,72 @@ type Inputs = {
 };
 
 export function LoginBasic(props: { setToken: (token: string) => void }) {
-    const { register, handleSubmit, formState: { errors } } = useForm<Inputs>();
+    const { register, handleSubmit, setValue, formState: { errors } } = useForm<Inputs>({
+        defaultValues: { username: '', password: '' },
+    });
     const setToken = props.setToken;
     const { addError } = useAppError();
+
+    const usernameRef = useRef<HTMLElement & { value: string }>(null);
+    const passwordRef = useRef<HTMLElement & { value: string }>(null);
 
     const onSubmit: SubmitHandler<Inputs> = async data => {
         try {
             const token = await authAPI.login(data.username, data.password);
             if (token) setToken(token.accessToken);
         } catch(e) {
-            if (e instanceof Error ) addError(e);
+            if (e instanceof Error) addError(e);
             console.error(e);
         }
     };
 
+    // Register fields for RHF validation rules. We don't attach RHF's returned ref to the
+    // web component (shadow DOM breaks the ref-based value read); instead we call setValue()
+    // directly from the antrea-input custom event listener below.
+    register('username', { required: 'Required field' });
+    register('password', { required: 'Required field' });
+
+    useEffect(() => {
+        const usernameEl = usernameRef.current;
+        const passwordEl = passwordRef.current;
+        if (!usernameEl || !passwordEl) return;
+
+        const onUsernameInput = (e: Event) => {
+            setValue('username', (e as CustomEvent<{ value: string }>).detail.value, { shouldValidate: false });
+        };
+        const onPasswordInput = (e: Event) => {
+            setValue('password', (e as CustomEvent<{ value: string }>).detail.value, { shouldValidate: false });
+        };
+
+        usernameEl.addEventListener('antrea-input', onUsernameInput);
+        passwordEl.addEventListener('antrea-input', onPasswordInput);
+        return () => {
+            usernameEl.removeEventListener('antrea-input', onUsernameInput);
+            passwordEl.removeEventListener('antrea-input', onPasswordInput);
+        };
+    // setValue and register are stable RHF function refs — safe to omit from deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
     return (
-        <form onSubmit = {handleSubmit(onSubmit)}>
-            <CdsFormGroup layout="horizontal">
-                <CdsInput>
-                    <label>Username</label>
-                    <input {...register("username", {
-                        required: "Required field",
-                    })} defaultValue="admin" />
-                </CdsInput>
-                <ErrorMessage
-                    errors={errors}
-                    name="username"
-                    as={<ErrorMessageContainer />}
-                />
-                <CdsPassword>
-                    <label>Password</label>
-                    <input type="password" {...register("password", {
-                        required: "Required field",
-                    })} />
-                </CdsPassword>
-                <ErrorMessage
-                    errors={errors}
-                    name="password"
-                    as={<ErrorMessageContainer />}
-                />
-                <CdsButton role="button" type="submit">Login</CdsButton>
-            </CdsFormGroup>
+        <form className="login-form" onSubmit={handleSubmit(onSubmit)}>
+            <antrea-input
+                ref={usernameRef}
+                label="Username"
+                name="username"
+                placeholder="admin"
+                error={!!errors.username}
+                error-message={errors.username?.message}
+            />
+            <antrea-input
+                ref={passwordRef}
+                label="Password"
+                name="password"
+                type="password"
+                error={!!errors.password}
+                error-message={errors.password?.message}
+            />
+            <antrea-button type="submit">Login</antrea-button>
         </form>
     );
 }
@@ -86,7 +105,7 @@ export function LoginOIDC(props: { providerName: string }) {
         const current = window.location.href;
         const params = new URLSearchParams();
         params.set('redirect_url', current);
-        window.location.href=`${apiServer}/auth/oauth2/login?${params.toString()}`;
+        window.location.href = `${apiServer}/auth/oauth2/login?${params.toString()}`;
     }
 
     useEffect(() => {
@@ -97,17 +116,21 @@ export function LoginOIDC(props: { providerName: string }) {
     }, []);
 
     return (
-        <CdsButton role="button" type="button" onClick={() => login()}>Login with {props.providerName}</CdsButton>
+        <antrea-button type="button" action="outline" onClick={() => login()}>
+            Login with {props.providerName}
+        </antrea-button>
     );
 }
 
 export default function Login(props: { setToken: (token: string) => void, settings: Settings }) {
-    const settings = props.settings;
+    const { settings } = props;
 
     return (
-        <div cds-layout="vertical p-y:md gap:md">
-            { settings.auth.basicEnabled && <> <CdsDivider /> <LoginBasic setToken={props.setToken} /> </> }
-            { settings.auth.oidcEnabled && <> <CdsDivider /> <LoginOIDC providerName={settings.auth.oidcProviderName || 'OIDC'} /> </> }
+        <div className="login-form">
+            {settings.auth.basicEnabled && <LoginBasic setToken={props.setToken} />}
+            {settings.auth.oidcEnabled && (
+                <LoginOIDC providerName={settings.auth.oidcProviderName || 'OIDC'} />
+            )}
         </div>
     );
 }

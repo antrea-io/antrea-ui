@@ -17,12 +17,11 @@
 import React, { useEffect, useState, useContext } from 'react';
 import logo from './logo.svg';
 import './App.css';
-import { Outlet, Link, useSearchParams } from "react-router";
+import '@antrea/ui-components';
+import { Outlet, Link, useSearchParams } from 'react-router';
 import NavTab from './components/nav';
 import Login from './components/login';
 import { useLogout } from './components/logout';
-import { CdsButton } from '@cds/react/button';
-import { CdsAlertGroup, CdsAlert } from "@cds/react/alert";
 import { AppErrorProvider, AppErrorNotification } from './components/errors';
 import { Provider, useSelector, useDispatch } from 'react-redux';
 import type { RootState } from './store';
@@ -30,7 +29,7 @@ import { store, setToken } from './store';
 import { authAPI } from './api/auth';
 import { Settings, settingsAPI } from './api/settings';
 import { APIError } from './api/common';
-import { useAppError} from './components/errors';
+import { useAppError } from './components/errors';
 import { WaitForAPIResource } from './components/progress';
 import SettingsContext from './components/settings';
 
@@ -51,41 +50,27 @@ export function LoginWall(props: React.PropsWithChildren) {
                 await authAPI.refreshToken();
             } catch (e) {
                 if (e instanceof APIError && e.code === 401) {
-                    // ignore 401 errors
                     return;
                 }
                 if (e instanceof Error) addError(e);
                 console.error(e);
             } finally {
-                // indicate that the refresh API call has completed
                 setRefreshDone(true);
             }
         }
 
         if (token === undefined) {
-            // try a refresh
             refreshToken();
         } else {
-            // If token is defined and we don't need to call refreshToken, set the refreshDone flag
-            // to true automatically.
-            // Not sure how important this is in practice, except maybe for unit tests.
-            // For users, the only way to have a defined token is if refreshToken has actually been
-            // called. In unit tests, it could be possible to set the token directly without having
-            // an actual call to refreshToken.
             setRefreshDone(true);
         }
     }, [token, addError, removeError]);
 
     useEffect(() => {
-        // From the React documentation:
-        // > By default, React DOM escapes any values embedded in JSX before rendering them.
-        // So we should not have to worry about displaying msg as is.
         setMsg(searchParams.get('msg'));
     }, [searchParams, setSearchParams]);
 
     useEffect(() => {
-        // we use this to remember that we successfully authenticated with OIDC
-        // when the refreshToken expires, we will use this information to login with OIDC by default
         const authMethod = searchParams.get('auth_method');
         if (authMethod === 'oidc' && settings.auth.oidcEnabled) {
             localStorage.setItem('ui.antrea.io/use-oidc', 'yes');
@@ -101,23 +86,23 @@ export function LoginWall(props: React.PropsWithChildren) {
     }
 
     if (token) {
-        return (
-            <div cds-layout="vertical align:stretch">
-                {props.children}
-            </div>
-        );
+        return <>{props.children}</>;
     }
 
     return (
         <WaitForAPIResource ready={refreshDone} text="Attempting to authenticate">
-            <div cds-layout="vertical">
-                <p cds-text="section" >Please log in</p>
+            <div className="login-wall">
+                <h2>Please log in</h2>
                 <Login setToken={doSetToken} settings={settings} />
-                { msg && <>
-                    <CdsAlertGroup status="success">
-                        <CdsAlert closable onCloseChange={() => setMsg(null)}>{msg}</CdsAlert>
-                    </CdsAlertGroup>
-                </> }
+                {msg && (
+                    <antrea-alert
+                        status="success"
+                        closable
+                        onAntreaClose={() => setMsg(null)}
+                    >
+                        {msg}
+                    </antrea-alert>
+                )}
             </div>
         </WaitForAPIResource>
     );
@@ -127,7 +112,13 @@ function Logout() {
     const logout = useLogout();
 
     return (
-        <CdsButton type="button" action="outline" onClick={() => { logout('You successfully logged out'); }}>Logout</CdsButton>        
+        <antrea-button
+            type="button"
+            action="outline"
+            onClick={() => logout('You successfully logged out')}
+        >
+            Logout
+        </antrea-button>
     );
 }
 
@@ -138,8 +129,8 @@ export function WaitForSettings(props: React.PropsWithChildren) {
     useEffect(() => {
         async function getSettings() {
             try {
-                const settings = await settingsAPI.fetch();
-                setSettings(settings);
+                const s = await settingsAPI.fetch();
+                setSettings(s);
                 removeError();
             } catch (e) {
                 if (e instanceof Error) addError(e);
@@ -148,10 +139,10 @@ export function WaitForSettings(props: React.PropsWithChildren) {
         }
 
         getSettings();
-    }, [addError, removeError, setSettings]);
+    }, [addError, removeError]);
 
     return (
-        <WaitForAPIResource ready={settings !== undefined} text='Loading app settings'>
+        <WaitForAPIResource ready={settings !== undefined} text="Loading app settings">
             <SettingsContext.Provider value={settings!}>
                 {props.children}
             </SettingsContext.Provider>
@@ -161,34 +152,31 @@ export function WaitForSettings(props: React.PropsWithChildren) {
 
 function App() {
     return (
-        <div cds-text="body" cds-theme="dark">
-            {/* 100vh to fill the whole screen */}
-            <div style={{ height: "fit-content", minHeight: "100vh" }} cds-layout="vertical gap:md align:top">
-                <Provider store={store}>
-                    <header cds-layout="horizontal wrap:none gap:md m-t:lg" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding:"0px 12px"}}>
-                        <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                            <Link to="/">
-                                <img src={logo} alt="logo" style={{ height: "2rem" }} />
-                            </Link>
-                            <p cds-text="heading" cds-layout="align:vertical-center">Antrea UI</p>
-                        </div>
-                        <Logout />
-                    </header>
-                    <div cds-layout="horizontal align:top wrap:none" style={{ height: "100%" }}>
-                        <NavTab />
-                        <div cds-layout="vertical p:md gap:md" style={{ minWidth: 0, flex: 1 }}>
-                            <AppErrorProvider>
-                                <WaitForSettings>
-                                    <LoginWall>
-                                        <Outlet />
-                                    </LoginWall>
-                                </WaitForSettings>
-                                <AppErrorNotification />
-                            </AppErrorProvider>
-                        </div>
+        <div className="app-shell">
+            <Provider store={store}>
+                <header className="app-header">
+                    <div className="app-header-left">
+                        <Link to="/">
+                            <img src={logo} alt="Antrea logo" className="App-logo" />
+                        </Link>
+                        <h1>Antrea UI</h1>
                     </div>
-                </Provider>
-            </div>
+                    <Logout />
+                </header>
+                <div className="app-body">
+                    <NavTab />
+                    <main className="app-content">
+                        <AppErrorProvider>
+                            <WaitForSettings>
+                                <LoginWall>
+                                    <Outlet />
+                                </LoginWall>
+                            </WaitForSettings>
+                            <AppErrorNotification />
+                        </AppErrorProvider>
+                    </main>
+                </div>
+            </Provider>
         </div>
     );
 }
