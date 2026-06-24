@@ -14,6 +14,18 @@
 
 FROM node:24-bullseye-slim as build-web
 
+# Optional: override the npm registry (e.g., for corporate proxies).
+# Leave unset to use the default registry (npmjs.org).
+ARG NPM_REGISTRY=""
+
+# Install antrea-ui-components dependencies first so the link: resolution can find 'lit'.
+WORKDIR /antrea-ui-components
+COPY client/web/antrea-ui-components/package.json client/web/antrea-ui-components/package-lock.json ./
+COPY client/web/antrea-ui-components/src ./src
+COPY client/web/antrea-ui-components/tsconfig.json ./
+RUN if [ -n "$NPM_REGISTRY" ]; then npm config set registry "$NPM_REGISTRY"; fi && \
+    npm install --omit=dev
+
 WORKDIR /app
 
 COPY client/web/antrea-ui/package.json .
@@ -21,9 +33,6 @@ COPY client/web/antrea-ui/yarn.lock .
 COPY client/web/antrea-ui/.yarnrc.yml .
 COPY client/web/antrea-ui/.yarn ./.yarn
 
-# Optional: override the npm registry (e.g., for corporate proxies).
-# Leave unset to use the default registry (npmjs.org).
-ARG NPM_REGISTRY=""
 RUN if [ -n "$NPM_REGISTRY" ]; then \
       echo "npmRegistryServer: \"$NPM_REGISTRY\"" >> .yarnrc.yml; \
     fi

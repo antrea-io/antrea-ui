@@ -1,0 +1,86 @@
+/*
+ * Copyright 2026 Antrea Authors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+/*
+ * Antrea UI design tokens.
+ *
+ * These CSS custom properties are the only styling contract between the shell
+ * and the Lit Web Components. Override them in the shell's :root to retheme
+ * the entire component library without touching any component internals.
+ *
+ * Downstream (e.g. NSX Angular shell) can map these to its own token set:
+ *   --antrea-color-primary: var(--nsx-lib-component-color-5);
+ */
+
+:root {
+  /* ── Color ─────────────────────────────────────────────────── */
+  --antrea-color-primary:          #0079b8;
+  --antrea-color-primary-hover:    #005f8e;
+  --antrea-color-primary-text:     #ffffff;
+
+  --antrea-color-bg:               #1b2a32;
+  --antrea-color-bg-surface:       #243340;
+  --antrea-color-bg-hover:         #2e3f4d;
+  --antrea-color-bg-active:        #375060;
+
+  --antrea-color-text:             #e9ecef;
+  --antrea-color-text-muted:       #adbbc4;
+  --antrea-color-text-disabled:    #6a7f8e;
+
+  --antrea-color-border:           #314351;
+  --antrea-color-border-focus:     #0079b8;
+
+  --antrea-color-danger:           #f54f47;
+  --antrea-color-danger-bg:        #3b1f1e;
+  --antrea-color-success:          #60b515;
+  --antrea-color-success-bg:       #1e3a1a;
+  --antrea-color-warning:          #f5a623;
+  --antrea-color-warning-bg:       #3b2e12;
+  --antrea-color-info:             #0079b8;
+  --antrea-color-info-bg:          #162b38;
+
+  /* ── Typography ────────────────────────────────────────────── */
+  --antrea-font-family:            -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --antrea-font-size-sm:           0.75rem;
+  --antrea-font-size-base:         0.875rem;
+  --antrea-font-size-lg:           1rem;
+  --antrea-font-size-heading:      1.25rem;
+  --antrea-font-weight-normal:     400;
+  --antrea-font-weight-medium:     500;
+  --antrea-font-weight-bold:       600;
+
+  /* ── Spacing ───────────────────────────────────────────────── */
+  --antrea-space-xs:               0.25rem;
+  --antrea-space-sm:               0.5rem;
+  --antrea-space-md:               1rem;
+  --antrea-space-lg:               1.5rem;
+  --antrea-space-xl:               2rem;
+
+  /* ── Shape ─────────────────────────────────────────────────── */
+  --antrea-radius-sm:              2px;
+  --antrea-radius-md:              4px;
+  --antrea-radius-lg:              6px;
+
+  /* ── Nav ───────────────────────────────────────────────────── */
+  --antrea-nav-width-expanded:     200px;
+  --antrea-nav-width-collapsed:    48px;
+  --antrea-nav-bg:                 #17242b;
+  --antrea-nav-border:             #243340;
+  --antrea-nav-item-text:          #adbbc4;
+  --antrea-nav-item-text-active:   #e9ecef;
+  --antrea-nav-item-bg-active:     #243340;
+  --antrea-nav-item-bg-hover:      #1e2f3a;
+}

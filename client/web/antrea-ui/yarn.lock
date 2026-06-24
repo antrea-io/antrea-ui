@@ -12,6 +12,12 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@antrea/ui-components@link:../antrea-ui-components::locator=antrea-ui%40workspace%3A.":
+  version: 0.0.0-use.local
+  resolution: "@antrea/ui-components@link:../antrea-ui-components::locator=antrea-ui%40workspace%3A."
+  languageName: node
+  linkType: soft
+
 "@asamuzakjp/css-color@npm:^5.1.11":
   version: 5.1.11
   resolution: "@asamuzakjp/css-color@npm:5.1.11"
@@ -242,51 +248,6 @@ __metadata:
   bin:
     specificity: bin/cli.js
   checksum: 10c0/c5f4e04e0bca0d2202598207a5eb0733c8109d12a68a329caa26373bec598d99db5bb785b8865fefa00fc01b08c6068138807ceb11a948fe15e904ed6cf4ba72
-  languageName: node
-  linkType: hard
-
-"@cds/city@npm:^1.1.0":
-  version: 1.1.0
-  resolution: "@cds/city@npm:1.1.0"
-  checksum: 10c0/2f0138aa63a46efbc702f5757efea40c135026a3eb1d85aa63d2602ba3dfa3c6fd04f2866a5e556cdc2085d3adceb3c0dc2e03aad519450b6a7a96058cf9e2b8
-  languageName: node
-  linkType: hard
-
-"@cds/core@npm:^6.5.0":
-  version: 6.17.0
-  resolution: "@cds/core@npm:6.17.0"
-  dependencies:
-    "@cds/city": "npm:^1.1.0"
-    lit: "npm:^2.1.3"
-    modern-normalize: "npm:1.1.0"
-    ramda: "npm:^0.29.0"
-    tslib: "npm:^2.3.1"
-  dependenciesMeta:
-    "@cds/city":
-      optional: true
-    modern-normalize:
-      optional: true
-  checksum: 10c0/150a22ca0444307010562e12f4340dc847272d820e1d9d8e7c2447aefc7eaf5dc2bc5c5be761c8f0bc844b726e6c0f512a11518a89bbb46b7a404d02cb3c825e
-  languageName: node
-  linkType: hard
-
-"@cds/react@npm:^6.5.0":
-  version: 6.16.1
-  resolution: "@cds/react@npm:6.16.1"
-  dependencies:
-    "@cds/city": "npm:^1.1.0"
-    "@lit-labs/react": "npm:^1.0.8"
-    modern-normalize: "npm:^1.1.0"
-  peerDependencies:
-    "@cds/core": 6.16.1
-    react: ">= 16.13.1"
-    react-dom: ">= 16.13.1"
-  dependenciesMeta:
-    "@cds/city":
-      optional: true
-    modern-normalize:
-      optional: true
-  checksum: 10c0/f5f3c91f0d76f1680c36bf9915243db287f285d65a715d8953e8d27c50e123f3c7210a2bef0d8edef84e6685916e7ebb35a23218ce2f733ac30b384149290d10
   languageName: node
   linkType: hard
 
@@ -658,29 +619,6 @@ __metadata:
     "@jridgewell/resolve-uri": "npm:^3.1.0"
     "@jridgewell/sourcemap-codec": "npm:^1.4.14"
   checksum: 10c0/4b30ec8cd56c5fd9a661f088230af01e0c1a3888d11ffb6b47639700f71225be21d1f7e168048d6d4f9449207b978a235c07c8f15c07705685d16dc06280e9d9
-  languageName: node
-  linkType: hard
-
-"@lit-labs/react@npm:^1.0.8":
-  version: 1.2.1
-  resolution: "@lit-labs/react@npm:1.2.1"
-  checksum: 10c0/c92364101348400a06c3eb45a6384ca7d47c32765fdcad892827b360d0bad6cef7916f9a17744f2f471a5da3d7d73750767b885fc1521cd5e5e724badb71f014
-  languageName: node
-  linkType: hard
-
-"@lit-labs/ssr-dom-shim@npm:^1.0.0, @lit-labs/ssr-dom-shim@npm:^1.1.0":
-  version: 1.4.0
-  resolution: "@lit-labs/ssr-dom-shim@npm:1.4.0"
-  checksum: 10c0/eb8b4c6ed83db48e2f2c8c038f88e0ac302214918e5c1209458cb82a35ce27ce586100c5692885b2c5520f6941b2c3512f26c4d7b7dd48f13f17f1668553395a
-  languageName: node
-  linkType: hard
-
-"@lit/reactive-element@npm:^1.3.0, @lit/reactive-element@npm:^1.6.0":
-  version: 1.6.3
-  resolution: "@lit/reactive-element@npm:1.6.3"
-  dependencies:
-    "@lit-labs/ssr-dom-shim": "npm:^1.0.0"
-  checksum: 10c0/10f1d25e24e32feb21c4c6f9e11d062901241602e12c4ecf746b3138f87fed4d8394194645514d5c1bfd5f33f3fd56ee8ef41344e2cb4413c40fe4961ec9d419
   languageName: node
   linkType: hard
 
@@ -1403,13 +1341,6 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@types/trusted-types@npm:^2.0.2":
-  version: 2.0.7
-  resolution: "@types/trusted-types@npm:2.0.7"
-  checksum: 10c0/4c4855f10de7c6c135e0d32ce462419d8abbbc33713b31d294596c0cc34ae1fa6112a2f9da729c8f7a20707782b0d69da3b1f8df6645b0366d08825ca1522e0c
-  languageName: node
-  linkType: hard
-
 "@types/use-sync-external-store@npm:^0.0.6":
   version: 0.0.6
   resolution: "@types/use-sync-external-store@npm:0.0.6"
@@ -1784,9 +1715,7 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "antrea-ui@workspace:."
   dependencies:
-    "@cds/city": "npm:^1.1.0"
-    "@cds/core": "npm:^6.5.0"
-    "@cds/react": "npm:^6.5.0"
+    "@antrea/ui-components": "link:../antrea-ui-components"
     "@eslint/create-config": "npm:^1.9.0"
     "@hookform/error-message": "npm:^2.0.1"
     "@reduxjs/toolkit": "npm:^2.8.2"
@@ -4406,37 +4335,6 @@ __metadata:
   languageName: node
   linkType: hard
 
-"lit-element@npm:^3.3.0":
-  version: 3.3.3
-  resolution: "lit-element@npm:3.3.3"
-  dependencies:
-    "@lit-labs/ssr-dom-shim": "npm:^1.1.0"
-    "@lit/reactive-element": "npm:^1.3.0"
-    lit-html: "npm:^2.8.0"
-  checksum: 10c0/f44c12fa3423a4e9ca5b84651410687e14646bb270ac258325e6905affac64a575f041f8440377e7ebaefa3910b6f0d6b8b1e902cb1aa5d0849b3fdfbf4fb3b6
-  languageName: node
-  linkType: hard
-
-"lit-html@npm:^2.8.0":
-  version: 2.8.0
-  resolution: "lit-html@npm:2.8.0"
-  dependencies:
-    "@types/trusted-types": "npm:^2.0.2"
-  checksum: 10c0/90057dee050803823ac884c1355b0213ab8c05fbe2ec63943c694b61aade5d36272068f3925f45a312835e504f9c9784738ef797009f0a756a750351eafb52d5
-  languageName: node
-  linkType: hard
-
-"lit@npm:^2.1.3":
-  version: 2.8.0
-  resolution: "lit@npm:2.8.0"
-  dependencies:
-    "@lit/reactive-element": "npm:^1.6.0"
-    lit-element: "npm:^3.3.0"
-    lit-html: "npm:^2.8.0"
-  checksum: 10c0/bf33c26b1937ee204aed1adbfa4b3d43a284e85aad8ea9763c7865365917426eded4e5888158b4136095ea42054812561fe272862b61775f1198fad3588b071f
-  languageName: node
-  linkType: hard
-
 "locate-path@npm:^6.0.0":
   version: 6.0.0
   resolution: "locate-path@npm:6.0.0"
@@ -4668,13 +4566,6 @@ __metadata:
   dependencies:
     minipass: "npm:^7.1.2"
   checksum: 10c0/5aad75ab0090b8266069c9aabe582c021ae53eb33c6c691054a13a45db3b4f91a7fb1bd79151e6b4e9e9a86727b522527c0a06ec7d45206b745d54cd3097bcec
-  languageName: node
-  linkType: hard
-
-"modern-normalize@npm:1.1.0, modern-normalize@npm:^1.1.0":
-  version: 1.1.0
-  resolution: "modern-normalize@npm:1.1.0"
-  checksum: 10c0/7886fa57dc0fcb1021343c4dbec2f65e06e9ff25f727d51fa3a469b0b684b796e5b98554c643b8859bda8d09ea86f89e5cc70a067da91d23ad9bf7cfd545e36b
   languageName: node
   linkType: hard
 
@@ -5086,13 +4977,6 @@ __metadata:
   version: 2.3.1
   resolution: "punycode@npm:2.3.1"
   checksum: 10c0/14f76a8206bc3464f794fb2e3d3cc665ae416c01893ad7a02b23766eb07159144ee612ad67af5e84fa4479ccfe67678c4feb126b0485651b302babf66f04f9e9
-  languageName: node
-  linkType: hard
-
-"ramda@npm:^0.29.0":
-  version: 0.29.1
-  resolution: "ramda@npm:0.29.1"
-  checksum: 10c0/5de53a07400959c1a704c366ec52b1b8cd9a444dc1f9cdf17d607e0b9eeaa38cbaea309d43e59dbd7f36731ba977a64d40092555c0e7c2d4a41e8e922239c0ba
   languageName: node
   linkType: hard
 
@@ -5954,7 +5838,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"tslib@npm:^2.3.1, tslib@npm:^2.4.0":
+"tslib@npm:^2.4.0":
   version: 2.8.1
   resolution: "tslib@npm:2.8.1"
   checksum: 10c0/9c4759110a19c53f992d9aae23aac5ced636e99887b51b9e61def52611732872ff7668757d4e4c61f19691e36f4da981cd9485e869b4a7408d689f6bf1f14e62

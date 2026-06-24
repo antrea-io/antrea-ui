@@ -15,12 +15,12 @@
  */
 
 import React from 'react';
-import { CdsAlertGroup, CdsAlert } from "@cds/react/alert";
+import '@antrea/ui-components';
 
 export function ErrorMessageContainer(props: React.PropsWithChildren) {
     return (
-        <CdsAlertGroup type="banner" status="danger">
-            <CdsAlert>{props.children}</CdsAlert>
-        </CdsAlertGroup>
+        <antrea-alert status="danger">
+            {props.children}
+        </antrea-alert>
     );
 }
