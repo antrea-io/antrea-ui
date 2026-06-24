@@ -76,9 +76,8 @@ export interface IP {
     destination: string;
 }
 
-export interface Labels {
-    labels: Record<string, string>;
-}
+// Pod labels are serialized as a flat map[string]string by the backend.
+export type Labels = Record<string, string>;
 
 export interface Kubernetes {
     flowType: FlowType;

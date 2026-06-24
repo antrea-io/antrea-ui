@@ -37,10 +37,10 @@ const WELL_KNOWN_APP_LABELS = [
 ];
 
 function getWorkloadName(namespace: string, podName: string, podLabels?: Labels): string {
-    if (podLabels?.labels) {
+    if (podLabels) {
         for (const label of WELL_KNOWN_APP_LABELS) {
-            if (podLabels.labels[label]) {
-                return `${namespace}/${podLabels.labels[label]}`;
+            if (podLabels[label]) {
+                return `${namespace}/${podLabels[label]}`;
             }
         }
     }
