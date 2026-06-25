@@ -19,6 +19,13 @@ rules:
       - list
       - get
   - apiGroups:
+      - stats.antrea.io
+    resources:
+      - nodelatencystats
+    verbs:
+      - list
+      - get
+  - apiGroups:
       - crd.antrea.io
     resources:
       - traceflows
