@@ -24,6 +24,7 @@ import {
     dashboardIcon, dashboardIconName,
     bugIcon, bugIconName,
     eyeIcon, eyeIconName,
+    nodesIcon, nodesIconName,
  } from '@cds/core/icon';
 
 ClarityIcons.addIcons(
@@ -31,6 +32,7 @@ ClarityIcons.addIcons(
     dashboardIcon,
     bugIcon,
     eyeIcon,
+    nodesIcon,
 );
 
 export default function NavTab() {
@@ -55,6 +57,12 @@ export default function NavTab() {
                 <Link to="/flows">
                     <CdsIcon shape={eyeIconName} solid size="sm"></CdsIcon>
                     Flow Visibility
+                </Link>
+            </CdsNavigationItem>
+            <CdsNavigationItem>
+                <Link to="/nodelatency">
+                    <CdsIcon shape={nodesIconName} solid size="sm"></CdsIcon>
+                    Node Latency
                 </Link>
             </CdsNavigationItem>
             <CdsNavigationItem>
