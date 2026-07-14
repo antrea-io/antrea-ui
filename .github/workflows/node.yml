@@ -22,9 +22,26 @@ jobs:
         node-version: 24
     - name: Enable Corepack
       run: corepack enable
+    - run: npm install
+      working-directory: client/web/antrea-ui-components/
     - run: yarn install
       working-directory: client/web/antrea-ui/
     - run: yarn lint
       working-directory: client/web/antrea-ui/
     - run: yarn test
       working-directory: client/web/antrea-ui/
+
+  ui-components:
+    name: Run antrea-ui-components checks
+    runs-on: ubuntu-latest
+    steps:
+    - name: Check-out code
+      uses: actions/checkout@v7
+    - name: Set up Node
+      uses: actions/setup-node@v7
+      with:
+        node-version: 24
+    - run: npm install
+      working-directory: client/web/antrea-ui-components/
+    - run: npm test
+      working-directory: client/web/antrea-ui-components/

@@ -20,11 +20,7 @@ import { createBrowserRouter } from 'react-router';
 import { RouterProvider } from 'react-router/dom';
 import './index.css';
 import App from './App';
-import Summary from './routes/summary';
-import Traceflow from './routes/traceflow';
-import TraceflowResult from './routes/traceflowresult';
-import FlowVisibility from './routes/flowvisibility';
-import Settings from './routes/settings';
+import { SummaryPage, TraceflowPage, FlowVisibilityPage, SettingsPage } from './routes/lit-pages';
 import reportWebVitals from './reportWebVitals';
 
 const router = createBrowserRouter([
@@ -33,31 +29,24 @@ const router = createBrowserRouter([
         element: <App />,
         children: [
             {
-                // default route
                 index: true,
-                element: <Summary />,
+                element: <SummaryPage />,
             },
             {
                 path: "summary",
-                element: <Summary />,
+                element: <SummaryPage />,
             },
             {
                 path: "traceflow",
-                element: <Traceflow />,
-                children: [
-                    {
-                        path: "result",
-                        element: <TraceflowResult />,
-                    }
-                ]
+                element: <TraceflowPage />,
             },
             {
                 path: "flows",
-                element: <FlowVisibility />,
+                element: <FlowVisibilityPage />,
             },
             {
                 path: "settings",
-                element: <Settings />,
+                element: <SettingsPage />,
             },
         ],
     },

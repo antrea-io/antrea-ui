@@ -15,7 +15,7 @@
  */
 
 import React, { useState, useCallback, useContext } from 'react';
-import { CdsAlertGroup, CdsAlert } from "@cds/react/alert";
+import '@antrea/ui-components';
 
 interface AppErrorContextType {
     error: Error | null
@@ -32,14 +32,10 @@ const AppErrorContext = React.createContext<AppErrorContextType>({
 export function AppErrorProvider(props: React.PropsWithChildren) {
     const [error, setError] = useState<Error | null>(null);
 
-    const removeError = () => setError(null);
-
-    const addError = (error: Error) => setError(error);
-
     const contextValue = {
         error,
-        addError: useCallback((error: Error) => addError(error), []),
-        removeError: useCallback(() => removeError(), [])
+        addError: useCallback((error: Error) => setError(error), []),
+        removeError: useCallback(() => setError(null), []),
     };
 
     return (
@@ -51,24 +47,22 @@ export function AppErrorProvider(props: React.PropsWithChildren) {
 
 // eslint-disable-next-line react-refresh/only-export-components
 export function useAppError() {
-  const { error, addError, removeError } = useContext(AppErrorContext);
-  return { error, addError, removeError };
+    const { error, addError, removeError } = useContext(AppErrorContext);
+    return { error, addError, removeError };
 }
 
 export function AppErrorNotification() {
     const { error, removeError } = useAppError();
 
-    const handleClose = () => {
-        removeError();
-    };
-
-    if (!error) {
-        return null;
-    }
+    if (!error) return null;
 
     return (
-        <CdsAlertGroup type="banner" status="danger">
-            <CdsAlert closable onCloseChange={()=>handleClose()}>{error.message}</CdsAlert>
-        </CdsAlertGroup>
+        <antrea-alert
+            status="danger"
+            closable
+            onAntreaClose={() => removeError()}
+        >
+            {error.message}
+        </antrea-alert>
     );
 }

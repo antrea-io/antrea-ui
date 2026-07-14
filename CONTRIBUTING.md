@@ -62,17 +62,25 @@ contributions (it's your responsibility to check with your employer).
 
 * [Go >= 1.21](https://golang.org/doc/install)
 * [Yarn >= 1.22](https://classic.yarnpkg.com/lang/en/docs/install/)
+* [npm](https://docs.npmjs.com/downloading-and-installing-node-js-and-npm)
+  (for `client/web/antrea-ui-components`, which uses npm rather than Yarn)
 * After installing Yarn, install all the frontend dependencies with `cd
   client/web/antrea-ui/ && yarn install`. You will need to run this command
   every time a new dependency is added to the project by another developer.
+  Do the same for the shared component library with `cd
+  client/web/antrea-ui-components/ && npm install`.
 
 ### Unit Tests
 
 To run unit tests for the backend, use `make test`.
 
-To run unit tests for the frontend, use `cd client/web/antrea-ui/ && yarn
-test`. If you are missing some dependencies, run `yarn install` before `yarn
-test`.
+To run unit tests for the React frontend, use `cd client/web/antrea-ui/ &&
+yarn test`. If you are missing some dependencies, run `yarn install` before
+`yarn test`.
+
+To run unit tests for the shared Lit component library, use `cd
+client/web/antrea-ui-components/ && npm test`. If you are missing some
+dependencies, run `npm install` before `npm test`.
 
 ### Running the UI locally
 

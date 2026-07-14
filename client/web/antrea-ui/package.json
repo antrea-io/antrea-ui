@@ -4,9 +4,7 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "@cds/city": "^1.1.0",
-    "@cds/core": "^6.5.0",
-    "@cds/react": "^6.5.0",
+    "@antrea/ui-components": "portal:../antrea-ui-components",
     "@hookform/error-message": "^2.0.1",
     "@reduxjs/toolkit": "^2.8.2",
     "@testing-library/react": "^16.0.0",

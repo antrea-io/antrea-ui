@@ -1,5 +1,5 @@
 /**
- * Copyright 2023 Antrea Authors.
+ * Copyright 2026 Antrea Authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,25 +14,12 @@
  * limitations under the License.
  */
 
-import { defineConfig } from 'vite'
-import react from '@vitejs/plugin-react'
-import { visualizer } from "rollup-plugin-visualizer";
-import path from 'node:path'
+import { defineConfig } from 'vitest/config'
 
-// https://vitejs.dev/config/
 export default defineConfig({
-    resolve: {
-        preserveSymlinks: true,
-        alias: {
-            '@antrea/ui-components': path.resolve(__dirname, '../antrea-ui-components'),
-        },
-    },
-    build: {
-        outDir: 'build',
-    },
-    plugins: [react(), visualizer()],
-    server: {
-        port: 3000,
-        strictPort: true,
+    test: {
+        environment: 'jsdom',
+        globals: true,
+        setupFiles: './vitest.setup.ts',
     },
 })

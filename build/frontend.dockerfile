@@ -14,6 +14,18 @@
 
 FROM node:24-bullseye-slim as build-web
 
+# Optional: override the npm registry (e.g., for corporate proxies).
+# Leave unset to use the default registry (npmjs.org).
+ARG NPM_REGISTRY=""
+
+# Install antrea-ui-components dependencies first so the portal: resolution can find 'lit'.
+WORKDIR /antrea-ui-components
+COPY client/web/antrea-ui-components/package.json client/web/antrea-ui-components/package-lock.json ./
+COPY client/web/antrea-ui-components/src ./src
+COPY client/web/antrea-ui-components/tsconfig.json ./
+RUN if [ -n "$NPM_REGISTRY" ]; then npm config set registry "$NPM_REGISTRY"; fi && \
+    npm install --omit=dev
+
 WORKDIR /app
 
 COPY client/web/antrea-ui/package.json .
@@ -21,14 +33,15 @@ COPY client/web/antrea-ui/yarn.lock .
 COPY client/web/antrea-ui/.yarnrc.yml .
 COPY client/web/antrea-ui/.yarn ./.yarn
 
-# Optional: override the npm registry (e.g., for corporate proxies).
-# Leave unset to use the default registry (npmjs.org).
-ARG NPM_REGISTRY=""
 RUN if [ -n "$NPM_REGISTRY" ]; then \
       echo "npmRegistryServer: \"$NPM_REGISTRY\"" >> .yarnrc.yml; \
     fi
 
-RUN corepack enable && yarn install --immutable
+# Corepack fetches the yarn binary itself from repo.yarnpkg.com, ignoring NPM_REGISTRY —
+# on networks that block it (TLS "unable to get local issuer certificate"), route it
+# through the same registry too (trailing slash stripped to avoid a "//" 404).
+RUN export COREPACK_NPM_REGISTRY="${NPM_REGISTRY%/}" && \
+    corepack enable && yarn install --immutable
 
 COPY client/web/antrea-ui .
 ARG NODE_ENV=production
