@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi, type Mock } from 'vitest';
 import './antrea-login-page';
 import type { AntreaLoginPage } from './antrea-login-page';
 
@@ -209,7 +209,7 @@ describe('AntreaLoginPage — success message banner', () => {
 });
 
 describe('AntreaLoginPage — OIDC auto-redirect', () => {
-    let hrefSetter: ReturnType<typeof vi.fn>;
+    let hrefSetter: Mock;
     let originalLocation: PropertyDescriptor | undefined;
 
     beforeEach(() => {

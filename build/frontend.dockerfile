@@ -18,13 +18,16 @@ FROM node:24-bullseye-slim as build-web
 # Leave unset to use the default registry (npmjs.org).
 ARG NPM_REGISTRY=""
 
-# Install antrea-ui-components dependencies first so the portal: resolution can find 'lit'.
+# Build antrea-ui-components first: antrea-ui now consumes its published dist/ output
+# (package.json's main/module/types point there), not its raw TypeScript source, so it
+# needs its devDependencies (vite, typescript) too, not just its runtime ones.
 WORKDIR /antrea-ui-components
 COPY client/web/antrea-ui-components/package.json client/web/antrea-ui-components/package-lock.json ./
 COPY client/web/antrea-ui-components/src ./src
-COPY client/web/antrea-ui-components/tsconfig.json ./
+COPY client/web/antrea-ui-components/tsconfig.json client/web/antrea-ui-components/vite.config.ts ./
 RUN if [ -n "$NPM_REGISTRY" ]; then npm config set registry "$NPM_REGISTRY"; fi && \
-    npm install --omit=dev
+    npm install && \
+    npm run build
 
 WORKDIR /app
 

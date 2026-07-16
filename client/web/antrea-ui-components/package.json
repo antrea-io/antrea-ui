@@ -3,16 +3,18 @@
   "version": "0.1.0",
   "description": "Antrea UI Web Components built with Lit",
   "type": "module",
-  "main": "src/index.ts",
-  "module": "src/index.ts",
+  "main": "dist/index.js",
+  "module": "dist/index.js",
+  "types": "dist/index.d.ts",
   "exports": {
     ".": {
-      "import": "./src/index.ts"
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
     },
     "./src/tokens.css": "./src/tokens.css"
   },
   "scripts": {
-    "build": "vite build",
+    "build": "vite build && tsc --emitDeclarationOnly",
     "dev": "vite demo --open",
     "test": "vitest"
   },
@@ -22,6 +24,9 @@
     "d3-graphviz": "^5.6.0",
     "is-ip": "^5.0.1",
     "lit": "^3.0.0"
+  },
+  "overrides": {
+    "@hpcc-js/wasm": "2.34.5"
   },
   "devDependencies": {
     "jsdom": "^29.0.0",

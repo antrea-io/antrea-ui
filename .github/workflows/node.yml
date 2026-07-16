@@ -24,6 +24,8 @@ jobs:
       run: corepack enable
     - run: npm install
       working-directory: client/web/antrea-ui-components/
+    - run: npm run build
+      working-directory: client/web/antrea-ui-components/
     - run: yarn install
       working-directory: client/web/antrea-ui/
     - run: yarn lint
