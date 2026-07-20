@@ -24,13 +24,16 @@ import {
     NetworkPolicyRuleAction,
 } from '../lib/flow-types';
 
-function makeFlow(overrides: { srcPod?: string; dstPod?: string; ingressPolicy?: string } = {}): Flow {
+function makeFlow(overrides: { srcPod?: string; dstPod?: string; ingressPolicy?: string; srcIP?: string } = {}): Flow {
     return {
         id: `flow-${Math.random()}`,
         startTs: '2026-03-25T00:00:00Z',
         endTs: '2026-03-25T00:01:00Z',
         endReason: FlowEndReason.Unspecified,
-        ip: { version: IPVersion.IPv4, source: '10.0.0.1', destination: '10.0.0.2' },
+        // connectionKey() (flow-types.ts) is keyed on source/destination IP, not pod name —
+        // entries with distinct pod names but the same IPs collapse into a single FlowStore
+        // entry. Tests distinguishing entries by pod name must also vary the source IP.
+        ip: { version: IPVersion.IPv4, source: overrides.srcIP ?? '10.0.0.1', destination: '10.0.0.2' },
         transport: { protocolNumber: 6, sourcePort: 12345, destinationPort: 80 },
         k8s: {
             flowType: FlowType.InterNode,
@@ -85,6 +88,12 @@ function flowEventChunk(flows: Flow[]): string {
     return `event: flow\ndata: ${JSON.stringify({ flows })}\n\n`;
 }
 
+// The page also fetches /api/v1/settings on connect (independently of the stream), so tests
+// asserting on stream-fetch count must filter to that URL rather than counting all fetch calls.
+function streamCalls(fetchMock: { mock: { calls: unknown[][] } }): unknown[][] {
+    return fetchMock.mock.calls.filter(c => typeof c[0] === 'string' && c[0].includes('/api/v1/flows/stream'));
+}
+
 let el: AntreaFlowVisibilityPage | undefined;
 
 beforeEach(() => {
@@ -124,8 +133,7 @@ describe('AntreaFlowVisibilityPage — smoke and stream lifecycle', () => {
         await vi.advanceTimersByTimeAsync(0);
         await vi.advanceTimersByTimeAsync(1000); // default FlowStreamClient batch interval
 
-        expect(fetchMock).toHaveBeenCalledTimes(1);
-        expect(fetchMock.mock.calls[0][0]).toContain('/api/v1/flows/stream');
+        expect(streamCalls(fetchMock)).toHaveLength(1);
     });
 
     test('a stream 401 dispatches antrea-session-expired', async () => {
@@ -145,7 +153,7 @@ describe('AntreaFlowVisibilityPage — smoke and stream lifecycle', () => {
         page.token = 'my-token';
         await page.updateComplete;
         await vi.advanceTimersByTimeAsync(0);
-        expect(fetchMock).toHaveBeenCalledTimes(1);
+        expect(streamCalls(fetchMock)).toHaveLength(1);
 
         // Host refreshed the token and re-set it, without unmounting the page.
         fetchMock.mockImplementation(async () => sseResponse([flowEventChunk([makeFlow()])]));
@@ -154,7 +162,7 @@ describe('AntreaFlowVisibilityPage — smoke and stream lifecycle', () => {
         await vi.advanceTimersByTimeAsync(0);
 
         // A second, brand-new client was started (not a dead updateToken() no-op).
-        expect(fetchMock).toHaveBeenCalledTimes(2);
+        expect(streamCalls(fetchMock)).toHaveLength(2);
         await vi.advanceTimersByTimeAsync(1000);
     });
 });
@@ -224,6 +232,177 @@ describe('AntreaFlowVisibilityPage — antrea-edge-selected extension point', ()
         expect(onSelected).toHaveBeenCalledTimes(1);
         expect(onSelected.mock.calls[0][0].detail).toBeNull();
         expect(page.shadowRoot!.querySelector('.edge-details-close')).toBeNull();
+    });
+});
+
+describe('AntreaFlowVisibilityPage — filters, sort, text filter, pause/resume, clear', () => {
+    async function mountWithTwoFlows(fetchMock = vi.fn(async () => sseResponse([
+        flowEventChunk([
+            makeFlow({ srcPod: 'aaa-abc12', srcIP: '10.0.0.1' }),
+            makeFlow({ srcPod: 'zzz-xyz34', srcIP: '10.0.0.2' }),
+        ]),
+    ]))): Promise<{ page: AntreaFlowVisibilityPage; fetchMock: typeof fetchMock }> {
+        const page = await mount(fetchMock);
+        page.token = 'my-token';
+        await page.updateComplete;
+        await vi.advanceTimersByTimeAsync(0);
+        await vi.advanceTimersByTimeAsync(1000);
+        return { page, fetchMock };
+    }
+
+    test('applying a namespace filter restarts the stream with the new filter encoded', async () => {
+        const { page, fetchMock } = await mountWithTwoFlows();
+        expect(streamCalls(fetchMock)).toHaveLength(1);
+
+        const nsToggle = page.shadowRoot!.querySelector<HTMLButtonElement>('.multiselect-btn')!;
+        nsToggle.click();
+        await page.updateComplete;
+        const checkbox = page.shadowRoot!.querySelector<HTMLInputElement>('.multiselect-option input[type="checkbox"]')!;
+        checkbox.dispatchEvent(new Event('change', { bubbles: true }));
+        await page.updateComplete;
+
+        page.shadowRoot!.querySelector<HTMLElement>('.filter-actions antrea-button')!.click();
+        await page.updateComplete;
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(streamCalls(fetchMock)).toHaveLength(2);
+        expect(streamCalls(fetchMock)[1][0]).toContain('namespaces=default');
+    });
+
+    test('resetting filters restarts the stream with no filter', async () => {
+        const { page, fetchMock } = await mountWithTwoFlows();
+
+        const nsToggle = page.shadowRoot!.querySelector<HTMLButtonElement>('.multiselect-btn')!;
+        nsToggle.click();
+        await page.updateComplete;
+        page.shadowRoot!.querySelector<HTMLInputElement>('.multiselect-option input[type="checkbox"]')!
+            .dispatchEvent(new Event('change', { bubbles: true }));
+        await page.updateComplete;
+        const [applyBtn, resetBtn] = page.shadowRoot!.querySelectorAll<HTMLElement>('.filter-actions antrea-button');
+        applyBtn.click();
+        await page.updateComplete;
+        await vi.advanceTimersByTimeAsync(0);
+        expect(streamCalls(fetchMock)).toHaveLength(2);
+
+        resetBtn.click();
+        await page.updateComplete;
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(streamCalls(fetchMock)).toHaveLength(3);
+        expect(streamCalls(fetchMock)[2][0]).not.toContain('namespaces');
+    });
+
+    test('clicking a column header sorts the flow list, toggling direction on a second click', async () => {
+        const { page } = await mountWithTwoFlows();
+        const sourceHeader = Array.from(page.shadowRoot!.querySelectorAll('th')).find(th => th.textContent?.includes('Source'))!;
+
+        sourceHeader.click();
+        await page.updateComplete;
+        let rows = page.shadowRoot!.querySelectorAll('tbody tr');
+        expect(rows[0].textContent).toContain('aaa-abc12');
+
+        sourceHeader.click();
+        await page.updateComplete;
+        rows = page.shadowRoot!.querySelectorAll('tbody tr');
+        expect(rows[0].textContent).toContain('zzz-xyz34');
+    });
+
+    test('the text filter narrows the flow list to matching entries', async () => {
+        const { page } = await mountWithTwoFlows();
+        const input = page.shadowRoot!.querySelector<HTMLInputElement>('.flow-filter-input')!;
+
+        input.value = 'zzz-xyz34';
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        await page.updateComplete;
+
+        const rows = page.shadowRoot!.querySelectorAll('tbody tr');
+        expect(rows).toHaveLength(1);
+        expect(rows[0].textContent).toContain('zzz-xyz34');
+    });
+
+    test('pause stops the stream and resume restarts it', async () => {
+        const { page, fetchMock } = await mountWithTwoFlows();
+        const [, , pauseBtn] = page.shadowRoot!.querySelectorAll<HTMLElement>('.filter-actions antrea-button');
+
+        pauseBtn.click();
+        await page.updateComplete;
+        expect(page.shadowRoot!.textContent).toContain('Paused');
+        expect(pauseBtn.textContent).toContain('Resume');
+
+        const callsAfterPause = streamCalls(fetchMock).length;
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(streamCalls(fetchMock)).toHaveLength(callsAfterPause);
+
+        pauseBtn.click();
+        await page.updateComplete;
+        await vi.advanceTimersByTimeAsync(0);
+        expect(streamCalls(fetchMock).length).toBeGreaterThan(callsAfterPause);
+    });
+
+    test('clear empties the flow list and resets counters', async () => {
+        const { page } = await mountWithTwoFlows();
+        expect(page.shadowRoot!.querySelectorAll('tbody tr')).toHaveLength(2);
+        const [, , , clearBtn] = page.shadowRoot!.querySelectorAll<HTMLElement>('.filter-actions antrea-button');
+
+        clearBtn.click();
+        await page.updateComplete;
+
+        expect(page.shadowRoot!.querySelectorAll('tbody tr')).toHaveLength(0);
+        expect(page.shadowRoot!.textContent).toContain('0 connections');
+    });
+});
+
+describe('AntreaFlowVisibilityPage — multiselect dropdown', () => {
+    test('opens on click, toggles a selection, and closes on an outside click', async () => {
+        const page = await mount(async () => sseResponse([flowEventChunk([makeFlow()])]));
+        page.token = 'my-token';
+        await page.updateComplete;
+        await vi.advanceTimersByTimeAsync(0);
+        await vi.advanceTimersByTimeAsync(1000);
+
+        const toggle = page.shadowRoot!.querySelector<HTMLButtonElement>('.multiselect-btn')!;
+        expect(page.shadowRoot!.querySelector('.multiselect-dropdown')).toBeNull();
+
+        toggle.click();
+        await page.updateComplete;
+        expect(page.shadowRoot!.querySelector('.multiselect-dropdown')).not.toBeNull();
+        expect(toggle.textContent).toContain('All');
+
+        const checkbox = page.shadowRoot!.querySelector<HTMLInputElement>('.multiselect-option input[type="checkbox"]')!;
+        checkbox.dispatchEvent(new Event('change', { bubbles: true }));
+        await page.updateComplete;
+        expect(toggle.textContent).toContain('default');
+
+        // _handleDocClick closes open dropdowns on any pointerdown outside .multiselect.
+        document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+        await page.updateComplete;
+        expect(page.shadowRoot!.querySelector('.multiselect-dropdown')).toBeNull();
+    });
+});
+
+describe('AntreaFlowVisibilityPage — flow visibility disabled server-side', () => {
+    test('shows the disabled message and never starts the stream', async () => {
+        const fetchMock = vi.fn(async (url: string) => {
+            if (url === '/api/v1/settings') {
+                return new Response(JSON.stringify({
+                    version: 'v1.0.0',
+                    auth: { basicEnabled: true, oidcEnabled: false },
+                    features: { flowVisibilityEnabled: false },
+                }), { status: 200 });
+            }
+            return sseResponse([flowEventChunk([makeFlow()])]);
+        });
+        const page = await mount(fetchMock);
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(page.shadowRoot!.querySelector('antrea-alert[status="danger"]')?.textContent)
+            .toContain('Flow visibility is disabled');
+
+        page.token = 'my-token';
+        await page.updateComplete;
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(streamCalls(fetchMock)).toHaveLength(0);
     });
 });
 

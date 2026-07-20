@@ -21,7 +21,7 @@ import { RouterProvider } from 'react-router/dom';
 import { setApiBase } from '@antrea/ui-components';
 import './index.css';
 import App from './App';
-import { SummaryPage, TraceflowPage, FlowVisibilityPage, SettingsPage } from './routes/lit-pages';
+import { SummaryPage, TraceflowPage, FlowVisibilityPage, SettingsPage } from './pages';
 import reportWebVitals from './reportWebVitals';
 import config from './config';
 

@@ -137,6 +137,10 @@ export class AntreaLoginPage extends LitElement {
         this._loginError = '';
         const username = this._usernameEl?.value ?? '';
         const password = this._passwordEl?.value ?? '';
+        if (!username || !password) {
+            this._loginError = 'Username and password are required';
+            return;
+        }
         try {
             const token = await apiLogin(username, password);
             this._tokenDispatched = true;

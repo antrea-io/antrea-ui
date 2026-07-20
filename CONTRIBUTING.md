@@ -92,9 +92,3 @@ the easiest way).
 2. Run the backend with `KUBECONFIG=<path to Kubeconfig> APP_ENV=dev ./bin/server`.
 3. Run the frontend with `cd client/web/antrea-ui/ && yarn start`.
 4. You can access the UI in your browser by visiting `http://localhost:3000/`.
-
-**Note:** `antrea-ui` resolves `@antrea/ui-components` to its built `dist/`
-output (per that package's `package.json` `exports`), not its TypeScript
-source. If you're editing a component in `antrea-ui-components`, there's no
-cross-package hot-reload — re-run `npm run build` there for `yarn start` /
-`yarn test` in `antrea-ui` to pick up your change.

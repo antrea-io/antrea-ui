@@ -252,29 +252,34 @@ export class AntreaTraceflowPage extends TokenAwarePage {
     private _buildSpec(): TraceflowSpec {
         const { _src, _dst, _proto, _srcPort, _dstPort, _tcpFlags, _timeout, _ipv6, _live, _droppedOnly, _srcNs, _dstNs, _dstType } = this;
 
+        // Collect every violated rule instead of throwing on the first one, so the user sees
+        // all problems at once (matching the old react-hook-form version's per-field errors)
+        // rather than fixing them one at a time via repeated submit attempts.
+        const errors: string[] = [];
+
         // The inputs carry HTML min/max, but submit is handled manually (preventDefault), so
         // native validation never runs and out-of-range values (pasted, or set via the
         // number spinner past the visual limit in some browsers) would otherwise reach the
         // API unvalidated.
-        if (_srcPort < 0 || _srcPort > 65535) throw new Error('Source port must be between 0 and 65535');
-        if (_dstPort < 0 || _dstPort > 65535) throw new Error('Destination port must be between 0 and 65535');
-        if (_tcpFlags < 0 || _tcpFlags > 255) throw new Error('TCP flags must be between 0 and 255');
-        if (_timeout < 1 || _timeout > 120) throw new Error('Request timeout must be between 1 and 120 seconds');
+        if (_srcPort < 0 || _srcPort > 65535) errors.push('Source port must be between 0 and 65535');
+        if (_dstPort < 0 || _dstPort > 65535) errors.push('Destination port must be between 0 and 65535');
+        if (_tcpFlags < 0 || _tcpFlags > 255) errors.push('TCP flags must be between 0 and 255');
+        if (_timeout < 1 || _timeout > 120) errors.push('Request timeout must be between 1 and 120 seconds');
 
-        if (_droppedOnly && !_live) throw new Error('Dropped-only requires Live Traffic mode');
-        if (!_src && !_live) throw new Error('Source is required');
-        if (!_dst && !_live) throw new Error('Destination is required');
-        if (!_src && !_dst) throw new Error('At least one of source and destination is required');
+        if (_droppedOnly && !_live) errors.push('Dropped-only requires Live Traffic mode');
+        if (!_src && !_live) errors.push('Source is required');
+        if (!_dst && !_live) errors.push('Destination is required');
+        if (!_src && !_dst) errors.push('At least one of source and destination is required');
 
         const srcIsIP = isIP(_src);
-        if (srcIsIP && !_live) throw new Error('Source must be a Pod for a regular Traceflow');
-        if (srcIsIP && _dstType !== 'Pod') throw new Error('At least one of source and destination must be a Pod');
+        if (srcIsIP && !_live) errors.push('Source must be a Pod for a regular Traceflow');
+        if (srcIsIP && _dstType !== 'Pod') errors.push('At least one of source and destination must be a Pod');
 
         const srcV = ipVersion(_src);
         const dstV = ipVersion(_dst);
-        if (srcV && dstV && srcV !== dstV) throw new Error('IP version mismatch between source and destination');
-        if (srcV === 4 && _ipv6) throw new Error("Don't check IPv6 when providing an IPv4 source");
-        if (dstV === 4 && _ipv6) throw new Error("Don't check IPv6 when providing an IPv4 destination");
+        if (srcV && dstV && srcV !== dstV) errors.push('IP version mismatch between source and destination');
+        if (srcV === 4 && _ipv6) errors.push("Don't check IPv6 when providing an IPv4 source");
+        if (dstV === 4 && _ipv6) errors.push("Don't check IPv6 when providing an IPv4 destination");
         const useIPv6 = dstV === 6 || srcV === 6 || _ipv6;
 
         let protocol = 0;
@@ -307,7 +312,7 @@ export class AntreaTraceflowPage extends TokenAwarePage {
             if (_dstType === 'Pod') { spec.destination.namespace = _dstNs; spec.destination.pod = _dst; }
             else if (_dstType === 'Service') { spec.destination.namespace = _dstNs; spec.destination.service = _dst; }
             else {
-                if (!isIP(_dst)) throw new Error('Invalid destination IP address');
+                if (!isIP(_dst)) errors.push('Invalid destination IP address');
                 spec.destination.ip = _dst;
             }
         }
@@ -315,6 +320,8 @@ export class AntreaTraceflowPage extends TokenAwarePage {
         if (_live) spec.liveTraffic = true;
         if (_droppedOnly) spec.droppedOnly = true;
         spec.timeout = _timeout;
+
+        if (errors.length > 0) throw new Error(errors.join('\n'));
         return spec;
     }
 
@@ -438,7 +445,11 @@ export class AntreaTraceflowPage extends TokenAwarePage {
                 <div class="tf-layout">
                     <div class="tf-form page-layout">
                         <p class="page-title">Traceflow</p>
-                        ${this._formError ? html`<antrea-alert status="danger">${this._formError}</antrea-alert>` : nothing}
+                        ${this._formError ? html`
+                            <antrea-alert status="danger">
+                                ${this._formError.split('\n').map(line => html`<div>${line}</div>`)}
+                            </antrea-alert>
+                        ` : nothing}
                         ${this._running ? html`<antrea-alert status="loading">Running Traceflow, this may take a few seconds…</antrea-alert>` : nothing}
 
                         <form class="form-stack" @submit=${this._submit}>

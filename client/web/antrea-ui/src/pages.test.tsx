@@ -16,8 +16,8 @@
 
 import { act, render, waitFor } from '@testing-library/react';
 import { Provider } from 'react-redux';
-import { setupStore } from '../store';
-import { SummaryPage } from './lit-pages';
+import { setupStore } from './store';
+import { SummaryPage } from './pages';
 
 // AntreaSummaryPage is a Lit web component with its own shadow DOM; we only need
 // its host element here to dispatch the antrea-session-expired event.

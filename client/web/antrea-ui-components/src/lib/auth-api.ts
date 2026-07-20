@@ -32,10 +32,10 @@ export interface AppSettings {
     }
 }
 
-async function unauthFetch(url: string, options: RequestInit = {}): Promise<Response> {
+async function unauthFetch(url: string, options: RequestInit = {}, fallbackMessage?: string): Promise<Response> {
     const res = await fetch(url, { credentials: 'include', ...options });
     if (!res.ok) {
-        let msg = `HTTP ${res.status}`;
+        let msg = fallbackMessage ?? `HTTP ${res.status}`;
         try { const t = await res.text(); if (t) msg = t; } catch { /* ignore */ }
         throw new APIError(res.status, res.statusText, msg);
     }
@@ -56,11 +56,6 @@ export async function apiRefreshToken(): Promise<Token> {
 }
 
 export async function apiFetchAppSettings(): Promise<AppSettings> {
-    const res = await fetch(`${getApiBase()}/api/v1/settings`);
-    if (!res.ok) {
-        let msg = 'Failed to load app settings';
-        try { const t = await res.text(); if (t) msg = t; } catch { /* ignore */ }
-        throw new APIError(res.status, res.statusText, msg);
-    }
+    const res = await unauthFetch(`${getApiBase()}/api/v1/settings`, {}, 'Failed to load app settings');
     return res.json();
 }

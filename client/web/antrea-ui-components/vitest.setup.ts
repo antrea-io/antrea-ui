@@ -42,3 +42,30 @@ Object.defineProperty(globalThis, 'localStorage', {
     value: localStorageMock,
     writable: true,
 });
+
+// jsdom doesn't implement HTMLFormElement.requestSubmit() ("Not implemented" thrown at
+// runtime) — antrea-button and antrea-input both call it to submit their owning form from
+// inside a shadow root, where native implicit submission doesn't reach. Without this, tests
+// can only dispatch a raw `submit` Event directly (bypassing the code under test entirely)
+// instead of exercising the real click/Enter -> requestSubmit() path.
+HTMLFormElement.prototype.requestSubmit = function (submitter?: HTMLElement) {
+    if (submitter && !this.contains(submitter)) {
+        throw new DOMException('The specified element is not owned by this form element', 'NotFoundError');
+    }
+    const event = new Event('submit', { bubbles: true, cancelable: true });
+    if (submitter) Object.defineProperty(event, 'submitter', { value: submitter });
+    this.dispatchEvent(event);
+};
+
+// jsdom's attachInternals() returns an ElementInternals whose `.form` getter always returns
+// undefined — antrea-button/antrea-input rely on `.form` to find their owning form from
+// inside a shadow root. Patch it to fall back to a light-DOM ancestor lookup, which covers
+// the common case (no form="idref" attribute) that every current usage relies on.
+const originalAttachInternals = HTMLElement.prototype.attachInternals;
+HTMLElement.prototype.attachInternals = function (this: HTMLElement) {
+    const internals = originalAttachInternals.call(this);
+    Object.defineProperty(internals, 'form', {
+        get: () => this.closest('form'),
+    });
+    return internals;
+};

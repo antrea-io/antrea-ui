@@ -58,10 +58,18 @@ export async function apiFetch(
     const headers = new Headers(options.headers as HeadersInit | undefined);
     if (token) headers.set('Authorization', `Bearer ${token}`);
 
-    const response = await fetch(`${apiBase}/api/v1/${path}`, {
-        ...options,
-        headers,
-    });
+    let response: Response;
+    try {
+        response = await fetch(`${apiBase}/api/v1/${path}`, {
+            ...options,
+            headers,
+        });
+    } catch (err) {
+        // fetch() itself rejects (offline, DNS failure, CORS) rather than resolving with a
+        // non-2xx Response — normalize so callers checking `instanceof APIError` (e.g.
+        // session-expiry handling) see a consistent error type either way.
+        throw new APIError(0, 'Network Error', err instanceof Error ? err.message : String(err));
+    }
 
     if (!response.ok) {
         let message = `HTTP ${response.status}`;

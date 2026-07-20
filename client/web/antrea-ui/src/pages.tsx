@@ -18,8 +18,8 @@ import { useRef, useEffect, useCallback } from 'react';
 import '@antrea/ui-components';
 import { apiRefreshToken } from '@antrea/ui-components';
 import { useSelector, useDispatch } from 'react-redux';
-import { RootState, setToken } from '../store';
-import { useLogout } from '../components/logout';
+import { RootState, setToken } from './store';
+import { useLogout } from './logout';
 
 function useLitPage() {
     const token = useSelector((state: RootState) => state.token ?? '');

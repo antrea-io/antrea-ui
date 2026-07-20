@@ -289,4 +289,20 @@ describe('AntreaTraceflowPage — building and submitting the Traceflow request'
         expect(page.shadowRoot!.querySelector('antrea-alert[status="danger"]')?.textContent)
             .toContain('required');
     });
+
+    test('shows every violated validation rule at once, not just the first', async () => {
+        const fetchMock = vi.fn();
+        vi.stubGlobal('fetch', fetchMock);
+        const page = await mount();
+        // Two independent violations: empty source/destination, and an out-of-range timeout.
+        (page as unknown as { _timeout: number })._timeout = 0;
+
+        page.shadowRoot!.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+        await page.updateComplete;
+
+        expect(fetchMock).not.toHaveBeenCalled();
+        const alertText = page.shadowRoot!.querySelector('antrea-alert[status="danger"]')?.textContent;
+        expect(alertText).toContain('required');
+        expect(alertText).toContain('timeout must be between');
+    });
 });

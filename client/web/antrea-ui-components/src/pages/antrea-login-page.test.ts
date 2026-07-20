@@ -192,6 +192,20 @@ describe('AntreaLoginPage — basic login form', () => {
         expect(page.shadowRoot!.querySelector('antrea-alert[status="danger"]')?.textContent)
             .toContain('invalid password');
     });
+
+    test('an empty username or password is rejected client-side, without calling the API', async () => {
+        const page = await mount({ settings: jsonResponse(settingsBasicOnly) });
+        const fetchMock = fetch as Mock;
+        fetchMock.mockClear();
+
+        await submitLogin(page, '', 'xyz');
+        expect(fetchMock).not.toHaveBeenCalledWith('/auth/login', expect.anything());
+        expect(page.shadowRoot!.querySelector('antrea-alert[status="danger"]')?.textContent)
+            .toContain('required');
+
+        await submitLogin(page, 'admin', '');
+        expect(fetchMock).not.toHaveBeenCalledWith('/auth/login', expect.anything());
+    });
 });
 
 describe('AntreaLoginPage — success message banner', () => {

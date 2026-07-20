@@ -113,6 +113,14 @@ describe('apiFetch', () => {
             message: 'HTTP 401',
         });
     });
+
+    test('normalizes a network-level fetch() rejection into an APIError', async () => {
+        vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')));
+
+        const err = await apiFetch('summary', 'my-token').catch(e => e);
+        expect(err).toBeInstanceOf(APIError);
+        expect(err.message).toBe('Failed to fetch');
+    });
 });
 
 describe('apiFetchJSON', () => {

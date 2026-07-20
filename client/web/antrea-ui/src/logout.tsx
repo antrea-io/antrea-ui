@@ -16,7 +16,7 @@
 
 import { useDispatch } from 'react-redux';
 import { getApiBase } from '@antrea/ui-components';
-import { setToken } from '../store';
+import { setToken } from './store';
 
 export function useLogout(): ((msg?: string) => Promise<void>) {
     const dispatch = useDispatch();

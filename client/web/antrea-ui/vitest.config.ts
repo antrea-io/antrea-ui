@@ -20,9 +20,12 @@ import path from 'node:path'
 export default defineConfig({
     resolve: {
         preserveSymlinks: true,
-        alias: {
-            '@antrea/ui-components': path.resolve(__dirname, '../antrea-ui-components'),
-        },
+        // See the matching alias in vite.config.ts: sends the bare specifier to source instead
+        // of the built dist/ that @antrea/ui-components' package.json "exports" points at, so
+        // `yarn test` picks up antrea-ui-components changes without a rebuild there first.
+        alias: [
+            { find: /^@antrea\/ui-components$/, replacement: path.resolve(__dirname, '../antrea-ui-components/src/index.ts') },
+        ],
     },
     test: {
         environment: 'jsdom',

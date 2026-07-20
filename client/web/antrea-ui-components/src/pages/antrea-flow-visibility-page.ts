@@ -17,6 +17,7 @@ import { state, query } from 'lit/decorators.js';
 import * as d3 from 'd3';
 import { pageStyles } from '../lib/styles.js';
 import { TokenAwarePage } from '../lib/token-aware-page.js';
+import { apiFetchAppSettings } from '../lib/auth-api.js';
 import { FlowStore, FlowEntry, entryBitRate } from '../lib/flow-store.js';
 import {
     FlowType,
@@ -55,6 +56,10 @@ export interface EdgeSelection {
     egressPolicyNames: string[];
     protected: boolean;
 }
+
+const FLOW_VISIBILITY_DISABLED_MESSAGE =
+    'Flow visibility is disabled on this Antrea UI server. Install or upgrade the chart with ' +
+    '--set flowAggregator.enabled=true and a reachable flowAggregator.address (see antrea-ui/hack/deploy-kind.sh).';
 
 const WELL_KNOWN_APP_LABELS = ['app.kubernetes.io/name', 'app.kubernetes.io/instance', 'app', 'k8s-app', 'name'];
 
@@ -401,6 +406,7 @@ export class AntreaFlowVisibilityPage extends TokenAwarePage {
     @state() private _entries: FlowEntry[] = [];
     @state() private _connected = false;
     @state() private _error: string | null = null;
+    private _flowVisibilityDisabled = false;
     @state() private _droppedCount = 0;
     @state() private _evictionWarning = false;
 
@@ -461,6 +467,18 @@ export class AntreaFlowVisibilityPage extends TokenAwarePage {
         // before the real token even arrives. updated() starts the stream once it does.
         if (this.token) this._startStream();
         window.addEventListener('pointerdown', this._handleDocClick);
+
+        // Unauthenticated — flow aggregation being enabled is server config, not
+        // user-specific — so this doesn't need to wait for the token like the stream does.
+        apiFetchAppSettings().then(settings => {
+            if (settings.features?.flowVisibilityEnabled === false) {
+                this._flowVisibilityDisabled = true;
+                this._client?.stop();
+                this._client = null;
+                this._connected = false;
+                this._error = FLOW_VISIBILITY_DISABLED_MESSAGE;
+            }
+        }).catch(() => { /* settings failing to load isn't this page's concern; ignore */ });
     }
 
     override disconnectedCallback() {
@@ -519,7 +537,7 @@ export class AntreaFlowVisibilityPage extends TokenAwarePage {
     // ── Stream management ─────────────────────────────────────────────────────
 
     private _startStream() {
-        if (this._paused) return;
+        if (this._paused || this._flowVisibilityDisabled) return;
         this._client?.stop();
         this._client = new FlowStreamClient(this.token, this._filter, {
             onFlows: flows => {

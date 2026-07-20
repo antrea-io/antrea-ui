@@ -154,6 +154,17 @@ export class AntreaInput extends LitElement {
         }));
     }
 
+    // The inner <input> lives in this component's shadow root, so it has no form
+    // owner of its own — pressing Enter triggers neither native implicit submission
+    // nor antrea-button's shadow-DOM submit button (same isolation issue). Forward
+    // it explicitly through the ElementInternals form association this component
+    // already has.
+    private _handleKeydown(e: KeyboardEvent) {
+        if (e.key !== 'Enter') return;
+        e.preventDefault();
+        this._internals.form?.requestSubmit();
+    }
+
     private _togglePassword() {
         this._showPassword = !this._showPassword;
         this.requestUpdate();
@@ -185,6 +196,7 @@ export class AntreaInput extends LitElement {
                         aria-invalid=${this.error}
                         @input=${this._handleInput}
                         @change=${this._handleChange}
+                        @keydown=${this._handleKeydown}
                     />
                     ${isPassword ? html`
                         <button
