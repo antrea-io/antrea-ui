@@ -14,13 +14,12 @@
  * limitations under the License.
  */
 
+// Origin of the backend, if it's different from this frontend's own origin (e.g. local dev).
+// Passed to antrea-ui-components' setApiBase() at startup; see src/index.tsx.
 const apiServer = import.meta.env.VITE_API_SERVER || "";
-const apiVersion = "v1";
 
 const config = {
     apiServer: apiServer,
-    apiVersion: apiVersion,
-    apiUri: `${apiServer}/api/${apiVersion}`,
 };
 
 export default config;

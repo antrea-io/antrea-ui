@@ -14,10 +14,10 @@
 
 import { html } from 'lit';
 import { state } from 'lit/decorators.js';
-import { pageStyles } from '../lib/styles';
-import { apiFetchJSON } from '../lib/api';
-import { TokenAwarePage } from '../lib/token-aware-page';
-import { renderStaticTable } from '../lib/render-table';
+import { pageStyles } from '../lib/styles.js';
+import { apiFetchJSON } from '../lib/api.js';
+import { TokenAwarePage } from '../lib/token-aware-page.js';
+import { renderStaticTable } from '../lib/render-table.js';
 import '../antrea-card';
 import '../antrea-alert';
 

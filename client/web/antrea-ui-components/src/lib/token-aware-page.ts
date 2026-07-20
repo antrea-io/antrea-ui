@@ -14,7 +14,7 @@
 
 import { LitElement, PropertyValues } from 'lit';
 import { property } from 'lit/decorators.js';
-import { APIError } from './api';
+import { APIError } from './api.js';
 
 /**
  * Base class for page components that receive an auth `token` property from

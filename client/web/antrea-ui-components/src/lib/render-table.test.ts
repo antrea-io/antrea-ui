@@ -13,7 +13,7 @@
 // limitations under the License.
 
 import { afterEach, describe, expect, test } from 'vitest';
-import { LitElement, html } from 'lit';
+import { LitElement } from 'lit';
 import { renderStaticTable } from './render-table';
 
 class TestTableHost extends LitElement {

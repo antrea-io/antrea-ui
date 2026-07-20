@@ -83,7 +83,7 @@ export class AntreaAlert extends LitElement {
             border-color: var(--antrea-color-warning, #f5a623);
             color: var(--antrea-color-warning, #f5a623);
         }
-        :host([status="info"]), :host(:not([status])) .alert {
+        :host([status="info"]) .alert {
             background: var(--antrea-color-info-bg, #162b38);
             border-color: var(--antrea-color-info, #0079b8);
             color: var(--antrea-color-info, #0079b8);

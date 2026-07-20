@@ -15,7 +15,7 @@
 import { LitElement, html, css, nothing } from 'lit';
 import { state, query } from 'lit/decorators.js';
 import { pageStyles } from '../lib/styles.js';
-import { APIError } from '../lib/api.js';
+import { APIError, getApiBase } from '../lib/api.js';
 import { Token, AppSettings, apiLogin, apiRefreshToken, apiFetchAppSettings } from '../lib/auth-api.js';
 import '../antrea-button.js';
 import '../antrea-alert.js';
@@ -93,6 +93,11 @@ export class AntreaLoginPage extends LitElement {
 
         if (settingsResult.status === 'fulfilled') {
             this._settings = settingsResult.value;
+            // _readUrlParams() ran before settings were loaded and may have unconditionally
+            // written the OIDC auto-redirect flag; clear it if OIDC turns out to be disabled,
+            // so it doesn't linger and trigger an unexpected auto-redirect if OIDC is enabled
+            // later.
+            if (!this._settings.auth.oidcEnabled) localStorage.removeItem('ui.antrea.io/use-oidc');
         } else {
             const err = settingsResult.reason;
             this._settingsError = err instanceof Error ? err.message : 'Failed to load settings';
@@ -144,7 +149,7 @@ export class AntreaLoginPage extends LitElement {
     private _doOidcLogin() {
         const params = new URLSearchParams();
         params.set('redirect_url', window.location.href);
-        window.location.href = `/auth/oauth2/login?${params.toString()}`;
+        window.location.href = `${getApiBase()}/auth/oauth2/login?${params.toString()}`;
     }
 
     private _renderBasicForm() {

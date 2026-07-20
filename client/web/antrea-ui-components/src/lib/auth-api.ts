@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { APIError } from './api.js';
+import { APIError, getApiBase } from './api.js';
 
 export interface Token {
     tokenType: string
@@ -43,7 +43,7 @@ async function unauthFetch(url: string, options: RequestInit = {}): Promise<Resp
 }
 
 export async function apiLogin(username: string, password: string): Promise<Token> {
-    const res = await unauthFetch('/auth/login', {
+    const res = await unauthFetch(`${getApiBase()}/auth/login`, {
         method: 'POST',
         headers: { 'Authorization': `Basic ${btoa(`${username}:${password}`)}` },
     });
@@ -51,12 +51,12 @@ export async function apiLogin(username: string, password: string): Promise<Toke
 }
 
 export async function apiRefreshToken(): Promise<Token> {
-    const res = await unauthFetch('/auth/refresh_token');
+    const res = await unauthFetch(`${getApiBase()}/auth/refresh_token`);
     return res.json();
 }
 
 export async function apiFetchAppSettings(): Promise<AppSettings> {
-    const res = await fetch('/api/v1/settings');
+    const res = await fetch(`${getApiBase()}/api/v1/settings`);
     if (!res.ok) {
         let msg = 'Failed to load app settings';
         try { const t = await res.text(); if (t) msg = t; } catch { /* ignore */ }

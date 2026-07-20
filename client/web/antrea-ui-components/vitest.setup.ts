@@ -12,6 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// jsdom doesn't implement ResizeObserver; antrea-flow-visibility-page's service map uses one
+// to size the SVG. Tests don't need it to actually report size changes, just to not throw.
+class ResizeObserverStub {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+}
+Object.defineProperty(globalThis, 'ResizeObserver', {
+    value: ResizeObserverStub,
+    writable: true,
+});
+
 // jsdom v29 + vitest v4: the jsdom Storage implementation is not accessible via
 // the bare `localStorage` global inside vitest's vm sandbox. Provide a simple
 // in-memory replacement so tests that use localStorage work correctly.

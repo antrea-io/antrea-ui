@@ -14,7 +14,6 @@
  * limitations under the License.
  */
 
-import axios from 'axios';
 // jest-dom adds custom jest matchers for asserting on DOM nodes.
 // allows you to do things like:
 // expect(element).toHaveTextContent(/react/i)
@@ -22,13 +21,10 @@ import axios from 'axios';
 import '@testing-library/jest-dom/vitest';
 import { mockIntersectionObserver,  mockResizeObserver } from 'jsdom-testing-mocks';
 
-// required by Clarity
+// jsdom doesn't implement these observers; some Lit components use them.
 mockIntersectionObserver();
 
 mockResizeObserver();
-
-// see https://github.com/nock/nock#axios
-axios.defaults.adapter = 'http';
 
 // jsdom v29 + vitest v4: the jsdom Storage implementation is not accessible via
 // the bare `localStorage` global inside vitest's vm sandbox. Provide a simple

@@ -17,9 +17,9 @@ import { state, query } from 'lit/decorators.js';
 import { isIP, ipVersion } from 'is-ip';
 // @ts-expect-error no bundled types shipped with d3-graphviz
 import { graphviz } from 'd3-graphviz';
-import { pageStyles } from '../lib/styles';
-import { apiFetch } from '../lib/api';
-import { TokenAwarePage } from '../lib/token-aware-page';
+import { pageStyles } from '../lib/styles.js';
+import { apiFetch } from '../lib/api.js';
+import { TokenAwarePage } from '../lib/token-aware-page.js';
 import '../antrea-button';
 import '../antrea-alert';
 
@@ -30,7 +30,7 @@ interface TraceflowPacket {
     ipHeader?: { protocol?: number };
     ipv6Header?: { nextHeader?: number };
     transportHeader: {
-        icmp?: {};
+        icmp?: Record<string, never>;
         udp?: { srcPort?: number; dstPort?: number };
         tcp?: { srcPort?: number; dstPort?: number; flags?: number };
     };
@@ -119,22 +119,29 @@ function obsLabel(obs: TraceflowObservation): string {
     return parts.join('\n');
 }
 
+// DOT double-quoted strings only need '"' and '\' escaped. K8s names/IPs can't
+// contain '"' in practice, but the labels below embed server-supplied values
+// (node names, IPs) directly into DOT source, so escape defensively.
+function escapeDotLabel(s: string): string {
+    return s.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+}
+
 function endpointNode(name: string, label: string): TFNode {
     const n = new TFNode(name);
-    n.setAttr('style', '"filled,bold"'); n.setAttr('label', `"${label}"`);
+    n.setAttr('style', '"filled,bold"'); n.setAttr('label', `"${escapeDotLabel(label)}"`);
     n.setAttr('color', grey); n.setAttr('fillcolor', lightGrey);
     return n;
 }
 
 function buildSubgraph(name: string, ep: TFNode, nr: TraceflowNodeResult, isDst: boolean): [TFSubgraph, TFNode] {
     const g = new TFSubgraph(name);
-    g.setAttr('style', '"filled,bold"'); g.setAttr('bgcolor', ghostWhite); g.setAttr('label', `"${nr.node}"`);
+    g.setAttr('style', '"filled,bold"'); g.setAttr('bgcolor', ghostWhite); g.setAttr('label', `"${escapeDotLabel(nr.node)}"`);
     const nodes: TFNode[] = [];
     if (!isDst) nodes.push(ep);
     nr.observations.forEach((obs, i) => {
         const n = new TFNode(`${name}_${i}`);
         n.setAttr('shape', '"box"'); n.setAttr('style', '"rounded,filled,solid"');
-        n.setAttr('label', `"${obsLabel(obs)}"`); n.setAttr('color', grey); n.setAttr('fillcolor', lightGrey);
+        n.setAttr('label', `"${escapeDotLabel(obsLabel(obs))}"`); n.setAttr('color', grey); n.setAttr('fillcolor', lightGrey);
         nodes.push(n);
     });
     if (isDst) nodes.push(ep);
@@ -245,6 +252,15 @@ export class AntreaTraceflowPage extends TokenAwarePage {
     private _buildSpec(): TraceflowSpec {
         const { _src, _dst, _proto, _srcPort, _dstPort, _tcpFlags, _timeout, _ipv6, _live, _droppedOnly, _srcNs, _dstNs, _dstType } = this;
 
+        // The inputs carry HTML min/max, but submit is handled manually (preventDefault), so
+        // native validation never runs and out-of-range values (pasted, or set via the
+        // number spinner past the visual limit in some browsers) would otherwise reach the
+        // API unvalidated.
+        if (_srcPort < 0 || _srcPort > 65535) throw new Error('Source port must be between 0 and 65535');
+        if (_dstPort < 0 || _dstPort > 65535) throw new Error('Destination port must be between 0 and 65535');
+        if (_tcpFlags < 0 || _tcpFlags > 255) throw new Error('TCP flags must be between 0 and 255');
+        if (_timeout < 1 || _timeout > 120) throw new Error('Request timeout must be between 1 and 120 seconds');
+
         if (_droppedOnly && !_live) throw new Error('Dropped-only requires Live Traffic mode');
         if (!_src && !_live) throw new Error('Source is required');
         if (!_dst && !_live) throw new Error('Destination is required');
@@ -315,14 +331,21 @@ export class AntreaTraceflowPage extends TokenAwarePage {
             const statusURL = `${location}/status`;
 
             let pollResp = createResp;
-            for (;;) {
+            // Bounded by both disconnection (user navigated away — stop polling with what may
+            // become a stale token, and skip the DELETE below) and a max iteration count (a
+            // backstop against a backend that never reports completion; the traceflow's own
+            // server-side timeout, up to 120s, would normally end it well before this).
+            for (let i = 0; i < 300; i++) {
+                if (!this.isConnected) return undefined;
                 const retryAfter = pollResp.headers.get('retry-after') ?? '0';
                 let wait = parseInt(retryAfter) * 1000;
                 if (isNaN(wait) || wait === 0) wait = 100;
                 await new Promise(r => setTimeout(r, wait));
+                if (!this.isConnected) return undefined;
                 pollResp = await apiFetch(statusURL.replace('/api/v1/', ''), this.token);
                 const done = pollResp.url.endsWith('/result');
                 if (done) {
+                    if (!this.isConnected) return undefined;
                     // Clean up
                     apiFetch(location.replace('/api/v1/', ''), this.token, { method: 'DELETE' })
                         .catch(() => { /* best-effort */ });
@@ -330,6 +353,7 @@ export class AntreaTraceflowPage extends TokenAwarePage {
                     return tf.status;
                 }
             }
+            throw new Error('Timed out waiting for the Traceflow result');
         } catch (e) {
             if (this.isSessionExpiredError(e)) {
                 this.dispatchSessionExpired();

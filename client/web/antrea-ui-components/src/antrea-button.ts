@@ -134,7 +134,7 @@ export class AntreaButton extends LitElement {
         return html`
             <button
                 part="button"
-                type="button"
+                type=${this.type}
                 ?disabled=${this.disabled}
                 @click=${this.handleClick}
             >

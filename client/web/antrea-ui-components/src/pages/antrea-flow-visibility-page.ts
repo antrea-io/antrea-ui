@@ -15,9 +15,9 @@
 import { html, css, nothing } from 'lit';
 import { state, query } from 'lit/decorators.js';
 import * as d3 from 'd3';
-import { pageStyles } from '../lib/styles';
-import { TokenAwarePage } from '../lib/token-aware-page';
-import { FlowStore, FlowEntry, entryBitRate } from '../lib/flow-store';
+import { pageStyles } from '../lib/styles.js';
+import { TokenAwarePage } from '../lib/token-aware-page.js';
+import { FlowStore, FlowEntry, entryBitRate } from '../lib/flow-store.js';
 import {
     FlowType,
     NetworkPolicyRuleAction,
@@ -27,14 +27,14 @@ import {
     formatPolicyInfo,
     formatBytes,
     destinationK8sServiceFilterKey,
-} from '../lib/flow-types';
+} from '../lib/flow-types.js';
 import {
     FlowStreamClient,
     FlowStreamFilter,
     FlowFilterDirection,
     FlowTypeName,
     streamFilterKey,
-} from '../lib/flow-stream';
+} from '../lib/flow-stream.js';
 import '../antrea-button';
 import '../antrea-alert';
 
@@ -163,15 +163,37 @@ function edgeToDetails(edge: WorkloadEdge): EdgeDetails {
     };
 }
 
-const EDGE_ALLOW = '#3ebd93';
-const EDGE_DROP = '#e45454';
-const EDGE_DEFAULT = '#6a9fb5';
+type EdgeRole = 'allow' | 'drop' | 'default';
+const EDGE_ROLES: EdgeRole[] = ['allow', 'drop', 'default'];
+// Set via .style()/inline style rather than .attr() so var() resolves through the normal CSS
+// cascade (and through the shadow boundary, like the rest of this library's theming) — unlike
+// the rest of the library, the service map (D3-driven SVG) had no theming surface at all before
+// this; downstream shells can override these on the host to match their own palette.
+const EDGE_COLOR_VAR: Record<EdgeRole, string> = {
+    allow: 'var(--antrea-color-edge-allow, #3ebd93)',
+    drop: 'var(--antrea-color-edge-drop, #e45454)',
+    default: 'var(--antrea-color-edge-default, #6a9fb5)',
+};
+// Same rationale as EDGE_COLOR_VAR above: set via .style() so var() resolves.
+const MAP_COLOR_VAR = {
+    nsHullFill: 'var(--antrea-color-map-ns-hull-fill, rgba(106,159,181,0.08))',
+    nsHullStroke: 'var(--antrea-color-map-ns-hull-stroke, rgba(106,159,181,0.25))',
+    nsLabel: 'var(--antrea-color-map-ns-label, rgba(106,159,181,0.5))',
+    edgeLabelBg: 'var(--antrea-color-map-edge-label-bg, rgba(23,36,43,0.85))',
+    edgeLabelText: 'var(--antrea-color-map-edge-label-text, #c5d1d8)',
+    externalFill: 'var(--antrea-color-map-external-fill, #3d2c1e)',
+    externalStroke: 'var(--antrea-color-map-external-stroke, #c4956a)',
+    nodeFill: 'var(--antrea-color-map-node-fill, #1e3a4c)',
+    nodeStroke: 'var(--antrea-color-map-node-stroke, #6a9fb5)',
+    nodeText: 'var(--antrea-color-map-node-text, #e0e8ec)',
+    nodeNamespaceText: 'var(--antrea-color-map-node-namespace-text, rgba(106,159,181,0.7))',
+} as const;
 
-function edgeColor(edge: WorkloadEdge): string {
+function edgeRole(edge: WorkloadEdge): EdgeRole {
     const all = new Set([...edge.ingressActions, ...edge.egressActions]);
-    if (all.has(NetworkPolicyRuleAction.Drop) || all.has(NetworkPolicyRuleAction.Reject)) return EDGE_DROP;
-    if (all.has(NetworkPolicyRuleAction.Allow)) return EDGE_ALLOW;
-    return EDGE_DEFAULT;
+    if (all.has(NetworkPolicyRuleAction.Drop) || all.has(NetworkPolicyRuleAction.Reject)) return 'drop';
+    if (all.has(NetworkPolicyRuleAction.Allow)) return 'allow';
+    return 'default';
 }
 
 function edgeLabel(edge: WorkloadEdge): string {
@@ -187,7 +209,7 @@ function edgeLabel(edge: WorkloadEdge): string {
 // ── D3 node geometry ─────────────────────────────────────────────────────────
 
 interface D3Node extends d3.SimulationNodeDatum { id: string; shortName: string; namespace: string; isExternal: boolean; }
-interface D3Link extends d3.SimulationLinkDatum<D3Node> { edgeKey: string; connectionCount: number; color: string; label: string; curveOffset: number; }
+interface D3Link extends d3.SimulationLinkDatum<D3Node> { edgeKey: string; connectionCount: number; role: EdgeRole; label: string; curveOffset: number; }
 
 const HEIGHT = 900;
 const NODE_RX = 8;
@@ -337,16 +359,18 @@ export class AntreaFlowVisibilityPage extends TokenAwarePage {
         .map-svg { display: block; border: 1px solid var(--antrea-color-border, #314351); border-radius: 4px; background: var(--antrea-color-bg-dark, #17242b); }
         .map-tooltip {
             position: fixed; opacity: 0;
-            background: rgba(20,32,40,0.95); border: 1px solid #555;
+            background: var(--antrea-color-map-tooltip-bg, rgba(20,32,40,0.95));
+            border: 1px solid var(--antrea-color-map-tooltip-border, #555);
             border-radius: 4px; padding: 8px 10px; font-size: 11px;
-            color: #d0dae0; line-height: 1.5; max-width: 320px;
+            color: var(--antrea-color-map-tooltip-text, #d0dae0); line-height: 1.5; max-width: 320px;
             z-index: 100; transition: opacity 150ms ease; pointer-events: none;
         }
         .map-legend {
             position: absolute; bottom: 10px; left: 10px;
-            background: rgba(20,32,40,0.9); border: 1px solid rgba(86,86,86,0.5);
+            background: var(--antrea-color-map-legend-bg, rgba(20,32,40,0.9));
+            border: 1px solid var(--antrea-color-map-legend-border, rgba(86,86,86,0.5));
             border-radius: 4px; padding: 8px 12px; font-size: 10px;
-            color: #adbbc4; line-height: 1.8;
+            color: var(--antrea-color-map-legend-text, #adbbc4); line-height: 1.8;
         }
         .map-legend-title { font-weight: 600; margin-bottom: 2px; }
         .legend-row { display: flex; align-items: center; gap: 6px; }
@@ -508,6 +532,10 @@ export class AntreaFlowVisibilityPage extends TokenAwarePage {
             onConnected: () => { this._connected = true; this._error = null; },
             onDisconnected: () => { this._connected = false; },
             onAuthError: () => {
+                // The client stops itself (running=false) on a 401, so updateToken() in
+                // onTokenReady() would otherwise be a no-op once a fresh token arrives. Drop
+                // the dead client so onTokenReady() starts a brand new one instead.
+                this._client = null;
                 this.dispatchSessionExpired();
             },
         });
@@ -522,15 +550,14 @@ export class AntreaFlowVisibilityPage extends TokenAwarePage {
 
     private _applyFilter(filter: FlowStreamFilter) {
         const newKey = streamFilterKey(filter);
-        if (newKey !== this._filterKey) {
-            this._filterKey = newKey;
-            this._filter = filter;
-            this._store.clear();
-            this._entries = [];
-            this._evictionWarning = false;
-            this._droppedCount = 0;
-            this._selectedEdgeKey = null;
-        }
+        if (newKey === this._filterKey) return;
+        this._filterKey = newKey;
+        this._filter = filter;
+        this._store.clear();
+        this._entries = [];
+        this._evictionWarning = false;
+        this._droppedCount = 0;
+        this._selectedEdgeKey = null;
         if (!this._paused) {
             this._client?.stop();
             this._client = null;
@@ -629,6 +656,15 @@ export class AntreaFlowVisibilityPage extends TokenAwarePage {
         const graph = buildGraph(this._entries);
         this._graphRef = graph;
 
+        // If a topology rebuild drops the currently-selected edge, clear the selection so
+        // _dispatchEdgeSelected() emits null — otherwise a host listening on the
+        // antrea-edge-selected extension point would keep believing an edge is selected even
+        // though the details card has disappeared (render() returns nothing once the edge is
+        // gone from edgeMap).
+        if (this._selectedEdgeKey && !graph.edgeMap.has(this._selectedEdgeKey)) {
+            this._selectedEdgeKey = null;
+        }
+
         const nodeIds = graph.nodes.map(n => n.id).sort().join(',');
         const edgeIds = graph.edges.map(e => `${e.source}|${e.target}`).sort().join(',');
         const topologyKey = `${nodeIds}::${edgeIds}::${this._svgWidth}`;
@@ -660,12 +696,12 @@ export class AntreaFlowVisibilityPage extends TokenAwarePage {
         }
 
         const defs = d3svg.append('defs');
-        for (const color of [EDGE_ALLOW, EDGE_DROP, EDGE_DEFAULT]) {
+        for (const role of EDGE_ROLES) {
             defs.append('marker')
-                .attr('id', `arrowhead-${color.replace('#', '')}`)
+                .attr('id', `arrowhead-${role}`)
                 .attr('viewBox', '-10 -5 10 10').attr('refX', 0).attr('refY', 0)
                 .attr('markerWidth', 7).attr('markerHeight', 7).attr('orient', 'auto')
-                .append('path').attr('d', 'M-10,-4L0,0L-10,4').attr('fill', color);
+                .append('path').attr('d', 'M-10,-4L0,0L-10,4').style('fill', EDGE_COLOR_VAR[role]);
         }
 
         const d3Nodes: D3Node[] = graph.nodes.map(n => ({ ...n, x: undefined, y: undefined }));
@@ -679,7 +715,7 @@ export class AntreaFlowVisibilityPage extends TokenAwarePage {
                 target: nodeById.get(e.target)!,
                 edgeKey: `${e.source}|${e.target}`,
                 connectionCount: e.connectionCount,
-                color: edgeColor(e),
+                role: edgeRole(e),
                 label: edgeLabel(e),
                 curveOffset: isBi ? (e.source < e.target ? CURVE_OFFSET : -CURVE_OFFSET) : 0,
             };
@@ -702,8 +738,8 @@ export class AntreaFlowVisibilityPage extends TokenAwarePage {
         const nsGroups: { nodes: D3Node[]; path: d3.Selection<SVGPathElement, unknown, null, undefined>; label: d3.Selection<SVGTextElement, unknown, null, undefined>; }[] = [];
         for (const [ns, nodes] of nsMap) {
             if (nodes.length < 1) continue;
-            const path = nsHulls.append('path').attr('fill', 'rgba(106,159,181,0.08)').attr('stroke', 'rgba(106,159,181,0.25)').attr('stroke-width', 1).attr('stroke-dasharray', '4,2');
-            const label = nsHulls.append('text').text(ns).attr('fill', 'rgba(106,159,181,0.5)').attr('font-size', '10px').attr('font-weight', '600');
+            const path = nsHulls.append('path').style('fill', MAP_COLOR_VAR.nsHullFill).style('stroke', MAP_COLOR_VAR.nsHullStroke).attr('stroke-width', 1).attr('stroke-dasharray', '4,2');
+            const label = nsHulls.append('text').text(ns).style('fill', MAP_COLOR_VAR.nsLabel).attr('font-size', '10px').attr('font-weight', '600');
             nsGroups.push({ nodes, path, label });
         }
 
@@ -711,10 +747,10 @@ export class AntreaFlowVisibilityPage extends TokenAwarePage {
         const linkPaths = container.append('g').selectAll<SVGPathElement, D3Link>('path')
             .data(d3Links).join('path')
             .attr('fill', 'none')
-            .attr('stroke', d => d.color)
+            .style('stroke', d => EDGE_COLOR_VAR[d.role])
             .attr('stroke-width', d => Math.min(1.5 + Math.log2(d.connectionCount + 1), 6))
             .attr('stroke-opacity', 0.6)
-            .attr('marker-end', d => `url(#arrowhead-${d.color.replace('#', '')})`)
+            .attr('marker-end', d => `url(#arrowhead-${d.role})`)
             .style('cursor', 'pointer')
             .on('mouseenter', (event, d) => {
                 d3.select(event.currentTarget as Element)
@@ -743,8 +779,8 @@ export class AntreaFlowVisibilityPage extends TokenAwarePage {
         // Edge labels
         const edgeLabelGroups = container.append('g').selectAll<SVGGElement, D3Link>('g')
             .data(d3Links.filter(d => d.label)).join('g');
-        edgeLabelGroups.append('rect').attr('rx', 3).attr('ry', 3).attr('fill', 'rgba(23,36,43,0.85)').attr('stroke', d => d.color).attr('stroke-width', 0.5).attr('stroke-opacity', 0.5);
-        edgeLabelGroups.append('text').text(d => d.label).attr('text-anchor', 'middle').attr('dominant-baseline', 'central').attr('fill', '#c5d1d8').attr('font-size', '9px').attr('pointer-events', 'none');
+        edgeLabelGroups.append('rect').attr('rx', 3).attr('ry', 3).style('fill', MAP_COLOR_VAR.edgeLabelBg).style('stroke', d => EDGE_COLOR_VAR[d.role]).attr('stroke-width', 0.5).attr('stroke-opacity', 0.5);
+        edgeLabelGroups.append('text').text(d => d.label).attr('text-anchor', 'middle').attr('dominant-baseline', 'central').style('fill', MAP_COLOR_VAR.edgeLabelText).attr('font-size', '9px').attr('pointer-events', 'none');
 
         // Nodes
         const nodeGroup = container.append('g').selectAll<SVGGElement, D3Node>('g')
@@ -765,13 +801,13 @@ export class AntreaFlowVisibilityPage extends TokenAwarePage {
             const g = d3.select(this);
             if (d.isExternal) {
                 const s = EXTERNAL_SIZE;
-                g.append('polygon').attr('points', `0,${-s} ${s},0 0,${s} ${-s},0`).attr('fill', '#3d2c1e').attr('stroke', '#c4956a').attr('stroke-width', 2);
-                g.append('text').text(d.shortName).attr('dy', s + 14).attr('text-anchor', 'middle').attr('fill', '#c4956a').attr('font-size', '11px').attr('font-weight', '600');
+                g.append('polygon').attr('points', `0,${-s} ${s},0 0,${s} ${-s},0`).style('fill', MAP_COLOR_VAR.externalFill).style('stroke', MAP_COLOR_VAR.externalStroke).attr('stroke-width', 2);
+                g.append('text').text(d.shortName).attr('dy', s + 14).attr('text-anchor', 'middle').style('fill', MAP_COLOR_VAR.externalStroke).attr('font-size', '11px').attr('font-weight', '600');
             } else {
                 const { hw, hh } = nodeHalfSize(d);
-                g.append('rect').attr('x', -hw).attr('y', -hh).attr('width', hw * 2).attr('height', hh * 2).attr('rx', NODE_RX).attr('ry', NODE_RX).attr('fill', '#1e3a4c').attr('stroke', '#6a9fb5').attr('stroke-width', 1.5);
-                g.append('text').text(d.shortName).attr('dy', -3).attr('text-anchor', 'middle').attr('fill', '#e0e8ec').attr('font-size', '12px').attr('font-weight', '600');
-                g.append('text').text(d.namespace).attr('dy', 13).attr('text-anchor', 'middle').attr('fill', 'rgba(106,159,181,0.7)').attr('font-size', '9px');
+                g.append('rect').attr('x', -hw).attr('y', -hh).attr('width', hw * 2).attr('height', hh * 2).attr('rx', NODE_RX).attr('ry', NODE_RX).style('fill', MAP_COLOR_VAR.nodeFill).style('stroke', MAP_COLOR_VAR.nodeStroke).attr('stroke-width', 1.5);
+                g.append('text').text(d.shortName).attr('dy', -3).attr('text-anchor', 'middle').style('fill', MAP_COLOR_VAR.nodeText).attr('font-size', '12px').attr('font-weight', '600');
+                g.append('text').text(d.namespace).attr('dy', 13).attr('text-anchor', 'middle').style('fill', MAP_COLOR_VAR.nodeNamespaceText).attr('font-size', '9px');
             }
         });
 
@@ -851,24 +887,47 @@ export class AntreaFlowVisibilityPage extends TokenAwarePage {
     private _showTooltip(event: MouseEvent, edge: WorkloadEdge) {
         const tip = this._tooltipEl;
         if (!tip) return;
-        const policyLines: string[] = [];
         const ingressAllow = !edge.ingressActions.has(NetworkPolicyRuleAction.Drop) && !edge.ingressActions.has(NetworkPolicyRuleAction.Reject);
         const egressAllow = !edge.egressActions.has(NetworkPolicyRuleAction.Drop) && !edge.egressActions.has(NetworkPolicyRuleAction.Reject);
-        for (const p of edge.ingressPolicies) policyLines.push(`<span style="color:${ingressAllow ? EDGE_ALLOW : EDGE_DROP}">${ingressAllow ? '✓' : '✗'}</span> Ingress: ${p}`);
-        for (const p of edge.egressPolicies) policyLines.push(`<span style="color:${egressAllow ? EDGE_ALLOW : EDGE_DROP}">${egressAllow ? '✓' : '✗'}</span> Egress: ${p}`);
         const portParts: string[] = [];
         edge.protoPorts.forEach((pSet, proto) => {
             const name = getProtocolName(proto);
             portParts.push(pSet.size > 0 ? `${name}(${Array.from(pSet).sort((a, b) => a - b).join(', ')})` : name);
         });
-        tip.innerHTML = `
-            <div style="font-weight:600;margin-bottom:4px">${workloadShortName(edge.source)} &rarr; ${workloadShortName(edge.target)}</div>
-            <div>${portParts.join(', ') || '-'}</div>
-            <div>${edge.connectionCount} connection${edge.connectionCount !== 1 ? 's' : ''}</div>
-            <div>&#8593; ${formatBytes(edge.totalBytesForward)} &nbsp; &#8595; ${formatBytes(edge.totalBytesReverse)}</div>
-            ${edge.bitRate > 0 ? `<div>Throughput: ${formatBitRate(edge.bitRate)}</div>` : ''}
-            ${policyLines.length > 0 ? '<hr style="border-color:#555;margin:4px 0"/>' + policyLines.join('<br/>') : ''}
-        `;
+
+        // Built from text nodes rather than innerHTML: edge.source/target (derived from pod
+        // labels) and policy names are server-supplied data, not markup we control.
+        const div = (text: string) => {
+            const e = document.createElement('div');
+            e.textContent = text;
+            return e;
+        };
+        const policyLine = (allow: boolean, direction: string, name: string) => {
+            const line = document.createElement('div');
+            const mark = document.createElement('span');
+            mark.style.color = allow ? EDGE_COLOR_VAR.allow : EDGE_COLOR_VAR.drop;
+            mark.textContent = allow ? '✓' : '✗';
+            line.append(mark, document.createTextNode(` ${direction}: ${name}`));
+            return line;
+        };
+
+        tip.replaceChildren();
+        const header = div(`${workloadShortName(edge.source)} → ${workloadShortName(edge.target)}`);
+        header.style.fontWeight = '600';
+        header.style.marginBottom = '4px';
+        tip.append(header);
+        tip.append(div(portParts.join(', ') || '-'));
+        tip.append(div(`${edge.connectionCount} connection${edge.connectionCount !== 1 ? 's' : ''}`));
+        tip.append(div(`↑ ${formatBytes(edge.totalBytesForward)}   ↓ ${formatBytes(edge.totalBytesReverse)}`));
+        if (edge.bitRate > 0) tip.append(div(`Throughput: ${formatBitRate(edge.bitRate)}`));
+        if (edge.ingressPolicies.size > 0 || edge.egressPolicies.size > 0) {
+            const hr = document.createElement('hr');
+            hr.style.borderColor = 'var(--antrea-color-map-tooltip-border, #555)';
+            hr.style.margin = '4px 0';
+            tip.append(hr);
+            for (const p of edge.ingressPolicies) tip.append(policyLine(ingressAllow, 'Ingress', p));
+            for (const p of edge.egressPolicies) tip.append(policyLine(egressAllow, 'Egress', p));
+        }
         tip.style.left = `${event.pageX + 12}px`;
         tip.style.top = `${event.pageY + 12}px`;
         tip.style.opacity = '1';
@@ -1048,14 +1107,14 @@ export class AntreaFlowVisibilityPage extends TokenAwarePage {
     private _renderServiceMap() {
         return html`
             <div class="map-container">
-                <svg id="graph-svg" class="map-svg" width=${this._svgWidth} height=${HEIGHT}></svg>
-                <div id="graph-tooltip" class="map-tooltip"></div>
-                <div class="map-legend">
+                <svg id="graph-svg" class="map-svg" part="map-svg" width=${this._svgWidth} height=${HEIGHT}></svg>
+                <div id="graph-tooltip" class="map-tooltip" part="map-tooltip"></div>
+                <div class="map-legend" part="map-legend">
                     <div class="map-legend-title">Legend</div>
-                    <div class="legend-row"><svg width="24" height="6"><line x1="0" y1="3" x2="24" y2="3" stroke=${EDGE_ALLOW} stroke-width="2"/></svg><span>Allow</span></div>
-                    <div class="legend-row"><svg width="24" height="6"><line x1="0" y1="3" x2="24" y2="3" stroke=${EDGE_DROP} stroke-width="2"/></svg><span>Drop / Reject</span></div>
-                    <div class="legend-row"><svg width="24" height="6"><line x1="0" y1="3" x2="24" y2="3" stroke=${EDGE_DEFAULT} stroke-width="2"/></svg><span>No policy</span></div>
-                    <div style="margin-top:2px;color:#8899a4">Line thickness = connection count</div>
+                    <div class="legend-row"><svg width="24" height="6"><line x1="0" y1="3" x2="24" y2="3" style="stroke:${EDGE_COLOR_VAR.allow}" stroke-width="2"/></svg><span>Allow</span></div>
+                    <div class="legend-row"><svg width="24" height="6"><line x1="0" y1="3" x2="24" y2="3" style="stroke:${EDGE_COLOR_VAR.drop}" stroke-width="2"/></svg><span>Drop / Reject</span></div>
+                    <div class="legend-row"><svg width="24" height="6"><line x1="0" y1="3" x2="24" y2="3" style="stroke:${EDGE_COLOR_VAR.default}" stroke-width="2"/></svg><span>No policy</span></div>
+                    <div style="margin-top:2px;color:var(--antrea-color-text-muted, #8899a4)">Line thickness = connection count</div>
                 </div>
                 ${this._renderEdgeDetails()}
             </div>
@@ -1070,7 +1129,7 @@ export class AntreaFlowVisibilityPage extends TokenAwarePage {
                         <p class="page-title">Flow Visibility</p>
                         <div class="btn-group">
                             <antrea-button type="button" action=${this._viewMode === 'list' ? 'solid' : 'outline'} @click=${() => { this._viewMode = 'list'; }}>Flow List</antrea-button>
-                            <antrea-button type="button" action=${this._viewMode === 'map' ? 'solid' : 'outline'} @click=${() => { this._viewMode = 'map'; this._setupResizeObserver(); }}>Service Map</antrea-button>
+                            <antrea-button type="button" action=${this._viewMode === 'map' ? 'solid' : 'outline'} @click=${() => { this._viewMode = 'map'; }}>Service Map</antrea-button>
                         </div>
                     </div>
 

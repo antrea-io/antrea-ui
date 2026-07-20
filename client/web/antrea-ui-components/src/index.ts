@@ -25,3 +25,4 @@ export type { EdgeSelection } from './pages/antrea-flow-visibility-page.js';
 export { AntreaLoginPage } from './pages/antrea-login-page.js';
 export type { AppSettings, Token } from './lib/auth-api.js';
 export { apiLogin, apiRefreshToken, apiFetchAppSettings } from './lib/auth-api.js';
+export { setApiBase, getApiBase } from './lib/api.js';

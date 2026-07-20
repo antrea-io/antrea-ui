@@ -14,7 +14,7 @@
 
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import { apiLogin, apiRefreshToken, apiFetchAppSettings } from './auth-api';
-import { APIError } from './api';
+import { APIError, setApiBase } from './api';
 
 function jsonResponse(body: unknown, status = 200): Response {
     return new Response(JSON.stringify(body), { status });
@@ -22,6 +22,7 @@ function jsonResponse(body: unknown, status = 200): Response {
 
 afterEach(() => {
     vi.unstubAllGlobals();
+    setApiBase('');
 });
 
 describe('apiLogin', () => {
@@ -93,5 +94,24 @@ describe('apiFetchAppSettings', () => {
             code: 500,
             message: 'Failed to load app settings',
         });
+    });
+});
+
+describe('apiBase prefixing', () => {
+    test('apiLogin, apiRefreshToken and apiFetchAppSettings prepend the configured base URL', async () => {
+        setApiBase('http://localhost:8080');
+        const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse({
+            tokenType: 'Bearer', accessToken: 'my-token', expiresIn: 3600,
+        })));
+        vi.stubGlobal('fetch', fetchMock);
+
+        await apiLogin('admin', 'xyz');
+        expect(fetchMock.mock.calls[0][0]).toBe('http://localhost:8080/auth/login');
+
+        await apiRefreshToken();
+        expect(fetchMock.mock.calls[1][0]).toBe('http://localhost:8080/auth/refresh_token');
+
+        await apiFetchAppSettings();
+        expect(fetchMock.mock.calls[2][0]).toBe('http://localhost:8080/api/v1/settings');
     });
 });

@@ -13,7 +13,7 @@
 // limitations under the License.
 
 import { afterEach, describe, expect, test, vi } from 'vitest';
-import { apiFetch, apiFetchJSON, APIError } from './api';
+import { apiFetch, apiFetchJSON, APIError, setApiBase, getApiBase } from './api';
 
 function jsonResponse(body: unknown, status = 200): Response {
     return new Response(JSON.stringify(body), { status });
@@ -21,6 +21,23 @@ function jsonResponse(body: unknown, status = 200): Response {
 
 afterEach(() => {
     vi.unstubAllGlobals();
+    setApiBase(''); // apiBase is module-level state — reset it so tests don't leak into each other
+});
+
+describe('setApiBase/getApiBase', () => {
+    test('defaults to same-origin (empty string)', () => {
+        expect(getApiBase()).toBe('');
+    });
+
+    test('apiFetch prepends the configured base to the request URL', async () => {
+        const fetchMock = vi.fn().mockResolvedValue(new Response('ok', { status: 200 }));
+        vi.stubGlobal('fetch', fetchMock);
+        setApiBase('http://localhost:8080');
+
+        await apiFetch('summary', 'my-token');
+
+        expect(fetchMock.mock.calls[0][0]).toBe('http://localhost:8080/api/v1/summary');
+    });
 });
 
 describe('APIError', () => {

@@ -173,9 +173,10 @@ export class AntreaInput extends LitElement {
         const isPassword = this.type === 'password';
         return html`
             <div class="field">
-                ${this.label ? html`<label>${this.label}</label>` : ''}
+                ${this.label ? html`<label for="input">${this.label}</label>` : ''}
                 <div class="input-wrapper">
                     <input
+                        id="input"
                         type=${this._resolvedType()}
                         name=${this.name}
                         .value=${this.value}

@@ -233,6 +233,50 @@ describe('AntreaTraceflowPage — building and submitting the Traceflow request'
         });
     });
 
+    test('removing the element mid-poll stops further polling', async () => {
+        const calls: { url: string; init?: RequestInit }[] = [];
+        const fn = vi.fn(async (url: string, init?: RequestInit) => {
+            calls.push({ url, init });
+            if (url === '/api/v1/traceflow' && init?.method === 'POST') {
+                return {
+                    ok: true, status: 202, statusText: 'Accepted', url,
+                    headers: {
+                        get: (k: string) => (k.toLowerCase() === 'location'
+                            ? '/api/v1/apis/crd.antrea.io/v1beta1/traceflows/tf-test'
+                            : k.toLowerCase() === 'retry-after' ? '0' : null),
+                    },
+                    text: async () => '', json: async () => ({}),
+                } as unknown as Response;
+            }
+            if (url.endsWith('/status')) {
+                // Never reports completion, so the loop keeps polling until cancelled.
+                return {
+                    ok: true, status: 200, statusText: 'OK', url,
+                    headers: { get: () => null }, text: async () => '',
+                } as unknown as Response;
+            }
+            throw new Error(`unexpected fetch: ${init?.method ?? 'GET'} ${url}`);
+        });
+        vi.stubGlobal('fetch', fn);
+        const page = await mount();
+
+        setInput(page, 'src', 'podA');
+        setInput(page, 'dst', 'podB');
+        await page.updateComplete;
+        page.shadowRoot!.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+
+        // Let a couple of poll iterations happen (each waits ~100ms, since retry-after=0).
+        await new Promise(r => setTimeout(r, 250));
+        const callsBeforeRemoval = calls.length;
+        expect(callsBeforeRemoval).toBeGreaterThan(1);
+
+        page.remove();
+        el = undefined;
+
+        await new Promise(r => setTimeout(r, 300));
+        expect(calls.length).toBe(callsBeforeRemoval);
+    });
+
     test('validation error is shown and no request is sent when source and destination are both empty', async () => {
         const fetchMock = vi.fn();
         vi.stubGlobal('fetch', fetchMock);

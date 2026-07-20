@@ -14,9 +14,9 @@
 
 import { html, nothing } from 'lit';
 import { state, query } from 'lit/decorators.js';
-import { pageStyles } from '../lib/styles';
-import { apiFetch } from '../lib/api';
-import { TokenAwarePage } from '../lib/token-aware-page';
+import { pageStyles } from '../lib/styles.js';
+import { apiFetch } from '../lib/api.js';
+import { TokenAwarePage } from '../lib/token-aware-page.js';
 import '../antrea-button';
 import '../antrea-alert';
 import '../antrea-card';
@@ -77,10 +77,11 @@ export class AntreaSettingsPage extends TokenAwarePage {
     private _field(id: string, label: string, type = 'password') {
         const errorKey = id === 'current-password' ? 'current' : id === 'new-password' ? 'new' : 'confirm';
         const err = this._fieldErrors[errorKey];
+        const autocomplete = id === 'current-password' ? 'current-password' : 'new-password';
         return html`
             <div class="field-group">
                 <label class="field-label" for=${id}>${label}</label>
-                <input id=${id} class="field-input ${err ? 'error' : ''}" type=${type} autocomplete="off" />
+                <input id=${id} class="field-input ${err ? 'error' : ''}" type=${type} autocomplete=${autocomplete} />
                 ${err ? html`<span class="field-error">${err}</span>` : nothing}
             </div>
         `;

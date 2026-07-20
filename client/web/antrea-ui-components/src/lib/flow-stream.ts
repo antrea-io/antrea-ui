@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { Flow } from './flow-types';
+import { Flow } from './flow-types.js';
 
 export type FlowFilterDirection = 'both' | 'from' | 'to';
 export type FlowTypeName = 'intra-node' | 'inter-node' | 'to-external' | 'from-external';

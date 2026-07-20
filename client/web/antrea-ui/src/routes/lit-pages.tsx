@@ -16,18 +16,31 @@
 
 import { useRef, useEffect, useCallback } from 'react';
 import '@antrea/ui-components';
-import { useSelector } from 'react-redux';
-import { RootState } from '../store';
+import { apiRefreshToken } from '@antrea/ui-components';
+import { useSelector, useDispatch } from 'react-redux';
+import { RootState, setToken } from '../store';
 import { useLogout } from '../components/logout';
 
 function useLitPage() {
     const token = useSelector((state: RootState) => state.token ?? '');
+    const dispatch = useDispatch();
     const ref = useRef<HTMLElement>(null);
     const logout = useLogout();
 
-    const onSessionExpired = useCallback(() => {
-        logout('Your session has expired. Please log in again.');
-    }, [logout]);
+    // The access token is short-lived (~10 min); the refresh token lives in a
+    // 24h HTTP-only cookie. A 401 from any page just means the access token
+    // expired — try a silent refresh (which relies on that cookie) before
+    // giving up and sending the user back to the login screen. Only logging
+    // out here would otherwise force a re-login every ~10 minutes instead of
+    // the intended 24h session.
+    const onSessionExpired = useCallback(async () => {
+        try {
+            const newToken = await apiRefreshToken();
+            dispatch(setToken(newToken.accessToken));
+        } catch {
+            logout('Your session has expired. Please log in again.');
+        }
+    }, [dispatch, logout]);
 
     useEffect(() => {
         const el = ref.current;

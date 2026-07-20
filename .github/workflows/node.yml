@@ -22,7 +22,7 @@ jobs:
         node-version: 24
     - name: Enable Corepack
       run: corepack enable
-    - run: npm install
+    - run: npm ci
       working-directory: client/web/antrea-ui-components/
     - run: npm run build
       working-directory: client/web/antrea-ui-components/
@@ -43,7 +43,9 @@ jobs:
       uses: actions/setup-node@v7
       with:
         node-version: 24
-    - run: npm install
+    - run: npm ci
+      working-directory: client/web/antrea-ui-components/
+    - run: npm run lint
       working-directory: client/web/antrea-ui-components/
     - run: npm test
       working-directory: client/web/antrea-ui-components/

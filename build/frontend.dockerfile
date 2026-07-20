@@ -26,7 +26,7 @@ COPY client/web/antrea-ui-components/package.json client/web/antrea-ui-component
 COPY client/web/antrea-ui-components/src ./src
 COPY client/web/antrea-ui-components/tsconfig.json client/web/antrea-ui-components/vite.config.ts ./
 RUN if [ -n "$NPM_REGISTRY" ]; then npm config set registry "$NPM_REGISTRY"; fi && \
-    npm install && \
+    npm ci && \
     npm run build
 
 WORKDIR /app
