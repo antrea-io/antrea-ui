@@ -95,6 +95,16 @@ describe('apiFetchAppSettings', () => {
             message: 'Failed to load app settings',
         });
     });
+
+    test('does not send credentials — the settings endpoint does not read the refresh cookie', async () => {
+        const fetchMock = vi.fn().mockResolvedValue(jsonResponse({}));
+        vi.stubGlobal('fetch', fetchMock);
+
+        await apiFetchAppSettings();
+
+        const [, init] = fetchMock.mock.calls[0];
+        expect(init?.credentials).toBeUndefined();
+    });
 });
 
 describe('apiBase prefixing', () => {

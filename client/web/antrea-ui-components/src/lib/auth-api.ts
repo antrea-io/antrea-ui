@@ -32,14 +32,16 @@ export interface AppSettings {
     }
 }
 
-async function unauthFetch(url: string, options: RequestInit = {}, fallbackMessage?: string): Promise<Response> {
+async function throwIfNotOk(res: Response, fallback: string): Promise<Response> {
+    if (res.ok) return res;
+    let msg = fallback;
+    try { const t = await res.text(); if (t) msg = t; } catch { /* ignore */ }
+    throw new APIError(res.status, res.statusText, msg);
+}
+
+async function unauthFetch(url: string, options: RequestInit = {}): Promise<Response> {
     const res = await fetch(url, { credentials: 'include', ...options });
-    if (!res.ok) {
-        let msg = fallbackMessage ?? `HTTP ${res.status}`;
-        try { const t = await res.text(); if (t) msg = t; } catch { /* ignore */ }
-        throw new APIError(res.status, res.statusText, msg);
-    }
-    return res;
+    return throwIfNotOk(res, `HTTP ${res.status}`);
 }
 
 export async function apiLogin(username: string, password: string): Promise<Token> {
@@ -56,6 +58,10 @@ export async function apiRefreshToken(): Promise<Token> {
 }
 
 export async function apiFetchAppSettings(): Promise<AppSettings> {
-    const res = await unauthFetch(`${getApiBase()}/api/v1/settings`, {}, 'Failed to load app settings');
+    // Deliberately a bare fetch(), not unauthFetch(): the settings endpoint doesn't read the
+    // refresh cookie, so it shouldn't send credentials cross-origin (that'd newly require the
+    // server to send Access-Control-Allow-Credentials for no reason).
+    const res = await fetch(`${getApiBase()}/api/v1/settings`);
+    await throwIfNotOk(res, 'Failed to load app settings');
     return res.json();
 }
