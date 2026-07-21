@@ -15,7 +15,6 @@
 import { html, css, nothing } from 'lit';
 import { state, query } from 'lit/decorators.js';
 import { isIP, ipVersion } from 'is-ip';
-// @ts-expect-error no bundled types shipped with d3-graphviz
 import { graphviz } from 'd3-graphviz';
 import { pageStyles } from '../lib/styles.js';
 import { apiFetch } from '../lib/api.js';

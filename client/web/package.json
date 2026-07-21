@@ -1,0 +1,13 @@
+{
+  "name": "antrea-ui-web",
+  "private": true,
+  "workspaces": [
+    "antrea-ui",
+    "antrea-ui-components"
+  ],
+  "resolutions": {
+    "@hpcc-js/wasm": "2.34.5",
+    "postcss": "8.5.19"
+  },
+  "packageManager": "yarn@4.17.1"
+}
