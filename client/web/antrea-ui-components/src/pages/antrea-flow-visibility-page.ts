@@ -471,6 +471,7 @@ export class AntreaFlowVisibilityPage extends TokenAwarePage {
         // Unauthenticated — flow aggregation being enabled is server config, not
         // user-specific — so this doesn't need to wait for the token like the stream does.
         apiFetchAppSettings().then(settings => {
+            if (!this.isConnected) return;
             if (settings.features?.flowVisibilityEnabled === false) {
                 this._flowVisibilityDisabled = true;
                 this._client?.stop();
@@ -503,6 +504,14 @@ export class AntreaFlowVisibilityPage extends TokenAwarePage {
             this._prevTopologyKey = '';
             this._setupResizeObserver();
             this._buildServiceMap();
+        }
+        // The <svg>/simulation only exist while in map view — leaving it tears down the DOM
+        // Lit-side, but the simulation would otherwise keep ticking against detached nodes and
+        // the ResizeObserver would keep observing until disconnectedCallback.
+        if (changed.has('_viewMode') && this._viewMode !== 'map') {
+            this._simulation?.stop();
+            this._ro?.disconnect();
+            this._ro = null;
         }
         // Rebuild map when entries or SVG width change
         if ((changed.has('_entries') || changed.has('_svgWidth')) && this._viewMode === 'map') {

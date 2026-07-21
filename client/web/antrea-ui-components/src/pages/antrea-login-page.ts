@@ -19,6 +19,8 @@ import { APIError, getApiBase } from '../lib/api.js';
 import { Token, AppSettings, apiLogin, apiRefreshToken, apiFetchAppSettings } from '../lib/auth-api.js';
 import '../antrea-button.js';
 import '../antrea-alert.js';
+import '../antrea-input.js';
+import type { AntreaInput } from '../antrea-input.js';
 
 export class AntreaLoginPage extends LitElement {
     static styles = [
@@ -59,8 +61,8 @@ export class AntreaLoginPage extends LitElement {
     // true after we dispatched antrea-token — show spinner until the host unmounts us
     @state() private _tokenDispatched = false;
 
-    @query('#username') private _usernameEl?: HTMLInputElement;
-    @query('#password') private _passwordEl?: HTMLInputElement;
+    @query('#username') private _usernameEl?: AntreaInput;
+    @query('#password') private _passwordEl?: AntreaInput;
 
     override connectedCallback() {
         super.connectedCallback();
@@ -159,14 +161,8 @@ export class AntreaLoginPage extends LitElement {
     private _renderBasicForm() {
         return html`
             <form class="login-form" @submit=${this._onBasicSubmit}>
-                <div class="field-group">
-                    <label class="field-label" for="username">Username</label>
-                    <input id="username" class="field-input" type="text" placeholder="admin" autocomplete="username" />
-                </div>
-                <div class="field-group">
-                    <label class="field-label" for="password">Password</label>
-                    <input id="password" class="field-input" type="password" autocomplete="current-password" />
-                </div>
+                <antrea-input id="username" label="Username" type="text" placeholder="admin" autocomplete="username"></antrea-input>
+                <antrea-input id="password" label="Password" type="password" autocomplete="current-password"></antrea-input>
                 <div class="btn-group">
                     <antrea-button type="submit">Login</antrea-button>
                 </div>

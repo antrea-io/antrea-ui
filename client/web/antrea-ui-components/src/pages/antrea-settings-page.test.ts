@@ -38,15 +38,21 @@ function fillAndSubmit(
 ) {
     const root = page.shadowRoot!;
     if (inputs.current !== undefined) {
-        root.querySelector<HTMLInputElement>('#current-password')!.value = inputs.current;
+        (root.querySelector('#current-password') as HTMLInputElement & { value: string }).value = inputs.current;
     }
     if (inputs.next !== undefined) {
-        root.querySelector<HTMLInputElement>('#new-password')!.value = inputs.next;
+        (root.querySelector('#new-password') as HTMLInputElement & { value: string }).value = inputs.next;
     }
     if (inputs.confirm !== undefined) {
-        root.querySelector<HTMLInputElement>('#confirm-password')!.value = inputs.confirm;
+        (root.querySelector('#confirm-password') as HTMLInputElement & { value: string }).value = inputs.confirm;
     }
     root.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+}
+
+// antrea-input renders its error message inside its own shadow root, so a plain
+// page.shadowRoot!.textContent check (which doesn't cross that boundary) won't see it.
+function fieldErrorText(page: AntreaSettingsPage, id: string): string {
+    return page.shadowRoot!.querySelector(`#${id}`)!.shadowRoot!.textContent ?? '';
 }
 
 async function flush(page: AntreaSettingsPage) {
@@ -60,24 +66,28 @@ describe('AntreaSettingsPage — validation', () => {
         {
             name: 'missing current password',
             inputs: { next: 'newpassword1', confirm: 'newpassword1' },
+            fieldId: 'current-password',
             expectedError: 'Current password is required',
         },
         {
             name: 'missing new password',
             inputs: { current: 'oldpassword1' },
+            fieldId: 'new-password',
             expectedError: 'New password is required',
         },
         {
             name: 'new password too short',
             inputs: { current: 'oldpassword1', next: 'short', confirm: 'short' },
+            fieldId: 'new-password',
             expectedError: 'Password must be at least 8 characters',
         },
         {
             name: 'new passwords do not match',
             inputs: { current: 'oldpassword1', next: 'newpassword1', confirm: 'newpassword2' },
+            fieldId: 'confirm-password',
             expectedError: 'Passwords do not match',
         },
-    ])('$name', async ({ inputs, expectedError }) => {
+    ])('$name', async ({ inputs, fieldId, expectedError }) => {
         const fetchMock = vi.fn();
         vi.stubGlobal('fetch', fetchMock);
         const page = await mount();
@@ -85,7 +95,7 @@ describe('AntreaSettingsPage — validation', () => {
         fillAndSubmit(page, inputs);
         await flush(page);
 
-        expect(page.shadowRoot!.textContent).toContain(expectedError);
+        expect(fieldErrorText(page, fieldId)).toContain(expectedError);
         expect(fetchMock).not.toHaveBeenCalled();
     });
 });

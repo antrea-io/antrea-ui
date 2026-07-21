@@ -20,6 +20,8 @@ import { TokenAwarePage } from '../lib/token-aware-page.js';
 import '../antrea-button';
 import '../antrea-alert';
 import '../antrea-card';
+import '../antrea-input';
+import type { AntreaInput } from '../antrea-input.js';
 
 export class AntreaSettingsPage extends TokenAwarePage {
     static styles = pageStyles;
@@ -29,9 +31,9 @@ export class AntreaSettingsPage extends TokenAwarePage {
     @state() private _error = '';
     @state() private _fieldErrors: Record<string, string> = {};
 
-    @query('#current-password') private _currentPw!: HTMLInputElement;
-    @query('#new-password') private _newPw!: HTMLInputElement;
-    @query('#confirm-password') private _confirmPw!: HTMLInputElement;
+    @query('#current-password') private _currentPw!: AntreaInput;
+    @query('#new-password') private _newPw!: AntreaInput;
+    @query('#confirm-password') private _confirmPw!: AntreaInput;
 
     private _validate(): boolean {
         const errors: Record<string, string> = {};
@@ -79,11 +81,14 @@ export class AntreaSettingsPage extends TokenAwarePage {
         const err = this._fieldErrors[errorKey];
         const autocomplete = id === 'current-password' ? 'current-password' : 'new-password';
         return html`
-            <div class="field-group">
-                <label class="field-label" for=${id}>${label}</label>
-                <input id=${id} class="field-input ${err ? 'error' : ''}" type=${type} autocomplete=${autocomplete} />
-                ${err ? html`<span class="field-error">${err}</span>` : nothing}
-            </div>
+            <antrea-input
+                id=${id}
+                label=${label}
+                type=${type}
+                autocomplete=${autocomplete}
+                ?error=${!!err}
+                error-message=${err ?? ''}
+            ></antrea-input>
         `;
     }
 

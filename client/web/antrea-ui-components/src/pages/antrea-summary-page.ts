@@ -73,11 +73,17 @@ export class AntreaSummaryPage extends TokenAwarePage {
     @state() private _loading = true;
     @state() private _error = '';
 
+    // onTokenReady() fires on every token change, including a silent refresh mid-load — bumped
+    // before each _load() and captured per-call, so a response from a superseded call can't
+    // overwrite state after a newer one has already resolved.
+    private _loadGeneration = 0;
+
     protected override onTokenReady() {
         this._load();
     }
 
     private async _load() {
+        const generation = ++this._loadGeneration;
         this._loading = true;
         this._error = '';
         try {
@@ -92,12 +98,14 @@ export class AntreaSummaryPage extends TokenAwarePage {
                 ),
                 apiFetchJSON<FeatureGate[]>('featuregates', this.token),
             ]);
+            if (generation !== this._loadGeneration) return;
             this._controller = controller;
             this._agents = agentsResp.items;
             this._controllerFG = featureGates.filter(fg => fg.component === 'controller');
             this._agentFG = featureGates.filter(fg => fg.component === 'agent');
             this._loading = false;
         } catch (e) {
+            if (generation !== this._loadGeneration) return;
             if (this.isSessionExpiredError(e)) {
                 this.dispatchSessionExpired();
                 // Stay in the loading state: no controller/agent data was set, so falling

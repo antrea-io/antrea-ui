@@ -119,6 +119,7 @@ export class FlowStreamClient {
         this.filter = filter;
         if (this.running) {
             this.abortController?.abort();
+            if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
             this.flushBatch();
             this.batchBuffer = [];
             this.reconnectAttempts = 0;
@@ -130,6 +131,7 @@ export class FlowStreamClient {
         this.token = token;
         if (this.running) {
             this.abortController?.abort();
+            if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
             this.reconnectAttempts = 0;
             this.connect();
         }
@@ -164,6 +166,7 @@ export class FlowStreamClient {
                 this.running = false;
                 this.stopBatchTimer();
                 this.callbacks.onAuthError?.();
+                this.callbacks.onDisconnected?.();
                 return;
             }
 

@@ -121,6 +121,7 @@ export class AntreaInput extends LitElement {
     @property({ attribute: 'error-message' }) errorMessage = '';
     @property() type: 'text' | 'password' | 'email' | 'number' = 'text';
     @property() name = '';
+    @property() autocomplete = '';
 
     @query('input') private _input!: HTMLInputElement;
 
@@ -190,6 +191,7 @@ export class AntreaInput extends LitElement {
                         id="input"
                         type=${this._resolvedType()}
                         name=${this.name}
+                        autocomplete=${this.autocomplete}
                         .value=${this.value}
                         placeholder=${this.placeholder}
                         ?disabled=${this.disabled}
