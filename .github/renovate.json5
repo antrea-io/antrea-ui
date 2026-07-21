@@ -51,6 +51,14 @@
       enabled: false,
     },
 
+    // Keep react and react-dom in sync, since they must have the exact same version
+    {
+      matchManagers: ["npm"],
+      matchPackageNames: ["react", "react-dom"],
+      groupName: "react",
+      groupSlug: "react",
+    },
+
     // Disable indirect go dependencies updates, resource: https://github.com/renovatebot/renovate/discussions/35225#discussioncomment-13666269
     {
       matchManagers: ["gomod"],
