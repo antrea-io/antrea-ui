@@ -14,27 +14,39 @@
 
 FROM node:24-bullseye-slim as build-web
 
-WORKDIR /app
-
-COPY client/web/antrea-ui/package.json .
-COPY client/web/antrea-ui/yarn.lock .
-COPY client/web/antrea-ui/.yarnrc.yml .
-COPY client/web/antrea-ui/.yarn ./.yarn
-
 # Optional: override the npm registry (e.g., for corporate proxies).
 # Leave unset to use the default registry (npmjs.org).
 ARG NPM_REGISTRY=""
+
+# antrea-ui and antrea-ui-components share one Yarn workspace (client/web/), so they share
+# one install. Copy just the manifests first so this layer caches independently of source edits.
+WORKDIR /app
+COPY client/web/package.json client/web/yarn.lock client/web/.yarnrc.yml ./
+COPY client/web/.yarn ./.yarn
+COPY client/web/antrea-ui/package.json ./antrea-ui/package.json
+COPY client/web/antrea-ui-components/package.json ./antrea-ui-components/package.json
+
 RUN if [ -n "$NPM_REGISTRY" ]; then \
       echo "npmRegistryServer: \"$NPM_REGISTRY\"" >> .yarnrc.yml; \
     fi
 
-RUN corepack enable && yarn install --immutable
+# Corepack fetches the yarn binary itself from repo.yarnpkg.com, ignoring NPM_REGISTRY —
+# on networks that block it (TLS "unable to get local issuer certificate"), route it
+# through the same registry too (trailing slash stripped to avoid a "//" 404).
+RUN export COREPACK_NPM_REGISTRY="${NPM_REGISTRY%/}" && \
+    corepack enable && yarn install --immutable
 
-COPY client/web/antrea-ui .
+# Build antrea-ui-components first: antrea-ui consumes its published dist/ output (see the
+# Vite/Vitest source alias in antrea-ui for why that's dev-only), not its raw TypeScript source.
+COPY client/web/antrea-ui-components/src ./antrea-ui-components/src
+COPY client/web/antrea-ui-components/tsconfig.json client/web/antrea-ui-components/vite.config.ts ./antrea-ui-components/
+RUN yarn workspace @antrea/ui-components run build
+
+COPY client/web/antrea-ui ./antrea-ui
 ARG NODE_ENV=production
-RUN yarn build
+RUN yarn workspace antrea-ui run build
 
 FROM nginxinc/nginx-unprivileged:1.29
 
-COPY --from=build-web /app/build /app
+COPY --from=build-web /app/antrea-ui/build /app
 COPY build/scripts/nginx-reloader.sh /docker-entrypoint.d/99-nginx-reloader.sh

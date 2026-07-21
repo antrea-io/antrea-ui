@@ -17,9 +17,23 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import { visualizer } from "rollup-plugin-visualizer";
+import path from 'node:path'
 
 // https://vitejs.dev/config/
 export default defineConfig({
+    resolve: {
+        preserveSymlinks: true,
+        // @antrea/ui-components's own package.json "exports" points at its built dist/ (needed
+        // for consumers outside this Yarn workspace), which would otherwise make antrea-ui
+        // resolve to a stale prebuilt bundle instead of picking up source edits. Send the bare
+        // specifier straight to source instead, so `yarn start`/`yarn build` here reload on
+        // changes to antrea-ui-components — a RegExp (not a plain string) so this doesn't also
+        // catch the separate "./src/tokens.css" subpath export, which should keep resolving
+        // normally.
+        alias: [
+            { find: /^@antrea\/ui-components$/, replacement: path.resolve(__dirname, '../antrea-ui-components/src/index.ts') },
+        ],
+    },
     build: {
         outDir: 'build',
     },

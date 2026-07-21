@@ -18,14 +18,18 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { createBrowserRouter } from 'react-router';
 import { RouterProvider } from 'react-router/dom';
+import { setApiBase } from '@antrea/ui-components';
 import './index.css';
 import App from './App';
-import Summary from './routes/summary';
-import Traceflow from './routes/traceflow';
-import TraceflowResult from './routes/traceflowresult';
-import FlowVisibility from './routes/flowvisibility';
-import Settings from './routes/settings';
+import { SummaryPage, TraceflowPage, FlowVisibilityPage, SettingsPage } from './pages';
 import reportWebVitals from './reportWebVitals';
+import config from './config';
+
+// Lets antrea-ui-components' fetch calls (login, refresh, settings, data pages) reach the
+// backend when it's on a different origin than this frontend — e.g. local dev, where
+// VITE_API_SERVER points at a separately-running backend and there's no dev proxy. A no-op in
+// the normal deployed case, where VITE_API_SERVER is unset and nginx serves both from one origin.
+setApiBase(config.apiServer);
 
 const router = createBrowserRouter([
     {
@@ -33,31 +37,24 @@ const router = createBrowserRouter([
         element: <App />,
         children: [
             {
-                // default route
                 index: true,
-                element: <Summary />,
+                element: <SummaryPage />,
             },
             {
                 path: "summary",
-                element: <Summary />,
+                element: <SummaryPage />,
             },
             {
                 path: "traceflow",
-                element: <Traceflow />,
-                children: [
-                    {
-                        path: "result",
-                        element: <TraceflowResult />,
-                    }
-                ]
+                element: <TraceflowPage />,
             },
             {
                 path: "flows",
-                element: <FlowVisibility />,
+                element: <FlowVisibilityPage />,
             },
             {
                 path: "settings",
-                element: <Settings />,
+                element: <SettingsPage />,
             },
         ],
     },

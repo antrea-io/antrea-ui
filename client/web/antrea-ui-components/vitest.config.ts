@@ -1,5 +1,5 @@
 /**
- * Copyright 2024 Antrea Authors.
+ * Copyright 2026 Antrea Authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,21 +15,11 @@
  */
 
 import { defineConfig } from 'vitest/config'
-import path from 'node:path'
 
 export default defineConfig({
-    resolve: {
-        preserveSymlinks: true,
-        // See the matching alias in vite.config.ts: sends the bare specifier to source instead
-        // of the built dist/ that @antrea/ui-components' package.json "exports" points at, so
-        // `yarn test` picks up antrea-ui-components changes without a rebuild there first.
-        alias: [
-            { find: /^@antrea\/ui-components$/, replacement: path.resolve(__dirname, '../antrea-ui-components/src/index.ts') },
-        ],
-    },
     test: {
         environment: 'jsdom',
-        setupFiles: './src/setupTests.ts',
         globals: true,
+        setupFiles: './vitest.setup.ts',
     },
 })

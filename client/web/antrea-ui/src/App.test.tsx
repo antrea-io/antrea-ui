@@ -1,5 +1,5 @@
 /**
- * Copyright 2023 Antrea Authors.
+ * Copyright 2026 Antrea Authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,251 +14,80 @@
  * limitations under the License.
  */
 
-import React, { ReactElement, useContext } from 'react';
-import { act, render, screen, waitFor, RenderOptions } from '@testing-library/react';
-import userEvent from '@testing-library/user-event';
+import { act, fireEvent, render, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router';
-import { Provider } from 'react-redux';
-import App, { LoginWall, WaitForSettings } from './App';
-import { setupStore, AppStore, setToken, store } from './store';
-import { authAPI } from './api/auth';
-import { APIError } from './api/common';
-import { Settings, settingsAPI } from './api/settings';
-import SettingsContext from './components/settings';
-import { AppErrorProvider, AppErrorNotification } from './components/errors';
+import App from './App';
+import { store, setToken } from './store';
 
-vi.mock('./api/auth');
-vi.mock('./api/settings');
+// AntreaLoginPage/AntreaButton are Lit web components with their own shadow DOM — Testing
+// Library's screen queries don't pierce shadow roots, so assertions below query the DOM
+// directly (document.querySelector) instead of using screen.getByText()/etc.
 
-const mockedAuthAPI = vi.mocked(authAPI, true);
-const mockedSettingsAPI = vi.mocked(settingsAPI, true);
-const consoleErrorMock = vi.spyOn(console, 'error');
-
-let testStore: AppStore;
-
-beforeEach(() => {
-    consoleErrorMock.mockImplementation(() => {});
-});
-afterAll(() => {
-    vi.restoreAllMocks();
-});
-afterEach(() => {
-    vi.clearAllMocks();
-});
+function jsonResponse(body: unknown, status = 200): Response {
+    return new Response(JSON.stringify(body), { status });
+}
 
 const defaultSettings = {
-    version: 'v0.1.0',
-    auth: {
-        basicEnabled: true,
-        oidcEnabled: false,
-    },
-} as Settings;
+    version: 'v1.0.0',
+    auth: { basicEnabled: true, oidcEnabled: false },
+};
 
-describe('LoginWall', () => {
-    beforeEach(() => {
-        testStore = setupStore();
-    });
-
-    const TestProviders = (props: React.PropsWithChildren<{ settings: Settings, url: string  }>) => {
-        return (
-            <MemoryRouter initialEntries={[props.url]}>
-                <Provider store={testStore}>
-                    <AppErrorProvider>
-                        <SettingsContext.Provider value={props.settings}>
-                            { props.children }
-                        </SettingsContext.Provider>
-                        <AppErrorNotification />
-                    </AppErrorProvider>
-                </Provider>
-            </MemoryRouter>
-        );
-    };
-
-    const customRender = (ui: ReactElement, settings: Settings, url: string = '/', options?: Omit<RenderOptions, 'wrapper'>) => {
-        return render(
-            <TestProviders settings={settings} url={url}>{ui}</TestProviders>,
-            { ...options},
-        );
-    };
-
-    afterEach(() => {
-        localStorage.removeItem('ui.antrea.io/use-oidc');
-    });
-
-    test('refresh error - unauthenticated', async () => {
-        mockedAuthAPI.refreshToken.mockRejectedValueOnce(new APIError(401, 'Unauthenticated', 'cookie expired'));
-        customRender(<LoginWall />, defaultSettings);
-        expect(await screen.findByText('Please log in')).toBeInTheDocument();
-        expect(mockedAuthAPI.refreshToken).toHaveBeenCalledTimes(1);
-        expect(consoleErrorMock).not.toHaveBeenCalled();
-    });
-
-    test('refresh error - other API error', async () => {
-        mockedAuthAPI.refreshToken.mockRejectedValueOnce(new APIError(404, 'Not Found'));
-        customRender(<LoginWall />, defaultSettings);
-        expect(await screen.findByText('Please log in')).toBeInTheDocument();
-        expect(await screen.findByText(/Not Found/)).toBeInTheDocument();
-        expect(mockedAuthAPI.refreshToken).toHaveBeenCalledTimes(1);
-        expect(consoleErrorMock).toHaveBeenCalled();
-    });
-
-    test('refresh error - other error', async () => {
-        mockedAuthAPI.refreshToken.mockRejectedValueOnce(new Error('some error'));
-        customRender(<LoginWall />, defaultSettings);
-        expect(await screen.findByText('Please log in')).toBeInTheDocument();
-        expect(await screen.findByText(/some error/)).toBeInTheDocument();
-        expect(mockedAuthAPI.refreshToken).toHaveBeenCalledTimes(1);
-        expect(consoleErrorMock).toHaveBeenCalled();
-    });
-
-    test('refresh success', async () => {
-        mockedAuthAPI.refreshToken.mockImplementationOnce(() => {
-            testStore.dispatch(setToken('my token'));
-            return Promise.resolve();
-        });
-        customRender(<LoginWall />, defaultSettings);
-        expect(screen.queryByText('Please log in')).toBeNull();
-        await waitFor(() => expect(mockedAuthAPI.refreshToken).toHaveBeenCalledTimes(1));
-    });
-
-    test('already logged in', () => {
-        act(() => {
-            testStore.dispatch(setToken('my token'));
-        });
-        customRender(<LoginWall />, defaultSettings);
-        expect(screen.queryByText('Please log in')).toBeNull();
-        expect(mockedAuthAPI.refreshToken).not.toHaveBeenCalled();
-    });
-
-    test('no log in screen during refresh', async () => {
-        mockedAuthAPI.refreshToken.mockImplementation(async () => {
-            return new Promise((_, reject) => setTimeout(() => reject(new APIError(401, 'Unauthenticated', 'cookie expired')), 200));
-        });
-
-        customRender(<LoginWall />, defaultSettings);
-
-        // we wait for refreshToken to be called
-        await waitFor(() => expect(mockedAuthAPI.refreshToken).toHaveBeenCalledTimes(1));
-        // at this point in time, the log in screen should not be visible (refreshToken has been
-        // called but has not completed yet).
-        expect(screen.queryByText('Please log in')).toBeNull();
-        // the log in screen should eventually be visible (200ms timeout above)
-        expect(await screen.findByText('Please log in')).toBeInTheDocument();
-    });
-
-    test('oidc search param', async () => {
-        const defaultSettings = {
-            version: 'v0.1.0',
-            auth: {
-                basicEnabled: true,
-                oidcEnabled: true,
-            },
-        } as Settings;
-
-        customRender(<LoginWall />, defaultSettings, '/summary?auth_method=oidc');
-
-        await waitFor(() => expect(localStorage.getItem('ui.antrea.io/use-oidc')).toBe('yes'));
-    });
-});
-
-describe('WaitForSettings', () => {
-    const TestProviders = (props: React.PropsWithChildren) => {
-        return (
-            <MemoryRouter>
-                <AppErrorProvider>
-                    { props.children }
-                    <AppErrorNotification />
-                </AppErrorProvider>
-            </MemoryRouter>
-        );
-    };
-
-    const customRender = (ui: ReactElement, options?: Omit<RenderOptions, 'wrapper'>) => {
-        return render(
-            <TestProviders>{ui}</TestProviders>,
-            { ...options},
-        );
-    };
-
-    const TestComponent = () => {
-        const settings = useContext(SettingsContext);
-        return (
-            <p>{JSON.stringify(settings)}</p>
-        );
-    };
-
-    const settings = {
-        version: 'v0.1.0',
-        auth: {
-            basicEnabled: true,
-            oidcEnabled: false,
-        },
-    } as Settings;
-
-    test('success', async () => {
-        mockedSettingsAPI.fetch.mockImplementation(async () => {
-            // we use a timeout rather than a condition flag
-            // using the flag would require some careful use of act() when toggling the flag
-            return new Promise((resolve) => setTimeout(() => resolve(settings), 200));
-        });
-
-        customRender(<WaitForSettings><TestComponent /></WaitForSettings>);
-
-        await waitFor(() => expect(mockedSettingsAPI.fetch).toHaveBeenCalledTimes(1));
-        // while the data is loading, we should see the following message
-        expect(screen.getByText('Loading app settings')).toBeInTheDocument();
-        expect(await screen.findByText(JSON.stringify(settings))).toBeInTheDocument();
-    });
-
-    test('API error', async() => {
-        mockedSettingsAPI.fetch.mockRejectedValueOnce(new APIError(404, 'Not Found', 'page not found'));
-
-        customRender(<WaitForSettings><TestComponent /></WaitForSettings>);
-
-        expect(await screen.findByText(/Not Found/)).toBeInTheDocument();
-        expect(mockedSettingsAPI.fetch).toHaveBeenCalledTimes(1);
-        expect(consoleErrorMock).toHaveBeenCalled();
-    });
+afterEach(() => {
+    act(() => { store.dispatch(setToken(undefined)); });
+    vi.unstubAllGlobals();
 });
 
 describe('App', () => {
-    beforeEach(() => {
-        mockedSettingsAPI.fetch.mockResolvedValue(defaultSettings);
-    });
+    test('login: an existing session hides the login page and shows the nav', async () => {
+        vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+            if (url === '/api/v1/settings') return jsonResponse(defaultSettings);
+            if (url === '/auth/refresh_token') {
+                return jsonResponse({ tokenType: 'Bearer', accessToken: 'my-token', expiresIn: 3600 });
+            }
+            throw new Error(`unexpected fetch to ${url}`);
+        }));
 
-    afterEach(() => {
-        act(() => {
-            store.dispatch(setToken(undefined));
-        });
-    });
-
-    test('login', async () => {
-        // It's important to use mockImplementationOnce instead of mockImplementation.
-        // There is an edge case where calling store.dispatch(setToken(undefined)) in afterEach will
-        // cause the component to be updated, with a new call to refreshToken, which in turn will
-        // set the token to 'my token', hence impacting subsequent test cases.
-        // Unlike for the test suites above, we cannot use an ephemeral test store when testing App.
-        mockedAuthAPI.refreshToken.mockImplementationOnce(() => {
-            store.dispatch(setToken('my token'));
-            return Promise.resolve();
-        });
         render(<App />, { wrapper: MemoryRouter });
-        await waitFor(() => expect(mockedAuthAPI.refreshToken).toHaveBeenCalledTimes(1));
-        expect(screen.queryByText('Please log in')).toBeNull();
+
+        await waitFor(() => expect(document.querySelector('antrea-login-page')).toBeNull());
+        expect(store.getState().token).toBe('my-token');
     });
 
-    test('logout', async () => {
-        mockedAuthAPI.refreshToken.mockImplementationOnce(() => {
-            store.dispatch(setToken('my token'));
-            return Promise.resolve();
+    test('logout: clicking Logout clears the token and shows the login page again', async () => {
+        vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+            if (url === '/api/v1/settings') return jsonResponse(defaultSettings);
+            if (url === '/auth/refresh_token') {
+                return jsonResponse({ tokenType: 'Bearer', accessToken: 'my-token', expiresIn: 3600 });
+            }
+            throw new Error(`unexpected fetch to ${url}`);
+        }));
+        // useLogout() navigates via window.location.href — intercept the setter only, so
+        // jsdom doesn't attempt a real navigation.
+        const hrefSetter = vi.fn();
+        const originalLocation = Object.getOwnPropertyDescriptor(window, 'location');
+        Object.defineProperty(window, 'location', {
+            value: new Proxy(window.location, {
+                set(target, prop, value) {
+                    if (prop === 'href') { hrefSetter(value); return true; }
+                    return Reflect.set(target, prop, value);
+                },
+            }),
+            configurable: true,
         });
-        render(<App />, { wrapper: MemoryRouter });
-        // mimic a user login
-        await waitFor(() => expect(mockedAuthAPI.refreshToken).toHaveBeenCalledTimes(1));
-        expect(screen.queryByText('Please log in')).toBeNull();
-        // logout action
-        await userEvent.click(screen.getByText('Logout'));
-        expect(await screen.findByText('Please log in')).toBeInTheDocument();
-        expect(store.getState().token).toBe('');
+
+        try {
+            render(<App />, { wrapper: MemoryRouter });
+            await waitFor(() => expect(document.querySelector('antrea-login-page')).toBeNull());
+
+            const logoutButton = document.querySelector('antrea-button')!;
+            fireEvent.click(logoutButton);
+
+            await waitFor(() => expect(document.querySelector('antrea-login-page')).not.toBeNull());
+            expect(store.getState().token).toBe('');
+            expect(hrefSetter).toHaveBeenCalledTimes(1);
+            expect(hrefSetter.mock.calls[0][0]).toContain('/auth/logout?');
+        } finally {
+            if (originalLocation) Object.defineProperty(window, 'location', originalLocation);
+        }
     });
 });

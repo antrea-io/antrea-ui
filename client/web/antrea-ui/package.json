@@ -4,16 +4,12 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "@cds/city": "^1.1.0",
-    "@cds/core": "^6.5.0",
-    "@cds/react": "^6.5.0",
+    "@antrea/ui-components": "workspace:*",
     "@hookform/error-message": "^2.0.1",
     "@reduxjs/toolkit": "^2.8.2",
     "@testing-library/react": "^16.0.0",
     "@testing-library/user-event": "^14.6.1",
     "@vitejs/plugin-react": "^6.0.0",
-    "axios": "^1.10.0",
-    "axios-auth-refresh": "^5.0.0",
     "base-64": "^1.0.0",
     "d3": "^7.9.0",
     "d3-graphviz": "^5.6.0",
@@ -72,6 +68,5 @@
     "rollup-plugin-visualizer": "^7.0.0",
     "typescript-eslint": "^8.36.0",
     "uuid": "^14.0.0"
-  },
-  "packageManager": "yarn@4.17.1"
+  }
 }

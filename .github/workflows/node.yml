@@ -13,6 +13,9 @@ jobs:
   yarn:
     name: Run Node checks
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: client/web/
     steps:
     - name: Check-out code
       uses: actions/checkout@v7
@@ -22,9 +25,26 @@ jobs:
         node-version: 24
     - name: Enable Corepack
       run: corepack enable
-    - run: yarn install
-      working-directory: client/web/antrea-ui/
-    - run: yarn lint
-      working-directory: client/web/antrea-ui/
-    - run: yarn test
-      working-directory: client/web/antrea-ui/
+    - run: yarn install --immutable
+    - run: yarn workspace @antrea/ui-components run build
+    - run: yarn workspace antrea-ui run lint
+    - run: yarn workspace antrea-ui run test
+
+  ui-components:
+    name: Run antrea-ui-components checks
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: client/web/
+    steps:
+    - name: Check-out code
+      uses: actions/checkout@v7
+    - name: Set up Node
+      uses: actions/setup-node@v7
+      with:
+        node-version: 24
+    - name: Enable Corepack
+      run: corepack enable
+    - run: yarn install --immutable
+    - run: yarn workspace @antrea/ui-components run lint
+    - run: yarn workspace @antrea/ui-components run test
