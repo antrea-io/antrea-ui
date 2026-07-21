@@ -14,6 +14,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, test, vi } from 'vitest';
 import { streamFilterKey, FlowStreamFilter, FlowStreamClient, FlowStreamCallbacks } from './flow-stream';
+import { setApiBase } from './api';
 
 describe('streamFilterKey', () => {
     it('matches for different object instances with the same filter', () => {
@@ -83,6 +84,7 @@ describe('FlowStreamClient', () => {
     afterEach(() => {
         vi.useRealTimers();
         vi.unstubAllGlobals();
+        setApiBase(''); // apiBase is module-level state — reset it so tests don't leak into each other
     });
 
     function stubFetch(impl: (url: string, init?: RequestInit) => Promise<Response>) {
@@ -103,6 +105,21 @@ describe('FlowStreamClient', () => {
         expect(url).toContain('/api/v1/flows/stream');
         expect((init.headers as Record<string, string>).Authorization).toBe('Bearer my-token');
         expect(cb.connected).toBe(1);
+
+        client.stop();
+    });
+
+    test('prefixes the stream URL with the configured API base', async () => {
+        setApiBase('http://localhost:8080');
+        stubFetch(async () => sseResponse([]));
+        const cb = makeCallbacks();
+        const client = new FlowStreamClient('my-token', {}, cb);
+
+        client.start();
+        await vi.advanceTimersByTimeAsync(0);
+
+        const [url] = fetchMock.mock.calls[0];
+        expect(url).toBe('http://localhost:8080/api/v1/flows/stream?');
 
         client.stop();
     });

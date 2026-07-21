@@ -14,8 +14,9 @@
  * limitations under the License.
  */
 
-import React, { useState, useCallback, useContext } from 'react';
+import React, { useState, useCallback, useContext, useRef, useEffect } from 'react';
 import '@antrea/ui-components';
+import type { AntreaAlert } from '@antrea/ui-components';
 
 interface AppErrorContextType {
     error: Error | null
@@ -53,14 +54,28 @@ export function useAppError() {
 
 export function AppErrorNotification() {
     const { error, removeError } = useAppError();
+    const alertRef = useRef<AntreaAlert>(null);
+
+    // antrea-alert dispatches a native 'antrea-close' CustomEvent, not a React synthetic
+    // event — React doesn't map an onX JSX prop to a custom-element event, so this can't be
+    // wired via onAntreaClose={...}; it needs a real addEventListener. The alert only exists
+    // in the DOM once `error` is set (see the early return below), and refs aren't reactive,
+    // so this must depend on `error` too or it'll attach to a ref that's still null.
+    useEffect(() => {
+        const el = alertRef.current;
+        if (!el) return;
+        const onClose = () => removeError();
+        el.addEventListener('antrea-close', onClose);
+        return () => el.removeEventListener('antrea-close', onClose);
+    }, [removeError, error]);
 
     if (!error) return null;
 
     return (
         <antrea-alert
+            ref={alertRef}
             status="danger"
             closable
-            onAntreaClose={() => removeError()}
         >
             {error.message}
         </antrea-alert>

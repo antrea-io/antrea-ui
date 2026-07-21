@@ -13,6 +13,7 @@
 // limitations under the License.
 
 import { Flow } from './flow-types.js';
+import { getApiBase } from './api.js';
 
 export type FlowFilterDirection = 'both' | 'from' | 'to';
 export type FlowTypeName = 'intra-node' | 'inter-node' | 'to-external' | 'from-external';
@@ -61,7 +62,7 @@ function buildStreamURL(filter: FlowStreamFilter): string {
     if (filter.flowTypes?.length) params.set('flowTypes', filter.flowTypes.join(','));
     if (filter.ips?.length) params.set('ips', filter.ips.join(','));
     if (filter.direction && filter.direction !== 'both') params.set('direction', filter.direction);
-    return `/api/v1/flows/stream?${params.toString()}`;
+    return `${getApiBase()}/api/v1/flows/stream?${params.toString()}`;
 }
 
 /**

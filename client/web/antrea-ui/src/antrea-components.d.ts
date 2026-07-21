@@ -31,10 +31,9 @@ declare global {
                 disabled?: boolean;
                 type?: 'button' | 'submit' | 'reset';
             };
-            'antrea-alert': React.HTMLAttributes<AntreaAlert> & {
+            'antrea-alert': React.HTMLAttributes<AntreaAlert> & React.ClassAttributes<AntreaAlert> & {
                 status?: AlertStatus;
                 closable?: boolean;
-                onAntreaClose?: (event: Event) => void;
             };
             'antrea-card': React.HTMLAttributes<AntreaCard> & {
                 heading?: string;
