@@ -8,8 +8,20 @@
 {{- end }}
 {{- end -}}
 
+{{- define "frontendDefaultRepository" -}}
+{{- $variant := .Values.frontend.variant | default "react" -}}
+{{- if eq $variant "angular" -}}
+antrea/antrea-ui-frontend-angular
+{{- else if eq $variant "react" -}}
+antrea/antrea-ui-frontend
+{{- else -}}
+{{- fail (printf "unsupported frontend.variant %q: must be \"react\" or \"angular\"" $variant) -}}
+{{- end -}}
+{{- end -}}
+
 {{- define "frontendImage" -}}
-{{- print .Values.frontend.image.repository ":" (include "frontendImageTag" .) -}}
+{{- $repository := .Values.frontend.image.repository | default (include "frontendDefaultRepository" .) -}}
+{{- print $repository ":" (include "frontendImageTag" .) -}}
 {{- end -}}
 
 {{- define "backendImageTag" -}}

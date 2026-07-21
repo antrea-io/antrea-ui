@@ -28,6 +28,9 @@ import (
 var allowedK8sPaths = []string{
 	"/apis/crd.antrea.io/v1beta1/antreaagentinfos",
 	"/apis/crd.antrea.io/v1beta1/antreacontrollerinfos",
+	"/apis/networking.k8s.io/v1/networkpolicies",
+	"/apis/crd.antrea.io/v1beta1/networkpolicies",
+	"/apis/crd.antrea.io/v1beta1/clusternetworkpolicies",
 }
 
 func (s *Server) GetK8s(c *gin.Context) {

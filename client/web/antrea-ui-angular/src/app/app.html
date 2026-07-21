@@ -1,0 +1,18 @@
+<clr-main-container>
+  <app-header></app-header>
+
+  @if (auth.token()) {
+    <div class="content-container">
+      <app-nav></app-nav>
+      <div class="content-area">
+        <router-outlet></router-outlet>
+      </div>
+    </div>
+  } @else {
+    <div class="content-container">
+      <div class="content-area login-area">
+        <app-login-page></app-login-page>
+      </div>
+    </div>
+  }
+</clr-main-container>

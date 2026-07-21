@@ -1,0 +1,24 @@
+<clr-vertical-nav [clrVerticalNavCollapsible]="true">
+  <a clrVerticalNavLink routerLink="/summary" routerLinkActive="active" [routerLinkActiveOptions]="{ exact: false }">
+    <cds-icon clrVerticalNavIcon shape="dashboard"></cds-icon>
+    Summary
+  </a>
+  <a clrVerticalNavLink routerLink="/traceflow" routerLinkActive="active">
+    <cds-icon clrVerticalNavIcon shape="router"></cds-icon>
+    Traceflow
+  </a>
+  <a clrVerticalNavLink routerLink="/flows" routerLinkActive="active">
+    <cds-icon clrVerticalNavIcon shape="eye"></cds-icon>
+    Flow Visibility
+  </a>
+  @for (entry of pluginSidebarEntries; track entry.path) {
+    <a clrVerticalNavLink [routerLink]="entry.path" routerLinkActive="active">
+      <cds-icon clrVerticalNavIcon [attr.shape]="entry.icon"></cds-icon>
+      {{ entry.label }}
+    </a>
+  }
+  <a clrVerticalNavLink routerLink="/settings" routerLinkActive="active">
+    <cds-icon clrVerticalNavIcon shape="cog"></cds-icon>
+    Settings
+  </a>
+</clr-vertical-nav>

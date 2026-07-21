@@ -1,0 +1,22 @@
+{
+  "name": "@antrea/ui-plugin-sdk",
+  "version": "0.1.0",
+  "description": "Registration API for building Antrea UI plugins, modeled after Headlamp's plugin architecture",
+  "type": "module",
+  "main": "src/index.ts",
+  "module": "src/index.ts",
+  "exports": {
+    ".": {
+      "import": "./src/index.ts"
+    }
+  },
+  "peerDependencies": {
+    "@angular/core": "^22.0.0",
+    "@angular/router": "^22.0.0"
+  },
+  "devDependencies": {
+    "@angular/core": "22.0.5",
+    "@angular/router": "22.0.5",
+    "typescript": "~6.0.2"
+  }
+}

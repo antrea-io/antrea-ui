@@ -1,0 +1,60 @@
+@import '@clr/ui/clr-ui.min.css';
+@import '@antrea/ui-components/src/tokens.css';
+
+/*
+ * antrea-ui-components' tokens.css already defines a dark theme (matching
+ * the React app's look) as its :root defaults, so no --antrea-color-*
+ * overrides are needed here — just switch Clarity's own chrome
+ * (header/nav/dropdown) to dark via cds-theme="dark" on <html> (index.html).
+ */
+
+/*
+ * Match the shared Lit components' font to Clarity's own (Metropolis, a real
+ * embedded web font shipped by clr-ui.min.css — not just an OS-font
+ * reference), so Policy Management (plain Angular/Clarity) and the other
+ * pages (Lit web components, styled via --antrea-font-family) render with
+ * the same typeface. Overridden here rather than in tokens.css's own
+ * default, since that file is shared with the React app, which never loads
+ * Clarity and would otherwise fall back to Avenir Next/sans-serif instead.
+ */
+:root {
+  --antrea-font-family: 'Metropolis', 'Avenir Next', sans-serif;
+}
+
+/*
+ * Match the shared Lit components' buttons and tables to Clarity's own
+ * conventions (uppercase/semibold/letter-spaced buttons; semibold,
+ * letter-spaced table headers) via the CSS custom properties antrea-button
+ * and pageStyles expose for exactly this purpose. Referencing Clarity's own
+ * --clr-* and --cds-* tokens directly (rather than hardcoding values) keeps
+ * this in sync if Clarity's own theme ever changes.
+ *
+ * Note: ::part() can't reach these — antrea-button/table cells are nested
+ * inside each page component's own shadow root, and ::part() doesn't cross
+ * more than one shadow boundary without explicit exportparts forwarding at
+ * every level. Custom properties cross any number of shadow boundaries via
+ * normal inheritance, so they're the only practical hook here.
+ */
+:root {
+  --antrea-button-height: var(--clr-btn-height);
+  --antrea-button-padding: var(--clr-btn-padding);
+  --antrea-button-font-weight: var(--cds-alias-typography-font-weight-semibold);
+  --antrea-button-text-transform: uppercase;
+  --antrea-button-letter-spacing: var(--cds-global-space-1);
+
+  --antrea-table-header-font-weight: var(--cds-alias-typography-font-weight-semibold);
+  --antrea-table-header-letter-spacing: calc(0.2 * 1rem / var(--cds-global-base));
+}
+
+html, body {
+  height: 100%;
+  margin: 0;
+}
+
+clr-main-container {
+  height: 100vh;
+}
+
+.content-area {
+  overflow-y: auto;
+}
