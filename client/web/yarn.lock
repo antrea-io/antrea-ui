@@ -660,14 +660,14 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@hpcc-js/wasm@npm:2.34.5":
-  version: 2.34.5
-  resolution: "@hpcc-js/wasm@npm:2.34.5"
+"@hpcc-js/wasm@npm:2.34.7":
+  version: 2.34.7
+  resolution: "@hpcc-js/wasm@npm:2.34.7"
   dependencies:
     yargs: "npm:18.0.0"
   bin:
     dot-wasm: deprecated/dot-wasm.js
-  checksum: 10c0/78ff312d0078560b10fbaabd481448daef65e4cb114131652e5b250355d09831b483616d59c45a3279016fc5df9f95932aa59943a44cd307fdfa5b79c360b26f
+  checksum: 10c0/2ea70e4de92cdc830e47747d851015514befbac0fc406fa6289bd07cec0556f7f21d2e76d72d47d9e5a13953d81514f1c20139090691ad0b4e4dc74334d6eb9d
   languageName: node
   linkType: hard
 
