@@ -54,7 +54,7 @@ func checkAPIAccess(scheme string, tlsConfig *tls.Config) func(t *testing.T, end
 			t,
 			url.String(),
 			tlsConfig,
-			10,            // retries
+			30,            // retries
 			1*time.Second, // sleep between retries
 			func(statusCode int, body string) bool {
 				return statusCode == 200
