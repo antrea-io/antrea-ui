@@ -13,7 +13,7 @@
 // limitations under the License.
 
 import { html, css, nothing } from 'lit';
-import { state, query } from 'lit/decorators.js';
+import { state, query, property } from 'lit/decorators.js';
 import * as d3 from 'd3';
 import { pageStyles } from '../lib/styles.js';
 import { TokenAwarePage } from '../lib/token-aware-page.js';
@@ -399,7 +399,12 @@ export class AntreaFlowVisibilityPage extends TokenAwarePage {
     `];
 
     // View
-    @state() private _viewMode: 'list' | 'map' = 'list';
+    // Public (not @state): hosts that render their own switcher (e.g. a nav with
+    // "Flow List"/"Service Map" sub-items) drive this externally instead of using the
+    // built-in tab strip — see hideViewToggle below.
+    @property({ attribute: 'view-mode' }) viewMode: 'list' | 'map' = 'list';
+    /** Hides the built-in Flow List / Service Map tab strip, for hosts that render their own switcher and drive viewMode externally instead. */
+    @property({ type: Boolean, attribute: 'hide-view-toggle' }) hideViewToggle = false;
     @state() private _paused = false;
 
     // Stream
@@ -495,7 +500,7 @@ export class AntreaFlowVisibilityPage extends TokenAwarePage {
     override updated(changed: Map<string, unknown>) {
         super.updated(changed);
         // Setup ResizeObserver once the DOM is ready
-        if (changed.has('_viewMode') && this._viewMode === 'map') {
+        if (changed.has('viewMode') && this.viewMode === 'map') {
             // The <svg> is always freshly created when switching into map view (render()
             // ternaries between list/map templates, so Lit tears down and recreates the whole
             // subtree). Reset the memoized topology key so _buildServiceMap() does a full
@@ -508,13 +513,13 @@ export class AntreaFlowVisibilityPage extends TokenAwarePage {
         // The <svg>/simulation only exist while in map view — leaving it tears down the DOM
         // Lit-side, but the simulation would otherwise keep ticking against detached nodes and
         // the ResizeObserver would keep observing until disconnectedCallback.
-        if (changed.has('_viewMode') && this._viewMode !== 'map') {
+        if (changed.has('viewMode') && this.viewMode !== 'map') {
             this._simulation?.stop();
             this._ro?.disconnect();
             this._ro = null;
         }
         // Rebuild map when entries or SVG width change
-        if ((changed.has('_entries') || changed.has('_svgWidth')) && this._viewMode === 'map') {
+        if ((changed.has('_entries') || changed.has('_svgWidth')) && this.viewMode === 'map') {
             this._buildServiceMap();
         }
         if (changed.has('_selectedEdgeKey')) {
@@ -1154,17 +1159,19 @@ export class AntreaFlowVisibilityPage extends TokenAwarePage {
                 <div class="page-layout" style="max-width:100%">
                     <div class="row">
                         <p class="page-title">Flow Visibility</p>
-                        <div class="btn-group">
-                            <antrea-button type="button" action=${this._viewMode === 'list' ? 'solid' : 'outline'} @click=${() => { this._viewMode = 'list'; }}>Flow List</antrea-button>
-                            <antrea-button type="button" action=${this._viewMode === 'map' ? 'solid' : 'outline'} @click=${() => { this._viewMode = 'map'; }}>Service Map</antrea-button>
-                        </div>
+                        ${this.hideViewToggle ? nothing : html`
+                            <div class="tab-strip" role="tablist">
+                                <button type="button" role="tab" class=${this.viewMode === 'list' ? 'active' : ''} aria-selected=${this.viewMode === 'list'} @click=${() => { this.viewMode = 'list'; }}>Flow List</button>
+                                <button type="button" role="tab" class=${this.viewMode === 'map' ? 'active' : ''} aria-selected=${this.viewMode === 'map'} @click=${() => { this.viewMode = 'map'; }}>Service Map</button>
+                            </div>
+                        `}
                     </div>
 
                     ${this._renderFilters()}
 
                     ${this._error ? html`<antrea-alert status="danger">${this._error}</antrea-alert>` : nothing}
 
-                    ${this._viewMode === 'list' ? this._renderFlowList() : this._renderServiceMap()}
+                    ${this.viewMode === 'list' ? this._renderFlowList() : this._renderServiceMap()}
                 </div>
             </main>
         `;

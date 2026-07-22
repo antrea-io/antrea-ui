@@ -15,6 +15,7 @@
  */
 
 import { useRef, useEffect, useCallback } from 'react';
+import { useSearchParams } from 'react-router';
 import '@antrea/ui-components';
 import { apiRefreshToken } from '@antrea/ui-components';
 import { useSelector, useDispatch } from 'react-redux';
@@ -64,7 +65,13 @@ export function TraceflowPage() {
 
 export function FlowVisibilityPage() {
     const { ref, token } = useLitPage();
-    return <antrea-flow-visibility-page ref={ref} token={token} />;
+    // Flow List / Service Map is switched from the left nav (see nav.tsx) instead of the
+    // component's own built-in tab strip (hidden via hideViewToggle below), via a ?view=
+    // query param rather than a separate route — that keeps this single page instance
+    // mounted across the switch, preserving the live SSE connection and applied filters.
+    const [searchParams] = useSearchParams();
+    const viewMode = searchParams.get('view') === 'map' ? 'map' : 'list';
+    return <antrea-flow-visibility-page ref={ref} token={token} viewMode={viewMode} hideViewToggle />;
 }
 
 export function SettingsPage() {

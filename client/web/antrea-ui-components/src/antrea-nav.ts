@@ -193,12 +193,76 @@ export class AntreaNavItem extends LitElement {
     }
 }
 
+/**
+ * A collapsible-free grouping of antrea-nav-item elements under a label, for
+ * pages that expose more than one view (e.g. Flow Visibility's "Flow List" /
+ * "Service Map"). Always expanded — this isn't a disclosure widget, just a
+ * visual section header, matching how the Angular shell's
+ * clr-vertical-nav-group is used for the same pages (always
+ * clrVerticalNavGroupExpanded="true").
+ *
+ * @slot label - Group header content (e.g. an icon + text, same convention as antrea-nav-item's link content)
+ * @slot - antrea-nav-item elements
+ */
+export class AntreaNavGroup extends LitElement {
+    static styles = css`
+        :host {
+            display: block;
+        }
+
+        .group-label {
+            display: flex;
+            align-items: center;
+            padding: var(--antrea-space-sm, 0.5rem) var(--antrea-space-sm, 0.5rem);
+            color: var(--antrea-color-text-muted, #adbbc4);
+            font-family: var(--antrea-font-family, sans-serif);
+            font-size: var(--antrea-font-size-base, 0.875rem);
+            white-space: nowrap;
+            overflow: hidden;
+        }
+
+        /* Always-expanded (no toggle) — chevron is static, matching the Angular
+           shell's clr-vertical-nav-group, which is likewise never collapsed. */
+        .group-label::after {
+            content: '';
+            width: 0.5rem;
+            height: 0.5rem;
+            margin-left: auto;
+            border-right: 2px solid currentColor;
+            border-bottom: 2px solid currentColor;
+            transform: rotate(45deg) translateY(-2px);
+            flex-shrink: 0;
+        }
+
+        /* The label slot's content (icon + text) provides its own flex row —
+           see antrea-nav-item's ::slotted(a) for the equivalent pattern. */
+        ::slotted([slot="label"]) {
+            display: flex;
+            align-items: center;
+            gap: var(--antrea-space-sm, 0.5rem);
+        }
+
+        ::slotted(antrea-nav-item) {
+            margin-left: var(--antrea-space-lg, 1.5rem);
+        }
+    `;
+
+    render() {
+        return html`
+            <div class="group-label"><slot name="label"></slot></div>
+            <slot></slot>
+        `;
+    }
+}
+
 customElements.define('antrea-nav', AntreaNav);
 customElements.define('antrea-nav-item', AntreaNavItem);
+customElements.define('antrea-nav-group', AntreaNavGroup);
 
 declare global {
     interface HTMLElementTagNameMap {
         'antrea-nav': AntreaNav;
         'antrea-nav-item': AntreaNavItem;
+        'antrea-nav-group': AntreaNavGroup;
     }
 }

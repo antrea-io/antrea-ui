@@ -18,6 +18,7 @@ import { Component, CUSTOM_ELEMENTS_SCHEMA, inject } from '@angular/core';
 import { RouterLink } from '@angular/router';
 import { ClarityModule } from '@clr/angular';
 import { AuthService } from '../../core/auth.service';
+import { ThemeService } from '../../services/theme.service';
 
 @Component({
   selector: 'app-header',
@@ -29,6 +30,7 @@ import { AuthService } from '../../core/auth.service';
 })
 export class Header {
   private readonly auth = inject(AuthService);
+  protected readonly theme = inject(ThemeService);
 
   logout(): void {
     this.auth.logout('You successfully logged out');

@@ -6,6 +6,19 @@
     </a>
   </div>
   <div class="header-actions">
+    <button
+      class="header-theme-btn"
+      type="button"
+      (click)="theme.toggle()"
+      [title]="theme.isDark() ? 'Switch to light theme' : 'Switch to dark theme'"
+      aria-label="Toggle theme"
+    >
+      @if (theme.isDark()) {
+        <cds-icon shape="sun"></cds-icon>
+      } @else {
+        <cds-icon shape="moon"></cds-icon>
+      }
+    </button>
     <clr-dropdown>
       <button class="nav-icon-hitarea" clrDropdownTrigger aria-label="user menu">
         <cds-icon shape="user"></cds-icon>

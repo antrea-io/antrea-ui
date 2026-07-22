@@ -51,6 +51,32 @@ export const pageStyles = css`
         gap: 0.25rem;
     }
 
+    /* ── Tabs ────────────────────────────────────────────── */
+    .tab-strip {
+        display: flex;
+        gap: 1.5rem;
+        border-bottom: 1px solid var(--antrea-color-border, #314351);
+    }
+    .tab-strip button {
+        background: none;
+        border: none;
+        border-bottom: 2px solid transparent;
+        margin-bottom: -1px;
+        padding: 0.5rem 0.125rem;
+        font-family: inherit;
+        font-size: var(--antrea-font-size-base, 0.875rem);
+        font-weight: var(--antrea-font-weight-medium, 500);
+        color: var(--antrea-color-text-muted, #adbbc4);
+        cursor: pointer;
+    }
+    .tab-strip button:hover {
+        color: var(--antrea-color-text, #e9ecef);
+    }
+    .tab-strip button.active {
+        color: var(--antrea-color-text, #e9ecef);
+        border-bottom-color: var(--antrea-color-primary, #0079b8);
+    }
+
     /* ── Tables ──────────────────────────────────────────── */
     .data-table {
         width: 100%;

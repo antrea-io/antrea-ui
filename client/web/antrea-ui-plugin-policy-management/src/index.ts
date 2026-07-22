@@ -29,6 +29,10 @@ export const register: AntreaPluginRegister = (host: AntreaPluginHost) => {
     label: 'Policy Management',
     path: '/policies',
     icon: 'shield-check',
+    children: [
+      { label: 'Policy Definitions', path: '/policies/definitions' },
+      { label: 'Policy Recommendations', path: '/policies/recommendations' },
+    ],
   });
 
   host.registerRoute({

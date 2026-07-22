@@ -1,0 +1,8 @@
+/* Clarity adds .has-nav-groups to clr-vertical-nav as soon as it contains any
+   clr-vertical-nav-group, which re-weights every top-level item (not just group
+   headers — plain leaf links like Summary/Traceflow/Settings too) via this
+   token. Custom properties cascade through the DOM regardless of Angular's
+   view encapsulation, so no ::ng-deep needed here. */
+:host {
+  --clr-vertical-nav-item-top-level-font-weight: normal;
+}

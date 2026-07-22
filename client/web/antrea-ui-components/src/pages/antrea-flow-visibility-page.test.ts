@@ -177,7 +177,7 @@ describe('AntreaFlowVisibilityPage — antrea-edge-selected extension point', ()
         // Switch to map view — this is what triggers _buildServiceMap(), synchronously
         // populating _graphRef.edgeMap and wiring up click handlers on the rendered paths
         // (independent of the D3 force simulation, which only animates positions afterward).
-        (page as unknown as { _viewMode: string })._viewMode = 'map';
+        page.viewMode = 'map';
         await page.updateComplete;
         return page;
     }

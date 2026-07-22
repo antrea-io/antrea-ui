@@ -25,6 +25,13 @@ export interface PluginSidebarEntry {
   label: string;
   path: string;
   icon: string;
+  /** Second-level nav items rendered under this entry's label instead of a single link (e.g. a plugin's own sub-pages). */
+  children?: PluginSidebarChildEntry[];
+}
+
+export interface PluginSidebarChildEntry {
+  label: string;
+  path: string;
 }
 
 /**

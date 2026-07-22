@@ -10,31 +10,6 @@
   color: var(--antrea-color-text, #e9ecef);
 }
 
-.tab-strip {
-  display: flex;
-  gap: 1.5rem;
-  border-bottom: 1px solid var(--antrea-color-border, #314351);
-  margin-bottom: 1.25rem;
-}
-
-.tab-strip a {
-  padding: 0.5rem 0.125rem;
-  color: var(--antrea-color-text-muted, #adbbc4);
-  text-decoration: none;
-  font-size: 0.875rem;
-  font-weight: 500;
-  border-bottom: 2px solid transparent;
-}
-
-.tab-strip a:hover {
-  color: var(--antrea-color-primary, #0079b8);
-}
-
-.tab-strip a.active {
-  color: var(--antrea-color-primary, #0079b8);
-  border-bottom-color: var(--antrea-color-primary, #0079b8);
-}
-
 .text-muted {
   color: var(--antrea-color-text-muted, #adbbc4);
 }

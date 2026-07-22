@@ -7,15 +7,39 @@
     <cds-icon clrVerticalNavIcon shape="router"></cds-icon>
     Traceflow
   </a>
-  <a clrVerticalNavLink routerLink="/flows" routerLinkActive="active">
+
+  <clr-vertical-nav-group [clrVerticalNavGroupExpanded]="true">
     <cds-icon clrVerticalNavIcon shape="eye"></cds-icon>
     Flow Visibility
-  </a>
+    <clr-vertical-nav-group-children>
+      <a clrVerticalNavLink routerLink="/flows" [queryParams]="{}" routerLinkActive="active" [routerLinkActiveOptions]="{ exact: true }">
+        Flow List
+      </a>
+      <a clrVerticalNavLink routerLink="/flows" [queryParams]="{ view: 'map' }" routerLinkActive="active" [routerLinkActiveOptions]="{ exact: true }">
+        Service Map
+      </a>
+    </clr-vertical-nav-group-children>
+  </clr-vertical-nav-group>
+
   @for (entry of pluginSidebarEntries; track entry.path) {
-    <a clrVerticalNavLink [routerLink]="entry.path" routerLinkActive="active">
-      <cds-icon clrVerticalNavIcon [attr.shape]="entry.icon"></cds-icon>
-      {{ entry.label }}
-    </a>
+    @if (entry.children) {
+      <clr-vertical-nav-group [clrVerticalNavGroupExpanded]="true">
+        <cds-icon clrVerticalNavIcon [shape]="entry.icon"></cds-icon>
+        {{ entry.label }}
+        <clr-vertical-nav-group-children>
+          @for (child of entry.children; track child.path) {
+            <a clrVerticalNavLink [routerLink]="child.path" routerLinkActive="active">
+              {{ child.label }}
+            </a>
+          }
+        </clr-vertical-nav-group-children>
+      </clr-vertical-nav-group>
+    } @else {
+      <a clrVerticalNavLink [routerLink]="entry.path" routerLinkActive="active">
+        <cds-icon clrVerticalNavIcon [shape]="entry.icon"></cds-icon>
+        {{ entry.label }}
+      </a>
+    }
   }
   <a clrVerticalNavLink routerLink="/settings" routerLinkActive="active">
     <cds-icon clrVerticalNavIcon shape="cog"></cds-icon>

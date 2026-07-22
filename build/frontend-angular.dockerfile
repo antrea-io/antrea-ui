@@ -27,13 +27,30 @@ ARG NPM_REGISTRY=""
 # Vite), Angular's stricter TS program would otherwise choke on source
 # written for the library's own toolchain (missing 'override' modifiers,
 # tslib decorator helpers, etc).
-WORKDIR /antrea-ui-components
-COPY client/web/antrea-ui-components/package.json client/web/antrea-ui-components/package-lock.json ./
-COPY client/web/antrea-ui-components/src ./src
-COPY client/web/antrea-ui-components/tsconfig.json client/web/antrea-ui-components/vite.config.ts ./
-RUN if [ -n "$NPM_REGISTRY" ]; then npm config set registry "$NPM_REGISTRY"; fi && \
-    npm install && \
-    npm run build
+#
+# antrea-ui-components is a Yarn workspace member of client/web (not a
+# standalone npm package with its own lockfile), so it's installed the same
+# way as antrea-ui-angular itself below: from the workspace root, via the
+# root yarn.lock. Installed under /workspace (Yarn's project-root detection
+# gets confused if that root is literally /), then the built member is
+# copied out to /antrea-ui-components — the exact sibling path
+# antrea-ui-angular's package.json expects via its
+# "link:../antrea-ui-components" dependency (resolved relative to /app).
+WORKDIR /workspace
+COPY client/web/package.json client/web/yarn.lock client/web/.yarnrc.yml ./
+COPY client/web/.yarn ./.yarn
+COPY client/web/antrea-ui/package.json ./antrea-ui/package.json
+COPY client/web/antrea-ui-components/package.json ./antrea-ui-components/package.json
+RUN if [ -n "$NPM_REGISTRY" ]; then \
+      echo "npmRegistryServer: \"$NPM_REGISTRY\"" >> .yarnrc.yml; \
+    fi
+RUN corepack enable && yarn install --immutable
+COPY client/web/antrea-ui-components/src ./antrea-ui-components/src
+COPY client/web/antrea-ui-components/tsconfig.json client/web/antrea-ui-components/vite.config.ts ./antrea-ui-components/
+RUN yarn workspace @antrea/ui-components build && \
+    cp -r /workspace/antrea-ui-components /antrea-ui-components && \
+    rm -rf /antrea-ui-components/node_modules && \
+    ln -s /workspace/node_modules /antrea-ui-components/node_modules
 
 # Plugin packages, consumed by antrea-ui-angular via "link:../<name>" (a yarn
 # portal to a sibling directory) — see client/web/antrea-ui-plugin-*/README.md.
@@ -68,6 +85,18 @@ RUN if [ -n "$NPM_REGISTRY" ]; then \
     fi
 
 RUN corepack enable && yarn install --immutable
+
+# Each plugin package's own npm install (above) gave it its own physical copy of
+# @angular/core and rxjs — a second live Angular-core instance bundled alongside
+# antrea-ui-angular's own breaks DI's injection-context tracking (it's
+# module-level singleton state), surfacing as NG0203/NG0200 errors on every
+# route, not just plugin routes. Force both plugins to share this app's single
+# copy instead of their own.
+RUN for pkg in antrea-ui-plugin-sdk antrea-ui-plugin-policy-management; do \
+      rm -rf /$pkg/node_modules/@angular /$pkg/node_modules/rxjs && \
+      ln -s /app/node_modules/@angular /$pkg/node_modules/@angular && \
+      ln -s /app/node_modules/rxjs /$pkg/node_modules/rxjs; \
+    done
 
 COPY client/web/antrea-ui-angular .
 ARG NODE_ENV=production

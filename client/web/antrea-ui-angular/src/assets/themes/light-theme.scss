@@ -1,0 +1,9 @@
+// =============================================================================
+// Antrea UI (Angular shell) — Light Theme
+//
+// Applied when `document.documentElement` has `data-theme="light"`. All token
+// values live in `_tokens.scss` under the `[data-theme='light']` block. This
+// file exists as the public entry-point that `styles.scss` imports; if you
+// need to tweak a token value, edit `_tokens.scss`, not this file.
+// =============================================================================
+@forward 'tokens';

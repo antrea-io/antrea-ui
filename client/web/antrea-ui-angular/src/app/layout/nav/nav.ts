@@ -24,6 +24,7 @@ import { pluginSidebarEntries } from '../../plugins';
   standalone: true,
   imports: [RouterLink, RouterLinkActive, ClarityModule],
   templateUrl: './nav.html',
+  styleUrl: './nav.css',
   schemas: [CUSTOM_ELEMENTS_SCHEMA],
 })
 export class Nav {

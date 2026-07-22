@@ -1,0 +1,900 @@
+// =============================================================================
+// Antrea UI (Angular shell) — Design Tokens
+//
+// Single source of truth for every colour, radius, spacing alias and
+// typography variable used across the UI workspace. Both `dark-theme.scss`
+// and `light-theme.scss` forward from this file; every token is defined in
+// **both** the `:root` (dark default) block and the `[data-theme='light']`
+// block, so consumers can reference them as `var(--token-name)` with no
+// fallback (Stylelint enforces no-fallback usage).
+//
+// To add a new token:
+//   1. Pick a role-based name (`--app-sidebar-text`, not `--blue-2`).
+//   2. Add it to BOTH `:root` and `[data-theme='light']` below.
+//   3. Reference it as `var(--token-name)` from any `.scss`, or use the
+//      `token('name')` Sass helper exported below.
+//
+// Ported from ~/vcf-ai/ui/src/assets/themes/_tokens.scss (same file
+// structure and token API, kept in sync deliberately — that app also
+// re-themes Clarity/CDS-core, so this shell should look and feel the same).
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// Palette helper
+// -----------------------------------------------------------------------------
+
+@function token($name) {
+  @return var(--#{$name});
+}
+
+// -----------------------------------------------------------------------------
+// Dark theme (default — applies to all `:root` consumers)
+//
+// Also matched via `[data-theme='dark']` (set on <body> in index.html
+// alongside `cds-theme="dark"`). This is required, not cosmetic: Clarity's
+// own stylesheet redefines many `--clr-*` custom properties (e.g.
+// `--clr-btn-primary-color`) directly on `[cds-theme]` elements via
+// `:where(:root, :host) [cds-theme]{...}`. Since that selector targets
+// <body> itself, our tokens must also be declared on a selector that
+// matches <body> directly — declaring them on `:root` alone (which only
+// matches <html>) lets Clarity's own defaults win on every element under
+// <body>, once a `<body>`-level rule exists for the same custom property.
+// The light theme doesn't need this because it's applied to an inner
+// `data-theme="light"` div that has no competing `[cds-theme]` rule from
+// this block.
+// -----------------------------------------------------------------------------
+
+:root,
+[data-theme='dark'] {
+  // Typography
+  --agentic-font-family: 'Metropolis', 'Segoe UI', Roboto, sans-serif;
+  --agentic-font-size: 15px;
+
+  // Geometry
+  --agentic-radius: 8px;
+
+  // App shell — backgrounds and borders
+  --app-bg: #1a2332;
+  --app-surface-1: #233040;
+  --app-surface-2: #253649;
+  --app-surface-3: #2a3e4a;
+  --app-border: #2a3e4a;
+  --app-border-strong: #3d5a6a;
+
+  // App shell — text
+  --app-text: #adbbc4;
+  --app-text-strong: #e8e8e8;
+  --app-text-secondary: #6d8290;
+
+  // Header
+  --app-header-bg: #2a3e4a;
+  --app-header-border: #3d5a6a;
+  --app-header-text: #e8e8e8;
+  --app-header-text-secondary: #7a9aaa;
+  --app-header-icon: #adbbc4;
+
+  // Header theme toggle
+  --app-header-theme-btn-bg: rgba(255, 255, 255, 0.08);
+  --app-header-theme-btn-color: #49afd9;
+  --app-header-theme-btn-hover-bg: rgba(73, 175, 217, 0.2);
+
+  // Sidebar
+  --app-sidebar-bg: #233040;
+  --app-sidebar-border: #3d5a6a;
+  --app-sidebar-text: #adbbc4;
+  --app-sidebar-text-secondary: #8a9ba8;
+
+  // Library — base palette
+  --agentic-bg-primary: #233040;
+  --agentic-bg-input: #2a3e4a;
+  --agentic-text-primary: #e8e8e8;
+  --agentic-text-secondary: #adbbc4;
+  --agentic-text-muted: #8a98a3;
+  --agentic-text-faded: #6b7785;
+  --agentic-text-light: #c5d0d8;
+
+  // Library — accent (brand)
+  --agentic-accent: #49afd9;
+  --agentic-accent-hover: #3a9fc9;
+  --agentic-accent-bright: #5bbde6;
+  --agentic-accent-translucent: rgba(73, 175, 217, 0.28);
+  --agentic-accent-translucent-strong: rgba(73, 175, 217, 0.55);
+  --agentic-accent-hover-bg: rgba(73, 175, 217, 0.08);
+  --agentic-accent-hover-bg-strong: rgba(73, 175, 217, 0.15);
+  --agentic-accent-tint-1: rgba(73, 175, 217, 0.05);
+  --agentic-accent-tint-2: rgba(73, 175, 217, 0.08);
+  --agentic-accent-tint-3: rgba(73, 175, 217, 0.1);
+  --agentic-accent-tint-4: rgba(73, 175, 217, 0.12);
+  --agentic-accent-tint-5: rgba(73, 175, 217, 0.15);
+  --agentic-accent-tint-6: rgba(73, 175, 217, 0.18);
+  --agentic-accent-tint-7: rgba(73, 175, 217, 0.2);
+  --agentic-accent-border-soft: rgba(73, 175, 217, 0.25);
+  --agentic-accent-border: rgba(73, 175, 217, 0.3);
+  --agentic-accent-border-strong: rgba(73, 175, 217, 0.45);
+  --agentic-accent-border-strongest: rgba(73, 175, 217, 0.6);
+  --agentic-accent-shadow: rgba(73, 175, 217, 0.3);
+  --agentic-accent-shadow-strong: rgba(73, 175, 217, 0.4);
+  --agentic-accent-gradient: linear-gradient(135deg, #49afd9 0%, #3a9fc9 100%);
+  --agentic-accent-gradient-hover: linear-gradient(135deg, #5bbde6 0%, #49afd9 100%);
+
+  // Library — borders & dividers
+  --agentic-border-color: #3d5a6a;
+  --agentic-border-soft: rgba(255, 255, 255, 0.08);
+  --agentic-border-very-soft: rgba(255, 255, 255, 0.05);
+  --agentic-divider: rgba(255, 255, 255, 0.05);
+
+  // Library — surface overlays (subtle white-tint backgrounds)
+  --agentic-overlay-0: rgba(255, 255, 255, 0.015);
+  --agentic-overlay-1: rgba(255, 255, 255, 0.02);
+  --agentic-overlay-2: rgba(255, 255, 255, 0.03);
+  --agentic-overlay-3: rgba(255, 255, 255, 0.04);
+  --agentic-overlay-4: rgba(255, 255, 255, 0.05);
+  --agentic-overlay-6: rgba(255, 255, 255, 0.07);
+  --agentic-overlay-8: rgba(255, 255, 255, 0.08);
+  --agentic-overlay-10: rgba(255, 255, 255, 0.1);
+  --agentic-overlay-12: rgba(255, 255, 255, 0.12);
+  --agentic-overlay-15: rgba(255, 255, 255, 0.15);
+  --agentic-overlay-18: rgba(255, 255, 255, 0.18);
+  --agentic-overlay-30: rgba(255, 255, 255, 0.3);
+  --agentic-overlay-strong: rgba(197, 208, 216, 0.85);
+  --agentic-overlay-pure: #ffffff;
+
+  // Shadows
+  --agentic-shadow-card: 0 2px 8px rgba(0, 0, 0, 0.3);
+  --agentic-shadow-bubble: 0 2px 12px rgba(0, 0, 0, 0.2);
+  --agentic-shadow-bubble-soft: 0 1px 4px rgba(0, 0, 0, 0.18);
+  --agentic-shadow-input: 0 0 0 1px rgba(73, 175, 217, 0.08), 0 4px 16px rgba(0, 0, 0, 0.3);
+  --agentic-shadow-input-focus: 0 0 0 3px rgba(73, 175, 217, 0.18), 0 4px 20px rgba(0, 0, 0, 0.35);
+  --agentic-shadow-edit-textarea: 0 0 0 3px rgba(73, 175, 217, 0.12);
+  --agentic-shadow-toast: 0 4px 12px rgba(0, 0, 0, 0.3);
+  --agentic-shadow-overlay: rgba(0, 0, 0, 0.3);
+  --agentic-shadow-overlay-strong: rgba(0, 0, 0, 0.5);
+  --agentic-modal-backdrop: rgba(0, 0, 0, 0.55);
+  --agentic-shadow-md: 0 16px 48px rgba(0, 0, 0, 0.5);
+  --agentic-shadow-code-header-bg: rgba(0, 0, 0, 0.35);
+  --agentic-shadow-code-bg: rgba(0, 0, 0, 0.3);
+  --agentic-shadow-code-inline-bg: rgba(0, 0, 0, 0.25);
+
+  // Avatars
+  --agentic-icon-assistant: #49afd9;
+  --agentic-icon-assistant-bg: rgba(73, 175, 217, 0.15);
+  --agentic-icon-assistant-gradient:
+    linear-gradient(135deg, #7c3aed 0%, #a855f7 50%, #6d28d9 100%);
+  --agentic-icon-assistant-shadow: 0 2px 10px rgba(124, 58, 237, 0.4);
+  --agentic-icon-user: #d8e0e8;
+  --agentic-icon-user-bg: #253649;
+  --agentic-on-accent: #ffffff;
+
+  // Message bubbles
+  --agentic-bg-message-assistant: #2a3e4a;
+  --agentic-bg-message-user: #253649;
+  --agentic-border-user-avatar: rgba(73, 175, 217, 0.26);
+  --agentic-border-assistant: 1px solid rgba(73, 175, 217, 0.12);
+  --agentic-border-assistant-left: 3px solid rgba(107, 79, 187, 0.7);
+  --agentic-border-user: 1px solid rgba(73, 175, 217, 0.26);
+
+  // Quick-action pills
+  --agentic-pill-bg: rgba(73, 175, 217, 0.08);
+  --agentic-pill-border: rgba(73, 175, 217, 0.35);
+  --agentic-pill-bg-hover: rgba(73, 175, 217, 0.15);
+  --agentic-pill-border-hover: rgba(73, 175, 217, 0.6);
+
+  // Agent log chips (tool_call / tool_result / llm_response kind badges)
+  --agentic-log-tool-call-bg: rgba(73, 175, 217, 0.18);
+  --agentic-log-tool-call-text: #7dd3f0;
+  --agentic-log-tool-result-bg: rgba(98, 164, 32, 0.18);
+  --agentic-log-tool-result-text: #86c864;
+  --agentic-log-llm-bg: rgba(168, 85, 247, 0.18);
+  --agentic-log-llm-text: #c084fc;
+  --agentic-log-llm-border: rgba(168, 85, 247, 0.25);
+
+  // Agent log terminal panel
+  --agentic-log-terminal-bg: #222c3c;
+  --agentic-log-terminal-text: #e6edf3;
+  --agentic-log-terminal-border: rgba(255, 255, 255, 0.08);
+  --agentic-log-terminal-row-hover: rgba(255, 255, 255, 0.04);
+  --agentic-log-terminal-icon: rgba(73, 175, 217, 0.7);
+  // Per-agent color cycle (4 slots — assigned deterministically by agent name hash)
+  --agentic-agent-color-0: #7dd3f0;
+  --agentic-agent-color-1: #86c864;
+  --agentic-agent-color-2: #f0c070;
+  --agentic-agent-color-3: #c084fc;
+  // Per-agent badge backgrounds (subtle tint matching each color)
+  --agentic-agent-bg-0: rgba(125, 211, 240, 0.10);
+  --agentic-agent-bg-1: rgba(134, 200, 100, 0.10);
+  --agentic-agent-bg-2: rgba(240, 192, 112, 0.10);
+  --agentic-agent-bg-3: rgba(192, 132, 252, 0.10);
+  // Per-agent badge borders
+  --agentic-agent-border-0: rgba(125, 211, 240, 0.45);
+  --agentic-agent-border-1: rgba(134, 200, 100, 0.45);
+  --agentic-agent-border-2: rgba(240, 192, 112, 0.45);
+  --agentic-agent-border-3: rgba(192, 132, 252, 0.45);
+  // Agent transfer row
+  --agentic-log-transfer-text: #94a3b8;
+  --agentic-log-transfer-arrow: rgba(73, 175, 217, 0.6);
+  --agentic-log-transfer-bg: rgba(148, 163, 184, 0.08);
+  // Agent selected / routing row
+  --agentic-log-selected-text: #7dd3f0;
+  --agentic-log-selected-bg: rgba(125, 211, 240, 0.07);
+  // Args code block
+  --agentic-log-args-bg: rgba(0, 0, 0, 0.18);
+  // Terminal panel drop shadow
+  --agentic-log-terminal-shadow: rgba(0, 0, 0, 0.22);
+
+  // Status — semantic colours
+  --agentic-success: #62a420;
+  --agentic-success-bright: #4ade80;
+  --agentic-success-on-bg: #22c55e;
+  --agentic-success-bg: rgba(34, 197, 94, 0.12);
+  --agentic-success-bg-strong: rgba(34, 197, 94, 0.25);
+  --agentic-success-tint: rgba(34, 197, 94, 0.1);
+  --agentic-success-tint-strong: rgba(34, 197, 94, 0.15);
+  --agentic-success-border: rgba(34, 197, 94, 0.25);
+  --agentic-success-shadow: rgba(34, 197, 94, 0.6);
+  --agentic-success-soft: rgba(98, 164, 32, 0.3);
+  --agentic-success-status-bg: rgba(76, 175, 80, 0.2);
+  --agentic-success-status-bg-soft: rgba(76, 175, 80, 0.08);
+  --agentic-success-status-color: #4caf50;
+  --agentic-success-status-color-soft: rgba(76, 175, 80, 0.9);
+
+  --agentic-error: #c92100;
+  --agentic-error-bright: #ef4444;
+  --agentic-error-soft: #f87171;
+  --agentic-error-soft-translucent: rgba(248, 113, 113, 0.7);
+  --agentic-error-bg: rgba(201, 33, 0, 0.12);
+  --agentic-error-bg-faint: rgba(201, 33, 0, 0.1);
+  --agentic-error-border: rgba(201, 33, 0, 0.35);
+  --agentic-error-tint: rgba(239, 68, 68, 0.1);
+  --agentic-error-tint-strong: rgba(239, 68, 68, 0.15);
+  --agentic-error-tint-stronger: rgba(239, 68, 68, 0.2);
+  --agentic-error-tint-strongest: rgba(239, 68, 68, 0.25);
+  --agentic-error-status-bg: rgba(244, 67, 54, 0.2);
+  --agentic-error-status-bg-soft: rgba(244, 67, 54, 0.15);
+  --agentic-error-status-color: #f44336;
+
+  --agentic-warning: #f59e0b;
+  --agentic-warning-bright: #fbbf24;
+  --agentic-warning-bg: #7d4e00;
+  --agentic-warning-tint: rgba(245, 158, 11, 0.08);
+  --agentic-warning-tint-strong: rgba(245, 158, 11, 0.15);
+  --agentic-warning-border: rgba(245, 158, 11, 0.2);
+  --agentic-warning-status-bg: rgba(255, 165, 0, 0.2);
+  --agentic-warning-status-color: #ffa500;
+
+  --agentic-info: #60a5fa;
+  --agentic-info-bright: #3b82f6;
+  --agentic-info-tint: rgba(59, 130, 246, 0.15);
+  --agentic-info-status-bg: rgba(33, 150, 243, 0.2);
+  --agentic-info-status-bg-soft: rgba(59, 130, 246, 0.08);
+  --agentic-info-status-color: #2196f3;
+  --agentic-info-status-color-soft: rgba(59, 130, 246, 0.9);
+
+  --agentic-muted: #9ca3af;
+  --agentic-muted-strong: #94a3b8;
+  --agentic-muted-bg: rgba(148, 163, 184, 0.1);
+  --agentic-muted-border: rgba(148, 163, 184, 0.2);
+
+  // Entity-list card (dark theme uses a distinct slate stripe)
+  --agentic-entity-card-bg: rgba(24, 23, 23, 0.02);
+  --agentic-entity-card-bg-hover: rgba(255, 255, 255, 0.04);
+  --agentic-entity-card-border: #415b67;
+  --agentic-entity-card-border-hover: rgba(255, 255, 255, 0.12);
+  --agentic-entity-card-header-bg: rgba(35, 48, 64, 0.8);
+  --agentic-entity-card-shadow: 0 2px 6px rgba(0, 0, 0, 0.18);
+  --agentic-entity-card-shadow-hover: 0 4px 10px rgba(0, 0, 0, 0.24);
+  --agentic-entity-section-bg: rgba(255, 255, 255, 0.025);
+  --agentic-entity-section-bg-nested: rgba(255, 255, 255, 0.015);
+  --agentic-entity-count-bg: rgba(255, 255, 255, 0.08);
+
+  // Charts (NSX overrides need pure colours visible on the chart canvas)
+  --agentic-chart-axis-text: #ffffff;
+  --agentic-chart-grid-line: rgba(255, 255, 255, 0.2);
+  --agentic-chart-default-color: #49afd9;
+  --agentic-chart-bar-default: #f5a623;
+  --agentic-chart-line-default: #62a420;
+
+  // Tables (markdown rendered inside chat bubbles)
+  --agentic-table-th-bg: rgba(73, 175, 217, 0.12);
+  --agentic-table-th-border: rgba(73, 175, 217, 0.2);
+  --agentic-table-td-border: rgba(73, 175, 217, 0.12);
+  --agentic-table-row-even: rgba(255, 255, 255, 0.03);
+  --agentic-table-row-hover: rgba(73, 175, 217, 0.06);
+
+  // Drawer overlay
+  --agentic-drawer-overlay: rgba(0, 0, 0, 0.3);
+
+  // Tool approval card (inline chat permission prompt)
+  // Neutral enterprise styling — no warning yellow. The shield icon is the
+  // only accent and uses the brand blue.
+  --agentic-tool-approval-bg: transparent;
+  --agentic-tool-approval-border: rgba(255, 255, 255, 0.08);
+  --agentic-tool-approval-accent: #49afd9;
+  --agentic-tool-approval-icon-bg: rgba(73, 175, 217, 0.14);
+  --agentic-tool-approval-resolved-bg: rgba(255, 255, 255, 0.03);
+  --agentic-tool-approval-resolved-border: rgba(255, 255, 255, 0.08);
+  --agentic-tool-approval-tool-bg: rgba(255, 255, 255, 0.035);
+  --agentic-tool-approval-tool-border: rgba(255, 255, 255, 0.08);
+  --agentic-tool-approval-radio-bg: rgba(255, 255, 255, 0.02);
+  --agentic-tool-approval-radio-bg-hover: rgba(73, 175, 217, 0.06);
+  --agentic-tool-approval-radio-bg-selected: rgba(73, 175, 217, 0.12);
+  --agentic-tool-approval-deny-bg: transparent;
+  --agentic-tool-approval-deny-border: rgba(239, 68, 68, 0.5);
+  --agentic-tool-approval-deny-color: #f87171;
+  --agentic-tool-approval-deny-bg-hover: rgba(239, 68, 68, 0.12);
+  --agentic-tool-approval-approve-bg: #22c55e;
+  --agentic-tool-approval-approve-bg-hover: #16a34a;
+  --agentic-tool-approval-approve-color: #ffffff;
+  --agentic-tool-approval-waiting-text: #adbbc4;
+
+  // Login page — the left panel is always light (white) regardless of theme.
+  // The right panel (illustration) is always dark.
+  --app-login-panel-bg:       #ffffff;
+  --app-login-panel-border:   #dde5ea;
+  --app-login-input-bg:       transparent;
+  --app-login-input-border:   #97b3c3;   // visible underline on white
+  --app-login-btn-bg:         #0079b8;   // vibrant Broadcom action blue
+  --app-login-btn-hover-bg:   #0065ab;
+  --app-login-btn-text:       #ffffff;
+  --app-login-error-text:     #c62828;
+  --app-login-label-text:     #444f58;
+  --app-login-right-bg:       #0d1b2a;   // always dark for illustration panel
+
+  // ── Clarity / CDS-alias global bridge (dark theme) ──────────────────────────
+  // All @clr/angular components (datagrid, modal, card, dropdown, tabs, wizard…)
+  // ultimately resolve colours through --cds-alias-* variables defined with
+  // light defaults in @cds/core/global.min.css. Remapping them here (this file
+  // loads after @cds/core so our :root wins) gives every Clarity component
+  // correct dark colours without per-component overrides.
+
+  // Surfaces & containers
+  --cds-alias-object-app-background:                         var(--app-bg);
+  --cds-alias-object-container-background:                   var(--app-surface-1);
+  --cds-alias-object-container-background-tint:              var(--app-surface-2);
+  --cds-alias-object-container-background-shade:             var(--app-bg);
+  --cds-alias-object-container-background-dark:              var(--app-bg);
+  --cds-alias-object-container-background-inverse:           var(--app-surface-3);
+  --cds-alias-object-container-background-inverse-tint:      var(--app-surface-2);
+  --cds-alias-object-container-background-inverse-shade:     var(--app-surface-1);
+
+  // Borders
+  --cds-alias-object-border-color:                           var(--app-border-strong);
+  --cds-alias-object-border-color-tint:                      var(--app-border);
+  --cds-alias-object-border-color-shade:                     var(--app-border-strong);
+
+  // Interactive states (row hover, selection, active)
+  --cds-alias-object-interaction-background:                 var(--app-surface-1);
+  --cds-alias-object-interaction-background-hover:           var(--agentic-overlay-4);
+  --cds-alias-object-interaction-background-active:          var(--agentic-overlay-8);
+  --cds-alias-object-interaction-background-selected:        var(--agentic-accent-tint-5);
+  --cds-alias-object-interaction-background-selected-hover:  var(--agentic-overlay-6);
+  --cds-alias-object-interaction-background-selected-active: var(--agentic-overlay-10);
+  --cds-alias-object-interaction-background-disabled:        var(--app-surface-1);
+  --cds-alias-object-interaction-background-shade:           var(--app-surface-2);
+  --cds-alias-object-interaction-background-shade-hover:     var(--agentic-overlay-4);
+  --cds-alias-object-interaction-border-color:               var(--app-border-strong);
+  --cds-alias-object-interaction-color:                      var(--app-text);
+  --cds-alias-object-interaction-color-hover:                var(--app-text-strong);
+  --cds-alias-object-interaction-color-active:               var(--app-text-strong);
+  --cds-alias-object-interaction-color-selected:             var(--app-text);
+
+  // Typography
+  --cds-alias-typography-color-500:                          var(--app-text-strong);
+  --cds-alias-typography-color-450:                          var(--app-text-strong);
+  --cds-alias-typography-color-400:                          var(--app-text);
+  --cds-alias-typography-color-300:                          var(--app-text-secondary);
+  --cds-alias-typography-color-200:                          var(--app-text-secondary);
+  --cds-alias-typography-color-100:                          var(--app-text-secondary);
+
+  // Clarity dropdown fine-tuning (exact hover/active bg control)
+  --clr-dropdown-bg-color:             var(--app-surface-2);
+  --clr-dropdown-border-color:         var(--app-border);
+  --clr-dropdown-item-color:           var(--app-text);
+  --clr-dropdown-item-hover-bg-color:  var(--agentic-accent-hover-bg);
+  --clr-dropdown-item-active-bg-color: var(--agentic-accent-hover-bg-strong);
+  --clr-dropdown-item-active-color:    var(--app-text-strong);
+  --clr-dropdown-header-color:         var(--app-text-secondary);
+  // A visible separator needs more contrast than the default subtle
+  // `--app-border` — at 1px it reads as blank space against the dropdown's
+  // own background otherwise.
+  --clr-dropdown-divider-color:        var(--app-border-strong);
+
+  // Clarity primary button — the `btn-primary` class resolves through
+  // --cds-alias-object-interaction-background which we remapped to our surface
+  // colour. Override the dedicated button tokens so solid primary buttons are
+  // visually distinct from plain surfaces.
+  --agentic-btn-on-accent:             #ffffff;
+  --clr-btn-primary-bg-color:          var(--agentic-accent);
+  --clr-btn-primary-color:             var(--agentic-btn-on-accent);
+  --clr-btn-primary-border-color:      var(--agentic-accent);
+  --clr-btn-primary-hover-bg-color:    var(--agentic-accent-hover);
+  --clr-btn-primary-active-bg-color:   var(--agentic-accent-hover);
+  --clr-btn-primary-outline-color:     var(--agentic-accent);
+  --clr-btn-primary-outline-hover-bg-color: var(--agentic-accent-tint-5);
+
+  // Clarity danger button — otherwise falls back to Clarity's own stock red,
+  // which is far more saturated than the rest of this muted palette.
+  --clr-btn-danger-bg-color:           var(--agentic-error-bright);
+  --clr-btn-danger-color:              var(--agentic-btn-on-accent);
+  --clr-btn-danger-border-color:       var(--agentic-error-bright);
+  --clr-btn-danger-hover-bg-color:     var(--agentic-error);
+  --clr-btn-danger-active-bg-color:    var(--agentic-error);
+  --clr-btn-danger-outline-color:      var(--agentic-error-bright);
+  --clr-btn-danger-outline-hover-bg-color: var(--agentic-error-tint);
+
+  // Clarity badge — otherwise falls back to stock CDS utility colours
+  // (saturated reds/blues/purples) instead of this app's muted palette.
+  --clr-badge-background-color:        var(--agentic-overlay-2);
+  --clr-badge-color:                   var(--app-text-secondary);
+  --clr-badge-gray-bg-color:           var(--agentic-overlay-2);
+  --clr-badge-gray-color:              var(--app-text-secondary);
+  --clr-badge-purple-bg-color:         var(--agentic-log-llm-bg);
+  --clr-badge-purple-color:            var(--agentic-log-llm-text);
+  --clr-badge-blue-bg-color:           var(--agentic-accent-tint-5);
+  --clr-badge-blue-color:              var(--agentic-accent);
+  --clr-badge-orange-bg-color:         var(--agentic-warning-status-bg);
+  --clr-badge-orange-color:            var(--agentic-warning-status-color);
+  --clr-badge-light-blue-bg-color:     var(--agentic-log-tool-call-bg);
+  --clr-badge-light-blue-color:        var(--agentic-log-tool-call-text);
+  --clr-badge-info-bg-color:           var(--agentic-info-status-bg);
+  --clr-badge-info-color:              var(--agentic-info-status-color);
+  --clr-badge-success-bg-color:        var(--agentic-success-bg);
+  --clr-badge-success-color:           var(--agentic-success-on-bg);
+  --clr-badge-warning-bg-color:        var(--agentic-warning-tint-strong);
+  --clr-badge-warning-color:           var(--agentic-warning);
+  --clr-badge-danger-bg-color:         var(--agentic-error-status-bg);
+  --clr-badge-danger-color:            var(--agentic-error-status-color);
+
+  // ---------------------------------------------------------------------------
+  // Clarity typography token bridge — the future-proof override
+  // ---------------------------------------------------------------------------
+  // Clarity (`@clr/ui`) renders all `<p>` / `<h1>` / `<ul>` / etc. through its
+  // own selectors (currently `body p:not([cds-text]) { font-size: var(--clr-p1-font-size) }`,
+  // and similar for headings). Trying to win that battle with our own
+  // selectors is fragile — if Clarity tweaks the selector pattern (e.g. moves
+  // from `:not([cds-text])` to a new attribute, adds a wrapper class, or
+  // switches to a CSS layer) our overrides silently stop applying.
+  //
+  // The robust fix is to drive Clarity from its own design tokens. The
+  // `--clr-base-typography-font-size-*` family is the foundation every
+  // `--clr-{p,h}*-font-size` token derives from, so re-anchoring those at
+  // `--agentic-font-size` makes Clarity itself emit our values — no matter
+  // what selector or layer it uses internally now or in the future.
+  //
+  // Scale ratios mirror Clarity's own defaults (caption-small : caption :
+  // default : sub-section : section : heading : headline : display
+  // ≈ 0.71 : 0.79 : 1.00 : 1.00 : 1.43 : 1.50 : 2.00 : 2.86) so the visual
+  // hierarchy stays familiar, just rescaled to our base.
+  --clr-base-typography-font-size-default:       var(--agentic-font-size);              // p / p1
+  --clr-base-typography-font-size-inline:        calc(var(--agentic-font-size) * 0.93); // p2..p5
+  --clr-base-typography-font-size-caption:       calc(var(--agentic-font-size) * 0.79); // p6
+  --clr-base-typography-font-size-caption-small: calc(var(--agentic-font-size) * 0.71); // p7..p8
+  --clr-base-typography-font-size-sub-section:   var(--agentic-font-size);              // h5..h6
+  --clr-base-typography-font-size-section:       calc(var(--agentic-font-size) * 1.43); // h4
+  --clr-base-typography-font-size-heading:       calc(var(--agentic-font-size) * 1.71); // h3
+  --clr-base-typography-font-size-headline:      calc(var(--agentic-font-size) * 2.00); // h2
+  --clr-base-typography-font-size-display:       calc(var(--agentic-font-size) * 2.86); // h1
+  --clr-base-typography-font-size:               var(--agentic-font-size);
+  --clr-basefont-size:                           var(--agentic-font-size);
+
+  // Family — `--clr-font` cascades from `--clr-body-font`, both of which we
+  // pin so Clarity's selectors emit Metropolis (matching the rest of the app)
+  // instead of its internal default.
+  --clr-font:      var(--agentic-font-family);
+  --clr-body-font: var(--agentic-font-family);
+
+  // CDS Core (the newer `@cds/core` package) reads its own alias tokens.
+  // Bridge those too so prose rendered via `<cds-text>` and friends stays on
+  // the same scale.
+  --cds-alias-typography-font-family:   var(--agentic-font-family);
+  --cds-alias-typography-body-font-size: var(--agentic-font-size);
+}
+
+// -----------------------------------------------------------------------------
+// Light theme (applied when document.documentElement[data-theme="light"])
+// -----------------------------------------------------------------------------
+
+[data-theme='light'] {
+  // App shell — backgrounds and borders
+  --app-bg: #f0f4f7;
+  --app-surface-1: #ffffff;
+  --app-surface-2: #edf4f8;
+  --app-surface-3: #e1ecf3;
+  --app-border: #c8d8e2;
+  --app-border-strong: #c1cbd0;
+
+  // App shell — text
+  --app-text: #1b2a32;
+  --app-text-strong: #0c1a22;
+  --app-text-secondary: #565656;
+
+  // Header
+  --app-header-bg: #1c4966;
+  --app-header-border: #155080;
+  --app-header-text: #ffffff;
+  --app-header-text-secondary: #9bbdd0;
+  --app-header-icon: #c8dde9;
+
+  // Header theme toggle
+  --app-header-theme-btn-bg: rgba(255, 255, 255, 0.18);
+  --app-header-theme-btn-color: #a8d4f5;
+  --app-header-theme-btn-hover-bg: rgba(255, 255, 255, 0.3);
+
+  // Sidebar
+  --app-sidebar-bg: #f0f4f7;
+  --app-sidebar-border: #c1cbd0;
+  --app-sidebar-text: #565656;
+  --app-sidebar-text-secondary: #9a9a9a;
+
+  // Library — base palette
+  --agentic-bg-primary: #f0f4f7;
+  --agentic-bg-input: #ffffff;
+  --agentic-text-primary: #1b2a32;
+  --agentic-text-secondary: #565656;
+  --agentic-text-muted: #6e7e88;
+  --agentic-text-faded: #8a9099;
+  --agentic-text-light: #344854;
+
+  // Library — accent (brand)
+  --agentic-accent: #0072a3;
+  --agentic-accent-hover: #005f8a;
+  --agentic-accent-bright: #008cc8;
+  --agentic-accent-translucent: rgba(0, 114, 163, 0.25);
+  --agentic-accent-translucent-strong: rgba(0, 114, 163, 0.55);
+  --agentic-accent-hover-bg: rgba(0, 114, 163, 0.08);
+  --agentic-accent-hover-bg-strong: rgba(0, 114, 163, 0.15);
+  --agentic-accent-tint-1: rgba(0, 114, 163, 0.04);
+  --agentic-accent-tint-2: rgba(0, 114, 163, 0.06);
+  --agentic-accent-tint-3: rgba(0, 114, 163, 0.08);
+  --agentic-accent-tint-4: rgba(0, 114, 163, 0.1);
+  --agentic-accent-tint-5: rgba(0, 114, 163, 0.12);
+  --agentic-accent-tint-6: rgba(0, 114, 163, 0.15);
+  --agentic-accent-tint-7: rgba(0, 114, 163, 0.18);
+  --agentic-accent-border-soft: rgba(0, 114, 163, 0.2);
+  --agentic-accent-border: rgba(0, 114, 163, 0.3);
+  --agentic-accent-border-strong: rgba(0, 114, 163, 0.45);
+  --agentic-accent-border-strongest: rgba(0, 114, 163, 0.6);
+  --agentic-accent-shadow: rgba(0, 114, 163, 0.25);
+  --agentic-accent-shadow-strong: rgba(0, 114, 163, 0.35);
+  --agentic-accent-gradient: linear-gradient(135deg, #0072a3 0%, #005f8a 100%);
+  --agentic-accent-gradient-hover: linear-gradient(135deg, #008cc8 0%, #0072a3 100%);
+
+  // Library — borders & dividers
+  --agentic-border-color: #c8d8e2;
+  --agentic-border-soft: rgba(0, 0, 0, 0.08);
+  --agentic-border-very-soft: rgba(0, 0, 0, 0.05);
+  --agentic-divider: rgba(0, 0, 0, 0.05);
+
+  // Library — surface overlays
+  --agentic-overlay-0: rgba(0, 0, 0, 0.015);
+  --agentic-overlay-1: rgba(0, 0, 0, 0.02);
+  --agentic-overlay-2: rgba(0, 0, 0, 0.03);
+  --agentic-overlay-3: rgba(0, 0, 0, 0.04);
+  --agentic-overlay-4: rgba(0, 0, 0, 0.05);
+  --agentic-overlay-6: rgba(0, 0, 0, 0.07);
+  --agentic-overlay-8: rgba(0, 0, 0, 0.08);
+  --agentic-overlay-10: rgba(0, 0, 0, 0.1);
+  --agentic-overlay-12: rgba(0, 0, 0, 0.12);
+  --agentic-overlay-15: rgba(0, 0, 0, 0.15);
+  --agentic-overlay-18: rgba(0, 0, 0, 0.18);
+  --agentic-overlay-30: rgba(0, 0, 0, 0.3);
+  --agentic-overlay-strong: rgba(50, 60, 65, 0.85);
+  --agentic-overlay-pure: #1b2a32;
+
+  // Shadows (lighter for light theme)
+  --agentic-shadow-card: 0 2px 8px rgba(0, 0, 0, 0.08);
+  --agentic-shadow-bubble: 0 2px 12px rgba(0, 0, 0, 0.06);
+  --agentic-shadow-bubble-soft: 0 1px 4px rgba(0, 0, 0, 0.05);
+  --agentic-shadow-input: 0 0 0 1px rgba(0, 114, 163, 0.06), 0 4px 16px rgba(0, 0, 0, 0.06);
+  --agentic-shadow-input-focus: 0 0 0 3px rgba(0, 114, 163, 0.16), 0 4px 20px rgba(0, 0, 0, 0.08);
+  --agentic-shadow-edit-textarea: 0 0 0 3px rgba(0, 114, 163, 0.12);
+  --agentic-shadow-toast: 0 4px 12px rgba(0, 0, 0, 0.08);
+  --agentic-shadow-overlay: rgba(0, 0, 0, 0.18);
+  --agentic-shadow-overlay-strong: rgba(0, 0, 0, 0.4);
+  --agentic-modal-backdrop: rgba(0, 0, 0, 0.35);
+  --agentic-shadow-md: 0 16px 48px rgba(0, 0, 0, 0.2);
+  --agentic-shadow-code-header-bg: rgba(0, 0, 0, 0.06);
+  --agentic-shadow-code-bg: rgba(0, 0, 0, 0.05);
+  --agentic-shadow-code-inline-bg: rgba(0, 0, 0, 0.05);
+
+  // Avatars
+  --agentic-icon-assistant: #0072a3;
+  --agentic-icon-assistant-bg: rgba(0, 114, 163, 0.1);
+  --agentic-icon-assistant-gradient: linear-gradient(135deg, #7b5ea7 0%, #9b7ec8 100%);
+  --agentic-icon-assistant-shadow: 0 2px 10px rgba(123, 94, 167, 0.3);
+  --agentic-icon-user: #565656;
+  --agentic-icon-user-bg: rgba(86, 86, 86, 0.1);
+  --agentic-on-accent: #ffffff;
+
+  // Message bubbles
+  --agentic-bg-message-assistant: #edf4f8;
+  --agentic-bg-message-user: #e8ecf0;
+  --agentic-border-user-avatar: rgba(0, 114, 163, 0.2);
+  --agentic-border-assistant: 1px solid #b3d4e6;
+  --agentic-border-assistant-left: 3px solid rgba(123, 94, 167, 0.5);
+  --agentic-border-user: 1px solid #c4b8e8;
+
+  // Quick-action pills
+  --agentic-pill-bg: rgba(0, 114, 163, 0.08);
+  --agentic-pill-border: rgba(0, 114, 163, 0.35);
+  --agentic-pill-bg-hover: rgba(0, 114, 163, 0.15);
+  --agentic-pill-border-hover: rgba(0, 114, 163, 0.5);
+
+  // Agent log chips (tool_call / tool_result / llm_response kind badges)
+  --agentic-log-tool-call-bg: rgba(0, 114, 163, 0.12);
+  --agentic-log-tool-call-text: #005a96;
+  --agentic-log-tool-result-bg: rgba(47, 138, 24, 0.12);
+  --agentic-log-tool-result-text: #2f7a14;
+  --agentic-log-llm-bg: rgba(124, 58, 237, 0.12);
+  --agentic-log-llm-text: #6027c4;
+  --agentic-log-llm-border: rgba(124, 58, 237, 0.22);
+
+  // Agent log terminal panel
+  --agentic-log-terminal-bg: #e8edf4;
+  --agentic-log-terminal-text: #1f2328;
+  --agentic-log-terminal-border: rgba(0, 0, 0, 0.1);
+  --agentic-log-terminal-row-hover: rgba(0, 0, 0, 0.04);
+  --agentic-log-terminal-icon: #005a96;
+  // Per-agent color cycle (4 slots — assigned deterministically by agent name hash)
+  --agentic-agent-color-0: #005a96;
+  --agentic-agent-color-1: #2f7a14;
+  --agentic-agent-color-2: #9a6000;
+  --agentic-agent-color-3: #6027c4;
+  // Per-agent badge backgrounds
+  --agentic-agent-bg-0: rgba(0, 90, 150, 0.08);
+  --agentic-agent-bg-1: rgba(47, 122, 20, 0.08);
+  --agentic-agent-bg-2: rgba(154, 96, 0, 0.08);
+  --agentic-agent-bg-3: rgba(96, 39, 196, 0.08);
+  // Per-agent badge borders
+  --agentic-agent-border-0: rgba(0, 90, 150, 0.4);
+  --agentic-agent-border-1: rgba(47, 122, 20, 0.4);
+  --agentic-agent-border-2: rgba(154, 96, 0, 0.4);
+  --agentic-agent-border-3: rgba(96, 39, 196, 0.4);
+  // Agent transfer row
+  --agentic-log-transfer-text: #64748b;
+  --agentic-log-transfer-arrow: rgba(0, 114, 163, 0.7);
+  --agentic-log-transfer-bg: rgba(100, 116, 139, 0.07);
+  // Agent selected / routing row
+  --agentic-log-selected-text: #005a96;
+  --agentic-log-selected-bg: rgba(0, 90, 150, 0.06);
+  // Args code block
+  --agentic-log-args-bg: rgba(0, 0, 0, 0.05);
+  // Terminal panel drop shadow
+  --agentic-log-terminal-shadow: rgba(0, 0, 0, 0.1);
+
+  // Status — semantic colours
+  --agentic-success: #2f8a18;
+  --agentic-success-bright: #16a34a;
+  --agentic-success-on-bg: #16a34a;
+  --agentic-success-bg: rgba(22, 163, 74, 0.1);
+  --agentic-success-bg-strong: rgba(22, 163, 74, 0.2);
+  --agentic-success-tint: rgba(22, 163, 74, 0.08);
+  --agentic-success-tint-strong: rgba(22, 163, 74, 0.12);
+  --agentic-success-border: rgba(22, 163, 74, 0.25);
+  --agentic-success-shadow: rgba(22, 163, 74, 0.4);
+  --agentic-success-soft: rgba(47, 138, 24, 0.3);
+  --agentic-success-status-bg: rgba(76, 175, 80, 0.15);
+  --agentic-success-status-bg-soft: rgba(76, 175, 80, 0.06);
+  --agentic-success-status-color: #2e7d32;
+  --agentic-success-status-color-soft: rgba(46, 125, 50, 0.9);
+
+  --agentic-error: #c92100;
+  --agentic-error-bright: #dc2626;
+  --agentic-error-soft: #ef4444;
+  --agentic-error-soft-translucent: rgba(220, 38, 38, 0.7);
+  --agentic-error-bg: rgba(201, 33, 0, 0.08);
+  --agentic-error-bg-faint: rgba(201, 33, 0, 0.06);
+  --agentic-error-border: rgba(201, 33, 0, 0.25);
+  --agentic-error-tint: rgba(220, 38, 38, 0.08);
+  --agentic-error-tint-strong: rgba(220, 38, 38, 0.12);
+  --agentic-error-tint-stronger: rgba(220, 38, 38, 0.18);
+  --agentic-error-tint-strongest: rgba(220, 38, 38, 0.22);
+  --agentic-error-status-bg: rgba(244, 67, 54, 0.15);
+  --agentic-error-status-bg-soft: rgba(244, 67, 54, 0.1);
+  --agentic-error-status-color: #c62828;
+
+  --agentic-warning: #b45309;
+  --agentic-warning-bright: #d97706;
+  --agentic-warning-bg: #c08a2c;
+  --agentic-warning-tint: rgba(180, 83, 9, 0.08);
+  --agentic-warning-tint-strong: rgba(180, 83, 9, 0.15);
+  --agentic-warning-border: rgba(180, 83, 9, 0.2);
+  --agentic-warning-status-bg: rgba(212, 137, 11, 0.15);
+  --agentic-warning-status-color: #b45309;
+
+  --agentic-info: #1d4ed8;
+  --agentic-info-bright: #2563eb;
+  --agentic-info-tint: rgba(37, 99, 235, 0.12);
+  --agentic-info-status-bg: rgba(37, 99, 235, 0.15);
+  --agentic-info-status-bg-soft: rgba(37, 99, 235, 0.08);
+  --agentic-info-status-color: #1d4ed8;
+  --agentic-info-status-color-soft: rgba(37, 99, 235, 0.9);
+
+  --agentic-muted: #6b7280;
+  --agentic-muted-strong: #4b5563;
+  --agentic-muted-bg: rgba(107, 114, 128, 0.1);
+  --agentic-muted-border: rgba(107, 114, 128, 0.2);
+
+  // Entity-list card
+  --agentic-entity-card-bg: rgba(0, 0, 0, 0.02);
+  --agentic-entity-card-bg-hover: rgba(0, 0, 0, 0.04);
+  --agentic-entity-card-border: #c1d3df;
+  --agentic-entity-card-border-hover: rgba(0, 0, 0, 0.12);
+  --agentic-entity-card-header-bg: rgba(225, 236, 243, 0.9);
+  --agentic-entity-card-shadow: 0 2px 6px rgba(0, 0, 0, 0.06);
+  --agentic-entity-card-shadow-hover: 0 4px 10px rgba(0, 0, 0, 0.1);
+  --agentic-entity-section-bg: rgba(0, 0, 0, 0.025);
+  --agentic-entity-section-bg-nested: rgba(0, 0, 0, 0.015);
+  --agentic-entity-count-bg: rgba(0, 0, 0, 0.06);
+
+  // Charts (axis text needs to be readable on chart canvas)
+  --agentic-chart-axis-text: #1b2a32;
+  --agentic-chart-grid-line: rgba(0, 0, 0, 0.12);
+  --agentic-chart-default-color: #0072a3;
+  --agentic-chart-bar-default: #d97706;
+  --agentic-chart-line-default: #2f8a18;
+
+  // Tables (markdown rendered inside chat bubbles)
+  --agentic-table-th-bg: rgba(0, 114, 163, 0.08);
+  --agentic-table-th-border: rgba(0, 114, 163, 0.2);
+  --agentic-table-td-border: rgba(0, 114, 163, 0.1);
+  --agentic-table-row-even: rgba(0, 0, 0, 0.025);
+  --agentic-table-row-hover: rgba(0, 114, 163, 0.06);
+
+  // Drawer overlay
+  --agentic-drawer-overlay: rgba(0, 0, 0, 0.18);
+
+  // Tool approval card (inline chat permission prompt)
+  // Neutral enterprise styling — no warning yellow.
+  --agentic-tool-approval-bg: transparent;
+  --agentic-tool-approval-border: rgba(0, 0, 0, 0.08);
+  --agentic-tool-approval-accent: #0072a3;
+  --agentic-tool-approval-icon-bg: rgba(0, 114, 163, 0.1);
+  --agentic-tool-approval-resolved-bg: rgba(0, 0, 0, 0.025);
+  --agentic-tool-approval-resolved-border: rgba(0, 0, 0, 0.08);
+  --agentic-tool-approval-tool-bg: rgba(0, 0, 0, 0.025);
+  --agentic-tool-approval-tool-border: rgba(0, 0, 0, 0.08);
+  --agentic-tool-approval-radio-bg: rgba(0, 0, 0, 0.02);
+  --agentic-tool-approval-radio-bg-hover: rgba(0, 114, 163, 0.06);
+  --agentic-tool-approval-radio-bg-selected: rgba(0, 114, 163, 0.1);
+  --agentic-tool-approval-deny-bg: transparent;
+  --agentic-tool-approval-deny-border: rgba(220, 38, 38, 0.4);
+  --agentic-tool-approval-deny-color: #dc2626;
+  --agentic-tool-approval-deny-bg-hover: rgba(220, 38, 38, 0.08);
+  --agentic-tool-approval-approve-bg: #16a34a;
+  --agentic-tool-approval-approve-bg-hover: #15803d;
+  --agentic-tool-approval-approve-color: #ffffff;
+  --agentic-tool-approval-waiting-text: #4b5563;
+
+  // Enhanced MCP Config contrast tokens (light theme)
+  --mcp-card-bg: rgba(0, 0, 0, 0.04);
+  --mcp-card-border: rgba(0, 0, 0, 0.1);
+  --mcp-card-border-hover: rgba(0, 114, 163, 0.3);
+  --mcp-text-primary: var(--app-text);
+  --mcp-text-secondary: rgba(0, 0, 0, 0.7);
+  --mcp-input-bg: rgba(0, 0, 0, 0.03);
+  --mcp-input-border: rgba(0, 0, 0, 0.15);
+  --mcp-input-focus: var(--agentic-accent);
+  --mcp-section-header: rgba(0, 0, 0, 0.85);
+  --mcp-required-asterisk: #dc2626;
+
+  // Enhanced MCP Config contrast tokens (dark theme)
+  --mcp-card-bg: rgba(255, 255, 255, 0.06);
+  --mcp-card-border: rgba(255, 255, 255, 0.12);
+  --mcp-card-border-hover: rgba(73, 175, 217, 0.4);
+  --mcp-text-primary: var(--app-text);
+  --mcp-text-secondary: rgba(255, 255, 255, 0.75);
+  --mcp-input-bg: rgba(255, 255, 255, 0.08);
+  --mcp-input-border: rgba(255, 255, 255, 0.18);
+  --mcp-input-focus: var(--agentic-accent);
+  --mcp-section-header: rgba(255, 255, 255, 0.9);
+  --mcp-required-asterisk: #ef4444;
+
+  // Login page — same light values as :root; login panel is always light.
+  --app-login-panel-bg:       #ffffff;
+  --app-login-panel-border:   #dde5ea;
+  --app-login-input-bg:       transparent;
+  --app-login-input-border:   #97b3c3;
+  --app-login-btn-bg:         #0079b8;
+  --app-login-btn-hover-bg:   #0065ab;
+  --app-login-btn-text:       #ffffff;
+  --app-login-error-text:     #c62828;
+  --app-login-label-text:     #444f58;
+  --app-login-right-bg:       #0d1b2a;
+
+  // ── Clarity / CDS-alias global bridge (light theme) ─────────────────────────
+  // Light-mode counterpart of the bridge above: map CDS alias vars to our
+  // light app-surface tokens so every @clr/angular component is on-theme.
+
+  // Surfaces & containers
+  --cds-alias-object-app-background:                         var(--app-bg);
+  --cds-alias-object-container-background:                   var(--app-surface-1);
+  --cds-alias-object-container-background-tint:              var(--app-surface-2);
+  --cds-alias-object-container-background-shade:             var(--app-bg);
+  --cds-alias-object-container-background-dark:              var(--app-border);
+  --cds-alias-object-container-background-inverse:           var(--app-surface-3);
+  --cds-alias-object-container-background-inverse-tint:      var(--app-surface-2);
+  --cds-alias-object-container-background-inverse-shade:     var(--app-border);
+
+  // Borders
+  --cds-alias-object-border-color:                           var(--app-border-strong);
+  --cds-alias-object-border-color-tint:                      var(--app-border);
+  --cds-alias-object-border-color-shade:                     var(--app-border-strong);
+
+  // Interactive states
+  --cds-alias-object-interaction-background:                 var(--app-surface-1);
+  --cds-alias-object-interaction-background-hover:           var(--agentic-overlay-4);
+  --cds-alias-object-interaction-background-active:          var(--agentic-overlay-8);
+  --cds-alias-object-interaction-background-selected:        var(--agentic-accent-tint-5);
+  --cds-alias-object-interaction-background-selected-hover:  var(--agentic-overlay-6);
+  --cds-alias-object-interaction-background-selected-active: var(--agentic-overlay-10);
+  --cds-alias-object-interaction-background-disabled:        var(--app-surface-2);
+  --cds-alias-object-interaction-background-shade:           var(--app-surface-2);
+  --cds-alias-object-interaction-background-shade-hover:     var(--agentic-overlay-4);
+  --cds-alias-object-interaction-border-color:               var(--app-border-strong);
+  --cds-alias-object-interaction-color:                      var(--app-text);
+  --cds-alias-object-interaction-color-hover:                var(--app-text-strong);
+  --cds-alias-object-interaction-color-active:               var(--app-text-strong);
+  --cds-alias-object-interaction-color-selected:             var(--app-text);
+
+  // Typography
+  --cds-alias-typography-color-500:                          var(--app-text-strong);
+  --cds-alias-typography-color-450:                          var(--app-text-strong);
+  --cds-alias-typography-color-400:                          var(--app-text);
+  --cds-alias-typography-color-300:                          var(--app-text-secondary);
+  --cds-alias-typography-color-200:                          var(--app-text-secondary);
+  --cds-alias-typography-color-100:                          var(--app-text-secondary);
+
+  // Clarity dropdown fine-tuning
+  --clr-dropdown-bg-color:             var(--app-surface-1);
+  --clr-dropdown-border-color:         var(--app-border);
+  --clr-dropdown-item-color:           var(--app-text);
+  --clr-dropdown-item-hover-bg-color:  var(--agentic-accent-hover-bg);
+  --clr-dropdown-item-active-bg-color: var(--agentic-accent-hover-bg-strong);
+  --clr-dropdown-item-active-color:    var(--app-text-strong);
+  --clr-dropdown-header-color:         var(--app-text-secondary);
+  // A visible separator needs more contrast than the default subtle
+  // `--app-border` — at 1px it reads as blank space against the dropdown's
+  // own background otherwise.
+  --clr-dropdown-divider-color:        var(--app-border-strong);
+
+  // Clarity primary button (light theme counterpart)
+  --agentic-btn-on-accent:             #ffffff;
+  --clr-btn-primary-bg-color:          var(--agentic-accent);
+  --clr-btn-primary-color:             var(--agentic-btn-on-accent);
+  --clr-btn-primary-border-color:      var(--agentic-accent);
+  --clr-btn-primary-hover-bg-color:    var(--agentic-accent-hover);
+  --clr-btn-primary-active-bg-color:   var(--agentic-accent-hover);
+  --clr-btn-primary-outline-color:     var(--agentic-accent);
+  --clr-btn-primary-outline-hover-bg-color: var(--agentic-accent-tint-5);
+
+  // Clarity danger button (light theme counterpart)
+  --clr-btn-danger-bg-color:           var(--agentic-error-bright);
+  --clr-btn-danger-color:              var(--agentic-btn-on-accent);
+  --clr-btn-danger-border-color:       var(--agentic-error-bright);
+  --clr-btn-danger-hover-bg-color:     var(--agentic-error);
+  --clr-btn-danger-active-bg-color:    var(--agentic-error);
+  --clr-btn-danger-outline-color:      var(--agentic-error-bright);
+  --clr-btn-danger-outline-hover-bg-color: var(--agentic-error-tint);
+
+  // Clarity badge (light theme counterpart)
+  --clr-badge-background-color:        var(--agentic-overlay-2);
+  --clr-badge-color:                   var(--app-text-secondary);
+  --clr-badge-gray-bg-color:           var(--agentic-overlay-2);
+  --clr-badge-gray-color:              var(--app-text-secondary);
+  --clr-badge-purple-bg-color:         var(--agentic-log-llm-bg);
+  --clr-badge-purple-color:            var(--agentic-log-llm-text);
+  --clr-badge-blue-bg-color:           var(--agentic-accent-tint-5);
+  --clr-badge-blue-color:              var(--agentic-accent);
+  --clr-badge-orange-bg-color:         var(--agentic-warning-status-bg);
+  --clr-badge-orange-color:            var(--agentic-warning-status-color);
+  --clr-badge-light-blue-bg-color:     var(--agentic-log-tool-call-bg);
+  --clr-badge-light-blue-color:        var(--agentic-log-tool-call-text);
+  --clr-badge-info-bg-color:           var(--agentic-info-status-bg);
+  --clr-badge-info-color:              var(--agentic-info-status-color);
+  --clr-badge-success-bg-color:        var(--agentic-success-bg);
+  --clr-badge-success-color:           var(--agentic-success-on-bg);
+  --clr-badge-warning-bg-color:        var(--agentic-warning-tint-strong);
+  --clr-badge-warning-color:           var(--agentic-warning);
+  --clr-badge-danger-bg-color:         var(--agentic-error-status-bg);
+  --clr-badge-danger-color:            var(--agentic-error-status-color);
+}
