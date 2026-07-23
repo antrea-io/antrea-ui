@@ -50,3 +50,13 @@ FROM nginxinc/nginx-unprivileged:1.29
 
 COPY --from=build-web /app/antrea-ui/build /app
 COPY build/scripts/nginx-reloader.sh /docker-entrypoint.d/99-nginx-reloader.sh
+COPY build/scripts/plugin-index-builder.sh /docker-entrypoint.d/50-plugin-index-builder.sh
+
+# /etc/plugins is where plugin tarballs get extracted at runtime (not baked into this image).
+# Deployments can run this image as an arbitrary non-root UID (e.g. the antrea-ui chart pins
+# runAsUser/runAsGroup to 65532, not this image's own default of 101), so rather than chown to
+# one specific UID, make the directory writable by anyone — the plugin-index-builder startup
+# script needs to write index.json into it regardless of which UID the container runs as.
+USER root
+RUN mkdir -p /etc/plugins && chmod 0777 /etc/plugins
+USER 101
