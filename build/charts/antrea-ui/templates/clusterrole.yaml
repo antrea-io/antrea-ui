@@ -40,6 +40,12 @@ rules:
     resourceNames:
       - antrea-config
       - antrea-ca
+  - apiGroups:
+      - ""
+    resources:
+      - pods
+    verbs:
+      - list
   - nonResourceURLs:
       - /featuregates
     verbs:

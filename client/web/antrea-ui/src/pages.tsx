@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { useRef, useEffect, useCallback } from 'react';
+import React, { useRef, useEffect, useCallback } from 'react';
 import '@antrea/ui-components';
 import { apiRefreshToken } from '@antrea/ui-components';
 import { useSelector, useDispatch } from 'react-redux';
@@ -70,4 +70,12 @@ export function FlowVisibilityPage() {
 export function SettingsPage() {
     const { ref, token } = useLitPage();
     return <antrea-settings-page ref={ref} token={token} />;
+}
+
+// Generic route element for plugin pages: any plugin declaring a `navItem` in its manifest gets
+// its custom element mounted here, with the same ref/token/session-refresh wiring as built-in
+// pages, keyed off the tag name discovered at runtime instead of a compile-time import.
+export function PluginPage({ tag }: { tag: string }) {
+    const { ref, token } = useLitPage();
+    return React.createElement(tag, { ref, token });
 }
