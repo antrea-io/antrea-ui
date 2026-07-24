@@ -16,6 +16,7 @@ package k8s
 
 import (
 	"flag"
+	"fmt"
 	"net/http"
 	"os"
 
@@ -67,6 +68,25 @@ func Client() (*rest.Config, *http.Client, *dynamic.DynamicClient, error) {
 		return nil, nil, nil, err
 	}
 	return config, httpClient, client, nil
+}
+
+// ImpersonatedClient builds an HTTP client and dynamic client that authenticate as config's
+// identity but have the K8s API server authorize requests as the given ServiceAccount instead,
+// via RBAC impersonation (the caller needs the "impersonate" verb on that ServiceAccount).
+func ImpersonatedClient(config *rest.Config, serviceAccountName, namespace string) (*http.Client, *dynamic.DynamicClient, error) {
+	impersonatedConfig := rest.CopyConfig(config)
+	impersonatedConfig.Impersonate = rest.ImpersonationConfig{
+		UserName: fmt.Sprintf("system:serviceaccount:%s:%s", namespace, serviceAccountName),
+	}
+	httpClient, err := rest.HTTPClientFor(impersonatedConfig)
+	if err != nil {
+		return nil, nil, err
+	}
+	client, err := dynamic.NewForConfigAndClient(impersonatedConfig, httpClient)
+	if err != nil {
+		return nil, nil, err
+	}
+	return httpClient, client, nil
 }
 
 func init() {

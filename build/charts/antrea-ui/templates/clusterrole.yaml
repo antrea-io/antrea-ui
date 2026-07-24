@@ -6,6 +6,48 @@ metadata:
     app: antrea-ui
 rules:
   - apiGroups:
+      - ""
+    resources:
+      - configmaps
+    verbs:
+      - get
+      - watch
+      - list
+    resourceNames:
+      - antrea-config
+      - antrea-ca
+---
+# antrea-ui-admin holds every permission needed to serve K8s API requests made on behalf of the
+# UI user (as opposed to antrea-ui's own operations, see the antrea-ui ClusterRole above), e.g.
+# the K8s API proxy and Traceflow CRUD. antrea-ui impersonates this ServiceAccount for those
+# requests (see role.yaml). This ClusterRole only aggregates rules from other ClusterRoles (see
+# antrea-ui-admin-base below and rbac.antrea.io/aggregate-to-antrea-ui-admin: "true"); it must not
+# carry its own rules, as the aggregation controller overwrites .rules on every reconcile and
+# would silently drop them.
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: antrea-ui-admin
+  labels:
+    app: antrea-ui
+aggregationRule:
+  clusterRoleSelectors:
+    - matchLabels:
+        rbac.antrea.io/aggregate-to-antrea-ui-admin: "true"
+rules: []
+---
+# antrea-ui-admin-base carries antrea-ui's own default rules for antrea-ui-admin. It is kept
+# separate from antrea-ui-admin itself so that the aggregation controller (which overwrites
+# antrea-ui-admin's .rules field on every reconcile) does not wipe them out.
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: antrea-ui-admin-base
+  labels:
+    app: antrea-ui
+    rbac.antrea.io/aggregate-to-antrea-ui-admin: "true"
+rules:
+  - apiGroups:
       - crd.antrea.io
     resources:
       - antreacontrollerinfos
@@ -29,17 +71,6 @@ rules:
       - watch
       - create
       - delete
-  - apiGroups:
-      - ""
-    resources:
-      - configmaps
-    verbs:
-      - get
-      - watch
-      - list
-    resourceNames:
-      - antrea-config
-      - antrea-ca
   - nonResourceURLs:
       - /featuregates
     verbs:
