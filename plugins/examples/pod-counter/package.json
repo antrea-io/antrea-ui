@@ -1,0 +1,16 @@
+{
+  "name": "antrea-ui-plugin-pod-counter",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "vite build && cp manifest.json dist/manifest.json"
+  },
+  "dependencies": {
+    "lit": "^3.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^6.0.0",
+    "vite": "^8.0.0"
+  }
+}

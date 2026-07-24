@@ -14,9 +14,11 @@
  * limitations under the License.
  */
 
+import React from 'react';
 import { useLocation } from 'react-router';
 import { Link } from 'react-router';
 import '@antrea/ui-components';
+import type { PluginManifest } from './plugins';
 
 function DashboardIcon() {
     return (
@@ -51,7 +53,7 @@ function GearIcon() {
     );
 }
 
-export default function NavTab() {
+export default function NavTab({ plugins }: { plugins: PluginManifest[] }) {
     const { pathname } = useLocation();
 
     return (
@@ -80,6 +82,24 @@ export default function NavTab() {
                     <span className="nav-label">Settings</span>
                 </Link>
             </antrea-nav-item>
+            {plugins
+                .filter((plugin) => plugin.navItem)
+                .map((plugin) => (
+                    <React.Fragment key={plugin.name}>
+                        <antrea-nav-item
+                            {...(pathname.startsWith(plugin.navItem!.path) ? { active: true } : {})}
+                        >
+                            <Link to={plugin.navItem!.path}>
+                                {plugin.navItem!.icon && (
+                                    <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" style={{ flexShrink: 0 }}>
+                                        <path d={plugin.navItem!.icon} />
+                                    </svg>
+                                )}
+                                <span className="nav-label">{plugin.navItem!.label}</span>
+                            </Link>
+                        </antrea-nav-item>
+                    </React.Fragment>
+                ))}
         </antrea-nav>
     );
 }

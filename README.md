@@ -32,3 +32,7 @@ The default `admin` password is `admin`.
 
 For more installation options, refer to the [Getting
 Started](docs/getting-started.md) document.
+
+Antrea UI also supports loading frontend plugins at runtime, without
+rebuilding the image. Refer to the [Plugins](docs/plugins.md) document for
+how it works and how to build one.

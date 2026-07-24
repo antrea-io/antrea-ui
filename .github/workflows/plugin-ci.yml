@@ -1,0 +1,78 @@
+name: Plugin
+
+on:
+  pull_request:
+    branches:
+    - main
+    - release-*
+  push:
+    branches:
+    - main
+    - release-*
+
+jobs:
+  build-and-ship-example-plugin:
+    name: Build example plugin and ship it in the frontend image
+    runs-on: ubuntu-latest
+    steps:
+    - name: Check-out code
+      uses: actions/checkout@v7
+
+    - name: Set up Node
+      uses: actions/setup-node@v7
+      with:
+        node-version: 24
+
+    - name: Build pod-counter plugin
+      working-directory: plugins/examples/pod-counter
+      run: |
+        npm ci
+        npm run build
+
+    - name: Package plugin tarball
+      working-directory: plugins/examples/pod-counter
+      run: tar czf pod-counter.tgz -C dist .
+
+    - name: Build base frontend image
+      run: docker build -f build/frontend.dockerfile -t antrea-ui-frontend:ci .
+
+    - name: Build frontend image with example plugin installed
+      run: |
+        docker build -f build/ci/frontend-with-example-plugin.dockerfile \
+          --build-arg BASE_IMAGE=antrea-ui-frontend:ci \
+          -t antrea-ui-frontend:ci-with-plugin .
+
+    - name: Render the chart's nginx config
+      # The /plugins/ location lives in the Helm chart's nginx.conf template, mounted into the
+      # pod at deploy time (build/charts/antrea-ui/templates/configmaps.yaml) — it is NOT baked
+      # into the image itself, so a plain `docker run` needs it mounted in to be a faithful test.
+      run: |
+        helm template test build/charts/antrea-ui --show-only templates/configmaps.yaml \
+          | yq eval-all 'select(.metadata.name == "antrea-ui-nginx") | .data["nginx.conf"]' - \
+          > /tmp/nginx.conf
+        cat /tmp/nginx.conf
+
+    - name: Run image and verify the plugin is served
+      run: |
+        docker run -d --name antrea-ui-frontend-ci -p 3000:3000 \
+          -v /tmp/nginx.conf:/etc/nginx/conf.d/default.conf:ro \
+          antrea-ui-frontend:ci-with-plugin
+        for i in $(seq 1 10); do
+          if curl -sf http://localhost:3000/plugins/index.json; then
+            break
+          fi
+          sleep 1
+        done
+        echo "--- /plugins/index.json ---"
+        curl -sf http://localhost:3000/plugins/index.json | tee /tmp/index.json
+        grep -q '"name": "pod-counter"' /tmp/index.json
+        echo "--- /plugins/pod-counter/index.js ---"
+        curl -sf -o /dev/null -w "%{http_code}\n" http://localhost:3000/plugins/pod-counter/index.js | grep -q 200
+
+    - name: Dump container logs on failure
+      if: failure()
+      run: docker logs antrea-ui-frontend-ci
+
+    - name: Clean up
+      if: always()
+      run: docker rm -f antrea-ui-frontend-ci || true
