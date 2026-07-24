@@ -43,6 +43,21 @@ func TestK8sProxyRequest(t *testing.T) {
 			expectedStatusCode: http.StatusOK,
 		},
 		{
+			name:               "allowed path 3",
+			path:               "/apis/networking.k8s.io/v1/networkpolicies",
+			expectedStatusCode: http.StatusOK,
+		},
+		{
+			name:               "allowed path 4",
+			path:               "/apis/crd.antrea.io/v1beta1/networkpolicies",
+			expectedStatusCode: http.StatusOK,
+		},
+		{
+			name:               "allowed path 5",
+			path:               "/apis/crd.antrea.io/v1beta1/clusternetworkpolicies",
+			expectedStatusCode: http.StatusOK,
+		},
+		{
 			name:               "forbidden path",
 			path:               "/api/v1/pods",
 			expectedStatusCode: http.StatusNotFound,

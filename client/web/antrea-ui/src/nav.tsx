@@ -52,7 +52,9 @@ function GearIcon() {
 }
 
 export default function NavTab() {
-    const { pathname } = useLocation();
+    const { pathname, search } = useLocation();
+    const onFlowsPage = pathname.startsWith('/flows');
+    const onServiceMap = onFlowsPage && new URLSearchParams(search).get('view') === 'map';
 
     return (
         <antrea-nav>
@@ -68,12 +70,22 @@ export default function NavTab() {
                     <span className="nav-label">Traceflow</span>
                 </Link>
             </antrea-nav-item>
-            <antrea-nav-item {...(pathname.startsWith('/flows') ? { active: true } : {})}>
-                <Link to="/flows">
+            <antrea-nav-group>
+                <span slot="label">
                     <EyeIcon />
                     <span className="nav-label">Flow Visibility</span>
-                </Link>
-            </antrea-nav-item>
+                </span>
+                <antrea-nav-item {...(onFlowsPage && !onServiceMap ? { active: true } : {})}>
+                    <Link to="/flows">
+                        <span className="nav-label">Flow List</span>
+                    </Link>
+                </antrea-nav-item>
+                <antrea-nav-item {...(onServiceMap ? { active: true } : {})}>
+                    <Link to="/flows?view=map">
+                        <span className="nav-label">Service Map</span>
+                    </Link>
+                </antrea-nav-item>
+            </antrea-nav-group>
             <antrea-nav-item {...(pathname === '/settings' ? { active: true } : {})}>
                 <Link to="/settings">
                     <GearIcon />

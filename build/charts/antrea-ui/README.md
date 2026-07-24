@@ -48,9 +48,11 @@ Kubernetes: `>= 1.16.0-0`
 | flowAggregator.namespace | string | `"flow-aggregator"` | Namespace where the Flow Aggregator is installed. |
 | flowAggregator.serverName | string | `""` | Override the TLS server name used for certificate verification. Useful when dialing via kubectl port-forward (loopback address) while the server cert is issued for the in-cluster Service DNS name (e.g. flow-aggregator.flow-aggregator.svc). Leave empty to use the hostname from the address field. |
 | frontend.extraVolumeMounts | list | `[]` | Additional volumeMounts. |
-| frontend.image | object | `{"pullPolicy":"IfNotPresent","repository":"antrea/antrea-ui-frontend","tag":""}` | Container image to use for the Antrea UI frontend. |
+| frontend.image | object | `{"pullPolicy":"IfNotPresent","repository":"","tag":""}` | Container image to use for the Antrea UI frontend. |
+| frontend.image.repository | string | `""` | (string) Defaults to "antrea/antrea-ui-frontend" for the "react" variant, or "antrea/antrea-ui-frontend-angular" for the "angular" variant. |
 | frontend.port | int | `3000` | Container port on which the frontend will listen. |
 | frontend.resources | object | `{}` | Resource requests and limits for the frontend container. |
+| frontend.variant | string | `"react"` | Which frontend UI to deploy: "react" (default) or "angular" (a Clarity Design System shell around the same underlying Web Components). Only used to pick the default value of frontend.image.repository below; it has no effect if frontend.image.repository is set explicitly. |
 | https.auto | object | `{"commonName":"localhost","daysValid":365,"dnsNames":[],"ipAddresses":[]}` | Configure automatic TLS certificate generation with Helm. |
 | https.auto.commonName | string | `"localhost"` | Common name to use in the certificate. |
 | https.auto.daysValid | int | `365` | Number of days for which the certificate will be valid. There is no automatic rotation with this method. |

@@ -1,0 +1,90 @@
+<div class="login-screen">
+  <div class="login-panel">
+    <div class="login-panel-inner">
+      <div class="brand">
+        <img src="icons/vmware-logo.svg" alt="" class="brand-logo" aria-hidden="true" />
+        <span class="brand-name">Antrea UI</span>
+      </div>
+
+      @if (loading()) {
+        <div class="status-row">
+          <div class="spinner" role="status" aria-label="Authenticating"></div>
+          <p>Authenticating...</p>
+        </div>
+      } @else if (settingsError() && !settings()) {
+        <p class="error-text">{{ settingsError() }}</p>
+      } @else {
+        <form class="login-form" (submit)="$event.preventDefault(); onBasicSubmit()">
+          @if (msg()) {
+            <div class="notice notice-success">
+              <span>{{ msg() }}</span>
+              <button type="button" class="notice-dismiss" aria-label="Dismiss" (click)="dismissMsg()">&times;</button>
+            </div>
+          }
+          @if (loginError()) {
+            <div class="notice notice-danger">{{ loginError() }}</div>
+          }
+
+          @if (settings()?.auth?.basicEnabled ?? true) {
+            <div class="field">
+              <label for="username">Username</label>
+              <input
+                id="username"
+                name="username"
+                type="text"
+                autocomplete="username"
+                required
+                [value]="username()"
+                (input)="username.set($any($event.target).value)"
+              />
+            </div>
+            <div class="field">
+              <label for="password">Password</label>
+              <div class="password-input">
+                <input
+                  id="password"
+                  name="password"
+                  [type]="showPassword() ? 'text' : 'password'"
+                  autocomplete="current-password"
+                  required
+                  [value]="password()"
+                  (input)="password.set($any($event.target).value)"
+                />
+                <button
+                  type="button"
+                  class="password-toggle"
+                  [attr.aria-label]="showPassword() ? 'Hide password' : 'Show password'"
+                  (click)="togglePasswordVisibility()"
+                >
+                  {{ showPassword() ? 'Hide' : 'Show' }}
+                </button>
+              </div>
+            </div>
+
+            <button type="submit" class="login-button" [disabled]="submitting()">
+              {{ submitting() ? 'Logging in…' : 'LOGIN' }}
+            </button>
+          }
+
+          @if (settings()?.auth?.oidcEnabled) {
+            <button type="button" class="login-button login-button-outline" (click)="doOidcLogin()">
+              Login with {{ settings()?.auth?.oidcProviderName || 'OIDC' }}
+            </button>
+          }
+        </form>
+      }
+
+      <div class="login-footer">
+        <span>&copy; Broadcom. All Rights Reserved.</span>
+        <span class="login-footer-links">
+          <a href="#" (click)="$event.preventDefault()">Privacy</a>
+          <a href="#" (click)="$event.preventDefault()">Term of Use</a>
+        </span>
+      </div>
+    </div>
+  </div>
+
+  <div class="illustration-panel" aria-hidden="true">
+    <div class="illustration-placeholder"></div>
+  </div>
+</div>

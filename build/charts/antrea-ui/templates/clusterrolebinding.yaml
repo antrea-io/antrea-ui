@@ -1,12 +1,14 @@
 kind: ClusterRoleBinding
 apiVersion: rbac.authorization.k8s.io/v1
 metadata:
-  name: antrea-ui
+  # ClusterRoleBinding is cluster-scoped, so its name must be unique across
+  # all antrea-ui releases in the cluster (see clusterrole.yaml).
+  name: {{ .Release.Name }}
   labels:
     app: antrea-ui
 roleRef:
   kind: ClusterRole
-  name: antrea-ui
+  name: {{ .Release.Name }}
   apiGroup: rbac.authorization.k8s.io
 subjects:
 - kind: ServiceAccount

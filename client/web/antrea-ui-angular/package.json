@@ -1,0 +1,39 @@
+{
+  "name": "antrea-ui-angular",
+  "version": "0.0.0",
+  "scripts": {
+    "ng": "ng",
+    "start": "ng serve",
+    "build": "ng build",
+    "watch": "ng build --watch --configuration development",
+    "test": "ng test"
+  },
+  "private": true,
+  "dependencies": {
+    "@angular/animations": "^22.0.5",
+    "@angular/cdk": "^22.0.0",
+    "@angular/common": "^22.0.0",
+    "@angular/compiler": "^22.0.0",
+    "@angular/core": "^22.0.0",
+    "@angular/forms": "^22.0.0",
+    "@angular/platform-browser": "^22.0.0",
+    "@angular/router": "^22.0.0",
+    "@antrea/ui-components": "link:../antrea-ui-components",
+    "@antrea/ui-plugin-policy-management": "link:../antrea-ui-plugin-policy-management",
+    "@antrea/ui-plugin-sdk": "link:../antrea-ui-plugin-sdk",
+    "@cds/core": "^6.17.0",
+    "@clr/angular": "^18.2.1",
+    "@clr/ui": "^18.2.1",
+    "rxjs": "~7.8.0",
+    "tslib": "^2.3.0"
+  },
+  "devDependencies": {
+    "@angular/build": "^22.0.5",
+    "@angular/cli": "^22.0.5",
+    "@angular/compiler-cli": "^22.0.0",
+    "jsdom": "^28.0.0",
+    "typescript": "~6.0.2",
+    "vitest": "^4.0.8"
+  },
+  "packageManager": "yarn@4.16.0"
+}

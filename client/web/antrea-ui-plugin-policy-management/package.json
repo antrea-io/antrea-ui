@@ -1,0 +1,28 @@
+{
+  "name": "@antrea/ui-plugin-policy-management",
+  "version": "0.1.0",
+  "description": "Antrea UI plugin: Policy Management (NetworkPolicy definitions & recommendations)",
+  "type": "module",
+  "main": "src/index.ts",
+  "module": "src/index.ts",
+  "exports": {
+    ".": {
+      "import": "./src/index.ts"
+    }
+  },
+  "peerDependencies": {
+    "@angular/common": "^22.0.0",
+    "@angular/core": "^22.0.0",
+    "@angular/router": "^22.0.0",
+    "@antrea/ui-plugin-sdk": "*",
+    "rxjs": "~7.8.0"
+  },
+  "devDependencies": {
+    "@angular/common": "22.0.5",
+    "@angular/core": "22.0.5",
+    "@angular/router": "22.0.5",
+    "@antrea/ui-plugin-sdk": "file:../antrea-ui-plugin-sdk",
+    "rxjs": "7.8.2",
+    "typescript": "~6.0.2"
+  }
+}

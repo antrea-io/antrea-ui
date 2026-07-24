@@ -1,0 +1,15 @@
+@if (source() && target()) {
+  <div class="recommendation-card">
+    <h3>Suggested policy: {{ source() }} → {{ target() }}</h3>
+    <p class="text-muted">
+      No existing policy currently governs this connection. Based on the observed flow, applying
+      the following NetworkPolicy would explicitly allow it (review and adjust before applying):
+    </p>
+    <div class="yaml-block">{{ recommendedYaml() }}</div>
+  </div>
+} @else {
+  <p class="text-muted">
+    Select a flow that isn't currently protected by a policy in the Flow Visibility service map to
+    generate a recommendation here.
+  </p>
+}

@@ -1,8 +1,14 @@
 # Configuration for the Antrea UI frontend container.
 frontend:
+  # -- Which frontend UI to deploy: "react" (default) or "angular" (a Clarity Design System shell
+  # around the same underlying Web Components). Only used to pick the default value of
+  # frontend.image.repository below; it has no effect if frontend.image.repository is set explicitly.
+  variant: "react"
   # -- Container image to use for the Antrea UI frontend.
   image:
-    repository: "antrea/antrea-ui-frontend"
+    # -- (string) Defaults to "antrea/antrea-ui-frontend" for the "react" variant, or
+    # "antrea/antrea-ui-frontend-angular" for the "angular" variant.
+    repository: ""
     pullPolicy: "IfNotPresent"
     tag: ""
   # -- Container port on which the frontend will listen.

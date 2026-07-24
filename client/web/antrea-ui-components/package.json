@@ -11,6 +11,10 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
+    "./dist": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
     "./src/tokens.css": "./src/tokens.css"
   },
   "scripts": {

@@ -1,0 +1,9 @@
+// =============================================================================
+// Antrea UI (Angular shell) — Dark Theme (default)
+//
+// All token values live in `_tokens.scss` under the `:root` block. This file
+// exists as the public entry-point that `styles.scss` imports for
+// historical/discovery reasons; if you need to tweak a token value, edit
+// `_tokens.scss`, not this file.
+// =============================================================================
+@forward 'tokens';

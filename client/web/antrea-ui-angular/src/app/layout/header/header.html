@@ -1,0 +1,34 @@
+<header class="header header-6">
+  <div class="branding">
+    <a routerLink="/" class="nav-link">
+      <img src="logo.svg" alt="Antrea logo" class="branding-icon" />
+      <span class="title">Antrea UI</span>
+    </a>
+  </div>
+  <div class="header-actions">
+    <button
+      class="header-theme-btn"
+      type="button"
+      (click)="theme.toggle()"
+      [title]="theme.isDark() ? 'Switch to light theme' : 'Switch to dark theme'"
+      aria-label="Toggle theme"
+    >
+      @if (theme.isDark()) {
+        <cds-icon shape="sun"></cds-icon>
+      } @else {
+        <cds-icon shape="moon"></cds-icon>
+      }
+    </button>
+    <clr-dropdown>
+      <button class="nav-icon-hitarea" clrDropdownTrigger aria-label="user menu">
+        <cds-icon shape="user"></cds-icon>
+      </button>
+      <clr-dropdown-menu clrPosition="bottom-right" *clrIfOpen>
+        <button clrDropdownItem type="button" (click)="logout()">
+          <cds-icon shape="logout"></cds-icon>
+          Logout
+        </button>
+      </clr-dropdown-menu>
+    </clr-dropdown>
+  </div>
+</header>

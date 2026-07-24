@@ -69,6 +69,11 @@ build-frontend:
 	docker build --pull -t antrea/antrea-ui-frontend:$(DOCKER_IMG_VERSION) -f build/frontend.dockerfile --build-arg GO_VERSION=$(GO_VERSION) $(if $(NPM_REGISTRY),--build-arg NPM_REGISTRY=$(NPM_REGISTRY)) .
 	docker tag antrea/antrea-ui-frontend:$(DOCKER_IMG_VERSION) antrea/antrea-ui-frontend
 
+.PHONY: build-frontend-angular
+build-frontend-angular:
+	docker build --pull -t antrea/antrea-ui-frontend-angular:$(DOCKER_IMG_VERSION) -f build/frontend-angular.dockerfile $(if $(NPM_REGISTRY),--build-arg NPM_REGISTRY=$(NPM_REGISTRY)) .
+	docker tag antrea/antrea-ui-frontend-angular:$(DOCKER_IMG_VERSION) antrea/antrea-ui-frontend-angular
+
 .PHONY: build-backend
 build-backend:
 	docker build --pull -t antrea/antrea-ui-backend:$(DOCKER_IMG_VERSION) -f build/backend.dockerfile --build-arg GO_VERSION=$(GO_VERSION) .

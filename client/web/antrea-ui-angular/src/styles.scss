@@ -1,0 +1,119 @@
+// Global stylesheet for the Antrea UI Angular shell. Imports the design-token
+// theme files (each forwards from `assets/themes/_tokens.scss`) so the same
+// `--token-name` custom-property API is available everywhere — same file
+// structure and token source as ~/vcf-ai/ui/src/styles.scss.
+@use 'assets/themes/dark-theme';
+@use 'assets/themes/light-theme';
+
+@import '@clr/ui/clr-ui.min.css';
+@import '@antrea/ui-components/src/tokens.css';
+
+/*
+ * Match the shared Lit components' font/accent to the ported design tokens
+ * (assets/themes/_tokens.scss) rather than antrea-ui-components' own
+ * tokens.css defaults, which were picked for the React app's plainer dark
+ * theme and read as washed-out/light-theme against this shell's Clarity
+ * chrome. --agentic-accent/--agentic-font-family are theme-aware (dark vs
+ * light), so these switch automatically with the rest of the app.
+ */
+:root {
+  --antrea-font-family: var(--agentic-font-family);
+
+  --antrea-color-primary: var(--agentic-accent);
+  --antrea-color-primary-hover: var(--agentic-accent-hover);
+  --antrea-color-primary-text: var(--agentic-btn-on-accent);
+  --antrea-color-border-focus: var(--agentic-accent);
+
+  /*
+   * The rest of antrea-ui-components' own --antrea-color-* tokens (tokens.css)
+   * are hardcoded dark values with no theme awareness at all — only the
+   * primary/accent ones above got bridged initially. That's why switching to
+   * light theme left every Lit page (Flow Visibility, Summary, etc.)  with
+   * unreadable near-white text on a now-light background: --antrea-color-text
+   * etc. never changed. Bridge the rest to the same theme-aware app- and
+   * agentic- prefixed tokens so these pages actually follow the theme too.
+   */
+  --antrea-color-bg: var(--app-bg);
+  --antrea-color-bg-surface: var(--app-surface-1);
+  --antrea-color-bg-hover: var(--app-surface-2);
+  --antrea-color-bg-active: var(--app-surface-3);
+  --antrea-color-text: var(--app-text-strong);
+  --antrea-color-text-muted: var(--app-text-secondary);
+  --antrea-color-text-disabled: var(--agentic-muted);
+  --antrea-color-border: var(--app-border);
+  --antrea-color-danger: var(--agentic-error-bright);
+  --antrea-color-danger-bg: var(--agentic-error-bg);
+  --antrea-color-success: var(--agentic-success-bright);
+  --antrea-color-success-bg: var(--agentic-success-bg);
+  --antrea-color-warning: var(--agentic-warning-bright);
+  --antrea-color-warning-bg: var(--agentic-warning-tint);
+  --antrea-color-info: var(--agentic-info-bright);
+  --antrea-color-info-bg: var(--agentic-info-tint);
+}
+
+/*
+ * Clarity's header chrome (.header, used by header.html) resolves its
+ * background/text through --clr-header-bg-color/--clr-header-font-color,
+ * which default to hardcoded --cds-global-color-* grays — NOT routed
+ * through the --cds-alias-* bridge above at all, so the header never
+ * followed the theme toggle. Point them at the dedicated --app-header-*
+ * tokens (which ARE theme-aware) instead.
+ */
+:root {
+  --clr-header-bg-color: var(--app-header-bg);
+  --clr-header-font-color: var(--app-header-text);
+}
+
+/*
+ * clr-vertical-nav's own background token (--clr-vertical-nav-bg-color)
+ * resolves through --cds-alias-object-interaction-background-shade, which
+ * we mapped to --app-surface-2 for general interactive-surface use — a
+ * shade lighter than --app-bg, so the sidebar visibly diverged from the
+ * rest of the page. The token system has a dedicated --app-sidebar-bg for
+ * exactly this (matching vcf-ai's own sidebar, which uses that token
+ * directly); point Clarity's nav at it instead.
+ */
+:root {
+  --clr-vertical-nav-bg-color: var(--app-sidebar-bg);
+  --clr-vertical-nav-item-color: var(--app-sidebar-text);
+}
+
+/*
+ * Match the shared Lit components' buttons and tables to Clarity's own
+ * conventions (uppercase/semibold/letter-spaced buttons; semibold,
+ * letter-spaced table headers) via the CSS custom properties antrea-button
+ * and pageStyles expose for exactly this purpose. Referencing Clarity's own
+ * --clr-* and --cds-* tokens directly (rather than hardcoding values) keeps
+ * this in sync if Clarity's own theme ever changes.
+ *
+ * Note: ::part() can't reach these — antrea-button/table cells are nested
+ * inside each page component's own shadow root, and ::part() doesn't cross
+ * more than one shadow boundary without explicit exportparts forwarding at
+ * every level. Custom properties cross any number of shadow boundaries via
+ * normal inheritance, so they're the only practical hook here.
+ */
+:root {
+  --antrea-button-height: var(--clr-btn-height);
+  --antrea-button-padding: var(--clr-btn-padding);
+  --antrea-button-font-weight: var(--cds-alias-typography-font-weight-semibold);
+  --antrea-button-text-transform: uppercase;
+  --antrea-button-letter-spacing: var(--cds-global-space-1);
+
+  --antrea-table-header-font-weight: var(--cds-alias-typography-font-weight-semibold);
+  --antrea-table-header-letter-spacing: calc(0.2 * 1rem / var(--cds-global-base));
+}
+
+html, body {
+  height: 100%;
+  margin: 0;
+  background: var(--app-bg);
+  color: var(--app-text);
+}
+
+clr-main-container {
+  height: 100vh;
+}
+
+.content-area {
+  overflow-y: auto;
+}

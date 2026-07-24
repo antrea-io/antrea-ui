@@ -1,0 +1,35 @@
+.branding-icon {
+  width: 2rem;
+  height: 2rem;
+}
+
+/*
+ * The user-menu button next to this one looks clean/transparent because
+ * Clarity's clrDropdownTrigger directive resets its button chrome
+ * automatically. This is a plain <button> with no such directive, so
+ * without this it falls back to the raw browser default button
+ * background/border — a visibly "brighter box" against the dark header.
+ */
+.header-theme-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  align-self: center;
+  width: 2.25rem;
+  height: 2.25rem;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--app-header-icon);
+  cursor: pointer;
+}
+
+.header-theme-btn:hover {
+  background: var(--app-header-theme-btn-hover-bg);
+}
+
+.header-theme-btn:focus-visible {
+  outline: 2px solid var(--agentic-accent);
+  outline-offset: 2px;
+}

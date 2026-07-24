@@ -1,0 +1,50 @@
+@if (loading()) {
+  <p>Loading policies…</p>
+} @else if (error()) {
+  <div class="notice notice-error">Failed to load policies: {{ error() }}</div>
+} @else {
+  @for (sourceError of sourceErrors(); track sourceError) {
+    <div class="notice notice-error">Failed to load {{ sourceError }}</div>
+  }
+
+  @if (highlightName() && !match()) {
+    <div class="notice notice-warning">
+      Flow references policy "<strong>{{ highlightName() }}</strong>", but it wasn't found in the
+      policy types currently listed here (it may have been deleted, or be of a type this POC page
+      doesn't query yet).
+    </div>
+  }
+
+  @if (policies().length === 0) {
+    <p class="text-muted">
+      @if (sourceErrors().length > 0) {
+        No policies could be loaded from the sources above.
+      } @else {
+        No NetworkPolicy, Antrea NetworkPolicy, or Antrea ClusterNetworkPolicy resources found in the cluster.
+      }
+    </p>
+  } @else {
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Namespace</th>
+          <th>Type</th>
+          <th>Applies To</th>
+          <th>Created</th>
+        </tr>
+      </thead>
+      <tbody>
+        @for (p of policies(); track p.key) {
+          <tr [class.highlight]="p.name === highlightName()">
+            <td>{{ p.name }}</td>
+            <td>{{ p.namespace ?? '(cluster-scoped)' }}</td>
+            <td>{{ p.type }}</td>
+            <td>{{ p.podSelector }}</td>
+            <td>{{ p.createdAt ?? '-' }}</td>
+          </tr>
+        }
+      </tbody>
+    </table>
+  }
+}
