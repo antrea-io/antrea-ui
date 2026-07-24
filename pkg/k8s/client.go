@@ -70,13 +70,19 @@ func Client() (*rest.Config, *http.Client, *dynamic.DynamicClient, error) {
 	return config, httpClient, client, nil
 }
 
+// ServiceAccountUserName returns the username used by the K8s API server to identify the given
+// ServiceAccount, e.g. for RBAC impersonation purposes.
+func ServiceAccountUserName(namespace, serviceAccountName string) string {
+	return fmt.Sprintf("system:serviceaccount:%s:%s", namespace, serviceAccountName)
+}
+
 // ImpersonatedClient builds an HTTP client and dynamic client that authenticate as config's
 // identity but have the K8s API server authorize requests as the given ServiceAccount instead,
 // via RBAC impersonation (the caller needs the "impersonate" verb on that ServiceAccount).
 func ImpersonatedClient(config *rest.Config, namespace, serviceAccountName string) (*http.Client, *dynamic.DynamicClient, error) {
 	impersonatedConfig := rest.CopyConfig(config)
 	impersonatedConfig.Impersonate = rest.ImpersonationConfig{
-		UserName: fmt.Sprintf("system:serviceaccount:%s:%s", namespace, serviceAccountName),
+		UserName: ServiceAccountUserName(namespace, serviceAccountName),
 	}
 	httpClient, err := rest.HTTPClientFor(impersonatedConfig)
 	if err != nil {

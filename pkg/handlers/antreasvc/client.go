@@ -39,6 +39,9 @@ type antreaHTTPClientProvider struct {
 	logger     logr.Logger
 	config     *rest.Config
 	serverName string
+	// impersonatedUser is the identity used to authorize requests sent using the client, via K8s
+	// RBAC impersonation (see rest.Config.Impersonate).
+	impersonatedUser string
 	// mutex protects client.
 	mutex sync.RWMutex
 	// client is the Antrea client that will be returned. It will be updated when caBundle is updated.
@@ -49,7 +52,7 @@ type antreaHTTPClientProvider struct {
 
 var _ dynamiccertificates.Listener = &antreaHTTPClientProvider{}
 
-func newAntreaClientProvider(logger logr.Logger, config *rest.Config, kubeClient kubernetes.Interface, antreaNamespace string, serverName string) *antreaHTTPClientProvider {
+func newAntreaClientProvider(logger logr.Logger, config *rest.Config, kubeClient kubernetes.Interface, antreaNamespace string, serverName string, impersonatedUser string) *antreaHTTPClientProvider {
 	// The key "ca.crt" may not exist at the beginning, no need to fail as the CA provider will watch the ConfigMap
 	// and notify antreaHTTPClientProvider of any update. The consumers of antreaHTTPClientProvider are supposed to always
 	// call GetAntreaClient() to get a client and not cache it.
@@ -63,6 +66,7 @@ func newAntreaClientProvider(logger logr.Logger, config *rest.Config, kubeClient
 		logger:            logger,
 		config:            config,
 		serverName:        serverName,
+		impersonatedUser:  impersonatedUser,
 		caContentProvider: antreaCAProvider,
 	}
 
@@ -111,6 +115,7 @@ func (p *antreaHTTPClientProvider) updateAntreaClient() error {
 		if kubeConfig, err = inClusterConfig(caBundle); err != nil {
 			return err
 		}
+		kubeConfig.Impersonate = rest.ImpersonationConfig{UserName: p.impersonatedUser}
 	}
 	// name used in the server certificate
 	kubeConfig.CAData = caBundle

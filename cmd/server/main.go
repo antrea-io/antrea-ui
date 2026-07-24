@@ -114,6 +114,7 @@ func run() error {
 	// e.g. reading the antrea-ui-passwd Secret) are impersonated as the antrea-ui-admin
 	// ServiceAccount, so that plugins can be granted extra permissions for these calls without
 	// exposing antrea-ui's own sensitive access.
+	antreaUIAdminUser := k8s.ServiceAccountUserName(env.GetNamespace(), "antrea-ui-admin")
 	k8sAdminHTTPClient, k8sAdminDynamicClient, err := k8s.ImpersonatedClient(k8sRESTConfig, env.GetNamespace(), "antrea-ui-admin")
 	if err != nil {
 		return fmt.Errorf("failed to create impersonated K8s clients for antrea-ui-admin: %w", err)
@@ -122,7 +123,7 @@ func run() error {
 	traceflowHandler := traceflowhandler.NewRequestsHandler(logger, k8sAdminDynamicClient)
 	k8sProxyHandler := k8sproxy.NewK8sProxyHandler(logger, k8sServerURL, k8sAdminHTTPClient.Transport)
 
-	antreaSvcHandler, err := antreasvchandler.NewRequestsHandler(logger, k8sRESTConfig, config.AntreaNamespace)
+	antreaSvcHandler, err := antreasvchandler.NewRequestsHandler(logger, k8sRESTConfig, config.AntreaNamespace, antreaUIAdminUser)
 	if err != nil {
 		return fmt.Errorf("failed to create handler for Antrea Service requests: %w", err)
 	}

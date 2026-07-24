@@ -77,7 +77,7 @@ func TestRequestsHandler(t *testing.T) {
 		antreaNamespace: antreaNamespace,
 		host:            url.Host,
 		kubeClient:      fakeClient,
-		clientProvider:  newAntreaClientProvider(logger, restConfig, fakeClient, antreaNamespace, antreaSvcAddr),
+		clientProvider:  newAntreaClientProvider(logger, restConfig, fakeClient, antreaNamespace, antreaSvcAddr, ""),
 		// the port forwarding case cannot be validated in the context of a unit test
 		portForwardingNeeded: false,
 	}
