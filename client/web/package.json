@@ -6,7 +6,7 @@
     "antrea-ui-components"
   ],
   "resolutions": {
-    "@hpcc-js/wasm": "2.34.7",
+    "@hpcc-js/wasm": "2.34.8",
     "postcss": "8.5.19"
   },
   "packageManager": "yarn@4.17.1"
