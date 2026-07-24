@@ -30,9 +30,9 @@
     {
       matchManagers: ["npm"],
       addLabels: ["javascript"],
-      // Require a 7-day stabilization period before updating npm packages,
+      // Require a 10-day stabilization period before updating npm packages,
       // to reduce exposure to recent high-profile supply chain attacks on popular NPM packages
-      minimumReleaseAge: "7 days",
+      minimumReleaseAge: "10 days",
     },
 
     // Automerge npm non-major updates
