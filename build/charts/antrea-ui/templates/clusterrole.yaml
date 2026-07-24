@@ -16,6 +16,13 @@ rules:
     resourceNames:
       - antrea-config
       - antrea-ca
+  # /featuregates is served by antrea-controller itself (see the GetFeatureGates handler), which
+  # authorizes the request using antrea-ui's own identity, not the impersonated antrea-ui-admin
+  # ServiceAccount, so the permission belongs here rather than on antrea-ui-admin.
+  - nonResourceURLs:
+      - /featuregates
+    verbs:
+      - get
 ---
 # antrea-ui-admin holds every permission needed to serve K8s API requests made on behalf of the
 # UI user (as opposed to antrea-ui's own operations, see the antrea-ui ClusterRole above), e.g.
@@ -71,7 +78,3 @@ rules:
       - watch
       - create
       - delete
-  - nonResourceURLs:
-      - /featuregates
-    verbs:
-      - get
