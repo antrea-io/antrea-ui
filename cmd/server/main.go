@@ -114,7 +114,7 @@ func run() error {
 	// e.g. reading the antrea-ui-passwd Secret) are impersonated as the antrea-ui-admin
 	// ServiceAccount, so that plugins can be granted extra permissions for these calls without
 	// exposing antrea-ui's own sensitive access.
-	k8sAdminHTTPClient, k8sAdminDynamicClient, err := k8s.ImpersonatedClient(k8sRESTConfig, "antrea-ui-admin", env.GetNamespace())
+	k8sAdminHTTPClient, k8sAdminDynamicClient, err := k8s.ImpersonatedClient(k8sRESTConfig, env.GetNamespace(), "antrea-ui-admin")
 	if err != nil {
 		return fmt.Errorf("failed to create impersonated K8s clients for antrea-ui-admin: %w", err)
 	}

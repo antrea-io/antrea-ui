@@ -73,7 +73,7 @@ func Client() (*rest.Config, *http.Client, *dynamic.DynamicClient, error) {
 // ImpersonatedClient builds an HTTP client and dynamic client that authenticate as config's
 // identity but have the K8s API server authorize requests as the given ServiceAccount instead,
 // via RBAC impersonation (the caller needs the "impersonate" verb on that ServiceAccount).
-func ImpersonatedClient(config *rest.Config, serviceAccountName, namespace string) (*http.Client, *dynamic.DynamicClient, error) {
+func ImpersonatedClient(config *rest.Config, namespace, serviceAccountName string) (*http.Client, *dynamic.DynamicClient, error) {
 	impersonatedConfig := rest.CopyConfig(config)
 	impersonatedConfig.Impersonate = rest.ImpersonationConfig{
 		UserName: fmt.Sprintf("system:serviceaccount:%s:%s", namespace, serviceAccountName),

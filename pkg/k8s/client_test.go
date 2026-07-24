@@ -27,7 +27,7 @@ func TestImpersonatedClient(t *testing.T) {
 		Host: "https://localhost:6443",
 	}
 
-	httpClient, dynamicClient, err := ImpersonatedClient(config, "antrea-ui-admin", "kube-system")
+	httpClient, dynamicClient, err := ImpersonatedClient(config, "kube-system", "antrea-ui-admin")
 	require.NoError(t, err)
 	require.NotNil(t, httpClient)
 	require.NotNil(t, dynamicClient)
