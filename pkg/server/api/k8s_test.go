@@ -48,8 +48,13 @@ func TestK8sProxyRequest(t *testing.T) {
 			expectedStatusCode: http.StatusOK,
 		},
 		{
-			name:               "forbidden path",
+			name:               "allowed path 4",
 			path:               "/api/v1/secrets",
+			expectedStatusCode: http.StatusOK,
+		},
+		{
+			name:               "forbidden path",
+			path:               "/apis/apps/v1/deployments",
 			expectedStatusCode: http.StatusNotFound,
 			expectedMessage:    "This K8s API path is not being proxied",
 		},

@@ -36,6 +36,15 @@ jobs:
     - uses: actions/checkout@v7
     - name: Build container images
       run: make
+    - name: Set up Node
+      uses: actions/setup-node@v7
+      with:
+        node-version: 24
+    - name: Build pod-counter example plugin
+      working-directory: plugins/examples/pod-counter
+      run: |
+        npm ci
+        npm run build
     - name: Install Kind
       run: |
         curl -Lo ./kind https://github.com/kubernetes-sigs/kind/releases/download/${KIND_VERSION}/kind-$(uname)-amd64
@@ -55,10 +64,19 @@ jobs:
     # For e2e helm tests, Antrea UI should not be installed
     - name: Run e2e helm tests
       run: go test -v ./test/e2e_helm
+    # The pod-counter example plugin is mounted via a ConfigMap + extraVolumes/extraVolumeMounts,
+    # the same mechanism a real plugin deployment would use (see docs/plugins.md) — the frontend
+    # image itself is unmodified.
+    - name: Create example plugin ConfigMap
+      run: |
+        kubectl create configmap pod-counter-plugin --namespace kube-system \
+          --from-file=plugins/examples/pod-counter/dist/index.js \
+          --from-file=plugins/examples/pod-counter/dist/manifest.json
     # We install Antrea UI with extra features enabled (e.g., OIDC) for better test coverage
     - name: Install Antrea UI
       run: |
-        helm install --namespace kube-system antrea-ui -f ci/antrea-ui-values.yml ./build/charts/antrea-ui
+        helm install --namespace kube-system antrea-ui \
+          -f ci/antrea-ui-values.yml -f ci/plugin-values.yml ./build/charts/antrea-ui
         kubectl rollout status -n kube-system deployment/antrea-ui --timeout=5m
     # For e2e tests, Antrea UI should be installed first
     - name: Run e2e tests

@@ -94,18 +94,20 @@ npm install && npm run build   # vite build, then copies manifest.json into dist
 ```
 
 If your plugin needs a K8s API path that isn't already proxied, add it to
-`allowedK8sPaths` in [`pkg/server/api/k8s.go`](../pkg/server/api/k8s.go) and
-grant matching RBAC in
-[`clusterrole.yaml`](../build/charts/antrea-ui/templates/clusterrole.yaml) —
-the one part of adding a plugin that isn't purely additive on the frontend.
+`allowedK8sPaths` in [`pkg/server/api/k8s.go`](../pkg/server/api/k8s.go) —
+this list is coarse and not scoped to your plugin (every path added becomes
+reachable by any authenticated Antrea UI user), so only add what's needed.
 
-**This grant is not scoped to the plugin** — Antrea UI has no per-user
-permission model, so every path added to `allowedK8sPaths` becomes reachable
-by any authenticated Antrea UI user, whether or not they use the plugin that
-needed it. Only add paths/verbs your plugin actually requires, and be
-mindful of what a cluster-wide `list`/`get` on that resource exposes (e.g.
-`pods` list includes image references, env var names, and volume mounts
-across every namespace).
+RBAC for that path is **not** added to Antrea UI's own `clusterroles.yaml`.
+Instead, ship your own `ClusterRole` labeled
+`rbac.antrea-ui.io/aggregate-to-antrea-ui-admin: "true"`, which
+[aggregates](https://kubernetes.io/docs/reference/access-authn-authz/rbac/#aggregated-clusterroles)
+into the `antrea-ui-admin` ClusterRole automatically — the one Antrea UI
+impersonates for K8s API calls made on behalf of the UI user, which is what
+the K8s API proxy your plugin calls through does — see
+[`plugins/examples/pod-counter/clusterrole.yaml`](../plugins/examples/pod-counter/clusterrole.yaml).
+Creating (and RBAC-scoping) that ClusterRole is the responsibility of
+whoever deploys the plugin, not Antrea UI itself.
 
 ## Trying it locally
 
@@ -113,7 +115,9 @@ Antrea UI only makes sense running against a real cluster, so test against
 one directly rather than a standalone dev server.
 
 **Recommended: mount it into the unmodified image**, via the chart's
-`extraVolumes` / `frontend.extraVolumeMounts` values — no rebuild needed:
+`extraVolumes` / `frontend.extraVolumeMounts` values — no rebuild needed.
+A ConfigMap is a simple way to populate the volume, but note ConfigMaps are
+capped at 1MiB total:
 
 ```bash
 cd plugins/examples/pod-counter
@@ -159,19 +163,23 @@ The last `helm upgrade` is needed even with no value changes — the chart
 stamps a fresh pod-recreating annotation on every render, so it forces the
 new ConfigMap content to actually get mounted into a new pod.
 
-**To test the image-packaging pipeline itself** (what CI does — see
-[`plugin-ci.yml`](../.github/workflows/plugin-ci.yml)):
+This same setup — build the plugin, mount it via a ConfigMap and
+`extraVolumes`/`frontend.extraVolumeMounts`, install Antrea UI — is what
+[`test/e2e/plugin_test.go`](../test/e2e/plugin_test.go) automates as a real
+e2e test in [`kind_e2e.yml`](../.github/workflows/kind_e2e.yml), against an
+actual Kind cluster rather than a standalone container.
 
-```bash
-cd plugins/examples/pod-counter
-tar czf pod-counter.tgz -C dist .
-cd ../../..
+## Future work
 
-docker build -f build/frontend.dockerfile -t antrea-ui-frontend:ci .
-docker build -f build/ci/frontend-with-example-plugin.dockerfile \
-  --build-arg BASE_IMAGE=antrea-ui-frontend:ci -t antrea-ui-frontend:ci-with-plugin .
-```
-
-This bakes the plugin into the image rather than mounting it — only useful
-for testing the build/ship workflow itself. Production deployments should
-use the mounted-volume approach above.
+* **Deeper customization.** Today a plugin can only add a whole new page.
+  Modifying an *existing* UI element (e.g. adding a column to the flow
+  table) would need Antrea UI to expose `registerX`-style extension points,
+  likely via a small shared library package plugins depend on. Not
+  implemented yet.
+* **Backend-hosted plugin serving.** `plugin-index-builder.sh` merges
+  manifests once at container startup. A plugin installed afterwards isn't
+  picked up until the frontend restarts. Moving plugin discovery/serving
+  into the Go backend (as an unauthenticated API, like `/api/v1/settings`)
+  would let it watch for changes — e.g. plugins delivered as labeled
+  ConfigMaps in a well-known namespace — and make new plugins show up on a
+  browser refresh, with no Antrea UI restart required.

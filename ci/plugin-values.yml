@@ -1,0 +1,9 @@
+extraVolumes:
+  - name: pod-counter-plugin
+    configMap:
+      name: pod-counter-plugin
+frontend:
+  extraVolumeMounts:
+    - name: pod-counter-plugin
+      mountPath: /etc/plugins/pod-counter
+      readOnly: true

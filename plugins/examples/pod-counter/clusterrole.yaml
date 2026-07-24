@@ -1,0 +1,18 @@
+# RBAC for the pod-counter plugin's API call (GET /api/v1/k8s/api/v1/ -> core v1 Pods).
+# kubectl apply this alongside deploying the plugin. It aggregates into the antrea-ui-admin
+# ClusterRole automatically — see build/charts/antrea-ui/templates/clusterroles.yaml. That's the
+# ClusterRole antrea-ui impersonates for K8s API calls made on behalf of the UI user (which is
+# what the K8s API proxy this plugin calls through does), not antrea-ui's own ClusterRole.
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: antrea-ui-plugin-pod-counter
+  labels:
+    rbac.antrea-ui.io/aggregate-to-antrea-ui-admin: "true"
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - pods
+    verbs:
+      - list
