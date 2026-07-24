@@ -36,6 +36,25 @@ var allowedK8sPaths = []string{
 	"/api/v1/",
 }
 
+// deniedK8sResources lists resource types that must never be proxied even though they fall
+// under an allowed prefix above: RBAC alone does not adequately restrict them (e.g. the
+// antrea-ui ServiceAccount can get/update the "antrea-ui-passwd" Secret for its own settings
+// feature, which would otherwise become readable by any authenticated UI user via this proxy).
+var deniedK8sResources = []string{
+	"secrets",
+}
+
+func isDeniedK8sPath(path string) bool {
+	for _, segment := range strings.Split(path, "/") {
+		for _, resource := range deniedK8sResources {
+			if segment == resource {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (s *Server) GetK8s(c *gin.Context) {
 	// we need to strip the beginning of the path (/api/v1/k8s) before proxying
 	path := c.Param("path")
@@ -49,6 +68,12 @@ func (s *Server) GetK8s(c *gin.Context) {
 func (s *Server) checkK8sPath(c *gin.Context) {
 	if sError := func() *errors.ServerError {
 		path := c.Param("path")
+		if isDeniedK8sPath(path) {
+			return &errors.ServerError{
+				Code:    http.StatusNotFound,
+				Message: "This K8s API path is not being proxied",
+			}
+		}
 		for _, allowedPath := range allowedK8sPaths {
 			if strings.HasPrefix(path, allowedPath) {
 				return nil

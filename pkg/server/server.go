@@ -26,6 +26,7 @@ import (
 	"antrea.io/antrea-ui/pkg/handlers/flowstream"
 	"antrea.io/antrea-ui/pkg/handlers/traceflow"
 	"antrea.io/antrea-ui/pkg/password"
+	"antrea.io/antrea-ui/pkg/plugins"
 	"antrea.io/antrea-ui/pkg/server/api"
 	"antrea.io/antrea-ui/pkg/server/errors"
 )
@@ -57,6 +58,7 @@ func NewServer(
 	passwordStore password.Store,
 	tokenManager auth.TokenManager,
 	oidcProvider *OIDCProvider,
+	pluginRegistry *plugins.Registry,
 	config *serverconfig.Config,
 ) *Server {
 	c := serverConfig{
@@ -78,6 +80,7 @@ func NewServer(
 			flowStreamSubscriber,
 			passwordStore,
 			tokenManager,
+			pluginRegistry,
 			config,
 		),
 		passwordStore: passwordStore,

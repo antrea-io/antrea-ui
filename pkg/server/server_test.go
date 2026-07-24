@@ -31,6 +31,7 @@ import (
 	authtesting "antrea.io/antrea-ui/pkg/auth/testing"
 	serverconfig "antrea.io/antrea-ui/pkg/config/server"
 	passwordtesting "antrea.io/antrea-ui/pkg/password/testing"
+	"antrea.io/antrea-ui/pkg/plugins"
 )
 
 func init() {
@@ -105,7 +106,7 @@ func newTestServer(t *testing.T, options ...testServerOptions) *testServer {
 	}
 
 	// we use nil for parameters which are only used by the API server
-	s := NewServer(logger, nil, nil, nil, nil, passwordStore, tokenManager, oidcProvider, config)
+	s := NewServer(logger, nil, nil, nil, nil, passwordStore, tokenManager, oidcProvider, plugins.NewRegistry(logger, nil, "", ""), config)
 	router := gin.Default()
 	s.AddRoutes(router)
 	return &testServer{

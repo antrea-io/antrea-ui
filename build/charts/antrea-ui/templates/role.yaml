@@ -29,3 +29,11 @@ rules:
       - "antrea-ui-admin"
     verbs:
       - "impersonate"
+  - apiGroups:
+      - ""
+    resources:
+      - "configmaps"
+    verbs:
+      - "get"
+      - "list"
+      - "watch"

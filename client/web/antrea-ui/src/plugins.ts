@@ -14,11 +14,13 @@
  * limitations under the License.
  */
 
-// Runtime plugin loading: plugins are dropped into /etc/plugins in the running pod (not baked
-// into this image, see build/frontend.dockerfile and build/scripts/plugin-index-builder.sh),
-// nginx serves them under /plugins/, and this module discovers and loads them at app startup.
+// Runtime plugin loading: plugins are delivered as labeled ConfigMaps in antrea-ui's own
+// namespace (see pkg/plugins and pkg/server/api/plugins.go), watched by the Go backend, which
+// serves them under /api/v1/plugins/. A ConfigMap can be created or deleted at any time - the
+// index reflects the change on the next fetch, with no antrea-ui restart required. This module
+// fetches that index and loads the plugins it lists at app startup.
 //
-// A plugin is a directory containing:
+// A plugin's ConfigMap data contains:
 //   - manifest.json: bare metadata (name/version/entry) — just enough to know which JS module
 //     to fetch and import(). It carries no UI-affecting fields; those are all registered in
 //     code (see below), so a plugin's actual shape (routes, sidebar entries, page extensions)
@@ -75,20 +77,26 @@ window.__antreaPluginHost = {
 // path is undefined, and a colliding plugin could silently shadow a built-in page.
 const RESERVED_PATHS = new Set(['', 'summary', 'traceflow', 'flows', 'settings']);
 
+// A plugin's route/sidebar entry path must also not fall under this prefix: nginx proxies it
+// straight to the backend (see /api/v1/plugins/ above), so a hard refresh or direct link to
+// such a path would 404 against the backend instead of reaching the SPA.
+const RESERVED_PREFIX = 'api/';
+
 function stripLeadingSlash(path: string): string {
     return path.replace(/^\//, '');
 }
 
-// Drops any route/sidebar entry whose path collides with a built-in route or with a path
-// already claimed by an earlier plugin, logging why. Applied once after every plugin has
-// finished registering (see loadPlugins()) — unlike the old manifest-driven navItem, there's
-// no way to validate a path before running the plugin code that registers it.
+// Drops any route/sidebar entry whose path collides with a built-in route, falls under a
+// backend-served prefix, or is already claimed by an earlier plugin, logging why. Applied once
+// after every plugin has finished registering (see loadPlugins()) — unlike the old
+// manifest-driven navItem, there's no way to validate a path before running the plugin code
+// that registers it.
 export function dedupeByPath<T extends { path: string }>(items: T[], kind: string): T[] {
     const seenPaths = new Set<string>();
     const kept: T[] = [];
     for (const item of items) {
         const normalizedPath = stripLeadingSlash(item.path);
-        if (RESERVED_PATHS.has(normalizedPath)) {
+        if (RESERVED_PATHS.has(normalizedPath) || normalizedPath.startsWith(RESERVED_PREFIX)) {
             console.error(`plugin ${kind} for path "${item.path}" collides with a built-in route, dropping it`);
             continue;
         }
@@ -127,7 +135,7 @@ export interface PluginManifest {
 export async function loadPlugins(): Promise<PluginManifest[]> {
     let manifests: PluginManifest[];
     try {
-        const res = await fetch('/plugins/index.json');
+        const res = await fetch('/api/v1/plugins/index.json');
         if (!res.ok) return [];
         manifests = await res.json();
     } catch (e) {
@@ -138,7 +146,7 @@ export async function loadPlugins(): Promise<PluginManifest[]> {
     const loaded: PluginManifest[] = [];
     for (const manifest of manifests) {
         try {
-            await import(/* @vite-ignore */ `/plugins/${manifest.name}/${manifest.entry}`);
+            await import(/* @vite-ignore */ `/api/v1/plugins/${manifest.name}/${manifest.entry}`);
             loaded.push(manifest);
         } catch (e) {
             console.error(`failed to load plugin "${manifest.name}"`, e);

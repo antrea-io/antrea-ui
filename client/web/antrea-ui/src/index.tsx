@@ -33,8 +33,8 @@ async function main() {
     // the normal deployed case, where VITE_API_SERVER is unset and nginx serves both from one origin.
     setApiBase(config.apiServer);
 
-    // Discover and dynamically import() plugins dropped into /etc/plugins before building the
-    // router, so any plugin that registered a route (see plugins.ts) gets a real one from the
+    // Discover and dynamically import() plugins served by the backend (see plugins.ts) before
+    // building the router, so any plugin that registered a route gets a real one from the
     // start — a plugin registers by calling an SDK function during its own module evaluation,
     // so the registry is only complete once every plugin's import() has resolved.
     await loadPlugins();

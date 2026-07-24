@@ -26,15 +26,15 @@ import (
 )
 
 // TestPluginLoading exercises the production plugin-loading mechanism end to end: the
-// pod-counter example plugin is mounted into the (unmodified) frontend image via a ConfigMap and
-// extraVolumes/frontend.extraVolumeMounts (see ci/plugin-values.yml and docs/plugins.md), and
-// this checks that nginx serves the merged manifest index and the plugin's JS bundle, and that
-// the K8s proxy allow-list + RBAC aggregation actually let the plugin's API call through.
+// pod-counter example plugin is delivered as a labeled ConfigMap in antrea-ui's own namespace
+// (see docs/plugins.md), and this checks that the backend's ConfigMap watch serves the merged
+// manifest index and the plugin's JS bundle, and that the K8s proxy allow-list + RBAC
+// aggregation actually let the plugin's API call through.
 func TestPluginLoading(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("plugin index", func(t *testing.T) {
-		resp, err := Request(ctx, host, "GET", "plugins/index.json", nil)
+		resp, err := Request(ctx, host, "GET", "api/v1/plugins/index.json", nil)
 		require.NoError(t, err)
 		defer resp.Body.Close()
 		require.Equal(t, http.StatusOK, resp.StatusCode)
@@ -56,7 +56,7 @@ func TestPluginLoading(t *testing.T) {
 	})
 
 	t.Run("plugin bundle is served", func(t *testing.T) {
-		resp, err := Request(ctx, host, "GET", "plugins/pod-counter/index.js", nil)
+		resp, err := Request(ctx, host, "GET", "api/v1/plugins/pod-counter/index.js", nil)
 		require.NoError(t, err)
 		defer resp.Body.Close()
 		assert.Equal(t, http.StatusOK, resp.StatusCode)

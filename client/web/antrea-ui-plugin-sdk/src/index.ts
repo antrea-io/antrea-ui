@@ -38,10 +38,11 @@ import type { EdgeExtraRenderer, FlowTableColumnsProcessor } from '@antrea/ui-co
  * plugin's entry module registers via customElements.define(...); the host renders it with
  * the same `token`/session-refresh wiring as its own built-in pages. */
 export interface PluginRoute {
-    // The in-app route path, e.g. "/plugin/pod-counter". Must not start with "/plugins/" —
-    // that prefix is reserved for serving plugin static assets, so a route there would never
-    // reach the SPA on a hard refresh or direct link. Must not collide with a built-in route
-    // or another plugin's — the host drops (and logs) whichever registration loses the race.
+    // The in-app route path, e.g. "/plugin/pod-counter". Must not start with "/api/" — that
+    // prefix is reserved for the backend API (including serving plugin static assets), so a
+    // route there would never reach the SPA on a hard refresh or direct link. Must not collide
+    // with a built-in route or another plugin's — the host drops (and logs) whichever
+    // registration loses the race.
     path: string;
     tag: string;
 }

@@ -1100,9 +1100,17 @@ export class AntreaFlowVisibilityPage extends TokenAwarePage {
             else { this._sortField = field; this._sortDir = 'asc'; }
         };
         // Plugin-inserted columns (via registerFlowTableColumnsProcessor) have no `field`, so
-        // they render but aren't sortable — see BASE_COLUMNS' comment.
+        // they render but aren't sortable — see BASE_COLUMNS' comment. Each processor is
+        // isolated: a throwing plugin drops its own contribution instead of breaking the page.
         const columns: (FlowTableColumn & { field?: SortField })[] =
-            this.flowTableColumnsProcessors.reduce((cols, fn) => fn(cols), BASE_COLUMNS as FlowTableColumn[]);
+            this.flowTableColumnsProcessors.reduce((cols, fn) => {
+                try {
+                    return fn(cols);
+                } catch (e) {
+                    console.error('plugin flow table columns processor threw, skipping it', e);
+                    return cols;
+                }
+            }, BASE_COLUMNS as FlowTableColumn[]);
         return html`
             <div style="display:flex;flex-direction:column;gap:1rem;max-width:100%">
                 <div class="flow-list-header">
@@ -1129,7 +1137,14 @@ export class AntreaFlowVisibilityPage extends TokenAwarePage {
         if (this.edgeExtraRenderers.length === 0) return nothing;
         const selection = edgeToSelection(edge);
         const nodes = this.edgeExtraRenderers
-            .map(fn => fn(selection))
+            .map(fn => {
+                try {
+                    return fn(selection);
+                } catch (e) {
+                    console.error('plugin edge extra renderer threw, skipping it', e);
+                    return null;
+                }
+            })
             .filter((n): n is Node => n !== null);
         return nodes.length ? html`<div class="edge-extra">${nodes}</div>` : nothing;
     }

@@ -26,12 +26,14 @@ import (
 	"github.com/golang/mock/gomock"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
+	k8sfake "k8s.io/client-go/kubernetes/fake"
 
 	authtesting "antrea.io/antrea-ui/pkg/auth/testing"
 	serverconfig "antrea.io/antrea-ui/pkg/config/server"
 	antreasvchandlertesting "antrea.io/antrea-ui/pkg/handlers/antreasvc/testing"
 	traceflowhandlertesting "antrea.io/antrea-ui/pkg/handlers/traceflow/testing"
 	passwordtesting "antrea.io/antrea-ui/pkg/password/testing"
+	"antrea.io/antrea-ui/pkg/plugins"
 )
 
 func init() {
@@ -61,6 +63,7 @@ type testServer struct {
 	antreaSvcRequestsHandler *antreasvchandlertesting.MockRequestsHandler
 	passwordStore            *passwordtesting.MockStore
 	tokenManager             *authtesting.MockTokenManager
+	pluginsClientset         *k8sfake.Clientset
 }
 
 type testServerOptions func(c *serverconfig.Config)
@@ -87,6 +90,12 @@ func newTestServer(t *testing.T, options ...testServerOptions) *testServer {
 		fn(config)
 	}
 
+	pluginsClientset := k8sfake.NewSimpleClientset()
+	pluginRegistry := plugins.NewRegistry(logger, pluginsClientset, "antrea-ui", "plugins.antrea-ui.io/plugin=true")
+	stopCh := make(chan struct{})
+	t.Cleanup(func() { close(stopCh) })
+	go pluginRegistry.Run(stopCh)
+
 	s := NewServer(
 		logger,
 		traceflowRequestsHandler,
@@ -95,6 +104,7 @@ func newTestServer(t *testing.T, options ...testServerOptions) *testServer {
 		nil, // flowStreamHandler
 		passwordStore,
 		tokenManager,
+		pluginRegistry,
 		config,
 	)
 	router := gin.Default()
@@ -105,6 +115,7 @@ func newTestServer(t *testing.T, options ...testServerOptions) *testServer {
 		traceflowRequestsHandler: traceflowRequestsHandler,
 		k8sProxyHandler:          k8sProxyHandler,
 		antreaSvcRequestsHandler: antreaSvcRequestsHandler,
+		pluginsClientset:         pluginsClientset,
 		passwordStore:            passwordStore,
 		tokenManager:             tokenManager,
 	}
@@ -121,8 +132,10 @@ func (ts *testServer) authorizeRequest(req *http.Request) {
 // token, it needs to be manually added to the unprotectedRoutes map below.
 func TestAuthorization(t *testing.T) {
 	unprotectedRoutes := map[string]bool{
-		"GET /api/v1/version":  true,
-		"GET /api/v1/settings": true,
+		"GET /api/v1/version":                 true,
+		"GET /api/v1/settings":                true,
+		"GET /api/v1/plugins/index.json":      true,
+		"GET /api/v1/plugins/:name/*filepath": true,
 	}
 	ts := newTestServer(t)
 	for _, routeInfo := range ts.router.Routes() {

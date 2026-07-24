@@ -1,0 +1,114 @@
+// Copyright 2026 Antrea Authors.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package api
+
+import (
+	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	apisv1 "antrea.io/antrea-ui/apis/v1"
+)
+
+func createPluginConfigMap(t *testing.T, ts *testServer, name, pluginName, version, entry string, files map[string]string) {
+	t.Helper()
+	data := map[string]string{
+		"manifest.json": `{"name":"` + pluginName + `","version":"` + version + `","entry":"` + entry + `"}`,
+	}
+	for k, v := range files {
+		data[k] = v
+	}
+	_, err := ts.pluginsClientset.CoreV1().ConfigMaps("antrea-ui").Create(context.Background(), &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   name,
+			Labels: map[string]string{"plugins.antrea-ui.io/plugin": "true"},
+		},
+		Data: data,
+	}, metav1.CreateOptions{})
+	require.NoError(t, err)
+}
+
+// waitForPluginIndex polls GET /api/v1/plugins/index.json until it matches want, since the
+// ConfigMap watch that backs the registry is asynchronous.
+func waitForPluginIndex(t *testing.T, ts *testServer, want []apisv1.PluginManifest) {
+	t.Helper()
+	require.Eventually(t, func() bool {
+		req := httptest.NewRequest("GET", "/api/v1/plugins/index.json", nil)
+		rr := httptest.NewRecorder()
+		ts.router.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			return false
+		}
+		var got []apisv1.PluginManifest
+		if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+			return false
+		}
+		return assert.ObjectsAreEqual(want, got)
+	}, 5*time.Second, 10*time.Millisecond)
+}
+
+func TestGetPluginsIndex(t *testing.T) {
+	ts := newTestServer(t)
+
+	req := httptest.NewRequest("GET", "/api/v1/plugins/index.json", nil)
+	rr := httptest.NewRecorder()
+	ts.router.ServeHTTP(rr, req)
+	require.Equal(t, http.StatusOK, rr.Code)
+	assert.JSONEq(t, "[]", rr.Body.String())
+
+	createPluginConfigMap(t, ts, "pod-counter-plugin", "pod-counter", "0.1.0", "index.js", map[string]string{
+		"index.js": "console.log('hi')",
+	})
+	waitForPluginIndex(t, ts, []apisv1.PluginManifest{
+		{Name: "pod-counter", Version: "0.1.0", Entry: "index.js"},
+	})
+}
+
+func TestGetPluginFile(t *testing.T) {
+	ts := newTestServer(t)
+	createPluginConfigMap(t, ts, "pod-counter-plugin", "pod-counter", "0.1.0", "index.js", map[string]string{
+		"index.js": "console.log('hi')",
+	})
+	waitForPluginIndex(t, ts, []apisv1.PluginManifest{
+		{Name: "pod-counter", Version: "0.1.0", Entry: "index.js"},
+	})
+
+	req := httptest.NewRequest("GET", "/api/v1/plugins/pod-counter/index.js", nil)
+	rr := httptest.NewRecorder()
+	ts.router.ServeHTTP(rr, req)
+	require.Equal(t, http.StatusOK, rr.Code)
+	assert.Equal(t, "application/javascript", rr.Header().Get("Content-Type"))
+	b, err := io.ReadAll(rr.Result().Body)
+	require.NoError(t, err)
+	assert.Equal(t, "console.log('hi')", string(b))
+}
+
+func TestGetPluginFileNotFound(t *testing.T) {
+	ts := newTestServer(t)
+
+	req := httptest.NewRequest("GET", "/api/v1/plugins/does-not-exist/index.js", nil)
+	rr := httptest.NewRecorder()
+	ts.router.ServeHTTP(rr, req)
+	assert.Equal(t, http.StatusNotFound, rr.Code)
+}

@@ -40,6 +40,16 @@ jobs:
       uses: actions/setup-node@v7
       with:
         node-version: 24
+    - name: Build @antrea/ui-plugin-sdk
+      # pod-counter depends on it via a file: path (see its package.json), so its dist/ must
+      # exist on disk before `npm ci` there resolves the import. @antrea/ui-components' dist/
+      # must exist first too: the sdk's tsc build resolves its types from there.
+      working-directory: client/web
+      run: |
+        corepack enable
+        yarn install --immutable
+        yarn workspace @antrea/ui-components run build
+        yarn workspace @antrea/ui-plugin-sdk run build
     - name: Build pod-counter example plugin
       working-directory: plugins/examples/pod-counter
       run: |
@@ -64,20 +74,23 @@ jobs:
     # For e2e helm tests, Antrea UI should not be installed
     - name: Run e2e helm tests
       run: go test -v ./test/e2e_helm
-    # The pod-counter example plugin is mounted via a ConfigMap + extraVolumes/extraVolumeMounts,
-    # the same mechanism a real plugin deployment would use (see docs/plugins.md) — the frontend
-    # image itself is unmodified.
+    # We install Antrea UI with extra features enabled (e.g., OIDC) for better test coverage
+    - name: Install Antrea UI
+      run: |
+        helm install --namespace kube-system antrea-ui \
+          -f ci/antrea-ui-values.yml ./build/charts/antrea-ui
+        kubectl rollout status -n kube-system deployment/antrea-ui --timeout=5m
+    # The pod-counter example plugin is delivered as a labeled ConfigMap, the same mechanism a
+    # real plugin deployment would use (see docs/plugins.md) — the backend's ConfigMap watch
+    # picks it up with no antrea-ui restart.
     - name: Create example plugin ConfigMap
       run: |
         kubectl create configmap pod-counter-plugin --namespace kube-system \
           --from-file=plugins/examples/pod-counter/dist/index.js \
           --from-file=plugins/examples/pod-counter/dist/manifest.json
-    # We install Antrea UI with extra features enabled (e.g., OIDC) for better test coverage
-    - name: Install Antrea UI
-      run: |
-        helm install --namespace kube-system antrea-ui \
-          -f ci/antrea-ui-values.yml -f ci/plugin-values.yml ./build/charts/antrea-ui
-        kubectl rollout status -n kube-system deployment/antrea-ui --timeout=5m
+        kubectl label configmap pod-counter-plugin --namespace kube-system \
+          plugins.antrea-ui.io/plugin=true
+        kubectl apply -f plugins/examples/pod-counter/clusterrole.yaml
     # For e2e tests, Antrea UI should be installed first
     - name: Run e2e tests
       run: go test -v ./test/e2e

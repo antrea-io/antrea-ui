@@ -11,14 +11,22 @@ complete, minimal example.
 
 ## How it works
 
-1. At container startup,
-   [`plugin-index-builder.sh`](../build/scripts/plugin-index-builder.sh)
-   scans `/etc/plugins/*/manifest.json` and merges them into
-   `/etc/plugins/index.json`. Nginx serves `/etc/plugins` under `/plugins/`.
-2. On load, Antrea UI fetches `/plugins/index.json` and `import()`s each
-   plugin's JS module at runtime — the code doesn't need to exist when the
-   frontend is built. See [`plugins.ts`](../client/web/antrea-ui/src/plugins.ts).
-3. Each module registers a [Lit](https://lit.dev) custom element via
+1. A plugin is delivered as a Kubernetes `ConfigMap`, in antrea-ui's own
+   namespace, labeled to match `plugins.labelSelector` (default:
+   `plugins.antrea-ui.io/plugin=true`). Its data holds `manifest.json` plus
+   the plugin's JS entry file.
+2. The Go backend watches ConfigMaps matching that label (see
+   [`pkg/plugins`](../pkg/plugins) and
+   [`pkg/server/api/plugins.go`](../pkg/server/api/plugins.go)) and serves
+   them, unauthenticated, at `GET /api/v1/plugins/index.json` (the merged
+   list of manifests) and `GET /api/v1/plugins/<name>/<file>` (any file from
+   that plugin's ConfigMap). A ConfigMap can be created, updated, or deleted
+   at any time — the backend picks up the change immediately, with no
+   antrea-ui restart.
+3. On load, Antrea UI fetches `/api/v1/plugins/index.json` and `import()`s
+   each plugin's JS module at runtime — the code doesn't need to exist when
+   the frontend is built. See [`plugins.ts`](../client/web/antrea-ui/src/plugins.ts).
+4. Each module registers a [Lit](https://lit.dev) custom element via
    `customElements.define(...)`, same as `@antrea/ui-components` does for
    Antrea UI's own pages, and tells the host about it by calling one of
    `@antrea/ui-plugin-sdk`'s `registerX()` functions — `registerRoute` and
@@ -39,9 +47,9 @@ complete, minimal example.
 
 | Field | Required | Description |
 | --- | --- | --- |
-| `name` | yes | Unique name; also the directory name under `/etc/plugins`. |
+| `name` | yes | Unique name; also the path segment used to serve the plugin, e.g. `/api/v1/plugins/<name>/`. |
 | `version` | yes | Informational only. |
-| `entry` | yes | Plugin's JS module filename, relative to its directory. |
+| `entry` | yes | Plugin's JS module filename; must be a key in the same ConfigMap's data. |
 
 That's the whole schema — the manifest only carries enough for the host to
 fetch and `import()` the right file. Everything that affects the UI (routes,
@@ -91,10 +99,8 @@ registerRoute({ path: '/plugin/pod-counter', tag: 'antrea-plugin-pod-counter' })
 registerSidebarEntry({ label: 'Pod Counter', path: '/plugin/pod-counter' });
 ```
 
-`registerRoute`'s `path` must **not** start with `/plugins/` — that prefix
-is reserved for static plugin assets — and must not collide with a
-built-in route or another plugin's; the host drops (and logs) whichever
-registration loses the race. `registerSidebarEntry` is independent of
+`registerRoute`'s `path` must not collide with a built-in route or another
+plugin's; the host drops (and logs) whichever registration loses the race. `registerSidebarEntry` is independent of
 `registerRoute`, so a plugin can add a sidebar entry without a route (e.g.
 an external link) or vice versa; pass the same `path` to both to link them,
 as above. `registerSidebarEntry`'s optional `icon` is SVG path `d` data,
@@ -183,12 +189,9 @@ stay in sync with what the host actually expects.
 
 Antrea UI only makes sense running against a real cluster, so test against
 one directly rather than a standalone dev server. The commands below assume
-`@antrea/ui-plugin-sdk` is already built (see "Writing a plugin" above).
-
-**Recommended: mount it into the unmodified image**, via the chart's
-`extraVolumes` / `frontend.extraVolumeMounts` values — no rebuild needed.
-A ConfigMap is a simple way to populate the volume, but note ConfigMaps are
-capped at 1MiB total:
+`@antrea/ui-plugin-sdk` is already built (see "Writing a plugin" above), and
+that `<namespace>` is the namespace Antrea UI itself is installed in — the
+backend only watches ConfigMaps in its own namespace.
 
 ```bash
 cd plugins/examples/pod-counter
@@ -196,46 +199,32 @@ npm install && npm run build
 
 kubectl create configmap pod-counter-plugin -n <namespace> \
   --from-file=dist/index.js --from-file=dist/manifest.json
+kubectl label configmap pod-counter-plugin -n <namespace> \
+  plugins.antrea-ui.io/plugin=true
+kubectl apply -f clusterrole.yaml
 ```
 
-Add to your Helm values (e.g. `plugin-volume-values.yaml`):
-
-```yaml
-extraVolumes:
-  - name: pod-counter-plugin
-    configMap:
-      name: pod-counter-plugin
-frontend:
-  extraVolumeMounts:
-    - name: pod-counter-plugin
-      mountPath: /etc/plugins/pod-counter
-      readOnly: true
-```
-
-```bash
-helm upgrade antrea-ui build/charts/antrea-ui -n <namespace> \
-  --reuse-values -f plugin-volume-values.yaml
-```
-
-The mount is in place before `plugin-index-builder.sh` runs, so
-`/etc/plugins/index.json` picks it up automatically — no image rebuild, no
-`kind load`, no tarball. To iterate on the plugin's code:
+The last command grants the plugin's own RBAC (see above); without it, the
+plugin's page loads but its K8s API call gets a 403. No Helm upgrade, no pod
+restart otherwise: the backend's ConfigMap watch picks this up
+immediately (note ConfigMaps are capped at 1MiB total, so this only works
+for reasonably small plugins). Refresh the browser and the plugin's page
+shows up. To iterate on the plugin's code:
 
 ```bash
 npm run build
 kubectl delete configmap pod-counter-plugin -n <namespace>
 kubectl create configmap pod-counter-plugin -n <namespace> \
   --from-file=dist/index.js --from-file=dist/manifest.json
-helm upgrade antrea-ui build/charts/antrea-ui -n <namespace> \
-  --reuse-values -f plugin-volume-values.yaml
+kubectl label configmap pod-counter-plugin -n <namespace> \
+  plugins.antrea-ui.io/plugin=true
 ```
 
-The last `helm upgrade` is needed even with no value changes — the chart
-stamps a fresh pod-recreating annotation on every render, so it forces the
-new ConfigMap content to actually get mounted into a new pod.
+To remove the plugin: `kubectl delete configmap pod-counter-plugin -n
+<namespace>` — it disappears from `/api/v1/plugins/index.json` immediately.
 
-This same setup — build the plugin, mount it via a ConfigMap and
-`extraVolumes`/`frontend.extraVolumeMounts`, install Antrea UI — is what
+This same flow — build the plugin, create the labeled ConfigMap, install
+Antrea UI — is what
 [`test/e2e/plugin_test.go`](../test/e2e/plugin_test.go) automates as a real
 e2e test in [`kind_e2e.yml`](../.github/workflows/kind_e2e.yml), against an
 actual Kind cluster rather than a standalone container.
@@ -249,10 +238,3 @@ actual Kind cluster rather than a standalone container.
   same shape: a new registration function in the SDK, a registry entry in
   `plugins.ts`, and the target Lit component consuming the registered
   functions when it renders.
-* **Backend-hosted plugin serving.** `plugin-index-builder.sh` merges
-  manifests once at container startup. A plugin installed afterwards isn't
-  picked up until the frontend restarts. Moving plugin discovery/serving
-  into the Go backend (as an unauthenticated API, like `/api/v1/settings`)
-  would let it watch for changes — e.g. plugins delivered as labeled
-  ConfigMaps in a well-known namespace — and make new plugins show up on a
-  browser refresh, with no Antrea UI restart required.
