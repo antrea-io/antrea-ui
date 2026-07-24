@@ -19,68 +19,109 @@
 // nginx serves them under /plugins/, and this module discovers and loads them at app startup.
 //
 // A plugin is a directory containing:
-//   - manifest.json: declares name/entry/tag and, optionally, a navItem to add a sidebar entry
-//     and route for it.
-//   - <entry>: an ES module that registers a custom element (customElements.define(tag, ...))
-//     as an import side effect, the same pattern @antrea/ui-components itself uses.
+//   - manifest.json: bare metadata (name/version/entry) — just enough to know which JS module
+//     to fetch and import(). It carries no UI-affecting fields; those are all registered in
+//     code (see below), so a plugin's actual shape (routes, sidebar entries, page extensions)
+//     is never split between JSON and JS.
+//   - <entry>: an ES module that, as an import side effect, registers a custom element
+//     (customElements.define(tag, ...)) for anything it wants to render, and calls into the
+//     plugin registry below via @antrea/ui-plugin-sdk to tell the host about it.
 //
-// Adding a new extension point later (e.g. a host API object passed to a register() callback)
-// can be layered onto this manifest without breaking existing plugins.
+// The registry (modeled on Headlamp's plugin API) is a plain object exposed on `window` —
+// plugin bundles are separate Vite builds with their own copy of any npm dependency, so a
+// module-scoped registry inside a shared package would not be the same object identity as the
+// one this app's code sees; `window` is the only thing plugin code and host code both reach.
+// It must exist before any plugin's `import()` below runs, since a plugin registers by calling
+// an SDK function during its own module evaluation.
 
-export interface PluginNavItem {
-    label: string;
-    // The in-app route path, e.g. "/plugin/pod-counter". Must not start with "/plugins/" —
-    // that prefix is reserved by nginx for serving plugin static assets (see
-    // build/charts/antrea-ui/templates/_nginx_conf.tpl), so a route there would never reach
-    // the SPA on a hard refresh or direct link.
+import type { EdgeExtraRenderer, FlowTableColumnsProcessor } from '@antrea/ui-components';
+
+export interface PluginRoute {
     path: string;
-    // SVG path "d" data for a 16x16 (viewBox "0 0 16 16") icon, matching the style of the
-    // built-in nav icons in nav.tsx. Optional — items without one just show a label.
+    tag: string;
+}
+
+export interface PluginSidebarEntry {
+    label: string;
+    path: string;
     icon?: string;
 }
 
-export interface PluginManifest {
-    name: string;
-    version: string;
-    entry: string;
-    tag: string;
-    navItem?: PluginNavItem;
+export interface AntreaPluginHost {
+    registerRoute(route: PluginRoute): void;
+    registerSidebarEntry(entry: PluginSidebarEntry): void;
+    registerEdgeExtraRenderer(fn: EdgeExtraRenderer): void;
+    registerFlowTableColumnsProcessor(fn: FlowTableColumnsProcessor): void;
 }
 
-// Top-level routes owned by Antrea UI itself. A plugin's navItem.path must not collide with
-// these — react-router's behavior with two children registered under the same path is
-// undefined, and a colliding plugin could silently shadow a built-in page.
+const pluginRoutes: PluginRoute[] = [];
+const pluginSidebarEntries: PluginSidebarEntry[] = [];
+const edgeExtraRenderers: EdgeExtraRenderer[] = [];
+const flowTableColumnsProcessors: FlowTableColumnsProcessor[] = [];
+
+declare global {
+    interface Window { __antreaPluginHost?: AntreaPluginHost; }
+}
+
+window.__antreaPluginHost = {
+    registerRoute: route => pluginRoutes.push(route),
+    registerSidebarEntry: entry => pluginSidebarEntries.push(entry),
+    registerEdgeExtraRenderer: fn => edgeExtraRenderers.push(fn),
+    registerFlowTableColumnsProcessor: fn => flowTableColumnsProcessors.push(fn),
+};
+
+// Top-level routes owned by Antrea UI itself. A plugin's route/sidebar entry path must not
+// collide with these — react-router's behavior with two children registered under the same
+// path is undefined, and a colliding plugin could silently shadow a built-in page.
 const RESERVED_PATHS = new Set(['', 'summary', 'traceflow', 'flows', 'settings']);
 
 function stripLeadingSlash(path: string): string {
     return path.replace(/^\//, '');
 }
 
-// Drops navItem from a manifest if its path collides with a built-in route or with a
-// navItem.path already claimed by an earlier plugin, logging why. `seenPaths` accumulates
-// claimed paths across the whole loadPlugins() call so later plugins are checked against
-// earlier ones too.
-export function validateNavItem(manifest: PluginManifest, seenPaths: Set<string>): PluginManifest {
-    if (!manifest.navItem) return manifest;
-
-    const normalizedPath = stripLeadingSlash(manifest.navItem.path);
-    if (RESERVED_PATHS.has(normalizedPath)) {
-        console.error(
-            `plugin "${manifest.name}": navItem.path "${manifest.navItem.path}" collides with ` +
-            `a built-in route, dropping its nav entry`
-        );
-        return { ...manifest, navItem: undefined };
+// Drops any route/sidebar entry whose path collides with a built-in route or with a path
+// already claimed by an earlier plugin, logging why. Applied once after every plugin has
+// finished registering (see loadPlugins()) — unlike the old manifest-driven navItem, there's
+// no way to validate a path before running the plugin code that registers it.
+export function dedupeByPath<T extends { path: string }>(items: T[], kind: string): T[] {
+    const seenPaths = new Set<string>();
+    const kept: T[] = [];
+    for (const item of items) {
+        const normalizedPath = stripLeadingSlash(item.path);
+        if (RESERVED_PATHS.has(normalizedPath)) {
+            console.error(`plugin ${kind} for path "${item.path}" collides with a built-in route, dropping it`);
+            continue;
+        }
+        if (seenPaths.has(normalizedPath)) {
+            console.error(`plugin ${kind} for path "${item.path}" is already claimed by another plugin, dropping it`);
+            continue;
+        }
+        seenPaths.add(normalizedPath);
+        kept.push(item);
     }
-    if (seenPaths.has(normalizedPath)) {
-        console.error(
-            `plugin "${manifest.name}": navItem.path "${manifest.navItem.path}" is already ` +
-            `claimed by another plugin, dropping its nav entry`
-        );
-        return { ...manifest, navItem: undefined };
-    }
+    return kept;
+}
 
-    seenPaths.add(normalizedPath);
-    return manifest;
+export function getPluginRoutes(): PluginRoute[] {
+    return dedupeByPath(pluginRoutes, 'route');
+}
+
+export function getPluginSidebarEntries(): PluginSidebarEntry[] {
+    return dedupeByPath(pluginSidebarEntries, 'sidebar entry');
+}
+
+export function getEdgeExtraRenderers(): EdgeExtraRenderer[] {
+    return edgeExtraRenderers;
+}
+
+export function getFlowTableColumnsProcessors(): FlowTableColumnsProcessor[] {
+    return flowTableColumnsProcessors;
+}
+
+export interface PluginManifest {
+    name: string;
+    version: string;
+    entry: string;
 }
 
 export async function loadPlugins(): Promise<PluginManifest[]> {
@@ -94,12 +135,11 @@ export async function loadPlugins(): Promise<PluginManifest[]> {
         return [];
     }
 
-    const seenPaths = new Set<string>();
     const loaded: PluginManifest[] = [];
     for (const manifest of manifests) {
         try {
             await import(/* @vite-ignore */ `/plugins/${manifest.name}/${manifest.entry}`);
-            loaded.push(validateNavItem(manifest, seenPaths));
+            loaded.push(manifest);
         } catch (e) {
             console.error(`failed to load plugin "${manifest.name}"`, e);
         }

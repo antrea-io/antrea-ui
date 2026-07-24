@@ -3,7 +3,8 @@
   "private": true,
   "workspaces": [
     "antrea-ui",
-    "antrea-ui-components"
+    "antrea-ui-components",
+    "antrea-ui-plugin-sdk"
   ],
   "resolutions": {
     "@hpcc-js/wasm": "2.34.8",

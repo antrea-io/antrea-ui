@@ -13,7 +13,7 @@
 // limitations under the License.
 
 import { html, css, nothing } from 'lit';
-import { state, query } from 'lit/decorators.js';
+import { state, query, property } from 'lit/decorators.js';
 import * as d3 from 'd3';
 import { pageStyles } from '../lib/styles.js';
 import { TokenAwarePage } from '../lib/token-aware-page.js';
@@ -43,10 +43,10 @@ import '../antrea-alert';
 
 /**
  * Detail payload for the `antrea-edge-selected` event, dispatched whenever the
- * selected edge in the service map changes (or is cleared, as `null`). Hosts
- * can listen for this event and project extra content into the
- * `edge-extra` slot of the edge details card — e.g. a link to a policy
- * management page, keyed off whether the connection is policy-protected.
+ * selected edge in the service map changes (or is cleared, as `null`). Also
+ * passed to each registered `edgeExtraRenderers` function so plugins can
+ * render content into the edge details card keyed off the selection. See
+ * `@antrea/ui-plugin-sdk`'s `registerEdgeExtraRenderer`.
  */
 export interface EdgeSelection {
     source: string;
@@ -56,6 +56,23 @@ export interface EdgeSelection {
     egressPolicyNames: string[];
     protected: boolean;
 }
+
+/** A function a plugin registers (via `@antrea/ui-plugin-sdk`'s `registerEdgeExtraRenderer`)
+ * to render extra content into the edge details card. Returns `null` to render nothing for
+ * this selection. */
+export type EdgeExtraRenderer = (selection: EdgeSelection) => Node | null;
+
+/** A single column of the flow list table. */
+export interface FlowTableColumn {
+    key: string;
+    label: string;
+    render(entry: FlowEntry): string;
+}
+
+/** A function a plugin registers (via `@antrea/ui-plugin-sdk`'s
+ * `registerFlowTableColumnsProcessor`) to insert, remove, update, or reorder flow list table
+ * columns — modeled on Headlamp's `registerResourceTableColumnsProcessor`. */
+export type FlowTableColumnsProcessor = (columns: FlowTableColumn[]) => FlowTableColumn[];
 
 const FLOW_VISIBILITY_DISABLED_MESSAGE =
     'Flow visibility is disabled on this Antrea UI server. Install or upgrade the chart with ' +
@@ -165,6 +182,17 @@ function edgeToDetails(edge: WorkloadEdge): EdgeDetails {
         ingressPolicies: Array.from(edge.ingressPolicies),
         egressPolicies: Array.from(edge.egressPolicies),
         flowTypes: Array.from(edge.flowTypes).map(ft => flowTypeLabel[ft] ?? 'Unknown'),
+    };
+}
+
+function edgeToSelection(edge: WorkloadEdge): EdgeSelection {
+    return {
+        source: edge.source,
+        target: edge.target,
+        destPorts: edgeToDetails(edge).destPortsStr,
+        ingressPolicyNames: Array.from(edge.ingressPolicyNames),
+        egressPolicyNames: Array.from(edge.egressPolicyNames),
+        protected: edge.ingressPolicies.size > 0 || edge.egressPolicies.size > 0,
     };
 }
 
@@ -298,18 +326,20 @@ function matchesText(entry: FlowEntry, text: string): boolean {
     ].some(s => s.toLowerCase().includes(lower));
 }
 
-const COLUMNS: { field: SortField; label: string }[] = [
-    { field: 'lastSeen', label: 'Last Seen' },
-    { field: 'source', label: 'Source' },
-    { field: 'destination', label: 'Destination' },
-    { field: 'destinationService', label: 'Dest Service' },
-    { field: 'protocol', label: 'Protocol' },
-    { field: 'destPort', label: 'Dest Port' },
-    { field: 'bytesFwd', label: 'Bytes (Fwd)' },
-    { field: 'bytesRev', label: 'Bytes (Rev)' },
-    { field: 'ingressPolicy', label: 'Ingress Policy' },
-    { field: 'egressPolicy', label: 'Egress Policy' },
-    { field: 'flowType', label: 'Flow Type' },
+// `field` marks a column as sortable via the existing SortField/sortValue() machinery — columns
+// a FlowTableColumnsProcessor inserts don't have one, so they render but aren't sortable.
+const BASE_COLUMNS: (FlowTableColumn & { field?: SortField })[] = [
+    { key: 'lastSeen', field: 'lastSeen', label: 'Last Seen', render: e => new Date(e.flow.endTs).toLocaleTimeString() },
+    { key: 'source', field: 'source', label: 'Source', render: e => formatEndpoint(e.flow.k8s.sourcePodNamespace, e.flow.k8s.sourcePodName, e.flow.ip.source) },
+    { key: 'destination', field: 'destination', label: 'Destination', render: e => formatEndpoint(e.flow.k8s.destinationPodNamespace, e.flow.k8s.destinationPodName, e.flow.ip.destination) },
+    { key: 'destinationService', field: 'destinationService', label: 'Dest Service', render: e => destinationK8sServiceFilterKey(e.flow.k8s.destinationServicePortName) || e.flow.k8s.destinationServicePortName || '-' },
+    { key: 'protocol', field: 'protocol', label: 'Protocol', render: e => getProtocolName(e.flow.transport.protocolNumber) },
+    { key: 'destPort', field: 'destPort', label: 'Dest Port', render: e => String(e.flow.transport.destinationPort) },
+    { key: 'bytesFwd', field: 'bytesFwd', label: 'Bytes (Fwd)', render: e => formatBytes(e.flow.stats.octetTotalCount) },
+    { key: 'bytesRev', field: 'bytesRev', label: 'Bytes (Rev)', render: e => formatBytes(e.flow.reverseStats.octetTotalCount) },
+    { key: 'ingressPolicy', field: 'ingressPolicy', label: 'Ingress Policy', render: e => formatPolicyInfo(e.flow.k8s.ingressNetworkPolicyName, e.flow.k8s.ingressNetworkPolicyRuleAction) || '-' },
+    { key: 'egressPolicy', field: 'egressPolicy', label: 'Egress Policy', render: e => formatPolicyInfo(e.flow.k8s.egressNetworkPolicyName, e.flow.k8s.egressNetworkPolicyRuleAction) || '-' },
+    { key: 'flowType', field: 'flowType', label: 'Flow Type', render: e => flowTypeLabel[e.flow.k8s.flowType as FlowType] ?? 'Unknown' },
 ];
 
 // ── Component ─────────────────────────────────────────────────────────────────
@@ -395,6 +425,7 @@ export class AntreaFlowVisibilityPage extends TokenAwarePage {
             color: var(--antrea-color-text-muted, #adbbc4); font-size: 11px; margin-bottom: 12px;
         }
         .edge-details-rows { display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.8125rem; }
+        .edge-extra { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--antrea-color-border, #314351); }
         .warn { color: var(--antrea-color-warning, #f5a623); }
     `];
 
@@ -436,6 +467,11 @@ export class AntreaFlowVisibilityPage extends TokenAwarePage {
 
     @query('#graph-svg') private _svgEl?: SVGSVGElement;
     @query('#graph-tooltip') private _tooltipEl?: HTMLDivElement;
+
+    // Plugin extension points — populated by the host from its plugin registry (see
+    // `@antrea/ui-plugin-sdk`). Never set by manifest/attribute, so `attribute: false`.
+    @property({ attribute: false }) edgeExtraRenderers: EdgeExtraRenderer[] = [];
+    @property({ attribute: false }) flowTableColumnsProcessors: FlowTableColumnsProcessor[] = [];
 
     // Non-reactive refs
     private _store = new FlowStore();
@@ -532,14 +568,7 @@ export class AntreaFlowVisibilityPage extends TokenAwarePage {
 
     private _dispatchEdgeSelected() {
         const edge = this._selectedEdgeKey ? this._graphRef.edgeMap.get(this._selectedEdgeKey) : undefined;
-        const detail: EdgeSelection | null = edge ? {
-            source: edge.source,
-            target: edge.target,
-            destPorts: edgeToDetails(edge).destPortsStr,
-            ingressPolicyNames: Array.from(edge.ingressPolicyNames),
-            egressPolicyNames: Array.from(edge.egressPolicyNames),
-            protected: edge.ingressPolicies.size > 0 || edge.egressPolicies.size > 0,
-        } : null;
+        const detail = edge ? edgeToSelection(edge) : null;
         this.dispatchEvent(new CustomEvent<EdgeSelection | null>('antrea-edge-selected', { detail, bubbles: true, composed: true }));
     }
 
@@ -1070,6 +1099,10 @@ export class AntreaFlowVisibilityPage extends TokenAwarePage {
             if (this._sortField === field) this._sortDir = this._sortDir === 'asc' ? 'desc' : 'asc';
             else { this._sortField = field; this._sortDir = 'asc'; }
         };
+        // Plugin-inserted columns (via registerFlowTableColumnsProcessor) have no `field`, so
+        // they render but aren't sortable — see BASE_COLUMNS' comment.
+        const columns: (FlowTableColumn & { field?: SortField })[] =
+            this.flowTableColumnsProcessors.reduce((cols, fn) => fn(cols), BASE_COLUMNS as FlowTableColumn[]);
         return html`
             <div style="display:flex;flex-direction:column;gap:1rem;max-width:100%">
                 <div class="flow-list-header">
@@ -1079,30 +1112,26 @@ export class AntreaFlowVisibilityPage extends TokenAwarePage {
                 </div>
                 <div class="flow-list-scroll">
                     <table class="data-table" part="table" style="min-width:1200px">
-                        <thead><tr>${COLUMNS.map(col => html`
-                            <th part="table-header-cell" class="sortable" @click=${() => onSort(col.field)}>
-                                ${col.label}${this._sortField === col.field ? (this._sortDir === 'asc' ? ' ▲' : ' ▼') : ''}
+                        <thead><tr>${columns.map(col => html`
+                            <th part="table-header-cell" class=${col.field ? 'sortable' : ''} @click=${() => { if (col.field) onSort(col.field); }}>
+                                ${col.label}${col.field && this._sortField === col.field ? (this._sortDir === 'asc' ? ' ▲' : ' ▼') : ''}
                             </th>`)}</tr></thead>
-                        <tbody>${sorted.map(entry => {
-                            const { flow } = entry;
-                            return html`<tr>
-                                <td part="table-cell">${new Date(flow.endTs).toLocaleTimeString()}</td>
-                                <td part="table-cell">${formatEndpoint(flow.k8s.sourcePodNamespace, flow.k8s.sourcePodName, flow.ip.source)}</td>
-                                <td part="table-cell">${formatEndpoint(flow.k8s.destinationPodNamespace, flow.k8s.destinationPodName, flow.ip.destination)}</td>
-                                <td part="table-cell" title=${flow.k8s.destinationServicePortName || nothing}>${destinationK8sServiceFilterKey(flow.k8s.destinationServicePortName) || flow.k8s.destinationServicePortName || '-'}</td>
-                                <td part="table-cell">${getProtocolName(flow.transport.protocolNumber)}</td>
-                                <td part="table-cell">${flow.transport.destinationPort}</td>
-                                <td part="table-cell">${formatBytes(flow.stats.octetTotalCount)}</td>
-                                <td part="table-cell">${formatBytes(flow.reverseStats.octetTotalCount)}</td>
-                                <td part="table-cell">${formatPolicyInfo(flow.k8s.ingressNetworkPolicyName, flow.k8s.ingressNetworkPolicyRuleAction) || '-'}</td>
-                                <td part="table-cell">${formatPolicyInfo(flow.k8s.egressNetworkPolicyName, flow.k8s.egressNetworkPolicyRuleAction) || '-'}</td>
-                                <td part="table-cell">${flowTypeLabel[flow.k8s.flowType as FlowType] ?? 'Unknown'}</td>
-                            </tr>`;
-                        })}</tbody>
+                        <tbody>${sorted.map(entry => html`<tr>
+                            ${columns.map(col => html`<td part="table-cell">${col.render(entry)}</td>`)}
+                        </tr>`)}</tbody>
                     </table>
                 </div>
             </div>
         `;
+    }
+
+    private _renderEdgeExtra(edge: WorkloadEdge) {
+        if (this.edgeExtraRenderers.length === 0) return nothing;
+        const selection = edgeToSelection(edge);
+        const nodes = this.edgeExtraRenderers
+            .map(fn => fn(selection))
+            .filter((n): n is Node => n !== null);
+        return nodes.length ? html`<div class="edge-extra">${nodes}</div>` : nothing;
     }
 
     private _renderEdgeDetails() {
@@ -1126,7 +1155,7 @@ export class AntreaFlowVisibilityPage extends TokenAwarePage {
                     ${d.egressPolicies.length ? html`<div><strong>Egress Policies:</strong> ${d.egressPolicies.join(', ')}</div>` : nothing}
                     <div><strong>Flow Types:</strong> ${d.flowTypes.join(', ') || '-'}</div>
                 </div>
-                <slot name="edge-extra"></slot>
+                ${this._renderEdgeExtra(edge)}
             </div>
         `;
     }

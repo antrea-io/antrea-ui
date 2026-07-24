@@ -43,7 +43,6 @@ func TestPluginLoading(t *testing.T) {
 		require.NoError(t, err)
 		var manifests []struct {
 			Name string `json:"name"`
-			Tag  string `json:"tag"`
 		}
 		require.NoError(t, json.Unmarshal(body, &manifests))
 
@@ -51,7 +50,6 @@ func TestPluginLoading(t *testing.T) {
 		for _, m := range manifests {
 			if m.Name == "pod-counter" {
 				found = true
-				assert.Equal(t, "antrea-plugin-pod-counter", m.Tag)
 			}
 		}
 		assert.True(t, found, "expected to find pod-counter in the plugin index: %s", string(body))

@@ -14,14 +14,14 @@
  * limitations under the License.
  */
 
-import { loadPlugins, validateNavItem, type PluginManifest } from './plugins';
+import { loadPlugins, dedupeByPath, getPluginRoutes, type PluginManifest, type PluginRoute } from './plugins';
 
 function jsonResponse(body: unknown, status = 200): Response {
     return new Response(JSON.stringify(body), { status });
 }
 
 function manifest(overrides: Partial<PluginManifest> = {}): PluginManifest {
-    return { name: 'pod-counter', version: '0.1.0', entry: 'index.js', tag: 'antrea-plugin-pod-counter', ...overrides };
+    return { name: 'pod-counter', version: '0.1.0', entry: 'index.js', ...overrides };
 }
 
 afterEach(() => {
@@ -51,40 +51,38 @@ describe('loadPlugins', () => {
     });
 });
 
-describe('validateNavItem', () => {
-    test('a plugin with no navItem passes through unchanged', () => {
-        const m = manifest();
-        expect(validateNavItem(m, new Set())).toEqual(m);
+describe('dedupeByPath', () => {
+    test('an empty list passes through unchanged', () => {
+        expect(dedupeByPath([], 'route')).toEqual([]);
     });
 
-    test('a navItem.path colliding with a built-in route is dropped', () => {
-        const m = manifest({ navItem: { label: 'Settings', path: '/settings' } });
+    test('a path colliding with a built-in route is dropped', () => {
+        const items = [{ path: '/settings' }];
         const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
-        const result = validateNavItem(m, new Set());
-
-        expect(result.navItem).toBeUndefined();
+        expect(dedupeByPath(items, 'route')).toEqual([]);
         expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('collides with a built-in route'));
     });
 
-    test('a navItem.path already claimed by another plugin is dropped', () => {
-        const m = manifest({ navItem: { label: 'Pod Counter', path: '/plugin/pod-counter' } });
-        const seenPaths = new Set(['plugin/pod-counter']);
+    test('a path already claimed by an earlier item is dropped', () => {
+        const items = [{ path: '/plugin/pod-counter' }, { path: '/plugin/pod-counter' }];
         const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
-        const result = validateNavItem(m, seenPaths);
-
-        expect(result.navItem).toBeUndefined();
+        expect(dedupeByPath(items, 'route')).toEqual([items[0]]);
         expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('already claimed by another plugin'));
     });
 
-    test('a unique, non-reserved navItem.path is kept and recorded in seenPaths', () => {
-        const m = manifest({ navItem: { label: 'Pod Counter', path: '/plugin/pod-counter' } });
-        const seenPaths = new Set<string>();
+    test('unique, non-reserved paths are all kept', () => {
+        const items = [{ path: '/plugin/pod-counter' }, { path: '/plugin/other' }];
 
-        const result = validateNavItem(m, seenPaths);
+        expect(dedupeByPath(items, 'route')).toEqual(items);
+    });
+});
 
-        expect(result.navItem).toEqual(m.navItem);
-        expect(seenPaths.has('plugin/pod-counter')).toBe(true);
+describe('getPluginRoutes / window.__antreaPluginHost', () => {
+    test('registerRoute makes the route show up in getPluginRoutes', () => {
+        window.__antreaPluginHost!.registerRoute({ path: '/plugin/test-registration', tag: 'antrea-plugin-test-registration' } satisfies PluginRoute);
+
+        expect(getPluginRoutes()).toContainEqual({ path: '/plugin/test-registration', tag: 'antrea-plugin-test-registration' });
     });
 });

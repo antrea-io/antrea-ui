@@ -1,0 +1,25 @@
+{
+  "name": "@antrea/ui-plugin-sdk",
+  "version": "0.1.0",
+  "description": "Registration API for Antrea UI plugins that extend an existing page (e.g. flow table columns, the service map's edge details card), modeled on Headlamp's plugin registry",
+  "type": "module",
+  "main": "dist/index.js",
+  "module": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc"
+  },
+  "peerDependencies": {
+    "@antrea/ui-components": "0.1.0"
+  },
+  "devDependencies": {
+    "@antrea/ui-components": "0.1.0",
+    "typescript": "^6.0.0"
+  }
+}

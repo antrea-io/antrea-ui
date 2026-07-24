@@ -24,7 +24,7 @@ import App from './App';
 import { SummaryPage, TraceflowPage, FlowVisibilityPage, SettingsPage, PluginPage } from './pages';
 import reportWebVitals from './reportWebVitals';
 import config from './config';
-import { loadPlugins } from './plugins';
+import { loadPlugins, getPluginRoutes, getPluginSidebarEntries } from './plugins';
 
 async function main() {
     // Lets antrea-ui-components' fetch calls (login, refresh, settings, data pages) reach the
@@ -34,13 +34,15 @@ async function main() {
     setApiBase(config.apiServer);
 
     // Discover and dynamically import() plugins dropped into /etc/plugins before building the
-    // router, so any plugin declaring a navItem gets a real route from the start.
-    const plugins = await loadPlugins();
+    // router, so any plugin that registered a route (see plugins.ts) gets a real one from the
+    // start — a plugin registers by calling an SDK function during its own module evaluation,
+    // so the registry is only complete once every plugin's import() has resolved.
+    await loadPlugins();
 
     const router = createBrowserRouter([
         {
             path: "/",
-            element: <App plugins={plugins} />,
+            element: <App pluginSidebarEntries={getPluginSidebarEntries()} />,
             children: [
                 {
                     index: true,
@@ -62,12 +64,10 @@ async function main() {
                     path: "settings",
                     element: <SettingsPage />,
                 },
-                ...plugins
-                    .filter((plugin) => plugin.navItem)
-                    .map((plugin) => ({
-                        path: plugin.navItem!.path.replace(/^\//, ''),
-                        element: <PluginPage tag={plugin.tag} />,
-                    })),
+                ...getPluginRoutes().map((route) => ({
+                    path: route.path.replace(/^\//, ''),
+                    element: <PluginPage tag={route.tag} />,
+                })),
             ],
         },
     ]);

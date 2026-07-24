@@ -20,6 +20,7 @@ import { apiRefreshToken } from '@antrea/ui-components';
 import { useSelector, useDispatch } from 'react-redux';
 import { RootState, setToken } from './store';
 import { useLogout } from './logout';
+import { getEdgeExtraRenderers, getFlowTableColumnsProcessors } from './plugins';
 
 function useLitPage() {
     const token = useSelector((state: RootState) => state.token ?? '');
@@ -64,7 +65,14 @@ export function TraceflowPage() {
 
 export function FlowVisibilityPage() {
     const { ref, token } = useLitPage();
-    return <antrea-flow-visibility-page ref={ref} token={token} />;
+    return (
+        <antrea-flow-visibility-page
+            ref={ref}
+            token={token}
+            edgeExtraRenderers={getEdgeExtraRenderers()}
+            flowTableColumnsProcessors={getFlowTableColumnsProcessors()}
+        />
+    );
 }
 
 export function SettingsPage() {
@@ -72,9 +80,9 @@ export function SettingsPage() {
     return <antrea-settings-page ref={ref} token={token} />;
 }
 
-// Generic route element for plugin pages: any plugin declaring a `navItem` in its manifest gets
-// its custom element mounted here, with the same ref/token/session-refresh wiring as built-in
-// pages, keyed off the tag name discovered at runtime instead of a compile-time import.
+// Generic route element for plugin pages: any plugin calling registerRoute() (see plugins.ts)
+// gets its custom element mounted here, with the same ref/token/session-refresh wiring as
+// built-in pages, keyed off the tag name discovered at runtime instead of a compile-time import.
 export function PluginPage({ tag }: { tag: string }) {
     const { ref, token } = useLitPage();
     return React.createElement(tag, { ref, token });

@@ -7,6 +7,7 @@
     "build": "vite build && cp manifest.json dist/manifest.json"
   },
   "dependencies": {
+    "@antrea/ui-plugin-sdk": "file:../../../client/web/antrea-ui-plugin-sdk",
     "lit": "^3.0.0"
   },
   "devDependencies": {

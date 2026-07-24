@@ -25,9 +25,9 @@ import { AppErrorProvider, AppErrorNotification } from './errors';
 import { Provider, useSelector, useDispatch } from 'react-redux';
 import type { RootState } from './store';
 import { store, setToken } from './store';
-import type { PluginManifest } from './plugins';
+import type { PluginSidebarEntry } from './plugins';
 
-function AuthShell({ plugins }: { plugins: PluginManifest[] }) {
+function AuthShell({ pluginSidebarEntries }: { pluginSidebarEntries: PluginSidebarEntry[] }) {
     const token = useSelector((state: RootState) => state.token);
     const dispatch = useDispatch();
     const loginRef = useRef<HTMLElement>(null);
@@ -48,7 +48,7 @@ function AuthShell({ plugins }: { plugins: PluginManifest[] }) {
 
     return (
         <>
-            <NavTab plugins={plugins} />
+            <NavTab pluginSidebarEntries={pluginSidebarEntries} />
             <main className="app-content">
                 <Outlet />
             </main>
@@ -69,7 +69,7 @@ function Logout() {
     );
 }
 
-function App({ plugins = [] }: { plugins?: PluginManifest[] }) {
+function App({ pluginSidebarEntries = [] }: { pluginSidebarEntries?: PluginSidebarEntry[] }) {
     return (
         <div className="app-shell">
             <Provider store={store}>
@@ -84,7 +84,7 @@ function App({ plugins = [] }: { plugins?: PluginManifest[] }) {
                 </header>
                 <div className="app-body">
                     <AppErrorProvider>
-                        <AuthShell plugins={plugins} />
+                        <AuthShell pluginSidebarEntries={pluginSidebarEntries} />
                         <AppErrorNotification />
                     </AppErrorProvider>
                 </div>

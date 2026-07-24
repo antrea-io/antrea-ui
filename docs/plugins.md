@@ -20,9 +20,12 @@ complete, minimal example.
    frontend is built. See [`plugins.ts`](../client/web/antrea-ui/src/plugins.ts).
 3. Each module registers a [Lit](https://lit.dev) custom element via
    `customElements.define(...)`, same as `@antrea/ui-components` does for
-   Antrea UI's own pages.
-4. A manifest with a `navItem` automatically gets a sidebar entry and route
-   — no changes to Antrea UI's own source required.
+   Antrea UI's own pages, and tells the host about it by calling one of
+   `@antrea/ui-plugin-sdk`'s `registerX()` functions — `registerRoute` and
+   `registerSidebarEntry` for a whole new page, or one of the "Extending an
+   existing page" functions below to extend one Antrea UI already ships.
+   This is modeled on
+   [Headlamp's plugin registry](https://headlamp.dev/docs/latest/development/plugins/functionality/).
 
 ## The manifest
 
@@ -30,13 +33,7 @@ complete, minimal example.
 {
   "name": "pod-counter",
   "version": "0.1.0",
-  "entry": "index.js",
-  "tag": "antrea-plugin-pod-counter",
-  "navItem": {
-    "label": "Pod Counter",
-    "path": "/plugin/pod-counter",
-    "icon": "M7.752.066a.5.5 0 0 1 .496 0l3.75 2.143a.5.5..."
-  }
+  "entry": "index.js"
 }
 ```
 
@@ -45,27 +42,30 @@ complete, minimal example.
 | `name` | yes | Unique name; also the directory name under `/etc/plugins`. |
 | `version` | yes | Informational only. |
 | `entry` | yes | Plugin's JS module filename, relative to its directory. |
-| `tag` | yes | Custom element tag name registered by `entry`. |
-| `navItem` | no | Adds a sidebar entry + route. Omit for plugins with no page of their own. |
-| `navItem.label` | if `navItem` set | Sidebar label. |
-| `navItem.path` | if `navItem` set | Route path, e.g. `/plugin/pod-counter`. Must **not** start with `/plugins/` — that prefix is reserved for static plugin assets. |
-| `navItem.icon` | no | SVG path `d` data, 16x16 (`viewBox="0 0 16 16"`), matching the built-in nav icons' style. |
+
+That's the whole schema — the manifest only carries enough for the host to
+fetch and `import()` the right file. Everything that affects the UI (routes,
+sidebar entries, page extensions) is registered in code, via
+`@antrea/ui-plugin-sdk`, so a plugin's actual shape is never split between
+JSON and JS.
 
 ## Writing a plugin
 
 A plugin is a standalone package — not part of the `client/web` Yarn
 workspace, and it doesn't depend on `@antrea/ui-components` internals. It
-only relies on: the `token` property/attribute the host sets on its custom
-element (for authenticated calls), and Antrea UI's REST API. Its own
-`vite.config.ts` must bundle dependencies like `lit` in, rather than
-externalizing them (unlike `@antrea/ui-components`) — there's no
-host-provided import map for a runtime `import()`.
+relies on: `@antrea/ui-plugin-sdk` to register itself with the host, the
+`token` property/attribute the host sets on its custom element (for
+authenticated calls), and Antrea UI's REST API. Its own `vite.config.ts`
+must bundle dependencies like `lit` in, rather than externalizing them
+(unlike `@antrea/ui-components`) — there's no host-provided import map for
+a runtime `import()`.
 
 `plugins/examples/pod-counter/src/index.ts`:
 
 ```ts
 import { LitElement, html } from 'lit';
 import { property, state } from 'lit/decorators.js';
+import { registerRoute, registerSidebarEntry } from '@antrea/ui-plugin-sdk';
 
 class AntreaPluginPodCounter extends LitElement {
     @property() token = '';
@@ -86,10 +86,27 @@ class AntreaPluginPodCounter extends LitElement {
 }
 
 customElements.define('antrea-plugin-pod-counter', AntreaPluginPodCounter);
+
+registerRoute({ path: '/plugin/pod-counter', tag: 'antrea-plugin-pod-counter' });
+registerSidebarEntry({ label: 'Pod Counter', path: '/plugin/pod-counter' });
 ```
 
+`registerRoute`'s `path` must **not** start with `/plugins/` — that prefix
+is reserved for static plugin assets — and must not collide with a
+built-in route or another plugin's; the host drops (and logs) whichever
+registration loses the race. `registerSidebarEntry` is independent of
+`registerRoute`, so a plugin can add a sidebar entry without a route (e.g.
+an external link) or vice versa; pass the same `path` to both to link them,
+as above. `registerSidebarEntry`'s optional `icon` is SVG path `d` data,
+16x16 (`viewBox="0 0 16 16"`), matching the built-in nav icons' style.
+
+`@antrea/ui-plugin-sdk` is a devDependency resolved from this repo's
+workspace (`file:../../../client/web/antrea-ui-plugin-sdk` in
+`package.json`) — build it once before building any example plugin:
+
 ```bash
-cd plugins/examples/pod-counter
+cd client/web/antrea-ui-plugin-sdk && yarn build
+cd ../../../plugins/examples/pod-counter
 npm install && npm run build   # vite build, then copies manifest.json into dist/
 ```
 
@@ -109,10 +126,64 @@ the K8s API proxy your plugin calls through does — see
 Creating (and RBAC-scoping) that ClusterRole is the responsibility of
 whoever deploys the plugin, not Antrea UI itself.
 
+## Extending an existing page
+
+Everything above adds a whole new page. A plugin can instead extend a page
+Antrea UI already ships — e.g. render extra content in the service map's
+edge details card, or add a column to the flow list table — via
+`@antrea/ui-plugin-sdk`, modeled on
+[Headlamp's plugin registry](https://headlamp.dev/docs/latest/development/plugins/functionality/)
+(`registerDetailsViewSection`, `registerResourceTableColumnsProcessor`).
+
+Call one of the SDK's `registerX()` functions as an import side effect in
+your plugin's entry module — the same place a whole-page plugin calls
+`customElements.define(...)`. A plugin can do both in the same module.
+
+```ts
+import { registerEdgeExtraRenderer, registerFlowTableColumnsProcessor } from '@antrea/ui-plugin-sdk';
+
+// Renders into the service map's edge details card for the currently
+// selected edge. Return null to render nothing for a given selection.
+registerEdgeExtraRenderer((selection) => {
+    const el = document.createElement('a');
+    el.href = `/plugin/my-plugin?source=${selection.source}&target=${selection.target}`;
+    el.textContent = 'Open in My Plugin';
+    return el;
+});
+
+// Inserts, removes, updates, or reorders flow list table columns. Receives
+// the current list — built-ins plus any earlier plugin's additions — and
+// returns the new list.
+registerFlowTableColumnsProcessor((columns) => [
+    ...columns,
+    { key: 'my-column', label: 'My Column', render: (entry) => entry.flow.k8s.flowType },
+]);
+```
+
+All registration functions, including the whole-new-page ones from "Writing
+a plugin" above:
+
+| Function | Extends | Notes |
+| --- | --- | --- |
+| `registerRoute` | Router | Adds a whole new page at `route.path`, rendering `route.tag`'s custom element. |
+| `registerSidebarEntry` | Sidebar | Adds a nav entry linking to `entry.path`. |
+| `registerEdgeExtraRenderer` | Service map edge details card | Called with an `EdgeSelection` on each selection change; return `null` to render nothing. |
+| `registerFlowTableColumnsProcessor` | Flow list table | Plugin-added columns aren't sortable — only built-in columns carry the sort key. |
+
+These functions call into a small registry the host sets up on `window`
+before loading any plugin — see
+[`plugins.ts`](../client/web/antrea-ui/src/plugins.ts) for the host side and
+[`antrea-flow-visibility-page.ts`](../client/web/antrea-ui-components/src/pages/antrea-flow-visibility-page.ts)
+for how the registered functions are consumed. `@antrea/ui-plugin-sdk` only
+re-exports types from `@antrea/ui-components` (a peer dependency,
+types-only — nothing from it ends up in your plugin's bundle) so the shapes
+stay in sync with what the host actually expects.
+
 ## Trying it locally
 
 Antrea UI only makes sense running against a real cluster, so test against
-one directly rather than a standalone dev server.
+one directly rather than a standalone dev server. The commands below assume
+`@antrea/ui-plugin-sdk` is already built (see "Writing a plugin" above).
 
 **Recommended: mount it into the unmodified image**, via the chart's
 `extraVolumes` / `frontend.extraVolumeMounts` values — no rebuild needed.
@@ -171,11 +242,13 @@ actual Kind cluster rather than a standalone container.
 
 ## Future work
 
-* **Deeper customization.** Today a plugin can only add a whole new page.
-  Modifying an *existing* UI element (e.g. adding a column to the flow
-  table) would need Antrea UI to expose `registerX`-style extension points,
-  likely via a small shared library package plugins depend on. Not
-  implemented yet.
+* **More extension points.** `@antrea/ui-plugin-sdk` (see "Extending an
+  existing page" above) currently only covers the service map's edge
+  details card and the flow list table. Other built-in pages (Summary,
+  Traceflow) don't expose any extension points yet — adding one means the
+  same shape: a new registration function in the SDK, a registry entry in
+  `plugins.ts`, and the target Lit component consuming the registered
+  functions when it renders.
 * **Backend-hosted plugin serving.** `plugin-index-builder.sh` merges
   manifests once at container startup. A plugin installed afterwards isn't
   picked up until the frontend restarts. Moving plugin discovery/serving

@@ -18,7 +18,7 @@ import React from 'react';
 import { useLocation } from 'react-router';
 import { Link } from 'react-router';
 import '@antrea/ui-components';
-import type { PluginManifest } from './plugins';
+import type { PluginSidebarEntry } from './plugins';
 
 function DashboardIcon() {
     return (
@@ -53,7 +53,7 @@ function GearIcon() {
     );
 }
 
-export default function NavTab({ plugins }: { plugins: PluginManifest[] }) {
+export default function NavTab({ pluginSidebarEntries }: { pluginSidebarEntries: PluginSidebarEntry[] }) {
     const { pathname } = useLocation();
 
     return (
@@ -82,24 +82,22 @@ export default function NavTab({ plugins }: { plugins: PluginManifest[] }) {
                     <span className="nav-label">Settings</span>
                 </Link>
             </antrea-nav-item>
-            {plugins
-                .filter((plugin) => plugin.navItem)
-                .map((plugin) => (
-                    <React.Fragment key={plugin.name}>
-                        <antrea-nav-item
-                            {...(pathname.startsWith(plugin.navItem!.path) ? { active: true } : {})}
-                        >
-                            <Link to={plugin.navItem!.path}>
-                                {plugin.navItem!.icon && (
-                                    <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" style={{ flexShrink: 0 }}>
-                                        <path d={plugin.navItem!.icon} />
-                                    </svg>
-                                )}
-                                <span className="nav-label">{plugin.navItem!.label}</span>
-                            </Link>
-                        </antrea-nav-item>
-                    </React.Fragment>
-                ))}
+            {pluginSidebarEntries.map((entry) => (
+                <React.Fragment key={entry.path}>
+                    <antrea-nav-item
+                        {...(pathname.startsWith(entry.path) ? { active: true } : {})}
+                    >
+                        <Link to={entry.path}>
+                            {entry.icon && (
+                                <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" style={{ flexShrink: 0 }}>
+                                    <path d={entry.icon} />
+                                </svg>
+                            )}
+                            <span className="nav-label">{entry.label}</span>
+                        </Link>
+                    </antrea-nav-item>
+                </React.Fragment>
+            ))}
         </antrea-nav>
     );
 }

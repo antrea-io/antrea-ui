@@ -17,26 +17,19 @@
 import { render } from '@testing-library/react';
 import { MemoryRouter } from 'react-router';
 import NavTab from './nav';
-import type { PluginManifest } from './plugins';
+import type { PluginSidebarEntry } from './plugins';
 
-const podCounterPlugin: PluginManifest = {
-    name: 'pod-counter',
-    version: '0.1.0',
-    entry: 'index.js',
-    tag: 'antrea-plugin-pod-counter',
-    navItem: { label: 'Pod Counter', path: '/plugin/pod-counter' },
-};
+const podCounterEntry: PluginSidebarEntry = { label: 'Pod Counter', path: '/plugin/pod-counter' };
 
 describe('NavTab', () => {
-    test('plugins with no navItem are not rendered', () => {
-        const noNavItem: PluginManifest = { name: 'headless', version: '0.1.0', entry: 'index.js', tag: 'antrea-plugin-headless' };
-        render(<NavTab plugins={[noNavItem]} />, { wrapper: MemoryRouter });
+    test('no plugin sidebar entries renders no extra items', () => {
+        render(<NavTab pluginSidebarEntries={[]} />, { wrapper: MemoryRouter });
 
-        expect(document.querySelector('a[href="/headless"]')).toBeNull();
+        expect(document.querySelector('a[href="/plugin/pod-counter"]')).toBeNull();
     });
 
-    test('a plugin with a navItem gets a sidebar entry linking to its path', () => {
-        render(<NavTab plugins={[podCounterPlugin]} />, { wrapper: MemoryRouter });
+    test('a plugin sidebar entry links to its path', () => {
+        render(<NavTab pluginSidebarEntries={[podCounterEntry]} />, { wrapper: MemoryRouter });
 
         const link = document.querySelector('a[href="/plugin/pod-counter"]');
         expect(link).not.toBeNull();
@@ -46,7 +39,7 @@ describe('NavTab', () => {
     test('the plugin nav item is marked active when the current path matches', () => {
         render(
             <MemoryRouter initialEntries={['/plugin/pod-counter']}>
-                <NavTab plugins={[podCounterPlugin]} />
+                <NavTab pluginSidebarEntries={[podCounterEntry]} />
             </MemoryRouter>
         );
 
@@ -61,7 +54,7 @@ describe('NavTab', () => {
     test('the plugin nav item is not active on an unrelated path', () => {
         render(
             <MemoryRouter initialEntries={['/summary']}>
-                <NavTab plugins={[podCounterPlugin]} />
+                <NavTab pluginSidebarEntries={[podCounterEntry]} />
             </MemoryRouter>
         );
 
