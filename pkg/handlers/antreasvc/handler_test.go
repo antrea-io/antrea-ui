@@ -33,6 +33,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/transport"
 )
 
 func TestRequestsHandler(t *testing.T) {
@@ -47,7 +48,9 @@ func TestRequestsHandler(t *testing.T) {
 	cert, err := tls.X509KeyPair(kp.PublicKey(), kp.PrivateKey())
 	require.NoError(t, err)
 
+	var gotHeader http.Header
 	ts := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHeader = r.Header.Clone()
 		b, _ := io.ReadAll(r.Body)
 		w.Write(b)
 	}))
@@ -72,12 +75,13 @@ func TestRequestsHandler(t *testing.T) {
 	url, err := url.Parse(ts.URL)
 	require.NoError(t, err)
 
+	const impersonatedUser = "system:serviceaccount:kube-system:antrea-ui-admin"
 	handler := &requestsHandler{
 		logger:          logger,
 		antreaNamespace: antreaNamespace,
 		host:            url.Host,
 		kubeClient:      fakeClient,
-		clientProvider:  newAntreaClientProvider(logger, restConfig, fakeClient, antreaNamespace, antreaSvcAddr),
+		clientProvider:  newAntreaClientProvider(logger, restConfig, fakeClient, antreaNamespace, antreaSvcAddr, impersonatedUser),
 		// the port forwarding case cannot be validated in the context of a unit test
 		portForwardingNeeded: false,
 	}
@@ -95,4 +99,6 @@ func TestRequestsHandler(t *testing.T) {
 	b, err := handler.Request(context.Background(), "GET", "/foo", bytes.NewBufferString(body))
 	require.NoError(t, err)
 	assert.Equal(t, body, string(b))
+	// the request sent on the wire must carry the impersonated identity
+	assert.Equal(t, impersonatedUser, gotHeader.Get(transport.ImpersonateUserHeader))
 }

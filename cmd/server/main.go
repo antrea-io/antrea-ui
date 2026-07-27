@@ -51,6 +51,10 @@ import (
 	"antrea.io/antrea-ui/pkg/version"
 )
 
+// antreaUIAdminSAName is the name of the ServiceAccount antrea-ui impersonates for K8s API calls
+// made on behalf of the UI user (see build/charts/antrea-ui/templates/clusterroles.yaml).
+const antreaUIAdminSAName = "antrea-ui-admin"
+
 var (
 	config *serverconfig.Config
 	logger logr.Logger
@@ -110,11 +114,20 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("failed to parse K8s server URL '%s': %w", k8sRESTConfig.Host, err)
 	}
+	// K8s API calls made on behalf of the UI user (as opposed to antrea-ui's own operations,
+	// e.g. reading the antrea-ui-passwd Secret) are impersonated as the antrea-ui-admin
+	// ServiceAccount, so that plugins can be granted extra permissions for these calls without
+	// exposing antrea-ui's own sensitive access.
+	antreaUIAdminUser := k8s.ServiceAccountUserName(env.GetNamespace(), antreaUIAdminSAName)
+	k8sAdminHTTPClient, k8sAdminDynamicClient, err := k8s.ImpersonatedClient(k8sRESTConfig, k8sHTTPClient.Transport, antreaUIAdminUser)
+	if err != nil {
+		return fmt.Errorf("failed to create impersonated K8s clients for antrea-ui-admin: %w", err)
+	}
 
-	traceflowHandler := traceflowhandler.NewRequestsHandler(logger, k8sDynamicClient)
-	k8sProxyHandler := k8sproxy.NewK8sProxyHandler(logger, k8sServerURL, k8sHTTPClient.Transport)
+	traceflowHandler := traceflowhandler.NewRequestsHandler(logger, k8sAdminDynamicClient)
+	k8sProxyHandler := k8sproxy.NewK8sProxyHandler(logger, k8sServerURL, k8sAdminHTTPClient.Transport)
 
-	antreaSvcHandler, err := antreasvchandler.NewRequestsHandler(logger, k8sRESTConfig, config.AntreaNamespace)
+	antreaSvcHandler, err := antreasvchandler.NewRequestsHandler(logger, k8sRESTConfig, config.AntreaNamespace, antreaUIAdminUser)
 	if err != nil {
 		return fmt.Errorf("failed to create handler for Antrea Service requests: %w", err)
 	}
@@ -216,7 +229,6 @@ func run() error {
 
 	s := server.NewServer(
 		logger,
-		k8sDynamicClient,
 		traceflowHandler,
 		k8sProxyHandler,
 		antreaSvcHandler,

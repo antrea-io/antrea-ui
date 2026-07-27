@@ -47,7 +47,11 @@ type requestsHandler struct {
 	portForwardingNeeded bool
 }
 
-func NewRequestsHandler(logger logr.Logger, config *rest.Config, antreaNamespace string) (*requestsHandler, error) {
+// NewRequestsHandler creates a handler for forwarding requests to the Antrea Service.
+// Requests are authorized as the impersonatedUser identity (e.g. a ServiceAccount username, see
+// k8s.ServiceAccountUserName), not as config's own identity, so permissions for these requests
+// can be managed separately (see the antrea-ui-admin ClusterRole).
+func NewRequestsHandler(logger logr.Logger, config *rest.Config, antreaNamespace string, impersonatedUser string) (*requestsHandler, error) {
 	antreaSvcAddr := antreaSvcName + "." + antreaNamespace + ".svc"
 	host := antreaSvcAddr
 	portForwardingNeeded := false
@@ -62,7 +66,7 @@ func NewRequestsHandler(logger logr.Logger, config *rest.Config, antreaNamespace
 	if err != nil {
 		return nil, err
 	}
-	clientProvider := newAntreaClientProvider(logger, antreaSvcConfig, kubeClient, antreaNamespace, antreaSvcAddr)
+	clientProvider := newAntreaClientProvider(logger, antreaSvcConfig, kubeClient, antreaNamespace, antreaSvcAddr, impersonatedUser)
 	return &requestsHandler{
 		logger:               logger,
 		config:               config,

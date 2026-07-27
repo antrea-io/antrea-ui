@@ -21,3 +21,11 @@ rules:
       - "secrets"
     verbs:
       - "create"
+  - apiGroups:
+      - ""
+    resources:
+      - "serviceaccounts"
+    resourceNames:
+      - "antrea-ui-admin"
+    verbs:
+      - "impersonate"
