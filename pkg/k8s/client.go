@@ -24,6 +24,7 @@ import (
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/client-go/transport"
 )
 
 var (
@@ -76,19 +77,16 @@ func ServiceAccountUserName(namespace, serviceAccountName string) string {
 	return fmt.Sprintf("system:serviceaccount:%s:%s", namespace, serviceAccountName)
 }
 
-// ImpersonatedClient builds an HTTP client and dynamic client that authenticate as config's
-// identity but have the K8s API server authorize requests as the given ServiceAccount instead,
-// via RBAC impersonation (the caller needs the "impersonate" verb on that ServiceAccount).
-func ImpersonatedClient(config *rest.Config, namespace, serviceAccountName string) (*http.Client, *dynamic.DynamicClient, error) {
-	impersonatedConfig := rest.CopyConfig(config)
-	impersonatedConfig.Impersonate = rest.ImpersonationConfig{
-		UserName: ServiceAccountUserName(namespace, serviceAccountName),
+// ImpersonatedClient builds an HTTP client and dynamic client that reuse baseTransport's
+// connection pool but have the K8s API server authorize requests as userName instead, via RBAC
+// impersonation (the caller needs the "impersonate" verb on the corresponding user/ServiceAccount,
+// see ServiceAccountUserName).
+func ImpersonatedClient(config *rest.Config, baseTransport http.RoundTripper, userName string) (*http.Client, *dynamic.DynamicClient, error) {
+	httpClient := &http.Client{
+		Transport: transport.NewImpersonatingRoundTripper(transport.ImpersonationConfig{UserName: userName}, baseTransport),
+		Timeout:   config.Timeout,
 	}
-	httpClient, err := rest.HTTPClientFor(impersonatedConfig)
-	if err != nil {
-		return nil, nil, err
-	}
-	client, err := dynamic.NewForConfigAndClient(impersonatedConfig, httpClient)
+	client, err := dynamic.NewForConfigAndClient(config, httpClient)
 	if err != nil {
 		return nil, nil, err
 	}

@@ -22,7 +22,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/go-logr/logr"
-	"k8s.io/client-go/dynamic"
 
 	apisv1 "antrea.io/antrea-ui/apis/v1"
 	"antrea.io/antrea-ui/pkg/auth"
@@ -42,7 +41,6 @@ type serverConfig struct {
 
 type Server struct {
 	logger                   logr.Logger
-	k8sClient                dynamic.Interface
 	traceflowRequestsHandler traceflow.RequestsHandler
 	k8sProxyHandler          http.Handler
 	antreaSvcRequestsHandler antreasvc.RequestsHandler
@@ -55,7 +53,6 @@ type Server struct {
 
 func NewServer(
 	logger logr.Logger,
-	k8sClient dynamic.Interface,
 	traceflowRequestsHandler traceflow.RequestsHandler,
 	k8sProxyHandler http.Handler,
 	antreaSvcRequestsHandler antreasvc.RequestsHandler,
@@ -74,7 +71,6 @@ func NewServer(
 	}
 	return &Server{
 		logger:                   logger,
-		k8sClient:                k8sClient,
 		traceflowRequestsHandler: traceflowRequestsHandler,
 		k8sProxyHandler:          k8sProxyHandler,
 		antreaSvcRequestsHandler: antreaSvcRequestsHandler,

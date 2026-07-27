@@ -26,8 +26,6 @@ import (
 	"github.com/golang/mock/gomock"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
-	"k8s.io/apimachinery/pkg/runtime"
-	dynamicfake "k8s.io/client-go/dynamic/fake"
 
 	authtesting "antrea.io/antrea-ui/pkg/auth/testing"
 	serverconfig "antrea.io/antrea-ui/pkg/config/server"
@@ -58,7 +56,6 @@ func (h *testk8sProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 type testServer struct {
 	s                        *Server
 	router                   *gin.Engine
-	k8sClient                *dynamicfake.FakeDynamicClient
 	traceflowRequestsHandler *traceflowhandlertesting.MockRequestsHandler
 	k8sProxyHandler          *testk8sProxyHandler
 	antreaSvcRequestsHandler *antreasvchandlertesting.MockRequestsHandler
@@ -76,8 +73,6 @@ func setMaxTraceflowsPerHour(v int) testServerOptions {
 
 func newTestServer(t *testing.T, options ...testServerOptions) *testServer {
 	logger := testr.New(t)
-	scheme := runtime.NewScheme()
-	k8sClient := dynamicfake.NewSimpleDynamicClient(scheme)
 	ctrl := gomock.NewController(t)
 	traceflowRequestsHandler := traceflowhandlertesting.NewMockRequestsHandler(ctrl)
 	k8sProxyHandler := &testk8sProxyHandler{}
@@ -94,7 +89,6 @@ func newTestServer(t *testing.T, options ...testServerOptions) *testServer {
 
 	s := NewServer(
 		logger,
-		k8sClient,
 		traceflowRequestsHandler,
 		k8sProxyHandler,
 		antreaSvcRequestsHandler,
@@ -108,7 +102,6 @@ func newTestServer(t *testing.T, options ...testServerOptions) *testServer {
 	return &testServer{
 		s:                        s,
 		router:                   router,
-		k8sClient:                k8sClient,
 		traceflowRequestsHandler: traceflowRequestsHandler,
 		k8sProxyHandler:          k8sProxyHandler,
 		antreaSvcRequestsHandler: antreaSvcRequestsHandler,

@@ -51,6 +51,10 @@ import (
 	"antrea.io/antrea-ui/pkg/version"
 )
 
+// antreaUIAdminSAName is the name of the ServiceAccount antrea-ui impersonates for K8s API calls
+// made on behalf of the UI user (see build/charts/antrea-ui/templates/clusterroles.yaml).
+const antreaUIAdminSAName = "antrea-ui-admin"
+
 var (
 	config *serverconfig.Config
 	logger logr.Logger
@@ -102,7 +106,7 @@ func ginLogger(logger logr.Logger, level int) gin.HandlerFunc {
 func run() error {
 	logger.Info("Starting Antrea UI backend", "version", version.GetFullVersionWithRuntimeInfo())
 
-	k8sRESTConfig, _, k8sDynamicClient, err := k8s.Client()
+	k8sRESTConfig, k8sHTTPClient, k8sDynamicClient, err := k8s.Client()
 	if err != nil {
 		return fmt.Errorf("failed to create K8s clients: %w", err)
 	}
@@ -114,8 +118,8 @@ func run() error {
 	// e.g. reading the antrea-ui-passwd Secret) are impersonated as the antrea-ui-admin
 	// ServiceAccount, so that plugins can be granted extra permissions for these calls without
 	// exposing antrea-ui's own sensitive access.
-	antreaUIAdminUser := k8s.ServiceAccountUserName(env.GetNamespace(), "antrea-ui-admin")
-	k8sAdminHTTPClient, k8sAdminDynamicClient, err := k8s.ImpersonatedClient(k8sRESTConfig, env.GetNamespace(), "antrea-ui-admin")
+	antreaUIAdminUser := k8s.ServiceAccountUserName(env.GetNamespace(), antreaUIAdminSAName)
+	k8sAdminHTTPClient, k8sAdminDynamicClient, err := k8s.ImpersonatedClient(k8sRESTConfig, k8sHTTPClient.Transport, antreaUIAdminUser)
 	if err != nil {
 		return fmt.Errorf("failed to create impersonated K8s clients for antrea-ui-admin: %w", err)
 	}
@@ -225,7 +229,6 @@ func run() error {
 
 	s := server.NewServer(
 		logger,
-		k8sDynamicClient,
 		traceflowHandler,
 		k8sProxyHandler,
 		antreaSvcHandler,

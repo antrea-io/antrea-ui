@@ -20,8 +20,10 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strings"
 
 	"github.com/go-logr/logr"
+	"k8s.io/client-go/transport"
 )
 
 type transportWrapper struct {
@@ -53,6 +55,19 @@ func NewK8sProxyHandler(logger logr.Logger, k8sServerURL *url.URL, k8sHTTPTransp
 			r.SetURL(k8sServerURL) // Also rewrites the Host header.
 			r.Out.Header["X-Forwarded-For"] = r.In.Header["X-Forwarded-For"]
 			r.SetXForwarded() // Set X-Forwarded-* headers.
+			// k8sHTTPTransport authorizes requests as an impersonated identity (see
+			// k8s.ImpersonatedClient). The K8s API server's impersonating round tripper leaves
+			// any pre-existing Impersonate-* header alone instead of overriding it, so without
+			// this, a UI user could set their own Impersonate-User/-Group/-Uid/-Extra-* header
+			// and have the proxied request authorized as a different identity.
+			r.Out.Header.Del(transport.ImpersonateUserHeader)
+			r.Out.Header.Del(transport.ImpersonateUIDHeader)
+			r.Out.Header.Del(transport.ImpersonateGroupHeader)
+			for name := range r.Out.Header {
+				if strings.HasPrefix(name, transport.ImpersonateUserExtraHeaderPrefix) {
+					r.Out.Header.Del(name)
+				}
+			}
 		},
 		Transport: &transportWrapper{
 			logger: logger,

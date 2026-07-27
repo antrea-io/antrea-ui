@@ -61,7 +61,6 @@ func NewRequestsHandler(logger logr.Logger, config *rest.Config, antreaNamespace
 		portForwardingNeeded = true
 		host = ""
 		antreaSvcConfig = rest.CopyConfig(config)
-		antreaSvcConfig.Impersonate = rest.ImpersonationConfig{UserName: impersonatedUser}
 	}
 	kubeClient, err := kubernetes.NewForConfig(config)
 	if err != nil {

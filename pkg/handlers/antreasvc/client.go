@@ -115,8 +115,8 @@ func (p *antreaHTTPClientProvider) updateAntreaClient() error {
 		if kubeConfig, err = inClusterConfig(caBundle); err != nil {
 			return err
 		}
-		kubeConfig.Impersonate = rest.ImpersonationConfig{UserName: p.impersonatedUser}
 	}
+	kubeConfig.Impersonate = rest.ImpersonationConfig{UserName: p.impersonatedUser}
 	// name used in the server certificate
 	kubeConfig.CAData = caBundle
 	kubeConfig.ServerName = p.serverName

@@ -41,6 +41,11 @@ func TestK8sProxyHandler(t *testing.T) {
 	req := httptest.NewRequest("GET", "/api/v1/pods", nil)
 	req.RemoteAddr = "127.0.0.1:32167"
 	req.Header.Add("X-Forwarded-For", "10.0.0.1")
+	// a malicious UI user should not be able to set their own impersonation identity
+	req.Header.Add("Impersonate-User", "system:admin")
+	req.Header.Add("Impersonate-Uid", "0")
+	req.Header.Add("Impersonate-Group", "system:masters")
+	req.Header.Add("Impersonate-Extra-foo", "bar")
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, req)
 	require.Equal(t, http.StatusOK, rr.Code)
@@ -54,4 +59,8 @@ func TestK8sProxyHandler(t *testing.T) {
 	assert.Equal(t, "example.com", header.Get("X-Forwarded-Host"))
 	assert.Equal(t, "http", header.Get("X-Forwarded-Proto"))
 	assert.Equal(t, serverURL.Host, capturedReq.Host)
+	assert.Empty(t, header.Get("Impersonate-User"))
+	assert.Empty(t, header.Get("Impersonate-Uid"))
+	assert.Empty(t, header.Get("Impersonate-Group"))
+	assert.Empty(t, header.Get("Impersonate-Extra-foo"))
 }

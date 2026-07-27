@@ -15,23 +15,34 @@
 package k8s
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/transport"
 )
 
 func TestImpersonatedClient(t *testing.T) {
-	config := &rest.Config{
-		Host: "https://localhost:6443",
-	}
+	var gotHeader http.Header
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHeader = r.Header.Clone()
+	}))
+	defer ts.Close()
 
-	httpClient, dynamicClient, err := ImpersonatedClient(config, "kube-system", "antrea-ui-admin")
+	config := &rest.Config{Host: ts.URL}
+	userName := ServiceAccountUserName("kube-system", "antrea-ui-admin")
+
+	httpClient, dynamicClient, err := ImpersonatedClient(config, http.DefaultTransport, userName)
 	require.NoError(t, err)
-	require.NotNil(t, httpClient)
 	require.NotNil(t, dynamicClient)
 
-	// the input config must not be mutated
-	assert.Zero(t, config.Impersonate)
+	resp, err := httpClient.Get(ts.URL)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	// the request sent on the wire must carry the impersonated identity
+	assert.Equal(t, userName, gotHeader.Get(transport.ImpersonateUserHeader))
 }
