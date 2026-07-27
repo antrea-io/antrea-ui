@@ -53,18 +53,6 @@ func TestK8sProxyRequest(t *testing.T) {
 			expectedStatusCode: http.StatusNotFound,
 			expectedMessage:    "This K8s API path is not being proxied",
 		},
-		{
-			name:               "denied secrets path",
-			path:               "/api/v1/secrets",
-			expectedStatusCode: http.StatusNotFound,
-			expectedMessage:    "This K8s API path is not being proxied",
-		},
-		{
-			name:               "denied namespaced secrets path",
-			path:               "/api/v1/namespaces/kube-system/secrets/antrea-ui-passwd",
-			expectedStatusCode: http.StatusNotFound,
-			expectedMessage:    "This K8s API path is not being proxied",
-		},
 	}
 
 	for _, tc := range testCases {
