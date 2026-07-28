@@ -15,7 +15,6 @@
 package e2e
 
 import (
-	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -31,7 +30,7 @@ import (
 // manifest index and the plugin's JS bundle, and that the K8s proxy allow-list + RBAC
 // aggregation actually let the plugin's API call through.
 func TestPluginLoading(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	t.Run("plugin index", func(t *testing.T) {
 		resp, err := Request(ctx, host, "GET", "api/v1/plugins/index.json", nil)

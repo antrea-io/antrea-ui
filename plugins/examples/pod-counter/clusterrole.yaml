@@ -8,7 +8,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 metadata:
   name: antrea-ui-plugin-pod-counter
   labels:
-    rbac.antrea-ui.io/aggregate-to-antrea-ui-admin: "true"
+    rbac.ui.antrea.io/aggregate-to-antrea-ui-admin: "true"
 rules:
   - apiGroups:
       - ""

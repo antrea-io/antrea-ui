@@ -37,24 +37,13 @@
 // an SDK function during its own module evaluation.
 
 import type { EdgeExtraRenderer, FlowTableColumnsProcessor } from '@antrea/ui-components';
+// The host and the SDK must agree on AntreaPluginHost's shape (it's the contract every plugin's
+// registerX() call goes through), but only as types — importing them with `import type` here
+// costs nothing at runtime, so there's no reason to hand-duplicate the interface as the actual
+// host-side implementation used to.
+import type { AntreaPluginHost, PluginRoute, PluginSidebarEntry } from '@antrea/ui-plugin-sdk';
 
-export interface PluginRoute {
-    path: string;
-    tag: string;
-}
-
-export interface PluginSidebarEntry {
-    label: string;
-    path: string;
-    icon?: string;
-}
-
-export interface AntreaPluginHost {
-    registerRoute(route: PluginRoute): void;
-    registerSidebarEntry(entry: PluginSidebarEntry): void;
-    registerEdgeExtraRenderer(fn: EdgeExtraRenderer): void;
-    registerFlowTableColumnsProcessor(fn: FlowTableColumnsProcessor): void;
-}
+export type { PluginRoute, PluginSidebarEntry };
 
 const pluginRoutes: PluginRoute[] = [];
 const pluginSidebarEntries: PluginSidebarEntry[] = [];
@@ -146,7 +135,7 @@ export async function loadPlugins(): Promise<PluginManifest[]> {
     const loaded: PluginManifest[] = [];
     for (const manifest of manifests) {
         try {
-            await import(/* @vite-ignore */ `/api/v1/plugins/${manifest.name}/${manifest.entry}`);
+            await import(/* @vite-ignore */ `/api/v1/plugins/${encodeURIComponent(manifest.name)}/${encodeURIComponent(manifest.entry)}`);
             loaded.push(manifest);
         } catch (e) {
             console.error(`failed to load plugin "${manifest.name}"`, e);

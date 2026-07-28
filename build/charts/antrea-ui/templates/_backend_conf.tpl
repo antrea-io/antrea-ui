@@ -14,6 +14,9 @@ auth:
   jwtKeyPath: "/app/jwt-key.pem"
   cookieSecure: {{ include "cookieSecure" . }}
 logVerbosity: {{ .Values.backend.logVerbosity }}
+plugins:
+  labelSelector: {{ .Values.plugins.labelSelector | quote }}
+  namespace: {{ .Values.plugins.namespace | default .Release.Namespace | quote }}
 flowAggregator:
   enabled: {{ .Values.flowAggregator.enabled }}
   address: {{ .Values.flowAggregator.address | quote }}

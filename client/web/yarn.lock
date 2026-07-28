@@ -34,7 +34,7 @@ __metadata:
   languageName: unknown
   linkType: soft
 
-"@antrea/ui-plugin-sdk@workspace:antrea-ui-plugin-sdk":
+"@antrea/ui-plugin-sdk@workspace:*, @antrea/ui-plugin-sdk@workspace:antrea-ui-plugin-sdk":
   version: 0.0.0-use.local
   resolution: "@antrea/ui-plugin-sdk@workspace:antrea-ui-plugin-sdk"
   dependencies:
@@ -1672,6 +1672,7 @@ __metadata:
   resolution: "antrea-ui@workspace:antrea-ui"
   dependencies:
     "@antrea/ui-components": "workspace:*"
+    "@antrea/ui-plugin-sdk": "workspace:*"
     "@eslint/create-config": "npm:^2.0.0"
     "@hookform/error-message": "npm:^2.0.1"
     "@reduxjs/toolkit": "npm:^2.8.2"

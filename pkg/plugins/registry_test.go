@@ -26,7 +26,7 @@ import (
 )
 
 func newTestRegistry(t *testing.T) *Registry {
-	return NewRegistry(testr.New(t), nil, "antrea-ui", "plugins.antrea-ui.io/plugin=true")
+	return NewRegistry(testr.New(t), nil, "antrea-ui", "ui.antrea.io/plugin=true")
 }
 
 func configMap(name, pluginName, version, entry string, extraFiles map[string]string) *corev1.ConfigMap {

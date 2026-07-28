@@ -91,7 +91,7 @@ func newTestServer(t *testing.T, options ...testServerOptions) *testServer {
 	}
 
 	pluginsClientset := k8sfake.NewSimpleClientset()
-	pluginRegistry := plugins.NewRegistry(logger, pluginsClientset, "antrea-ui", "plugins.antrea-ui.io/plugin=true")
+	pluginRegistry := plugins.NewRegistry(logger, pluginsClientset, "antrea-ui", "ui.antrea.io/plugin=true")
 	stopCh := make(chan struct{})
 	t.Cleanup(func() { close(stopCh) })
 	go pluginRegistry.Run(stopCh)

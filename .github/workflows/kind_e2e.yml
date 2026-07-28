@@ -89,7 +89,7 @@ jobs:
           --from-file=plugins/examples/pod-counter/dist/index.js \
           --from-file=plugins/examples/pod-counter/dist/manifest.json
         kubectl label configmap pod-counter-plugin --namespace kube-system \
-          plugins.antrea-ui.io/plugin=true
+          ui.antrea.io/plugin=true
         kubectl apply -f plugins/examples/pod-counter/clusterrole.yaml
     # For e2e tests, Antrea UI should be installed first
     - name: Run e2e tests

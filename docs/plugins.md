@@ -11,10 +11,22 @@ complete, minimal example.
 
 ## How it works
 
-1. A plugin is delivered as a Kubernetes `ConfigMap`, in antrea-ui's own
-   namespace, labeled to match `plugins.labelSelector` (default:
-   `plugins.antrea-ui.io/plugin=true`). Its data holds `manifest.json` plus
+1. A plugin is delivered as a Kubernetes `ConfigMap`, in the namespace the
+   backend watches for plugins (`plugins.namespace`, default: antrea-ui's own
+   release namespace), labeled to match `plugins.labelSelector` (default:
+   `ui.antrea.io/plugin=true`). Its data holds `manifest.json` plus
    the plugin's JS entry file.
+
+   The RBAC this requires (`get`/`list`/`watch` on ConfigMaps) is granted on
+   every ConfigMap in that namespace, not just labeled plugin ones — the
+   label selector is applied by the backend's watch, not by RBAC. Since
+   antrea-ui is commonly installed into `kube-system`, which can host other,
+   unrelated, more sensitive ConfigMaps, set `plugins.namespace` to a
+   dedicated namespace if you want plugin ConfigMaps isolated from it. If
+   that namespace differs from the release namespace, whoever runs
+   `helm install`/`upgrade` needs permission to create a `Role`/`RoleBinding`
+   there too — the chart can't grant permissions outside its own release
+   namespace.
 2. The Go backend watches ConfigMaps matching that label (see
    [`pkg/plugins`](../pkg/plugins) and
    [`pkg/server/api/plugins.go`](../pkg/server/api/plugins.go)) and serves
@@ -22,7 +34,12 @@ complete, minimal example.
    list of manifests) and `GET /api/v1/plugins/<name>/<file>` (any file from
    that plugin's ConfigMap). A ConfigMap can be created, updated, or deleted
    at any time — the backend picks up the change immediately, with no
-   antrea-ui restart.
+   antrea-ui restart. Both routes are served with `Cache-Control: no-store`
+   for exactly that reason. If a plugin's entry file is stored as
+   gzip-compressed `binaryData` (worth doing once bundled with dependencies —
+   detected by its magic number, no manifest changes needed), the backend
+   passes it through as-is with `Content-Encoding: gzip` rather than
+   decompressing and re-serving it.
 3. On load, Antrea UI fetches `/api/v1/plugins/index.json` and `import()`s
    each plugin's JS module at runtime — the code doesn't need to exist when
    the frontend is built. See [`plugins.ts`](../client/web/antrea-ui/src/plugins.ts).
@@ -123,7 +140,7 @@ reachable by any authenticated Antrea UI user), so only add what's needed.
 
 RBAC for that path is **not** added to Antrea UI's own `clusterroles.yaml`.
 Instead, ship your own `ClusterRole` labeled
-`rbac.antrea-ui.io/aggregate-to-antrea-ui-admin: "true"`, which
+`rbac.ui.antrea.io/aggregate-to-antrea-ui-admin: "true"`, which
 [aggregates](https://kubernetes.io/docs/reference/access-authn-authz/rbac/#aggregated-clusterroles)
 into the `antrea-ui-admin` ClusterRole automatically — the one Antrea UI
 impersonates for K8s API calls made on behalf of the UI user, which is what
@@ -190,8 +207,9 @@ stay in sync with what the host actually expects.
 Antrea UI only makes sense running against a real cluster, so test against
 one directly rather than a standalone dev server. The commands below assume
 `@antrea/ui-plugin-sdk` is already built (see "Writing a plugin" above), and
-that `<namespace>` is the namespace Antrea UI itself is installed in — the
-backend only watches ConfigMaps in its own namespace.
+that `<namespace>` is wherever the backend watches for plugins —
+`plugins.namespace` if set, otherwise Antrea UI's own release namespace (see
+"How it works" above).
 
 ```bash
 cd plugins/examples/pod-counter
@@ -200,7 +218,7 @@ npm install && npm run build
 kubectl create configmap pod-counter-plugin -n <namespace> \
   --from-file=dist/index.js --from-file=dist/manifest.json
 kubectl label configmap pod-counter-plugin -n <namespace> \
-  plugins.antrea-ui.io/plugin=true
+  ui.antrea.io/plugin=true
 kubectl apply -f clusterrole.yaml
 ```
 
@@ -217,7 +235,7 @@ kubectl delete configmap pod-counter-plugin -n <namespace>
 kubectl create configmap pod-counter-plugin -n <namespace> \
   --from-file=dist/index.js --from-file=dist/manifest.json
 kubectl label configmap pod-counter-plugin -n <namespace> \
-  plugins.antrea-ui.io/plugin=true
+  ui.antrea.io/plugin=true
 ```
 
 To remove the plugin: `kubectl delete configmap pod-counter-plugin -n

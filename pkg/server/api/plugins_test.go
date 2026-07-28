@@ -15,6 +15,8 @@
 package api
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"io"
@@ -42,7 +44,7 @@ func createPluginConfigMap(t *testing.T, ts *testServer, name, pluginName, versi
 	_, err := ts.pluginsClientset.CoreV1().ConfigMaps("antrea-ui").Create(context.Background(), &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:   name,
-			Labels: map[string]string{"plugins.antrea-ui.io/plugin": "true"},
+			Labels: map[string]string{"ui.antrea.io/plugin": "true"},
 		},
 		Data: data,
 	}, metav1.CreateOptions{})
@@ -75,6 +77,7 @@ func TestGetPluginsIndex(t *testing.T) {
 	rr := httptest.NewRecorder()
 	ts.router.ServeHTTP(rr, req)
 	require.Equal(t, http.StatusOK, rr.Code)
+	assert.Equal(t, "no-store", rr.Header().Get("Cache-Control"))
 	assert.JSONEq(t, "[]", rr.Body.String())
 
 	createPluginConfigMap(t, ts, "pod-counter-plugin", "pod-counter", "0.1.0", "index.js", map[string]string{
@@ -99,9 +102,44 @@ func TestGetPluginFile(t *testing.T) {
 	ts.router.ServeHTTP(rr, req)
 	require.Equal(t, http.StatusOK, rr.Code)
 	assert.Equal(t, "application/javascript", rr.Header().Get("Content-Type"))
+	assert.Equal(t, "no-store", rr.Header().Get("Cache-Control"))
+	assert.Empty(t, rr.Header().Get("Content-Encoding"))
 	b, err := io.ReadAll(rr.Result().Body)
 	require.NoError(t, err)
 	assert.Equal(t, "console.log('hi')", string(b))
+}
+
+func TestGetPluginFileGzipped(t *testing.T) {
+	ts := newTestServer(t)
+	var gzipped bytes.Buffer
+	gw := gzip.NewWriter(&gzipped)
+	_, err := gw.Write([]byte("console.log('hi')"))
+	require.NoError(t, err)
+	require.NoError(t, gw.Close())
+
+	_, err = ts.pluginsClientset.CoreV1().ConfigMaps("antrea-ui").Create(context.Background(), &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "pod-counter-plugin",
+			Labels: map[string]string{"ui.antrea.io/plugin": "true"},
+		},
+		Data: map[string]string{
+			"manifest.json": `{"name":"pod-counter","version":"0.1.0","entry":"index.js"}`,
+		},
+		BinaryData: map[string][]byte{
+			"index.js": gzipped.Bytes(),
+		},
+	}, metav1.CreateOptions{})
+	require.NoError(t, err)
+	waitForPluginIndex(t, ts, []apisv1.PluginManifest{
+		{Name: "pod-counter", Version: "0.1.0", Entry: "index.js"},
+	})
+
+	req := httptest.NewRequest("GET", "/api/v1/plugins/pod-counter/index.js", nil)
+	rr := httptest.NewRecorder()
+	ts.router.ServeHTTP(rr, req)
+	require.Equal(t, http.StatusOK, rr.Code)
+	assert.Equal(t, "gzip", rr.Header().Get("Content-Encoding"))
+	assert.Equal(t, gzipped.Bytes(), rr.Body.Bytes())
 }
 
 func TestGetPluginFileNotFound(t *testing.T) {

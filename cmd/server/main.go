@@ -132,7 +132,11 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("failed to create K8s clientset: %w", err)
 	}
-	pluginRegistry := pluginregistry.NewRegistry(logger, k8sClientset, env.GetNamespace(), config.Plugins.LabelSelector)
+	pluginsNamespace := config.Plugins.Namespace
+	if pluginsNamespace == "" {
+		pluginsNamespace = env.GetNamespace()
+	}
+	pluginRegistry := pluginregistry.NewRegistry(logger, k8sClientset, pluginsNamespace, config.Plugins.LabelSelector)
 
 	antreaSvcHandler, err := antreasvchandler.NewRequestsHandler(logger, k8sRESTConfig, config.AntreaNamespace, antreaUIAdminUser)
 	if err != nil {

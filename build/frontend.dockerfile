@@ -37,11 +37,16 @@ RUN if [ -n "$NPM_REGISTRY" ]; then \
 RUN export COREPACK_NPM_REGISTRY="${NPM_REGISTRY%/}" && \
     corepack enable && yarn install --immutable
 
-# Build antrea-ui-components first: antrea-ui consumes its published dist/ output (see the
-# Vite/Vitest source alias in antrea-ui for why that's dev-only), not its raw TypeScript source.
+# Build antrea-ui-components and antrea-ui-plugin-sdk first: antrea-ui consumes their published
+# dist/ output (see the Vite/Vitest source alias in antrea-ui for why that's dev-only), not their
+# raw TypeScript source.
 COPY client/web/antrea-ui-components/src ./antrea-ui-components/src
 COPY client/web/antrea-ui-components/tsconfig.json client/web/antrea-ui-components/vite.config.ts ./antrea-ui-components/
 RUN yarn workspace @antrea/ui-components run build
+
+COPY client/web/antrea-ui-plugin-sdk/src ./antrea-ui-plugin-sdk/src
+COPY client/web/antrea-ui-plugin-sdk/tsconfig.json ./antrea-ui-plugin-sdk/
+RUN yarn workspace @antrea/ui-plugin-sdk run build
 
 COPY client/web/antrea-ui ./antrea-ui
 ARG NODE_ENV=production
