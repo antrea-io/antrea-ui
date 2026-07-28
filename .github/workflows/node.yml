@@ -27,6 +27,7 @@ jobs:
       run: corepack enable
     - run: yarn install --immutable
     - run: yarn workspace @antrea/ui-components run build
+    - run: yarn workspace @antrea/ui-plugin-sdk run build
     - run: yarn workspace antrea-ui run lint
     - run: yarn workspace antrea-ui run test
 

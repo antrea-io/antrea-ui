@@ -12,7 +12,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@antrea/ui-components@workspace:*, @antrea/ui-components@workspace:antrea-ui-components":
+"@antrea/ui-components@npm:0.1.0, @antrea/ui-components@workspace:*, @antrea/ui-components@workspace:antrea-ui-components":
   version: 0.0.0-use.local
   resolution: "@antrea/ui-components@workspace:antrea-ui-components"
   dependencies:
@@ -31,6 +31,17 @@ __metadata:
     typescript-eslint: "npm:^8.36.0"
     vite: "npm:^8.0.0"
     vitest: "npm:^4.0.5"
+  languageName: unknown
+  linkType: soft
+
+"@antrea/ui-plugin-sdk@workspace:*, @antrea/ui-plugin-sdk@workspace:antrea-ui-plugin-sdk":
+  version: 0.0.0-use.local
+  resolution: "@antrea/ui-plugin-sdk@workspace:antrea-ui-plugin-sdk"
+  dependencies:
+    "@antrea/ui-components": "npm:0.1.0"
+    typescript: "npm:^6.0.0"
+  peerDependencies:
+    "@antrea/ui-components": 0.1.0
   languageName: unknown
   linkType: soft
 
@@ -1661,6 +1672,7 @@ __metadata:
   resolution: "antrea-ui@workspace:antrea-ui"
   dependencies:
     "@antrea/ui-components": "workspace:*"
+    "@antrea/ui-plugin-sdk": "workspace:*"
     "@eslint/create-config": "npm:^2.0.0"
     "@hookform/error-message": "npm:^2.0.1"
     "@reduxjs/toolkit": "npm:^2.8.2"

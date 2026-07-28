@@ -46,6 +46,7 @@ import (
 	"antrea.io/antrea-ui/pkg/password"
 	passwordhasher "antrea.io/antrea-ui/pkg/password/hasher"
 	passwordrw "antrea.io/antrea-ui/pkg/password/readwriter"
+	pluginregistry "antrea.io/antrea-ui/pkg/plugins"
 	"antrea.io/antrea-ui/pkg/server"
 	"antrea.io/antrea-ui/pkg/signals"
 	"antrea.io/antrea-ui/pkg/version"
@@ -127,6 +128,16 @@ func run() error {
 	traceflowHandler := traceflowhandler.NewRequestsHandler(logger, k8sAdminDynamicClient)
 	k8sProxyHandler := k8sproxy.NewK8sProxyHandler(logger, k8sServerURL, k8sAdminHTTPClient.Transport)
 
+	k8sClientset, err := kubernetes.NewForConfig(k8sRESTConfig)
+	if err != nil {
+		return fmt.Errorf("failed to create K8s clientset: %w", err)
+	}
+	pluginsNamespace := config.Plugins.Namespace
+	if pluginsNamespace == "" {
+		pluginsNamespace = env.GetNamespace()
+	}
+	pluginRegistry := pluginregistry.NewRegistry(logger, k8sClientset, pluginsNamespace, config.Plugins.LabelSelector)
+
 	antreaSvcHandler, err := antreasvchandler.NewRequestsHandler(logger, k8sRESTConfig, config.AntreaNamespace, antreaUIAdminUser)
 	if err != nil {
 		return fmt.Errorf("failed to create handler for Antrea Service requests: %w", err)
@@ -194,14 +205,10 @@ func run() error {
 			if ns == "" {
 				ns = "flow-aggregator"
 			}
-			k8sClient, err := kubernetes.NewForConfig(k8sRESTConfig)
-			if err != nil {
-				return fmt.Errorf("failed to create k8s client for FlowAggregator CA cert: %w", err)
-			}
 			fetchCtx, fetchCancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer fetchCancel()
 			logger.Info("Fetching FlowAggregator CA cert", "namespace", ns, "configMap", config.FlowAggregator.CAConfigMap)
-			cm, err := k8sClient.CoreV1().ConfigMaps(ns).Get(fetchCtx, config.FlowAggregator.CAConfigMap, metav1.GetOptions{})
+			cm, err := k8sClientset.CoreV1().ConfigMaps(ns).Get(fetchCtx, config.FlowAggregator.CAConfigMap, metav1.GetOptions{})
 			if err != nil {
 				return fmt.Errorf("failed to get FlowAggregator CA configmap %s/%s: %w", ns, config.FlowAggregator.CAConfigMap, err)
 			}
@@ -236,6 +243,7 @@ func run() error {
 		passwordStore,
 		tokenManager,
 		oidcProvider,
+		pluginRegistry,
 		config,
 	)
 
@@ -267,6 +275,7 @@ func run() error {
 	go traceflowHandler.Run(stopCh)
 	go antreaSvcHandler.Run(stopCh)
 	go tokenManager.Run(stopCh)
+	go pluginRegistry.Run(stopCh)
 
 	// Initializing the server in a goroutine so that
 	// it won't block the graceful shutdown handling below

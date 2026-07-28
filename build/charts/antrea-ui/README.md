@@ -71,6 +71,8 @@ Kubernetes: `>= 1.16.0-0`
 | https.userCA.key | string | `""` | CA private key (base64-encoded PEM format) |
 | ipv6.enable | bool | `true` | Enable IPv6 for accessing the web UI. Even if the cluster does not support IPv6, you do not typically need to set this value to false. |
 | nodeSelector | object | `{"kubernetes.io/os":"linux"}` | Node selector for the Antrea UI Pod. |
+| plugins.labelSelector | string | `"ui.antrea.io/plugin=true"` | Label selector for the ConfigMaps (in the namespace below) that the backend watches for frontend plugins. |
+| plugins.namespace | string | `""` | Namespace to watch for plugin ConfigMaps. Defaults to the release namespace. Set this to isolate plugin ConfigMaps away from antrea-ui's own release namespace - useful since antrea-ui is commonly installed into kube-system, which can host other sensitive ConfigMaps. If set to anything other than the release namespace, whoever runs `helm install`/`upgrade` needs permission to create a Role/RoleBinding in that other namespace too. |
 | podAnnotations | object | `{}` | Annotations to be added to the Antrea UI Pod. |
 | podLabels | object | `{}` | Labels to be added to the Antrea UI Pod. |
 | security.cookieSecure | bool | same as https.enable | Set the Secure attribute for Antrea UI cookies. The attribute is set by default when HTTPS is enabled in Antrea UI (by setting https.enable to true). When using an Ingress to terminate TLS, you should explicitly set cookieSecure to true for security hardening purposes. |

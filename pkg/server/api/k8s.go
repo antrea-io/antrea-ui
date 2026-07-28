@@ -25,9 +25,18 @@ import (
 
 // allowedK8sPaths contains the K8s api paths that we are proxying.
 // Note the leading slash, since the Gin "catch-all" parameter ("/*path") will include it.
+// There is no per-user permission model here: every path listed below is reachable by any
+// authenticated Antrea UI user, not just users of the feature (e.g. a plugin) that needed it.
+// This is only a coarse, extra layer of restriction on top of RBAC (itself granted per
+// ClusterRole, see clusterroles.yaml) - it is expected to go away once per-user RBAC is
+// implemented. RBAC alone is sufficient here: requests are impersonated as antrea-ui-admin (see
+// cmd/server/main.go), never antrea-ui itself, so whatever antrea-ui-admin's (aggregated)
+// ClusterRole grants is exactly what's reachable through this proxy - the same permissions an
+// admin already approved by applying that RBAC in the first place.
 var allowedK8sPaths = []string{
 	"/apis/crd.antrea.io/v1beta1/antreaagentinfos",
 	"/apis/crd.antrea.io/v1beta1/antreacontrollerinfos",
+	"/api/v1/",
 }
 
 func (s *Server) GetK8s(c *gin.Context) {

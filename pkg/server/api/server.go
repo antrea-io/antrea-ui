@@ -30,6 +30,7 @@ import (
 	"antrea.io/antrea-ui/pkg/handlers/flowstream"
 	"antrea.io/antrea-ui/pkg/handlers/traceflow"
 	"antrea.io/antrea-ui/pkg/password"
+	"antrea.io/antrea-ui/pkg/plugins"
 	"antrea.io/antrea-ui/pkg/server/errors"
 	"antrea.io/antrea-ui/pkg/version"
 )
@@ -49,6 +50,7 @@ type Server struct {
 	tokenManager             auth.TokenManager
 	config                   serverConfig
 	frontendSettings         *apisv1.FrontendSettings
+	pluginRegistry           *plugins.Registry
 }
 
 func NewServer(
@@ -59,6 +61,7 @@ func NewServer(
 	flowStreamSubscriber flowstream.FlowStreamSubscriber,
 	passwordStore password.Store,
 	tokenManager auth.TokenManager,
+	pluginRegistry *plugins.Registry,
 	config *serverconfig.Config,
 ) *Server {
 	c := serverConfig{
@@ -79,6 +82,7 @@ func NewServer(
 		tokenManager:             tokenManager,
 		config:                   c,
 		frontendSettings:         buildFrontendSettingsFromConfig(config),
+		pluginRegistry:           pluginRegistry,
 	}
 }
 
@@ -127,6 +131,7 @@ func (s *Server) AddRoutes(r *gin.RouterGroup) {
 		c.String(http.StatusOK, version.GetFullVersionWithRuntimeInfo())
 	})
 	apiv1.GET("/settings", s.FrontendSettings)
+	s.AddPluginsRoutes(apiv1)
 	s.AddTraceflowRoutes(apiv1)
 	s.AddAccountRoutes(apiv1)
 	s.AddK8sRoutes(apiv1)

@@ -57,6 +57,16 @@ type Config struct {
 	}
 	LogVerbosity    int
 	AntreaNamespace string
+	Plugins         PluginsConfig
+}
+
+type PluginsConfig struct {
+	// LabelSelector selects the ConfigMaps (in Namespace) that the backend watches for
+	// frontend plugins, e.g. "ui.antrea.io/plugin=true".
+	LabelSelector string
+	// Namespace is the Kubernetes namespace the backend watches for plugin ConfigMaps.
+	// Empty means antrea-ui's own namespace (see env.GetNamespace()).
+	Namespace string
 }
 
 type AuthConfig struct {
@@ -131,6 +141,7 @@ func LoadConfig() (*Config, error) {
 	v.SetDefault("auth.basic.enabled", true)
 	v.SetDefault("auth.oidc.enabled", false)
 	v.SetDefault("antreaNamespace", "kube-system")
+	v.SetDefault("plugins.labelSelector", "ui.antrea.io/plugin=true")
 	v.SetDefault("flowAggregator.enabled", false)
 	v.SetDefault("flowAggregator.address", "flow-aggregator.flow-aggregator.svc:14740")
 	v.SetDefault("flowAggregator.caConfigMap", "flow-aggregator-ca")

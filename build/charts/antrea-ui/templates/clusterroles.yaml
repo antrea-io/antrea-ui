@@ -20,14 +20,35 @@ rules:
 # antrea-ui-admin holds every permission needed to serve K8s API requests made on behalf of the
 # UI user (as opposed to antrea-ui's own operations, see the antrea-ui ClusterRole above), e.g.
 # the K8s API proxy and Traceflow CRUD. antrea-ui impersonates this ServiceAccount for those
-# requests (see role.yaml). A follow-up PR will let plugins extend these permissions via
-# ClusterRole aggregation.
+# requests (see role.yaml).
+#
+# Aggregated ClusterRole (https://kubernetes.io/docs/reference/access-authn-authz/rbac/#aggregated-clusterroles):
+# its `rules` are populated automatically by the API server from every ClusterRole labeled
+# rbac.ui.antrea.io/aggregate-to-antrea-ui-admin: "true", including antrea-ui-admin-core below.
+# Plugins that need additional RBAC ship their own similarly-labeled ClusterRole instead of
+# editing this file — that ClusterRole's creation is the responsibility of whoever deploys the
+# plugin.
 kind: ClusterRole
 apiVersion: rbac.authorization.k8s.io/v1
 metadata:
   name: antrea-ui-admin
   labels:
     app: antrea-ui
+aggregationRule:
+  clusterRoleSelectors:
+    - matchLabels:
+        rbac.ui.antrea.io/aggregate-to-antrea-ui-admin: "true"
+# No `rules` here: the aggregation controller owns and populates this field itself. Setting it
+# explicitly (even to []) makes Helm's server-side apply fight the controller for ownership of
+# .rules on every upgrade ("conflict with clusterrole-aggregation-controller").
+---
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: antrea-ui-admin-core
+  labels:
+    app: antrea-ui
+    rbac.ui.antrea.io/aggregate-to-antrea-ui-admin: "true"
 rules:
   - apiGroups:
       - crd.antrea.io

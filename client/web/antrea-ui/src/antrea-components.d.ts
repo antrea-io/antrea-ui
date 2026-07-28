@@ -16,7 +16,7 @@
 // Allows using <antrea-button>, <antrea-input>, etc. in TSX files without
 // TypeScript errors, and provides prop type checking.
 
-import type { AntreaButton, AntreaAlert, AntreaCard, AntreaNav, AntreaNavItem, AntreaInput } from '@antrea/ui-components';
+import type { AntreaButton, AntreaAlert, AntreaCard, AntreaNav, AntreaNavItem, AntreaInput, EdgeExtraRenderer, FlowTableColumnsProcessor } from '@antrea/ui-components';
 import React from 'react';
 
 type ButtonAction = 'solid' | 'outline' | 'flat';
@@ -66,6 +66,8 @@ declare global {
             };
             'antrea-flow-visibility-page': React.HTMLAttributes<HTMLElement> & React.ClassAttributes<HTMLElement> & {
                 token?: string;
+                edgeExtraRenderers?: EdgeExtraRenderer[];
+                flowTableColumnsProcessors?: FlowTableColumnsProcessor[];
             };
             'antrea-login-page': React.HTMLAttributes<HTMLElement> & React.ClassAttributes<HTMLElement>;
         }

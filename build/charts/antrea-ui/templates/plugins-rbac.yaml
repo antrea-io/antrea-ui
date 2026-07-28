@@ -1,0 +1,45 @@
+# Grants antrea-ui's own ServiceAccount read access to ConfigMaps in the namespace the backend
+# watches for frontend plugins (see values.yaml's plugins.namespace and docs/plugins.md). Split
+# out from role.yaml into its own namespace-parameterized Role/RoleBinding pair, rather than a
+# rule on the base antrea-ui Role, since plugins.namespace can differ from the release namespace
+# - e.g. to keep plugin ConfigMaps out of kube-system, where antrea-ui is commonly installed
+# alongside other, unrelated, more sensitive ConfigMaps. Note this grants get/list/watch on
+# every ConfigMap in that namespace, not just labeled plugin ones - the label selector is applied
+# client-side by the backend's informer, not by RBAC, so isolating plugin ConfigMaps into their
+# own namespace (rather than relying on the label alone) is the actual mitigation here.
+kind: Role
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: antrea-ui-plugins
+  namespace: {{ .Values.plugins.namespace | default .Release.Namespace }}
+  labels:
+    app: antrea-ui
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - "configmaps"
+    verbs:
+      - "get"
+      - "list"
+      - "watch"
+---
+# In the same (possibly non-release) namespace as the Role above - unlike this chart's other
+# RoleBindings, this pair can't just reuse the release namespace throughout. The Helm identity
+# running install/upgrade needs permission to create a Role/RoleBinding in that other namespace
+# when it differs from the release namespace.
+kind: RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: antrea-ui-plugins
+  namespace: {{ .Values.plugins.namespace | default .Release.Namespace }}
+  labels:
+    app: antrea-ui
+subjects:
+- kind: ServiceAccount
+  name: antrea-ui
+  namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: Role
+  name: antrea-ui-plugins
+  apiGroup: rbac.authorization.k8s.io

@@ -34,6 +34,19 @@ url: ""
 # -- Namespace where Antrea is installed.
 antreaNamespace: "kube-system"
 
+# Frontend plugins (see docs/plugins.md): delivered as labeled ConfigMaps that the backend
+# watches.
+plugins:
+  # -- Label selector for the ConfigMaps (in the namespace below) that the backend watches for
+  # frontend plugins.
+  labelSelector: "ui.antrea.io/plugin=true"
+  # -- Namespace to watch for plugin ConfigMaps. Defaults to the release namespace. Set this to
+  # isolate plugin ConfigMaps away from antrea-ui's own release namespace - useful since
+  # antrea-ui is commonly installed into kube-system, which can host other sensitive ConfigMaps.
+  # If set to anything other than the release namespace, whoever runs `helm install`/`upgrade`
+  # needs permission to create a Role/RoleBinding in that other namespace too.
+  namespace: ""
+
 # Flow Aggregator gRPC integration (live flow visibility in the UI).
 flowAggregator:
   # -- When true, the backend connects to Flow Aggregator's FlowStreamService over gRPC.

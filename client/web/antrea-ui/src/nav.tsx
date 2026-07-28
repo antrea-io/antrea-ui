@@ -14,9 +14,11 @@
  * limitations under the License.
  */
 
+import React from 'react';
 import { useLocation } from 'react-router';
 import { Link } from 'react-router';
 import '@antrea/ui-components';
+import type { PluginSidebarEntry } from './plugins';
 
 function DashboardIcon() {
     return (
@@ -42,6 +44,10 @@ function EyeIcon() {
     );
 }
 
+function isExternalUrl(path: string): boolean {
+    return /^[a-z][a-z0-9+.-]*:\/\//i.test(path);
+}
+
 function GearIcon() {
     return (
         <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" style={{ flexShrink: 0 }}>
@@ -51,7 +57,7 @@ function GearIcon() {
     );
 }
 
-export default function NavTab() {
+export default function NavTab({ pluginSidebarEntries }: { pluginSidebarEntries: PluginSidebarEntry[] }) {
     const { pathname } = useLocation();
 
     return (
@@ -80,6 +86,34 @@ export default function NavTab() {
                     <span className="nav-label">Settings</span>
                 </Link>
             </antrea-nav-item>
+            {pluginSidebarEntries.map((entry) => {
+                const external = isExternalUrl(entry.path);
+                const label = (
+                    <>
+                        {entry.icon && (
+                            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" style={{ flexShrink: 0 }}>
+                                <path d={entry.icon} />
+                            </svg>
+                        )}
+                        <span className="nav-label">{entry.label}</span>
+                    </>
+                );
+                return (
+                    <React.Fragment key={entry.path}>
+                        <antrea-nav-item
+                            {...(!external && pathname.startsWith(entry.path) ? { active: true } : {})}
+                        >
+                            {external ? (
+                                <a href={entry.path} target="_blank" rel="noopener noreferrer">
+                                    {label}
+                                </a>
+                            ) : (
+                                <Link to={entry.path}>{label}</Link>
+                            )}
+                        </antrea-nav-item>
+                    </React.Fragment>
+                );
+            })}
         </antrea-nav>
     );
 }
