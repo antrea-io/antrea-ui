@@ -34,8 +34,8 @@ import (
 // ClusterRole grants is exactly what's reachable through this proxy - the same permissions an
 // admin already approved by applying that RBAC in the first place.
 var allowedK8sPaths = []string{
-	"/apis/crd.antrea.io/v1beta1/antreaagentinfos",
-	"/apis/crd.antrea.io/v1beta1/antreacontrollerinfos",
+	"/apis/crd.antrea.io/",
+	"/apis/networking.k8s.io/v1",
 	"/api/v1/",
 }
 
