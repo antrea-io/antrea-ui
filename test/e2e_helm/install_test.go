@@ -131,6 +131,15 @@ stringData:
 			helmOptions := &helm.Options{
 				KubectlOptions: kubectlOptions,
 				SetValues:      tc.helmSetValues,
+				// the chart's resource names (e.g., the antrea-ui Deployment and Service) are
+				// not templated with the release name, so they are shared across subtests. Without
+				// --wait, "helm delete" returns as soon as the deletion is submitted to the API
+				// server, before the old Pod actually terminates. The next subtest's Service can
+				// then briefly select the old (Terminating) Pod instead of the new one, causing
+				// connection failures that no amount of HTTP retries can fix.
+				ExtraArgs: map[string][]string{
+					"delete": {"--wait"},
+				},
 			}
 
 			// Run pre-install setup if provided
