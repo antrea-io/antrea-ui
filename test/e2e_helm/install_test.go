@@ -28,6 +28,7 @@ import (
 	http_helper "github.com/gruntwork-io/terratest/modules/http-helper"
 	"github.com/gruntwork-io/terratest/modules/k8s"
 	"github.com/gruntwork-io/terratest/modules/random"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 const (
@@ -131,15 +132,6 @@ stringData:
 			helmOptions := &helm.Options{
 				KubectlOptions: kubectlOptions,
 				SetValues:      tc.helmSetValues,
-				// the chart's resource names (e.g., the antrea-ui Deployment and Service) are
-				// not templated with the release name, so they are shared across subtests. Without
-				// --wait, "helm delete" returns as soon as the deletion is submitted to the API
-				// server, before the old Pod actually terminates. The next subtest's Service can
-				// then briefly select the old (Terminating) Pod instead of the new one, causing
-				// connection failures that no amount of HTTP retries can fix.
-				ExtraArgs: map[string][]string{
-					"delete": {"--wait"},
-				},
 			}
 
 			// Run pre-install setup if provided
@@ -149,7 +141,19 @@ stringData:
 
 			// the test will fail immediately in case of error
 			helm.Install(t, helmOptions, helmChartPath, releaseName)
-			defer helm.Delete(t, helmOptions, releaseName, true)
+			defer func() {
+				helm.Delete(t, helmOptions, releaseName, true)
+				// the chart's resource names (e.g., the antrea-ui Deployment and Service) are not
+				// templated with the release name, so they are shared across subtests. "helm delete"
+				// only waits for the resources it manages (the Deployment/Service objects) to be
+				// removed from the API; it does not wait for the Deployment's Pod to actually
+				// terminate, since the Pod itself is not part of the release manifest. That leaves
+				// a window where the old Pod is still Running/Ready (just Terminating) and still
+				// matches the Service's label selector, so the next subtest's tunnel can attach to
+				// the old, dying Pod instead of the newly installed one. Wait for the Pod to be
+				// fully gone before returning.
+				k8s.WaitUntilNumPodsCreated(t, kubectlOptions, metav1.ListOptions{LabelSelector: "app=antrea-ui"}, 0, 60, 1*time.Second)
+			}()
 
 			// retry at most 60 times, with a 1s delay
 			// this is actually a no-op except for LoadBalancer Services
