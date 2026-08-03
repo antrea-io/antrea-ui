@@ -70,6 +70,6 @@ func (s *Server) checkK8sPath(c *gin.Context) {
 
 func (s *Server) AddK8sRoutes(r *gin.RouterGroup) {
 	r = r.Group("/k8s")
-	r.Use(s.checkBearerToken)
+	r.Use(s.authenticate())
 	r.GET("/*path", s.checkK8sPath, s.GetK8s)
 }

@@ -149,7 +149,7 @@ func (s *Server) DeleteTraceflowRequest(c *gin.Context) {
 
 func (s *Server) AddTraceflowRoutes(r *gin.RouterGroup) {
 	r = r.Group("/traceflow")
-	r.Use(s.checkBearerToken)
+	r.Use(s.authenticate())
 	createTfHandlers := []gin.HandlerFunc{}
 	if s.config.MaxTraceflowsPerHour >= 0 {
 		burstSize := 0

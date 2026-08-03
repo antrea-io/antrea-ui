@@ -15,6 +15,7 @@
 package api
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -27,14 +28,17 @@ import (
 	"github.com/golang/mock/gomock"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	k8sfake "k8s.io/client-go/kubernetes/fake"
 
-	authtesting "antrea.io/antrea-ui/pkg/auth/testing"
+	"antrea.io/antrea-ui/pkg/auth/session"
 	serverconfig "antrea.io/antrea-ui/pkg/config/server"
 	antreasvchandlertesting "antrea.io/antrea-ui/pkg/handlers/antreasvc/testing"
 	traceflowhandlertesting "antrea.io/antrea-ui/pkg/handlers/traceflow/testing"
 	passwordtesting "antrea.io/antrea-ui/pkg/password/testing"
 	"antrea.io/antrea-ui/pkg/plugins"
+	"antrea.io/antrea-ui/pkg/server/authn"
+	cookieutils "antrea.io/antrea-ui/pkg/server/utils/cookie"
 )
 
 func init() {
@@ -56,6 +60,17 @@ func (h *testk8sProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 	}
 }
 
+// fakeValidator stands in for the API server's SelfSubjectReview: every request that
+// ts.authorizeRequest signs is accepted, since these tests are exercising route wiring, not
+// credential validation (see pkg/server/authn for that).
+type fakeValidator struct {
+	username string
+}
+
+func (v *fakeValidator) ValidateCredential(_ context.Context, _ *session.Credential) (string, error) {
+	return v.username, nil
+}
+
 type testServer struct {
 	s                        *Server
 	router                   *gin.Engine
@@ -63,7 +78,7 @@ type testServer struct {
 	k8sProxyHandler          *testk8sProxyHandler
 	antreaSvcRequestsHandler *antreasvchandlertesting.MockRequestsHandler
 	passwordStore            *passwordtesting.MockStore
-	tokenManager             *authtesting.MockTokenManager
+	sessionStore             session.Store
 	pluginsClientset         *k8sfake.Clientset
 }
 
@@ -82,7 +97,6 @@ func newTestServer(t *testing.T, options ...testServerOptions) *testServer {
 	k8sProxyHandler := &testk8sProxyHandler{}
 	antreaSvcRequestsHandler := antreasvchandlertesting.NewMockRequestsHandler(ctrl)
 	passwordStore := passwordtesting.NewMockStore(ctrl)
-	tokenManager := authtesting.NewMockTokenManager(ctrl)
 
 	config := &serverconfig.Config{}
 	// disable rate limiting by default
@@ -105,17 +119,25 @@ func newTestServer(t *testing.T, options ...testServerOptions) *testServer {
 		wg.Wait()
 	})
 
-	s := NewServer(
-		logger,
-		traceflowRequestsHandler,
-		k8sProxyHandler,
-		antreaSvcRequestsHandler,
-		nil, // flowStreamHandler
-		passwordStore,
-		tokenManager,
-		pluginRegistry,
-		config,
-	)
+	sessionStore := session.NewStore(logger, session.Options{})
+	authenticator, err := authn.New(logger, authn.Config{
+		Store:                 sessionStore,
+		BearerFallbackEnabled: true,
+		BearerValidator:       &fakeValidator{username: "alice"},
+	})
+	require.NoError(t, err)
+
+	s := NewServer(Options{
+		Logger:                   logger,
+		Config:                   config,
+		TraceflowRequestsHandler: traceflowRequestsHandler,
+		K8sProxyHandler:          k8sProxyHandler,
+		AntreaSvcRequestsHandler: antreaSvcRequestsHandler,
+		FlowStreamSubscriber:     nil,
+		PasswordStore:            passwordStore,
+		PluginRegistry:           pluginRegistry,
+		Authenticator:            authenticator,
+	})
 	router := gin.Default()
 	s.AddRoutes(&router.RouterGroup)
 	return &testServer{
@@ -126,19 +148,35 @@ func newTestServer(t *testing.T, options ...testServerOptions) *testServer {
 		antreaSvcRequestsHandler: antreaSvcRequestsHandler,
 		pluginsClientset:         pluginsClientset,
 		passwordStore:            passwordStore,
-		tokenManager:             tokenManager,
+		sessionStore:             sessionStore,
 	}
 }
 
 func (ts *testServer) authorizeRequest(req *http.Request) {
 	token := fmt.Sprintf("token-%s", uuid.NewString())
 	req.Header.Add("Authorization", fmt.Sprintf("Bearer %s", token))
-	ts.tokenManager.EXPECT().VerifyToken(token).Return(nil)
+}
+
+// authorizeAdminRequest attaches a session cookie for a mode-4 (static admin password) session,
+// for the one route (UpdatePassword) that is restricted to that mode specifically rather than to
+// any authenticated caller.
+func (ts *testServer) authorizeAdminRequest(t *testing.T, req *http.Request) {
+	t.Helper()
+	sess, err := ts.sessionStore.Create(&session.Spec{
+		Mode:     session.ModeAdmin,
+		Username: "admin",
+		Credential: session.Credential{
+			Kind:     session.KindImpersonate,
+			UserName: "system:serviceaccount:kube-system:antrea-ui-admin",
+		},
+	})
+	require.NoError(t, err)
+	req.AddCookie(&http.Cookie{Name: cookieutils.SessionCookieName, Value: sess.ID()})
 }
 
 // TestAuthorization ensures that all routes that are meant to be protected (i.e., can only be
-// accessed with a valid JWT token) are indeed protected. If a route does not require an access
-// token, it needs to be manually added to the unprotectedRoutes map below.
+// accessed with a valid credential) are indeed protected. If a route does not require one, it
+// needs to be manually added to the unprotectedRoutes map below.
 func TestAuthorization(t *testing.T) {
 	unprotectedRoutes := map[string]bool{
 		"GET /api/v1/version":                 true,

@@ -15,9 +15,15 @@
 package v1
 
 type FrontendAuthSettings struct {
-	BasicEnabled     bool   `json:"basicEnabled"`
+	// BasicEnabled is the static admin password (mode 4).
+	BasicEnabled bool `json:"basicEnabled"`
+	// OIDCEnabled is login through an OIDC provider the kube-apiserver also trusts (mode 1).
 	OIDCEnabled      bool   `json:"oidcEnabled"`
 	OIDCProviderName string `json:"oidcProviderName,omitempty"`
+	// KubeconfigEnabled is "bring your own kubeconfig" (mode 3).
+	KubeconfigEnabled bool `json:"kubeconfigEnabled"`
+	// ServiceAccountTokenEnabled is "paste a Kubernetes token" (mode 5).
+	ServiceAccountTokenEnabled bool `json:"serviceAccountTokenEnabled"`
 }
 
 type FrontendFeatureSettings struct {
