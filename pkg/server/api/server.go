@@ -50,13 +50,9 @@ type Options struct {
 	FlowStreamSubscriber     flowstream.FlowStreamSubscriber
 	PasswordStore            password.Store
 	PluginRegistry           *plugins.Registry
-	// Authenticator resolves the caller's identity (session cookie or bearer token) ahead of
-	// every protected route.
+	// Authenticator resolves the caller's identity for every protected route.
 	Authenticator *authn.Authenticator
-	// ClientFactory is not used by this package yet: routes still act through the shared
-	// impersonated client passed in via the individual *RequestsHandler dependencies above.
-	// It is threaded through here ahead of the follow-up change that has each route build a
-	// client from the caller's own credential instead.
+	// ClientFactory builds Kubernetes clients that act as the caller.
 	ClientFactory *k8s.ClientFactory
 }
 
@@ -68,11 +64,10 @@ type Server struct {
 	flowStreamSSEHandler     *flowstream.SSEHandler
 	passwordStore            password.Store
 	authenticator            *authn.Authenticator
-	//nolint:unused // wired in ahead of the follow-up change that uses it
-	clientFactory    *k8s.ClientFactory
-	config           serverConfig
-	frontendSettings *apisv1.FrontendSettings
-	pluginRegistry   *plugins.Registry
+	clientFactory            *k8s.ClientFactory
+	config                   serverConfig
+	frontendSettings         *apisv1.FrontendSettings
+	pluginRegistry           *plugins.Registry
 }
 
 func NewServer(o Options) *Server {
@@ -99,10 +94,9 @@ func NewServer(o Options) *Server {
 	}
 }
 
-// authenticate resolves the caller's session cookie or bearer token, replacing the old
-// checkBearerToken JWT check. It is a thin wrapper today so that call sites read the same either
-// way; the routes it guards still act through a shared impersonated client rather than the
-// caller's own credential, which is a following change.
+// authenticate is the middleware protecting every route that acts on the user's behalf. It
+// resolves the session cookie (or the Authorization: Bearer fallback) into the credential that
+// downstream handlers present to Kubernetes.
 func (s *Server) authenticate() gin.HandlerFunc {
 	return s.authenticator.Middleware()
 }
@@ -140,8 +134,11 @@ func (s *Server) AddFlowStreamRoutes(r *gin.RouterGroup) {
 }
 
 // flowStreamDisabled handles GET /api/v1/flows/stream when Flow Aggregator integration is off.
+//
+// 501, not 503: this is a static per-deployment configuration choice, not a transient condition
+// that a retry could resolve. The frontend treats 501 on this endpoint as terminal.
 func (s *Server) flowStreamDisabled(c *gin.Context) {
-	c.JSON(http.StatusServiceUnavailable, gin.H{
+	c.JSON(http.StatusNotImplemented, gin.H{
 		"error": "Flow Aggregator integration is not enabled for this Antrea UI instance (set flowAggregator.enabled in the Helm chart).",
 	})
 }

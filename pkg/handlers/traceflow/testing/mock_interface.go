@@ -25,6 +25,7 @@ import (
 
 	traceflow "antrea.io/antrea-ui/pkg/handlers/traceflow"
 	gomock "github.com/golang/mock/gomock"
+	dynamic "k8s.io/client-go/dynamic"
 )
 
 // MockRequestsHandler is a mock of RequestsHandler interface.
@@ -51,39 +52,39 @@ func (m *MockRequestsHandler) EXPECT() *MockRequestsHandlerMockRecorder {
 }
 
 // CreateRequest mocks base method.
-func (m *MockRequestsHandler) CreateRequest(ctx context.Context, request *traceflow.Request) (string, error) {
+func (m *MockRequestsHandler) CreateRequest(ctx context.Context, client dynamic.Interface, request *traceflow.Request) (string, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "CreateRequest", ctx, request)
+	ret := m.ctrl.Call(m, "CreateRequest", ctx, client, request)
 	ret0, _ := ret[0].(string)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // CreateRequest indicates an expected call of CreateRequest.
-func (mr *MockRequestsHandlerMockRecorder) CreateRequest(ctx, request interface{}) *gomock.Call {
+func (mr *MockRequestsHandlerMockRecorder) CreateRequest(ctx, client, request interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CreateRequest", reflect.TypeOf((*MockRequestsHandler)(nil).CreateRequest), ctx, request)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CreateRequest", reflect.TypeOf((*MockRequestsHandler)(nil).CreateRequest), ctx, client, request)
 }
 
 // DeleteRequest mocks base method.
-func (m *MockRequestsHandler) DeleteRequest(ctx context.Context, requestID string) (bool, error) {
+func (m *MockRequestsHandler) DeleteRequest(ctx context.Context, client dynamic.Interface, requestID string) (bool, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "DeleteRequest", ctx, requestID)
+	ret := m.ctrl.Call(m, "DeleteRequest", ctx, client, requestID)
 	ret0, _ := ret[0].(bool)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // DeleteRequest indicates an expected call of DeleteRequest.
-func (mr *MockRequestsHandlerMockRecorder) DeleteRequest(ctx, requestID interface{}) *gomock.Call {
+func (mr *MockRequestsHandlerMockRecorder) DeleteRequest(ctx, client, requestID interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeleteRequest", reflect.TypeOf((*MockRequestsHandler)(nil).DeleteRequest), ctx, requestID)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeleteRequest", reflect.TypeOf((*MockRequestsHandler)(nil).DeleteRequest), ctx, client, requestID)
 }
 
 // GetRequestResult mocks base method.
-func (m *MockRequestsHandler) GetRequestResult(ctx context.Context, requestID string) (map[string]interface{}, bool, error) {
+func (m *MockRequestsHandler) GetRequestResult(ctx context.Context, client dynamic.Interface, requestID string) (map[string]interface{}, bool, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetRequestResult", ctx, requestID)
+	ret := m.ctrl.Call(m, "GetRequestResult", ctx, client, requestID)
 	ret0, _ := ret[0].(map[string]interface{})
 	ret1, _ := ret[1].(bool)
 	ret2, _ := ret[2].(error)
@@ -91,7 +92,7 @@ func (m *MockRequestsHandler) GetRequestResult(ctx context.Context, requestID st
 }
 
 // GetRequestResult indicates an expected call of GetRequestResult.
-func (mr *MockRequestsHandlerMockRecorder) GetRequestResult(ctx, requestID interface{}) *gomock.Call {
+func (mr *MockRequestsHandlerMockRecorder) GetRequestResult(ctx, client, requestID interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetRequestResult", reflect.TypeOf((*MockRequestsHandler)(nil).GetRequestResult), ctx, requestID)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetRequestResult", reflect.TypeOf((*MockRequestsHandler)(nil).GetRequestResult), ctx, client, requestID)
 }

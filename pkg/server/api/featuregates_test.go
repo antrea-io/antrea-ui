@@ -15,6 +15,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -24,6 +25,8 @@ import (
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"antrea.io/antrea-ui/pkg/auth/session"
 )
 
 func TestGetFeatureGates(t *testing.T) {
@@ -48,7 +51,17 @@ func TestGetFeatureGates(t *testing.T) {
 	}
 	testData, err := json.Marshal(&testFeatureGates)
 	require.NoError(t, err)
-	ts.antreaSvcRequestsHandler.EXPECT().Request(gomock.Any(), "GET", "/featuregates", nil).Return(testData, nil)
+	// The handler resolves the caller's credential from the context it is given, so assert that
+	// the identity actually made it across. Passing the *gin.Context here instead of the request
+	// context would silently drop it: gin only forwards Value() lookups to the request context
+	// when Engine.ContextWithFallback is set.
+	ts.antreaSvcRequestsHandler.EXPECT().Request(gomock.Any(), "GET", "/featuregates", nil).
+		DoAndReturn(func(ctx context.Context, _ string, _ string, _ io.Reader) ([]byte, int, error) {
+			ra, ok := session.RequestAuthFrom(ctx)
+			require.True(t, ok, "context passed to the Antrea Service carries no identity")
+			assert.Equal(t, session.ModeAdmin, ra.Mode)
+			return testData, http.StatusOK, nil
+		})
 	ts.router.ServeHTTP(rr, req)
 	require.Equal(t, http.StatusOK, rr.Code)
 	resp := rr.Result()

@@ -63,7 +63,7 @@ func TestTraceflowRequest(t *testing.T) {
 	ts.authorizeRequest(req)
 	rr := httptest.NewRecorder()
 	requestID := uuid.NewString()
-	ts.traceflowRequestsHandler.EXPECT().CreateRequest(gomock.Any(), &traceflowhandler.Request{
+	ts.traceflowRequestsHandler.EXPECT().CreateRequest(gomock.Any(), gomock.Any(), &traceflowhandler.Request{
 		Object: tf,
 	}).Return(requestID, nil)
 	ts.router.ServeHTTP(rr, req)
@@ -89,7 +89,7 @@ func TestTraceflowRequest(t *testing.T) {
 	req = httptest.NewRequest("GET", statusURI, nil)
 	ts.authorizeRequest(req)
 	rr = httptest.NewRecorder()
-	ts.traceflowRequestsHandler.EXPECT().GetRequestResult(gomock.Any(), requestID).Return(tf, false, nil)
+	ts.traceflowRequestsHandler.EXPECT().GetRequestResult(gomock.Any(), gomock.Any(), requestID).Return(tf, false, nil)
 	ts.router.ServeHTTP(rr, req)
 	require.Equal(t, http.StatusOK, rr.Code)
 	resp = rr.Result()
@@ -108,7 +108,7 @@ func TestTraceflowRequest(t *testing.T) {
 	req = httptest.NewRequest("GET", statusURI, nil)
 	ts.authorizeRequest(req)
 	rr = httptest.NewRecorder()
-	ts.traceflowRequestsHandler.EXPECT().GetRequestResult(gomock.Any(), requestID).Return(tfResult, true, nil)
+	ts.traceflowRequestsHandler.EXPECT().GetRequestResult(gomock.Any(), gomock.Any(), requestID).Return(tfResult, true, nil)
 	ts.router.ServeHTTP(rr, req)
 	require.Equal(t, http.StatusFound, rr.Code)
 	resp = rr.Result()
@@ -121,7 +121,7 @@ func TestTraceflowRequest(t *testing.T) {
 	req = httptest.NewRequest("GET", resultURI, nil)
 	ts.authorizeRequest(req)
 	rr = httptest.NewRecorder()
-	ts.traceflowRequestsHandler.EXPECT().GetRequestResult(gomock.Any(), requestID).Return(tfResult, true, nil)
+	ts.traceflowRequestsHandler.EXPECT().GetRequestResult(gomock.Any(), gomock.Any(), requestID).Return(tfResult, true, nil)
 	ts.router.ServeHTTP(rr, req)
 	require.Equal(t, http.StatusOK, rr.Code)
 	var result map[string]interface{}
@@ -132,7 +132,7 @@ func TestTraceflowRequest(t *testing.T) {
 	req = httptest.NewRequest("DELETE", reqURI, nil)
 	ts.authorizeRequest(req)
 	rr = httptest.NewRecorder()
-	ts.traceflowRequestsHandler.EXPECT().DeleteRequest(gomock.Any(), requestID).Return(true, nil)
+	ts.traceflowRequestsHandler.EXPECT().DeleteRequest(gomock.Any(), gomock.Any(), requestID).Return(true, nil)
 	ts.router.ServeHTTP(rr, req)
 	assert.Equal(t, http.StatusOK, rr.Code)
 }
@@ -154,7 +154,7 @@ func TestTraceflowRequestRateLimiting(t *testing.T) {
 
 	t.Run("5/s", func(t *testing.T) {
 		ts := newTestServer(t, setMaxTraceflowsPerHour(5*3600))
-		ts.traceflowRequestsHandler.EXPECT().CreateRequest(gomock.Any(), &traceflowhandler.Request{
+		ts.traceflowRequestsHandler.EXPECT().CreateRequest(gomock.Any(), gomock.Any(), &traceflowhandler.Request{
 			Object: tf,
 		}).Return(uuid.NewString(), nil).AnyTimes()
 		rr := sendRequest(ts)

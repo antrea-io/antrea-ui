@@ -51,12 +51,13 @@ func (m *MockRequestsHandler) EXPECT() *MockRequestsHandlerMockRecorder {
 }
 
 // Request mocks base method.
-func (m *MockRequestsHandler) Request(ctx context.Context, method, path string, body io.Reader) ([]byte, error) {
+func (m *MockRequestsHandler) Request(ctx context.Context, method, path string, body io.Reader) ([]byte, int, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "Request", ctx, method, path, body)
 	ret0, _ := ret[0].([]byte)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
+	ret1, _ := ret[1].(int)
+	ret2, _ := ret[2].(error)
+	return ret0, ret1, ret2
 }
 
 // Request indicates an expected call of Request.

@@ -30,6 +30,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 
+	"antrea.io/antrea-ui/pkg/auth/session"
 	"antrea.io/antrea-ui/pkg/env"
 	"antrea.io/antrea-ui/pkg/utils/portforwarder"
 )
@@ -43,15 +44,16 @@ type requestsHandler struct {
 	hostMutex            sync.RWMutex
 	host                 string
 	kubeClient           kubernetes.Interface
-	clientProvider       *antreaHTTPClientProvider
+	clientProvider       *antreaClientFactoryProvider
 	portForwardingNeeded bool
 }
 
 // NewRequestsHandler creates a handler for forwarding requests to the Antrea Service.
-// Requests are authorized as the impersonatedUser identity (e.g. a ServiceAccount username, see
-// k8s.ServiceAccountUserName), not as config's own identity, so permissions for these requests
-// can be managed separately (see the antrea-ui-admin ClusterRole).
-func NewRequestsHandler(logger logr.Logger, config *rest.Config, antreaNamespace string, impersonatedUser string) (*requestsHandler, error) {
+//
+// Requests carry the credential of the end user who triggered them (see Request), never
+// antrea-ui's own, so the Antrea Service - which delegates authn/authz to Kubernetes - authorizes
+// them against that user's RBAC.
+func NewRequestsHandler(logger logr.Logger, config *rest.Config, antreaNamespace string) (*requestsHandler, error) {
 	antreaSvcAddr := antreaSvcName + "." + antreaNamespace + ".svc"
 	host := antreaSvcAddr
 	portForwardingNeeded := false
@@ -66,7 +68,7 @@ func NewRequestsHandler(logger logr.Logger, config *rest.Config, antreaNamespace
 	if err != nil {
 		return nil, err
 	}
-	clientProvider := newAntreaClientProvider(logger, antreaSvcConfig, kubeClient, antreaNamespace, antreaSvcAddr, impersonatedUser)
+	clientProvider := newAntreaClientProvider(logger, antreaSvcConfig, kubeClient, antreaNamespace, antreaSvcAddr)
 	return &requestsHandler{
 		logger:               logger,
 		config:               config,
@@ -142,14 +144,28 @@ func (h *requestsHandler) getHost() (string, error) {
 	return h.host, nil
 }
 
-func (h *requestsHandler) Request(ctx context.Context, method string, path string, body io.Reader) ([]byte, error) {
+// Request forwards a request to the Antrea Service as the end user behind ctx. ctx must carry the
+// identity resolved by the authentication middleware.
+//
+// It returns the upstream status code alongside the body so that callers can keep 401 (the
+// credential was rejected: the session is dead) distinct from 403 (an ordinary authorization
+// failure, which must not log the user out).
+func (h *requestsHandler) Request(ctx context.Context, method string, path string, body io.Reader) ([]byte, int, error) {
 	host, err := h.getHost()
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	client, err := h.clientProvider.GetAntreaClient()
+	factory, generation, err := h.clientProvider.GetClientFactory()
 	if err != nil {
-		return nil, err
+		return nil, 0, err
+	}
+	ra, ok := session.RequestAuthFrom(ctx)
+	if !ok {
+		return nil, 0, fmt.Errorf("request is not authenticated")
+	}
+	rt, err := ra.TransportFor(transportKey(generation), factory.TransportFor)
+	if err != nil {
+		return nil, 0, err
 	}
 	url := url.URL{
 		Scheme: "https",
@@ -158,12 +174,18 @@ func (h *requestsHandler) Request(ctx context.Context, method string, path strin
 	}
 	req, err := http.NewRequestWithContext(ctx, method, url.String(), body)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	resp, err := client.Do(req)
+	resp, err := factory.HTTPClient(rt).Do(req)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer resp.Body.Close()
-	return io.ReadAll(resp.Body)
+	if resp.StatusCode == http.StatusUnauthorized {
+		// The credential itself was rejected, so no later request with this session can
+		// succeed either.
+		ra.Invalidate()
+	}
+	respBody, err := io.ReadAll(resp.Body)
+	return respBody, resp.StatusCode, err
 }

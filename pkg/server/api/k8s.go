@@ -15,61 +15,36 @@
 package api
 
 import (
-	"net/http"
-	"strings"
-
 	"github.com/gin-gonic/gin"
-
-	"antrea.io/antrea-ui/pkg/server/errors"
 )
 
-// allowedK8sPaths contains the K8s api paths that we are proxying.
-// Note the leading slash, since the Gin "catch-all" parameter ("/*path") will include it.
-// There is no per-user permission model here: every path listed below is reachable by any
-// authenticated Antrea UI user, not just users of the feature (e.g. a plugin) that needed it.
-// This is only a coarse, extra layer of restriction on top of RBAC (itself granted per
-// ClusterRole, see clusterroles.yaml) - it is expected to go away once per-user RBAC is
-// implemented. RBAC alone is sufficient here: requests are impersonated as antrea-ui-admin (see
-// cmd/server/main.go), never antrea-ui itself, so whatever antrea-ui-admin's (aggregated)
-// ClusterRole grants is exactly what's reachable through this proxy - the same permissions an
-// admin already approved by applying that RBAC in the first place.
-var allowedK8sPaths = []string{
-	"/apis/crd.antrea.io/",
-	"/apis/networking.k8s.io/v1",
-	"/api/v1/",
-}
-
+// GetK8s proxies a read request to the Kubernetes API server, as the identity of the user who made
+// it.
+//
+// There is no path allowlist: RBAC is the guard. In the OIDC, kubeconfig and ServiceAccount-token
+// modes it is the end user's own RBAC; with the static admin password it is the antrea-ui-admin
+// aggregated ClusterRole, i.e. exactly the permissions an admin approved by applying that RBAC in
+// the first place.
 func (s *Server) GetK8s(c *gin.Context) {
 	// we need to strip the beginning of the path (/api/v1/k8s) before proxying
 	path := c.Param("path")
 	request := c.Request
 	request.URL.Path = path
-	// we also ensure that the Bearer Token is removed
+	// Strip the credentials the client used to authenticate to antrea-ui: the proxy
+	// authenticates the request itself, from the credential the middleware resolved, so
+	// nothing the client sent has any business reaching the API server. The session cookie in
+	// particular is credential-equivalent for the whole UI, and forwarding it would deposit it
+	// in the API server's audit log and in every proxy in between.
+	//
+	// The proxy's own Rewrite does this as well; doing it here too means the guarantee does not
+	// depend on which handler is wired in.
 	request.Header.Del("Authorization")
+	request.Header.Del("Cookie")
 	s.k8sProxyHandler.ServeHTTP(c.Writer, c.Request)
-}
-
-func (s *Server) checkK8sPath(c *gin.Context) {
-	if sError := func() *errors.ServerError {
-		path := c.Param("path")
-		for _, allowedPath := range allowedK8sPaths {
-			if strings.HasPrefix(path, allowedPath) {
-				return nil
-			}
-		}
-		return &errors.ServerError{
-			Code:    http.StatusNotFound,
-			Message: "This K8s API path is not being proxied",
-		}
-	}(); sError != nil {
-		errors.HandleError(c, sError)
-		c.Abort()
-		return
-	}
 }
 
 func (s *Server) AddK8sRoutes(r *gin.RouterGroup) {
 	r = r.Group("/k8s")
 	r.Use(s.authenticate())
-	r.GET("/*path", s.checkK8sPath, s.GetK8s)
+	r.GET("/*path", s.GetK8s)
 }

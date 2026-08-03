@@ -114,26 +114,26 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("failed to parse K8s server URL '%s': %w", k8sRESTConfig.Host, err)
 	}
-	// K8s API calls made on behalf of the UI user (as opposed to antrea-ui's own operations,
-	// e.g. reading the antrea-ui-passwd Secret) are impersonated as the antrea-ui-admin
-	// ServiceAccount, so that plugins can be granted extra permissions for these calls without
-	// exposing antrea-ui's own sensitive access.
+	// Sessions created with the static admin password have no Kubernetes identity of their
+	// own, so their K8s API calls are impersonated as the antrea-ui-admin ServiceAccount. This
+	// is also what the Traceflow GC loop uses, since it runs with no user request in flight.
 	antreaUIAdminUser := k8s.ServiceAccountUserName(env.GetNamespace(), antreaUIAdminSAName)
-	k8sAdminHTTPClient, k8sAdminDynamicClient, err := k8s.ImpersonatedClient(k8sRESTConfig, k8sHTTPClient.Transport, antreaUIAdminUser)
+	_, k8sAdminDynamicClient, err := k8s.ImpersonatedClient(k8sRESTConfig, k8sHTTPClient.Transport, antreaUIAdminUser)
 	if err != nil {
 		return fmt.Errorf("failed to create impersonated K8s clients for antrea-ui-admin: %w", err)
 	}
 
 	// clientFactory turns the credential resolved for a request into a K8s client that acts as
-	// that user. Nothing routes through it yet: every handler below still acts through the
-	// shared antrea-ui-admin client, which is a following change.
-	clientFactory, err := k8s.NewClientFactory(k8sRESTConfig, k8sHTTPClient.Transport, "k8s-apiserver")
+	// that user.
+	clientFactory, err := k8s.NewClientFactory(k8sRESTConfig, k8sHTTPClient.Transport, session.TransportKeyK8s)
 	if err != nil {
 		return fmt.Errorf("failed to create K8s client factory: %w", err)
 	}
 
 	traceflowHandler := traceflowhandler.NewRequestsHandler(logger, k8sAdminDynamicClient)
-	k8sProxyHandler := k8sproxy.NewK8sProxyHandler(logger, k8sServerURL, k8sAdminHTTPClient.Transport)
+	k8sProxyHandler := k8sproxy.NewK8sProxyHandler(logger, k8sServerURL, func(req *http.Request) (http.RoundTripper, error) {
+		return clientFactory.TransportForRequest(req.Context())
+	})
 
 	k8sClientset, err := kubernetes.NewForConfig(k8sRESTConfig)
 	if err != nil {
@@ -145,7 +145,7 @@ func run() error {
 	}
 	pluginRegistry := pluginregistry.NewRegistry(logger, k8sClientset, pluginsNamespace, config.Plugins.LabelSelector)
 
-	antreaSvcHandler, err := antreasvchandler.NewRequestsHandler(logger, k8sRESTConfig, config.AntreaNamespace, antreaUIAdminUser)
+	antreaSvcHandler, err := antreasvchandler.NewRequestsHandler(logger, k8sRESTConfig, config.AntreaNamespace)
 	if err != nil {
 		return fmt.Errorf("failed to create handler for Antrea Service requests: %w", err)
 	}

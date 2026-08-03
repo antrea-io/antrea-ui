@@ -16,15 +16,22 @@ package traceflow
 
 import (
 	"context"
+
+	"k8s.io/client-go/dynamic"
 )
 
 //go:generate mockgen -source=interface.go -package=testing -destination=testing/mock_interface.go -copyright_file=$MOCKGEN_COPYRIGHT_FILE
 
+// RequestsHandler manages the Traceflow CRs behind the UI's Traceflow page.
+//
+// Every method takes the dynamic client to use, because Traceflows are created and deleted as the
+// end user, whose credential is only known per request. The handler's own client is reserved for
+// the background GC loop, which has no user to act as.
 type RequestsHandler interface {
-	CreateRequest(ctx context.Context, request *Request) (string, error)
+	CreateRequest(ctx context.Context, client dynamic.Interface, request *Request) (string, error)
 	// GetRequestResult returns the Traceflow object, and a boolean to indicate whether the
 	// Traceflow request is completed. Completed means that the Traceflow Status has either been
 	// updated to "Succeeded" or "Failed".
-	GetRequestResult(ctx context.Context, requestID string) (map[string]interface{}, bool, error)
-	DeleteRequest(ctx context.Context, requestID string) (bool, error)
+	GetRequestResult(ctx context.Context, client dynamic.Interface, requestID string) (map[string]interface{}, bool, error)
+	DeleteRequest(ctx context.Context, client dynamic.Interface, requestID string) (bool, error)
 }

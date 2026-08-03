@@ -36,15 +36,16 @@ func (s *Server) CreateTraceflowRequest(c *gin.Context) {
 				Message: err.Error(),
 			}
 		}
+		client, sError := s.dynamicClientFor(c)
+		if sError != nil {
+			return sError
+		}
 		var err error
-		requestID, err = s.traceflowRequestsHandler.CreateRequest(c, &traceflowhandler.Request{
+		requestID, err = s.traceflowRequestsHandler.CreateRequest(c, client, &traceflowhandler.Request{
 			Object: tfRequest,
 		})
 		if err != nil {
-			return &errors.ServerError{
-				Code: http.StatusInternalServerError,
-				Err:  fmt.Errorf("error when creating Traceflow request: %w", err),
-			}
+			return s.k8sError(c, err, "error when creating Traceflow request")
 		}
 		return nil
 	}(); sError != nil {
@@ -62,13 +63,14 @@ func (s *Server) GetTraceflowRequestStatus(c *gin.Context) {
 	requestID := c.Param("requestId")
 	var done bool
 	if sError := func() *errors.ServerError {
+		client, sError := s.dynamicClientFor(c)
+		if sError != nil {
+			return sError
+		}
 		var err error
-		_, done, err = s.traceflowRequestsHandler.GetRequestResult(c, requestID)
+		_, done, err = s.traceflowRequestsHandler.GetRequestResult(c, client, requestID)
 		if err != nil {
-			return &errors.ServerError{
-				Code: http.StatusInternalServerError,
-				Err:  fmt.Errorf("error when getting Traceflow request status: %w", err),
-			}
+			return s.k8sError(c, err, "error when getting Traceflow request status")
 		}
 		return nil
 	}(); sError != nil {
@@ -92,12 +94,13 @@ func (s *Server) GetTraceflowRequestResult(c *gin.Context) {
 	requestID := c.Param("requestId")
 	var data []byte
 	if sError := func() *errors.ServerError {
-		tfResult, done, err := s.traceflowRequestsHandler.GetRequestResult(c, requestID)
+		client, sError := s.dynamicClientFor(c)
+		if sError != nil {
+			return sError
+		}
+		tfResult, done, err := s.traceflowRequestsHandler.GetRequestResult(c, client, requestID)
 		if err != nil {
-			return &errors.ServerError{
-				Code: http.StatusInternalServerError,
-				Err:  fmt.Errorf("error when getting Traceflow request result: %w", err),
-			}
+			return s.k8sError(c, err, "error when getting Traceflow request result")
 		}
 		if !done {
 			return &errors.ServerError{
@@ -125,12 +128,13 @@ func (s *Server) GetTraceflowRequestResult(c *gin.Context) {
 func (s *Server) DeleteTraceflowRequest(c *gin.Context) {
 	requestID := c.Param("requestId")
 	if sError := func() *errors.ServerError {
-		ok, err := s.traceflowRequestsHandler.DeleteRequest(c, requestID)
+		client, sError := s.dynamicClientFor(c)
+		if sError != nil {
+			return sError
+		}
+		ok, err := s.traceflowRequestsHandler.DeleteRequest(c, client, requestID)
 		if err != nil {
-			return &errors.ServerError{
-				Code: http.StatusInternalServerError,
-				Err:  fmt.Errorf("error when deleting Traceflow request: %w", err),
-			}
+			return s.k8sError(c, err, "error when deleting Traceflow request")
 		}
 		if !ok {
 			return &errors.ServerError{

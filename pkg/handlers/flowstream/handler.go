@@ -16,6 +16,7 @@ package flowstream
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -26,6 +27,7 @@ import (
 	"github.com/go-logr/logr"
 
 	apisv1 "antrea.io/antrea-ui/apis/v1"
+	"antrea.io/antrea-ui/pkg/auth/session"
 )
 
 // FlowFilterDirection controls which endpoint of a flow the directional filters are matched against.
@@ -49,16 +51,32 @@ type FlowStreamFilter struct {
 	Direction        FlowFilterDirection
 }
 
+// defaultKeepAliveInterval is how often the stream emits an SSE comment and re-checks its session.
+const defaultKeepAliveInterval = 5 * time.Second
+
+// errUnauthenticatedStream means the handler was reached without the authentication middleware
+// having resolved an identity, which is a wiring bug rather than anything a client can cause.
+var errUnauthenticatedStream = errors.New("flow stream request carries no resolved identity")
+
 // SSEHandler handles the SSE endpoint for flow streaming.
+//
+// Known gap, deliberate for now: this endpoint is authenticated but not authorized per user. The
+// subscriber reaches the Flow Aggregator over antrea-ui's own mTLS gRPC connection, so unlike
+// every other API route, the caller's Kubernetes RBAC has no say in what they see — any user who
+// can log in sees every exported flow. Authorization is being implemented upstream in
+// antrea-io/antrea#8221; see the "Flow data is not yet per-user" section of docs/authentication.md.
 type SSEHandler struct {
 	logger  logr.Logger
 	handler FlowStreamSubscriber
+	// keepAliveInterval is a field so tests do not have to wait seconds for a tick.
+	keepAliveInterval time.Duration
 }
 
 func NewSSEHandler(logger logr.Logger, handler FlowStreamSubscriber) *SSEHandler {
 	return &SSEHandler{
-		logger:  logger,
-		handler: handler,
+		logger:            logger,
+		handler:           handler,
+		keepAliveInterval: defaultKeepAliveInterval,
 	}
 }
 
@@ -174,8 +192,29 @@ func (h *SSEHandler) StreamFlows(c *gin.Context) {
 	// filtered streams match nothing for a long time, nothing is sent on flowsCh and this
 	// handler would block forever on the next select, stalling fetch() and freezing the UI.
 	// Periodic SSE comments keep the connection and ReadableStream alive.
-	keepAlive := time.NewTicker(5 * time.Second)
+	keepAlive := time.NewTicker(h.keepAliveInterval)
 	defer keepAlive.Stop()
+
+	// This is a single request that can run for hours (nginx allows up to 24h for it), so the
+	// session's last-seen time has to be bumped for as long as the stream is attached -
+	// otherwise an actively-streaming session would idle out from under itself. This holds even
+	// while the tab is in the background, which is the one place antrea-ui departs from "idle
+	// means no visible tab": a flow-visibility tab is something people background on purpose.
+	// See RequestAuth.KeepAlive for why that exception is only safe because the same call also
+	// renews the credential. It reports when the session has ended (logged out in another tab,
+	// past the absolute lifetime cap, a credential that can no longer be renewed), which must
+	// close the stream: a logged-out user must stop receiving flows.
+	// Fails closed: every route reaching this handler goes through the authentication
+	// middleware, so a missing identity means the handler was wired up without it. A stream
+	// that cannot tell whether its session is still alive must not keep running for hours.
+	sessionAlive := func() bool {
+		ra, ok := session.RequestAuthFrom(ctx)
+		if !ok {
+			h.logger.Error(errUnauthenticatedStream, "Closing flow stream")
+			return false
+		}
+		return ra.KeepAlive(ctx)
+	}
 
 	c.Stream(func(w io.Writer) bool {
 		writePreamble(w)
@@ -183,6 +222,10 @@ func (h *SSEHandler) StreamFlows(c *gin.Context) {
 		case <-ctx.Done():
 			return false
 		case <-keepAlive.C:
+			if !sessionAlive() {
+				h.logger.V(2).Info("Closing flow stream: session is no longer valid")
+				return false
+			}
 			if _, err := w.Write([]byte(": keepalive\n\n")); err != nil {
 				return false
 			}

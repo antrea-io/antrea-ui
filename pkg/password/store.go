@@ -17,8 +17,8 @@ package password
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"fmt"
-	"slices"
 	"sync"
 
 	"antrea.io/antrea-ui/pkg/password/hasher"
@@ -105,7 +105,7 @@ func (s *store) Compare(ctx context.Context, password []byte) error {
 	if err != nil {
 		return err
 	}
-	if !slices.Equal(hash, s.cachedHash) {
+	if subtle.ConstantTimeCompare(hash, s.cachedHash) != 1 {
 		return ErrInvalidPassword
 	}
 	return nil

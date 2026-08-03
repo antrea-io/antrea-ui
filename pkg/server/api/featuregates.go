@@ -34,12 +34,19 @@ type featureGate struct {
 
 func (s *Server) GetFeatureGates(c *gin.Context) {
 	if sError := func() *errors.ServerError {
-		b, err := s.antreaSvcRequestsHandler.Request(c, "GET", "/featuregates", nil)
+		// c.Request.Context(), not c: the handler reads the resolved identity back out with
+		// session.RequestAuthFrom, which keys off an unexported type. A *gin.Context only
+		// forwards Value() lookups to the request context when Engine.ContextWithFallback is
+		// set, which it is not, so passing c here would lose the identity entirely.
+		b, statusCode, err := s.antreaSvcRequestsHandler.Request(c.Request.Context(), "GET", "/featuregates", nil)
 		if err != nil {
 			return &errors.ServerError{
 				Code: http.StatusInternalServerError,
 				Err:  err,
 			}
+		}
+		if statusCode != http.StatusOK {
+			return s.upstreamStatusError(c, statusCode, b)
 		}
 		// We return the API response as it to the client, with no transformation.
 		// But first, we validate that it is what we expect.
