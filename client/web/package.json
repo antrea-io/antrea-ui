@@ -7,7 +7,7 @@
     "antrea-ui-plugin-sdk"
   ],
   "resolutions": {
-    "@hpcc-js/wasm": "2.34.12",
+    "@hpcc-js/wasm": "2.35.0",
     "postcss": "8.5.22"
   },
   "packageManager": "yarn@4.17.1"
