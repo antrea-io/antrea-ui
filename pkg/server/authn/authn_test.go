@@ -15,14 +15,21 @@
 package authn
 
 import (
+	"context"
+	"encoding/base64"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/go-logr/logr/testr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	clocktesting "k8s.io/utils/clock/testing"
 
 	"antrea.io/antrea-ui/pkg/auth/session"
 	cookieutils "antrea.io/antrea-ui/pkg/server/utils/cookie"
@@ -32,15 +39,61 @@ func init() {
 	gin.SetMode(gin.ReleaseMode)
 }
 
+// fakeValidator stands in for the API server's SelfSubjectReview. A bearer request has no login
+// step, so this is what the authenticator consults on every cache miss.
+type fakeValidator struct {
+	mutex    sync.Mutex
+	calls    int
+	username string
+	// rejected tokens get the answer a real API server gives for a credential it does not
+	// accept; anything in failed gets a transient error instead.
+	rejected map[string]bool
+	failed   map[string]bool
+}
+
+func newFakeValidator() *fakeValidator {
+	return &fakeValidator{
+		username: "alice",
+		rejected: map[string]bool{},
+		failed:   map[string]bool{},
+	}
+}
+
+func (v *fakeValidator) ValidateCredential(_ context.Context, cred *session.Credential) (string, error) {
+	v.mutex.Lock()
+	defer v.mutex.Unlock()
+	v.calls++
+	token := string(cred.Token)
+	if v.failed[token] {
+		return "", apierrors.NewServiceUnavailable("API server is having a bad day")
+	}
+	if v.rejected[token] {
+		return "", apierrors.NewUnauthorized("invalid bearer token")
+	}
+	return v.username, nil
+}
+
+func (v *fakeValidator) callCount() int {
+	v.mutex.Lock()
+	defer v.mutex.Unlock()
+	return v.calls
+}
+
 func newTestAuthenticator(t *testing.T, mutators ...func(*Config)) (*Authenticator, session.Store) {
+	a, store, _ := newTestAuthenticatorWithValidator(t, mutators...)
+	return a, store
+}
+
+func newTestAuthenticatorWithValidator(t *testing.T, mutators ...func(*Config)) (*Authenticator, session.Store, *fakeValidator) {
 	store := session.NewStore(testr.New(t), session.Options{})
-	config := Config{Store: store}
+	validator := newFakeValidator()
+	config := Config{Store: store, BearerFallbackEnabled: true, BearerValidator: validator}
 	for _, m := range mutators {
 		m(&config)
 	}
 	a, err := New(testr.New(t), config)
 	require.NoError(t, err)
-	return a, store
+	return a, store, validator
 }
 
 func newRouter(a *Authenticator) *gin.Engine {
@@ -124,6 +177,26 @@ func TestSameSite(t *testing.T) {
 
 	devAuth, _ := newTestAuthenticator(t, func(c *Config) { c.DevMode = true })
 	assert.Equal(t, http.SameSiteLaxMode, devAuth.SameSite())
+}
+
+func TestBearerFallbackCanBeDisabled(t *testing.T) {
+	a, _ := newTestAuthenticator(t, func(c *Config) { c.BearerFallbackEnabled = false })
+	req := httptest.NewRequest("GET", "/protected", nil)
+	req.Header.Set("Authorization", "Bearer some-token")
+	rr := httptest.NewRecorder()
+	newRouter(a).ServeHTTP(rr, req)
+	assert.Equal(t, http.StatusUnauthorized, rr.Code)
+}
+
+func TestMalformedAuthorizationHeader(t *testing.T) {
+	for _, header := range []string{"Bearer", "Bearer ", "Basic dXNlcjpwYXNz", "token abc"} {
+		a, _ := newTestAuthenticator(t)
+		req := httptest.NewRequest("GET", "/protected", nil)
+		req.Header.Set("Authorization", header)
+		rr := httptest.NewRecorder()
+		newRouter(a).ServeHTTP(rr, req)
+		assert.Equalf(t, http.StatusUnauthorized, rr.Code, "header %q should not authenticate", header)
+	}
 }
 
 func TestInvalidServerURL(t *testing.T) {
@@ -278,4 +351,218 @@ func TestSafeRedirectURLWithoutServerURL(t *testing.T) {
 
 	assert.Equal(t, "https://antrea-ui.example.com/x", a.SafeRedirectURL(c, "https://antrea-ui.example.com/x"))
 	assert.Equal(t, "", a.SafeRedirectURL(c, "https://evil.example.com/x"))
+}
+
+// A bearer request has no login step, so Resolve is the only place its credential is ever checked.
+// Leaving it to the upstream call is not enough: GET /auth/session and the flow stream resolve an
+// identity and then never talk to Kubernetes, so an unvalidated token there is simply believed.
+func TestBearerTokenIsValidated(t *testing.T) {
+	t.Run("rejected token", func(t *testing.T) {
+		a, _, validator := newTestAuthenticatorWithValidator(t)
+		validator.rejected["bogus"] = true
+		req := httptest.NewRequest("GET", "/protected", nil)
+		req.Header.Set("Authorization", "Bearer bogus")
+		rr := httptest.NewRecorder()
+		newRouter(a).ServeHTTP(rr, req)
+		assert.Equal(t, http.StatusUnauthorized, rr.Code)
+		assert.Equal(t, 1, validator.callCount())
+	})
+
+	t.Run("accepted token", func(t *testing.T) {
+		a, _, validator := newTestAuthenticatorWithValidator(t)
+		req := httptest.NewRequest("GET", "/protected", nil)
+		req.Header.Set("Authorization", "Bearer good")
+		rr := httptest.NewRecorder()
+		newRouter(a).ServeHTTP(rr, req)
+		assert.Equal(t, http.StatusOK, rr.Code)
+		assert.Equal(t, 1, validator.callCount())
+	})
+
+	// An API server that is unreachable is not the same as a token it refused. Answering 401
+	// would tell a client with a perfectly good token to go and get another one.
+	t.Run("API server unavailable", func(t *testing.T) {
+		a, _, validator := newTestAuthenticatorWithValidator(t)
+		validator.failed["good"] = true
+		req := httptest.NewRequest("GET", "/protected", nil)
+		req.Header.Set("Authorization", "Bearer good")
+		rr := httptest.NewRecorder()
+		newRouter(a).ServeHTTP(rr, req)
+		assert.Equal(t, http.StatusServiceUnavailable, rr.Code)
+	})
+}
+
+// The identity comes from the API server, not from the caller.
+func TestBearerUsernameComesFromValidation(t *testing.T) {
+	a, _, validator := newTestAuthenticatorWithValidator(t)
+	validator.username = "system:serviceaccount:default:reader"
+	router := gin.New()
+	router.GET("/whoami", a.Middleware(), func(c *gin.Context) {
+		ra, _ := RequestAuthFromGin(c)
+		c.String(http.StatusOK, ra.Username)
+	})
+	req := httptest.NewRequest("GET", "/whoami", nil)
+	req.Header.Set("Authorization", "Bearer good")
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+	require.Equal(t, http.StatusOK, rr.Code)
+	assert.Equal(t, "system:serviceaccount:default:reader", rr.Body.String())
+}
+
+// Validating on every request would put an API server call in front of every API call, so a
+// successful validation is cached for a short while. A failure is deliberately not cached.
+func TestBearerValidationIsCached(t *testing.T) {
+	a, _, validator := newTestAuthenticatorWithValidator(t)
+	fakeClock := clocktesting.NewFakeClock(time.Now())
+	a.bearer.clock = fakeClock
+	router := newRouter(a)
+	send := func(token string) int {
+		req := httptest.NewRequest("GET", "/protected", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		rr := httptest.NewRecorder()
+		router.ServeHTTP(rr, req)
+		return rr.Code
+	}
+
+	for i := 0; i < 5; i++ {
+		require.Equal(t, http.StatusOK, send("good"))
+	}
+	assert.Equal(t, 1, validator.callCount(), "repeat requests with the same token should be served from the cache")
+
+	// A different token is a different cache entry.
+	require.Equal(t, http.StatusOK, send("also-good"))
+	assert.Equal(t, 2, validator.callCount())
+
+	// A revoked token keeps working until its cache entry ages out, and stops afterwards. That
+	// window is the price of not calling the API server on every request.
+	validator.rejected["good"] = true
+	require.Equal(t, http.StatusOK, send("good"))
+	fakeClock.Step(bearerCacheTTL + time.Second)
+	assert.Equal(t, http.StatusUnauthorized, send("good"))
+}
+
+// The cache is keyed on a hash, never on the token: it outlives the request, and credential
+// material must not sit in a long-lived structure.
+func TestBearerCacheKeyIsHashed(t *testing.T) {
+	a, _, _ := newTestAuthenticatorWithValidator(t)
+	req := httptest.NewRequest("GET", "/protected", nil)
+	req.Header.Set("Authorization", "Bearer super-secret-token")
+	rr := httptest.NewRecorder()
+	newRouter(a).ServeHTTP(rr, req)
+	require.Equal(t, http.StatusOK, rr.Code)
+
+	for _, key := range a.bearer.cache.Keys() {
+		assert.NotContains(t, key, "super-secret-token")
+	}
+	assert.True(t, a.bearer.cache.Contains(cacheKey([]byte("super-secret-token"))))
+}
+
+// Without a throttle on cache misses, antrea-ui is an unauthenticated, unthrottled way to test
+// Kubernetes credentials against an API server the caller may not be able to reach directly - and
+// every attempt is an API server request that a caller with no credential at all can trigger.
+func TestBearerValidationMissesAreRateLimited(t *testing.T) {
+	a, _, validator := newTestAuthenticatorWithValidator(t)
+	router := newRouter(a)
+	send := func(token string) int {
+		req := httptest.NewRequest("GET", "/protected", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		rr := httptest.NewRecorder()
+		router.ServeHTTP(rr, req)
+		return rr.Code
+	}
+
+	// Every token is distinct, so every request is a cache miss and reaches the validator.
+	throttled := false
+	for i := 0; i < bearerMissBurst+20; i++ {
+		if send(fmt.Sprintf("token-%d", i)) == http.StatusTooManyRequests {
+			throttled = true
+			break
+		}
+	}
+	assert.True(t, throttled, "a burst of distinct tokens should be throttled")
+	assert.LessOrEqual(t, validator.callCount(), bearerMissBurst+1,
+		"throttled requests must not reach the API server")
+}
+
+// Accepting bearer tokens with no way to check them would mean believing every one of them, so
+// this is refused at startup rather than at runtime.
+func TestBearerFallbackRequiresValidator(t *testing.T) {
+	store := session.NewStore(testr.New(t), session.Options{})
+	_, err := New(testr.New(t), Config{Store: store, BearerFallbackEnabled: true})
+	assert.ErrorContains(t, err, "no credential validator")
+
+	// Disabled needs no validator.
+	_, err = New(testr.New(t), Config{Store: store, BearerFallbackEnabled: false})
+	assert.NoError(t, err)
+}
+
+// jwtWithExpiry builds an unsigned JWT-shaped token with the given "exp". Nothing here verifies
+// the signature - the API server does, which is what makes the claim usable once validation has
+// succeeded.
+func jwtWithExpiry(expiry time.Time) string {
+	enc := func(v string) string { return base64.RawURLEncoding.EncodeToString([]byte(v)) }
+	return enc(`{"alg":"RS256","typ":"JWT"}`) + "." + enc(fmt.Sprintf(`{"exp":%d}`, expiry.Unix())) + ".signature"
+}
+
+// The expiry is only read once the API server has accepted the token, so it is a claim that has
+// been checked rather than one the caller asserted. It is what bounds a long-running request that
+// never presents the credential again.
+func TestBearerCredentialCarriesValidatedExpiry(t *testing.T) {
+	expiry := time.Now().Add(30 * time.Minute).Truncate(time.Second)
+	token := jwtWithExpiry(expiry)
+
+	a, _, _ := newTestAuthenticatorWithValidator(t)
+	var got *session.RequestAuth
+	router := gin.New()
+	router.GET("/protected", a.Middleware(), func(c *gin.Context) {
+		got, _ = RequestAuthFromGin(c)
+		c.Status(http.StatusOK)
+	})
+	req := httptest.NewRequest("GET", "/protected", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+	require.Equal(t, http.StatusOK, rr.Code)
+	require.NotNil(t, got)
+	assert.Equal(t, expiry, got.Credential().ExpiresAt)
+	assert.True(t, got.KeepAlive(t.Context()), "a credential that has not expired keeps the request alive")
+
+	// An opaque token has no expiry claim, so there is nothing to enforce.
+	a2, _, _ := newTestAuthenticatorWithValidator(t)
+	router2 := gin.New()
+	router2.GET("/protected", a2.Middleware(), func(c *gin.Context) {
+		got, _ = RequestAuthFromGin(c)
+		c.Status(http.StatusOK)
+	})
+	req = httptest.NewRequest("GET", "/protected", nil)
+	req.Header.Set("Authorization", "Bearer legacy-opaque-token") // #nosec G101: not a real credential
+	rr = httptest.NewRecorder()
+	router2.ServeHTTP(rr, req)
+	require.Equal(t, http.StatusOK, rr.Code)
+	assert.True(t, got.Credential().ExpiresAt.IsZero())
+}
+
+// A cache entry must not outlive the token it vouches for: a token expiring sooner than the TTL
+// would otherwise keep being accepted from the cache after it stopped being valid.
+func TestBearerCacheEntryCappedAtTokenExpiry(t *testing.T) {
+	a, _, validator := newTestAuthenticatorWithValidator(t)
+	fakeClock := clocktesting.NewFakeClock(time.Now())
+	a.bearer.clock = fakeClock
+	router := newRouter(a)
+
+	// Expires well inside the cache TTL.
+	token := jwtWithExpiry(fakeClock.Now().Add(5 * time.Second))
+	send := func() int {
+		req := httptest.NewRequest("GET", "/protected", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		rr := httptest.NewRecorder()
+		router.ServeHTTP(rr, req)
+		return rr.Code
+	}
+
+	require.Equal(t, http.StatusOK, send())
+	require.Equal(t, 1, validator.callCount())
+	fakeClock.Step(10 * time.Second)
+	// Still inside bearerCacheTTL, but past the token's own expiry, so the cache must not answer.
+	require.Equal(t, http.StatusOK, send())
+	assert.Equal(t, 2, validator.callCount(), "an entry must not outlive the token's expiry")
 }
