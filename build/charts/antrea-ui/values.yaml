@@ -129,21 +129,70 @@ https:
     # kube-system).
     secretName: "antrea-ui-tls"
 
+# Authentication. The modes below are independent: enable any combination.
+#
+# Except for basic, every mode makes Antrea UI act as the *end user's* Kubernetes identity, so
+# what a user can see and do is decided by that user's own RBAC. Grant them a role of your own,
+# scoped to what they should be allowed to do (antrea-ui-admin-core's rules are a good starting
+# point), or they will log in successfully and then get 403s everywhere. Note that the
+# antrea-ui-admin ClusterRole is aggregated, so binding *it* to users hands them whatever any
+# installed plugin adds to it, now and later. See docs/authentication.md.
 auth:
   basic:
-    # -- Enable password-based authentication.
+    # -- Enable password-based authentication (the static "admin" password). Kubernetes API calls
+    # made by these sessions are impersonated as the antrea-ui-admin ServiceAccount, so every
+    # user logging in this way has exactly the same cluster access.
+    enable: true
+  kubeconfig:
+    # -- Enable "bring your own kubeconfig" authentication: the user uploads a kubeconfig and
+    # Antrea UI uses the current context's credential (a token, or a client certificate and key)
+    # on their behalf. Credentials that would have to run a program on the user's machine (exec
+    # plugins, auth-provider) are rejected.
+    enable: false
+  serviceAccountToken:
+    # -- Enable Kubernetes token authentication on the login page: the user pastes a bearer token
+    # (typically a ServiceAccount token) and Antrea UI creates a session from it, like any other
+    # login mode. Independent of auth.bearerToken below, which accepts the same credential as a
+    # per-request API header rather than as a login.
+    enable: true
+  bearerToken:
+    # -- Enable the "Authorization: Bearer <token>" fallback on the Antrea UI API, for non-browser
+    # clients (a script, a controller, the e2e suite) that authenticate every request with a
+    # Kubernetes token instead of holding a session cookie. Such a request creates no session, and
+    # its token is validated against the API server on the request itself, since there is no login
+    # step to validate it at. The browser UI never sends this header, so turning it off costs the
+    # UI nothing; leave it on only if something other than a browser talks to the API.
     enable: true
   oidc:
     # -- Enable OIDC-based authentication: the server connects to an OIDC provider to authenticate
-    # users. When enabling OIDC authentication, you will need to set the top-level url value.
+    # users. When enabling OIDC authentication, you will need to set the top-level url value. The
+    # kube-apiserver must be configured to trust the *same* issuer, via the --oidc-issuer-url
+    # and --oidc-client-id flags, because the id_token is what Antrea UI presents to it on the
+    # user's behalf. See docs/oidc.md.
     enable: false
+    # -- Scopes to request from the OIDC provider. "offline_access" is what makes the provider
+    # issue a refresh token, without which a session ends as soon as the id_token does (often
+    # only minutes). "groups" populates the group claims that group-based Kubernetes RBAC needs.
+    # "email" is requested because --oidc-username-claim=email is by far the most common
+    # kube-apiserver configuration, and providers omit the claim if the scope was not asked for.
+    scopes:
+      - openid
+      - email
+      - groups
+      - offline_access
     # -- Name of the OIDC provider (Dex, Github OAuth2, ...). This is used for user-facing messages,
     # and does not have any impact on functionality.
     providerName: ""
     # -- URL of the OIDC provider. The server will use the URL to retrieve the OpenID Provider
     # Configuration Document, which should be available at the /.well-known/openid-configuration
-    # endpoint.
+    # endpoint. The kube-apiserver must be configured to trust this same issuer, since the id_token
+    # it issues is the credential Antrea UI presents to Kubernetes on the user's behalf.
     issuerURL: ""
+    # -- Address at which to perform OIDC discovery, when it differs from issuerURL. Only needed
+    # when the issuer is a public address the backend Pod cannot reach (or cannot reach until it is
+    # itself Ready, which would deadlock startup). Leave empty to discover at issuerURL, which is
+    # the normal case.
+    discoveryURL: ""
     # -- Application (client) ID to be used by the Antrea UI server to identify itself to the OIDC
     # provider.
     clientID: ""
@@ -175,19 +224,23 @@ auth:
     # user-facing message).
     logoutURL: ""
 
-dex:
-  # -- Enable built-in Dex for OIDC authentication.
-  enable: false
-  config:
-    # -- Dex connectors configuration (refer to https://dexidp.io/docs/connectors/).
-    connectors: []
-  # -- Container image to use for Dex.
-  image:
-    repository: "ghcr.io/dexidp/dex"
-    pullPolicy: "IfNotPresent"
-    tag: "v2.36.0-distroless"
-  # -- Resource requests and limits for the Dex container.
-  resources: {}
+# Server-side sessions. A session holds the user's Kubernetes credential, in the backend's
+# memory only: nothing is written to a Secret, a ConfigMap, or a volume, and a Pod restart logs
+# everyone out.
+session:
+  # -- How long a session survives with no request. The UI pings the backend every 5 minutes
+  # while a tab is visible, so this is really "how long with no open visible tab".
+  idleTimeout: 30m
+  # -- Absolute cap on a session's lifetime, however active the user is.
+  maxLifetime: 12h
+  # -- Maximum number of concurrent sessions the backend will hold.
+  maxSessions: 1000
+  # -- Maximum number of concurrent sessions one identity may hold. This is what keeps a single
+  # user from filling maxSessions and denying logins to everyone else. Logging in past the cap
+  # evicts that user's own least-recently-used session rather than failing the login. Must be
+  # <= maxSessions. Admin-password sessions are exempt: they all authenticate as the same
+  # "admin", so capping them would give every user of that password one shared budget.
+  maxSessionsPerUser: 10
 
 # IPv6 configuration for the Antrea UI.
 ipv6:
@@ -228,3 +281,9 @@ podLabels: {}
 
 # -- Additional volumes.
 extraVolumes: []
+
+# -- Additional entries for the Pod's /etc/hosts, in the standard PodSpec hostAliases form. Useful
+# when the backend has to reach a name that cluster DNS cannot resolve - an OIDC issuer served
+# outside the cluster, for example - without having to touch CoreDNS. Each entry is
+# `{ip: <address>, hostnames: [<name>, ...]}`.
+hostAliases: []

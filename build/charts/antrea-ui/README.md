@@ -12,7 +12,7 @@ Web UI for the Antrea Kubernetes network plugin
 
 ## Requirements
 
-Kubernetes: `>= 1.16.0-0`
+Kubernetes: `>= 1.28.0-0`
 
 ## Values
 
@@ -20,26 +20,27 @@ Kubernetes: `>= 1.16.0-0`
 |-----|------|---------|-------------|
 | affinity | object | `{}` | Affinity for the Antrea UI Pod. |
 | antreaNamespace | string | `"kube-system"` | Namespace where Antrea is installed. |
-| auth.basic.enable | bool | `true` | Enable password-based authentication. |
+| auth.basic.enable | bool | `true` | Enable password-based authentication (the static "admin" password). Kubernetes API calls made by these sessions are impersonated as the antrea-ui-admin ServiceAccount, so every user logging in this way has exactly the same cluster access. |
+| auth.bearerToken.enable | bool | `true` | Enable the "Authorization: Bearer <token>" fallback on the Antrea UI API, for non-browser clients (a script, a controller, the e2e suite) that authenticate every request with a Kubernetes token instead of holding a session cookie. Such a request creates no session, and its token is validated against the API server on the request itself, since there is no login step to validate it at. The browser UI never sends this header, so turning it off costs the UI nothing; leave it on only if something other than a browser talks to the API. |
+| auth.kubeconfig.enable | bool | `false` | Enable "bring your own kubeconfig" authentication: the user uploads a kubeconfig and Antrea UI uses the current context's credential (a token, or a client certificate and key) on their behalf. Credentials that would have to run a program on the user's machine (exec plugins, auth-provider) are rejected. |
 | auth.oidc.clientID | string | `""` | Application (client) ID to be used by the Antrea UI server to identify itself to the OIDC provider. |
 | auth.oidc.clientIDSecretRef.key | string | `"clientID"` | Name of the key field storing the application (client) ID in the referenced secret. |
 | auth.oidc.clientIDSecretRef.name | string | `""` | Name of the secret containing the application (client) ID to be used by the Antrea UI server to identify itself to the OIDC provider. The secret must exist in the Namespace of the Helm release. It is mutually exclusive with the clientID value. |
 | auth.oidc.clientSecret | string | `""` | Application secret to be used by the Antrea UI server to identify itself to the OIDC provider. Note that this secret will never be exposed to the UI frontend and to users. It should be base64-encoded. |
 | auth.oidc.clientSecretSecretRef.key | string | `"clientSecret"` | Name of the key field storing the application secret in the referenced secret. |
 | auth.oidc.clientSecretSecretRef.name | string | `""` | Name of the secret containing the application secret to be used by the Antrea UI server to identify itself to the OIDC provider. The secret must exist in the Namespace of the Helm release. It is mutually exclusive with the clientSecret value. |
-| auth.oidc.enable | bool | `false` | Enable OIDC-based authentication: the server connects to an OIDC provider to authenticate users. When enabling OIDC authentication, you will need to set the top-level url value. |
-| auth.oidc.issuerURL | string | `""` | URL of the OIDC provider. The server will use the URL to retrieve the OpenID Provider Configuration Document, which should be available at the /.well-known/openid-configuration endpoint. |
+| auth.oidc.discoveryURL | string | `""` | Address at which to perform OIDC discovery, when it differs from issuerURL. Only needed when the issuer is a public address the backend Pod cannot reach (or cannot reach until it is itself Ready, which would deadlock startup). Leave empty to discover at issuerURL, which is the normal case. |
+| auth.oidc.enable | bool | `false` | Enable OIDC-based authentication: the server connects to an OIDC provider to authenticate users. When enabling OIDC authentication, you will need to set the top-level url value. The kube-apiserver must be configured to trust the *same* issuer, via the --oidc-issuer-url and --oidc-client-id flags, because the id_token is what Antrea UI presents to it on the user's behalf. See docs/oidc.md. |
+| auth.oidc.issuerURL | string | `""` | URL of the OIDC provider. The server will use the URL to retrieve the OpenID Provider Configuration Document, which should be available at the /.well-known/openid-configuration endpoint. The kube-apiserver must be configured to trust this same issuer, since the id_token it issues is the credential Antrea UI presents to Kubernetes on the user's behalf. |
 | auth.oidc.logoutURL | string | `""` | URL to log out of the OIDC provider. It will be invoked when the user logs out of the Antrea UI. Some OIDC providers may not offer this capability. If this is empty, the user will stay signed into the identity provider even after logging out of the Antrea UI. The provided URL will be processed by a template engine, and the following template values are supported: {{Token}} (the ID token issued by the provider), {{ClientID}} (the application ID), {{URL}} (the URL at which Antrea UI is accessible), and {{LogoutReturnURL}} (useful if you want to redirect back to Antrea UI after signing out from the identity provider, with a helpful user-facing message). |
 | auth.oidc.providerName | string | `""` | Name of the OIDC provider (Dex, Github OAuth2, ...). This is used for user-facing messages, and does not have any impact on functionality. |
+| auth.oidc.scopes | list | `["openid","email","groups","offline_access"]` | Scopes to request from the OIDC provider. "offline_access" is what makes the provider issue a refresh token, without which a session ends as soon as the id_token does (often only minutes). "groups" populates the group claims that group-based Kubernetes RBAC needs. "email" is requested because --oidc-username-claim=email is by far the most common kube-apiserver configuration, and providers omit the claim if the scope was not asked for. |
+| auth.serviceAccountToken.enable | bool | `true` | Enable Kubernetes token authentication on the login page: the user pastes a bearer token (typically a ServiceAccount token) and Antrea UI creates a session from it, like any other login mode. Independent of auth.bearerToken below, which accepts the same credential as a per-request API header rather than as a login. |
 | backend.extraVolumeMounts | list | `[]` | Additional volumeMounts. |
 | backend.image | object | `{"pullPolicy":"IfNotPresent","repository":"antrea/antrea-ui-backend","tag":""}` | Container image to use for the Antrea UI backend. |
 | backend.logVerbosity | int | `0` | Log verbosity switch for backend server. |
 | backend.port | int | `8080` | Container port on which the backend will listen. |
 | backend.resources | object | `{}` | Resource requests and limits for the backend container. |
-| dex.config.connectors | list | `[]` | Dex connectors configuration (refer to https://dexidp.io/docs/connectors/). |
-| dex.enable | bool | `false` | Enable built-in Dex for OIDC authentication. |
-| dex.image | object | `{"pullPolicy":"IfNotPresent","repository":"ghcr.io/dexidp/dex","tag":"v2.36.0-distroless"}` | Container image to use for Dex. |
-| dex.resources | object | `{}` | Resource requests and limits for the Dex container. |
 | extraVolumes | list | `[]` | Additional volumes. |
 | flowAggregator.address | string | `"flow-aggregator.flow-aggregator.svc:14740"` | gRPC address (host:port) of the FlowStreamService. |
 | flowAggregator.caConfigMap | string | `"flow-aggregator-ca"` | Name of the ConfigMap (in namespace below) containing the CA certificate (key: ca.crt) used to verify the FlowStreamService server certificate. The FlowStreamService uses server-side TLS only (no client authentication). Leave empty to skip server certificate verification (dev/test only). |
@@ -51,6 +52,7 @@ Kubernetes: `>= 1.16.0-0`
 | frontend.image | object | `{"pullPolicy":"IfNotPresent","repository":"antrea/antrea-ui-frontend","tag":""}` | Container image to use for the Antrea UI frontend. |
 | frontend.port | int | `3000` | Container port on which the frontend will listen. |
 | frontend.resources | object | `{}` | Resource requests and limits for the frontend container. |
+| hostAliases | list | `[]` | Additional entries for the Pod's /etc/hosts, in the standard PodSpec hostAliases form. Useful when the backend has to reach a name that cluster DNS cannot resolve - an OIDC issuer served outside the cluster, for example - without having to touch CoreDNS. Each entry is `{ip: <address>, hostnames: [<name>, ...]}`. |
 | https.auto | object | `{"commonName":"localhost","daysValid":365,"dnsNames":[],"ipAddresses":[]}` | Configure automatic TLS certificate generation with Helm. |
 | https.auto.commonName | string | `"localhost"` | Common name to use in the certificate. |
 | https.auto.daysValid | int | `365` | Number of days for which the certificate will be valid. There is no automatic rotation with this method. |
@@ -82,6 +84,10 @@ Kubernetes: `>= 1.16.0-0`
 | service.nodePort | int | `31234` | - The Node port to use when the Service type is NodePort or LoadBalancer. |
 | service.port | int | `3000` | The port on which the Service is exposed. |
 | service.type | string | `"ClusterIP"` | - The type of Service used for Antrea UI access, either ClusterIP, NodePort or LoadBalancer. |
+| session.idleTimeout | string | `"30m"` | How long a session survives with no request. The UI pings the backend every 5 minutes while a tab is visible, so this is really "how long with no open visible tab". |
+| session.maxLifetime | string | `"12h"` | Absolute cap on a session's lifetime, however active the user is. |
+| session.maxSessions | int | `1000` | Maximum number of concurrent sessions the backend will hold. |
+| session.maxSessionsPerUser | int | `10` | Maximum number of concurrent sessions one identity may hold. This is what keeps a single user from filling maxSessions and denying logins to everyone else. Logging in past the cap evicts that user's own least-recently-used session rather than failing the login. Must be <= maxSessions. Admin-password sessions are exempt: they all authenticate as the same "admin", so capping them would give every user of that password one shared budget. |
 | tolerations | object | `{}` | Tolerations for the Antrea UI Pod. |
 | url | string | `""` | Address at which the Antrea UI is accessible. Not required for most configurations. |
 

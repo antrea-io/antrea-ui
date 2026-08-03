@@ -11,8 +11,20 @@ auth:
     discoveryURL: {{ include "oidcDiscoveryURL" . }}
     providerName: {{ include "oidcProviderName" . }}
     logoutURL: {{ .Values.auth.oidc.logoutURL | quote }}
-  jwtKeyPath: "/app/jwt-key.pem"
+    scopes:
+      {{- toYaml .Values.auth.oidc.scopes | nindent 6 }}
+  kubeconfig:
+    enabled: {{ .Values.auth.kubeconfig.enable }}
+  serviceAccountToken:
+    enabled: {{ .Values.auth.serviceAccountToken.enable }}
+  bearerToken:
+    enabled: {{ .Values.auth.bearerToken.enable }}
   cookieSecure: {{ include "cookieSecure" . }}
+session:
+  idleTimeout: {{ .Values.session.idleTimeout | quote }}
+  maxLifetime: {{ .Values.session.maxLifetime | quote }}
+  maxSessions: {{ .Values.session.maxSessions }}
+  maxSessionsPerUser: {{ .Values.session.maxSessionsPerUser }}
 logVerbosity: {{ .Values.backend.logVerbosity }}
 plugins:
   labelSelector: {{ .Values.plugins.labelSelector | quote }}

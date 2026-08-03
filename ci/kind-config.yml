@@ -1,9 +1,51 @@
+# Kind cluster used by the e2e tests.
+#
+# The apiserver is configured to trust the Dex instance that ci/e2e-oidc.sh runs, because Antrea UI
+# now presents the OIDC id_token to the apiserver as the end user's own credential. Run
+# `ci/e2e-oidc.sh start-dex` BEFORE creating the cluster: it writes the CA that the extraMounts
+# below hand to the apiserver, and the apiserver will not start if that file is missing.
+#
+# The kubeadm patch uses the v1beta4 schema (extraArgs as a list), which requires Kubernetes >=
+# 1.31 - see KIND_VERSION in .github/workflows/kind_e2e.yml.
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 networking:
   disableDefaultCNI: true
   podSubnet: 10.10.0.0/16
+kubeadmConfigPatches:
+- |
+  kind: ClusterConfiguration
+  apiServer:
+    extraArgs:
+    # Must match the issuer in ci/e2e-oidc.sh exactly: it is the "iss" claim the apiserver checks.
+    # Resolvable from the node containers because Dex joins the same Docker network under this
+    # network alias.
+    - name: oidc-issuer-url
+      value: https://dex.e2e:5556/dex
+    - name: oidc-client-id
+      value: antrea-ui
+    - name: oidc-ca-file
+      value: /etc/dex-ca/ca.crt
+    # With the email claim, Kubernetes applies no username prefix, so the user is exactly
+    # "kilgore@kilgore.trout" - the identity Dex's mockCallback connector returns.
+    - name: oidc-username-claim
+      value: email
+    - name: oidc-groups-claim
+      value: groups
+    # kubeadm does not mount arbitrary flag paths into the static Pod, so the CA has to be
+    # declared here as well as in the node extraMounts below.
+    extraVolumes:
+    - name: dex-ca
+      hostPath: /etc/dex-ca
+      mountPath: /etc/dex-ca
+      readOnly: true
+      pathType: DirectoryOrCreate
 nodes:
 - role: control-plane
+  extraMounts:
+  # Fixed path, matching DEX_DIR in ci/e2e-oidc.sh.
+  - hostPath: /tmp/antrea-ui-e2e-dex
+    containerPath: /etc/dex-ca
+    readOnly: true
 - role: worker
 - role: worker

@@ -4,76 +4,35 @@ The default authentication method for Antrea UI uses an admin password. However,
 we also support SSO integration using the OIDC protocol. When SSO is enabled, it
 is possible to disable password-based authentication altogether.
 
-There are 2 main methods to enable OIDC support in Antrea UI:
+## Precondition: the kube-apiserver must trust the same issuer
 
-1. Use the built-in Dex support to connect to an identity provider of your
-   choice. Refer to the list of Dex [connectors](https://dexidp.io/docs/connectors/)
-   for a list of supported providers.
-2. Configure Antrea UI to connect to an OIDC-conformant provider. The provider
-   could be an external instance of Dex managed by you, an OIDC service such as
-   [Auth0](https://auth0.com/), etc.
+Antrea UI acts as the logged-in user's own Kubernetes identity, and the id_token
+issued by the OIDC provider is the credential it presents to the kube-apiserver.
+So the kube-apiserver has to accept that token: it must be started with
 
-In this document we will cover both methods.
-
-## Method 1: Built-in Dex
-
-When installing Antrea UI using Helm, you can choose to enable built-in support
-for Dex, in which case an additional container named `dex` will be added to the
-`antrea-ui` Deployment, and the OIDC client in the Antrea UI backend will be
-configured automatically to access Dex.
-[Connectors](https://dexidp.io/docs/connectors/) for the built-in Dex instance
-can be configured through the `dex.config.connectors` Helm list value.
-
-Let's assume that you want to deploy Antrea UI with built-in Dex support, and
-with Github as the connector. You will first need to create a new
-[Github OAuth app](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/creating-an-oauth-app),
-with the following settings:
-
-* Set the Application name to anything you want, e.g., `Antrea UI`.
-* Set the Homepage URL to: `https://<ANTREA_UI_ADDRESS>`.
-* Set the Authorization callback URL to: `https://<ANTREA_UI_ADDRESS>/dex/callback`.
-
-After that, take note of the Client ID and generate a new Client Secret.
-
-This is what the Antrea UI Helm configuration should look like:
-
-```yaml
-url: "https://<ANTREA_UI_ADDRESS>"
-auth:
-  basic:
-    # if disabling password-based admin authentication is desired
-    enable: false
-  oidc:
-    enable: true
-dex:
-  enable: true
-  config:
-    connectors:
-    - type: github
-      id: github
-      name: Github
-      config:
-        clientID: "<GITHUB_APP_CLIENT_ID>"
-        # secret provided by Github, *not* base64-encoded
-        clientSecret: "<GITHUB_APP_CLIENT_SECRET>"
-        redirectURI: "https://<ANTREA_UI_ADDRESS>/dex/callback"
-security:
-  cookieSecure: true
+```
+--oidc-issuer-url=<the same issuer URL you configure below>
+--oidc-client-id=<the same client ID you configure below>
 ```
 
-After installing Antrea UI with the correct configuration values, visit
-`https://<ANTREA_UI_ADDRESS>` and click on the `Login With Dex` button. It will
-redirect you to a Github login page, where you can enter your credentials.
+plus whatever `--oidc-username-claim` / `--oidc-groups-claim` flags suit your
+provider (or the equivalent
+[structured authentication config](https://kubernetes.io/docs/reference/access-authn-authz/authentication/#using-authentication-configuration)).
 
-Note that when logging out from the Antrea UI (by clicking the `Logout` button),
-users will not be automatically logged out from the identity provider (Github in
-the example above). This is not a feature supported by Dex.
+Without this, OIDC login succeeds and then every API call fails with 401. You
+also need to grant those users RBAC — see
+[authentication.md](authentication.md).
 
-## Method 2: OIDC-Conformant Provider
+Antrea UI checks this at login: if the API server rejects the id_token, the
+login fails with a message pointing here, rather than appearing to succeed and
+then failing on every subsequent request.
 
-For this method, we will use [Auth0](https://auth0.com/) as an example, but
-similar steps should work with other providers, as long as they are
-OIDC-conformant.
+## Configuring an OIDC provider
+
+Below we use [Auth0](https://auth0.com/) as an example, but similar steps should
+work with any OIDC-conformant provider — a Dex instance you run yourself, Keycloak,
+Okta, and so on. Whichever you pick, the kube-apiserver must be configured to
+trust it as described in [the precondition above](#precondition-the-kube-apiserver-must-trust-the-same-issuer).
 
 In Auth0, register a new application of type "Regular Web Application". It is
 important to note that while Antrea UI uses React as its frontend technology, we

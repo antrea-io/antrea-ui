@@ -10,7 +10,9 @@ on:
     - release-*
 
 env:
-  KIND_VERSION: v0.22.0
+  # >= v0.31 is required: ci/kind-config.yml patches the apiserver with the kubeadm v1beta4
+  # schema (extraArgs as a list), which only applies to Kubernetes >= 1.31.
+  KIND_VERSION: v0.32.0
 
 jobs:
   check-changes:
@@ -60,6 +62,10 @@ jobs:
         curl -Lo ./kind https://github.com/kubernetes-sigs/kind/releases/download/${KIND_VERSION}/kind-$(uname)-amd64
         chmod +x ./kind
         sudo mv kind /usr/local/bin
+    # Must run before the cluster is created: it writes the CA that ci/kind-config.yml mounts
+    # into the control-plane node for the apiserver's --oidc-ca-file.
+    - name: Start Dex
+      run: ci/e2e-oidc.sh start-dex
     - name: Create Kind cluster
       run: |
         kind create cluster --config ci/kind-config.yml
@@ -74,11 +80,19 @@ jobs:
     # For e2e helm tests, Antrea UI should not be installed
     - name: Run e2e helm tests
       run: go test -v ./test/e2e_helm
-    # We install Antrea UI with extra features enabled (e.g., OIDC) for better test coverage
+    # Makes the Dex issuer resolvable from Pods, publishes its CA for the backend, and grants the
+    # test identity its RBAC. Needs the cluster up, and Antrea UI not yet installed.
+    - name: Configure cluster for OIDC
+      run: ci/e2e-oidc.sh configure-cluster
+    # We install Antrea UI with extra features enabled (OIDC, kubeconfig login) for better test
+    # coverage; see the comments in ci/antrea-ui-values.yml.
     - name: Install Antrea UI
       run: |
         helm install --namespace kube-system antrea-ui \
-          -f ci/antrea-ui-values.yml ./build/charts/antrea-ui
+          -f ci/antrea-ui-values.yml \
+          --set hostAliases[0].ip="$(ci/e2e-oidc.sh dex-ip)" \
+          --set hostAliases[0].hostnames[0]=dex.e2e \
+          ./build/charts/antrea-ui
         kubectl rollout status -n kube-system deployment/antrea-ui --timeout=5m
     # The pod-counter example plugin is delivered as a labeled ConfigMap, the same mechanism a
     # real plugin deployment would use (see docs/plugins.md) — the backend's ConfigMap watch

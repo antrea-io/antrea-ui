@@ -6,6 +6,8 @@ metadata:
   labels:
     app: antrea-ui
 spec:
+  # Must stay 1: sessions (and the Kubernetes credentials they hold) live in the backend's
+  # memory only, so a second replica would reject cookies issued by the first.
   replicas: 1
   selector:
     matchLabels:
@@ -18,15 +20,16 @@ spec:
         {{- toYaml . | nindent 8 }}
         {{- end }}
       annotations:
-        # every time the chart is templated, a new JWT key is generated, so we
-        # need to re-create the Pod
-        rollme: {{ randAlphaNum 5 | quote }}
         kubectl.kubernetes.io/default-container: frontend
         {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
     spec:
       serviceAccountName: antrea-ui
+      {{- with .Values.hostAliases }}
+      hostAliases:
+        {{- toYaml . | trim | nindent 8 }}
+      {{- end }}
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532
@@ -118,57 +121,9 @@ spec:
               mountPath: /app/server-conf.yaml
               subPath: server.conf
               readOnly: true
-            - name: jwt-key
-              mountPath: /app/jwt-key.pem
-              subPath: key.pem
-              readOnly: true
             {{- with .Values.backend.extraVolumeMounts }}
             {{- toYaml . | trim | nindent 12 }}
             {{- end }}
-        {{- if .Values.dex.enable }}
-        - name: dex
-          image: {{ .Values.dex.image.repository }}:{{ .Values.dex.image.tag | default "latest" }}
-          imagePullPolicy: {{ .Values.dex.image.pullPolicy }}
-          args:
-            - "dex"
-            - "serve"
-            - "/etc/dex/config.yaml"
-          env:
-            {{- if .Values.auth.oidc.enable }}
-            - name: ANTREA_UI_AUTH_OIDC_CLIENT_ID
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "oidcClientIDSecretName" . }}
-                  key: {{ include "oidcClientIDKey" . }}
-            - name: ANTREA_UI_AUTH_OIDC_CLIENT_SECRET
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "oidcClientSecretSecretName" . }}
-                  key: {{ include "oidcClientSecretKey" . }}
-            {{- end }}
-          ports:
-            - name: dex-http
-              containerPort: 5556
-              protocol: TCP
-            - name: dex-telemetry
-              containerPort: 5558
-              protocol: TCP
-          livenessProbe:
-            httpGet:
-              path: /healthz/live
-              port: dex-telemetry
-          readinessProbe:
-            httpGet:
-              path: /healthz/ready
-              port: dex-telemetry
-          resources:
-            {{- toYaml .Values.dex.resources | nindent 12 }}
-          volumeMounts:
-            - name: dex-conf
-              mountPath: /etc/dex/config.yaml
-              subPath: dex.conf
-              readOnly: true
-        {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
@@ -188,10 +143,6 @@ spec:
         - name: server-conf
           configMap:
             name: antrea-ui-backend
-        - name: jwt-key
-          secret:
-            secretName: antrea-ui-jwt-key
-            defaultMode: 0400
         {{- if .Values.https.enable }}
         {{- $secretName := "antrea-ui-tls-helm" }}
         {{- if eq .Values.https.method "secret" }}
@@ -201,11 +152,6 @@ spec:
           secret:
             secretName: {{ $secretName }}
             defaultMode: 0400
-        {{- end }}
-        {{- if .Values.dex.enable }}
-        - name: dex-conf
-          configMap:
-            name: antrea-ui-dex
         {{- end }}
         {{- with .Values.extraVolumes }}
         {{- toYaml . | trim | nindent 8 }}

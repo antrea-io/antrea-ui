@@ -16,14 +16,6 @@ package v1
 
 import "time"
 
-// Token is the body of the pre-session login/refresh responses. Kept only for
-// test/e2e/client.go, which still exercises the old flow until it is rewired onto sessions.
-type Token struct {
-	TokenType   string `json:"tokenType"`
-	AccessToken string `json:"accessToken"`
-	ExpiresIn   int64  `json:"expiresIn"`
-}
-
 // LoginTokenRequest is the body of POST /auth/login/token: a Kubernetes bearer token (typically a
 // ServiceAccount token) that the server will use as the caller's identity.
 type LoginTokenRequest struct {

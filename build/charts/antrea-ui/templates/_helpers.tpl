@@ -37,27 +37,27 @@
 {{- end -}}
 
 {{- define "oidcProviderName" -}}
-{{- ternary "Dex" .Values.auth.oidc.providerName .Values.dex.enable -}}
+{{- .Values.auth.oidc.providerName -}}
 {{- end -}}
 
 {{- define "oidcIssuerURL" -}}
-{{- ternary (print .Values.url "/dex") .Values.auth.oidc.issuerURL .Values.dex.enable -}}
+{{- .Values.auth.oidc.issuerURL -}}
 {{- end -}}
 
-{{- /* When using Dex we need to use a dicovery URL which is different from the issuer URL, in case
-the issuer URL is a public / external address. This is to avoid some cyclic dependency: the external
-address may not be accessible until the antrea-ui Pod is Ready, and the antrea-ui Pod will not be
-ready until OIDC discovery is successful. */ -}}
+{{- /* An optional discovery URL, distinct from the issuer URL, for deployments where the issuer is
+a public / external address that the backend cannot reach (or cannot reach yet: the external address
+may not resolve until the antrea-ui Pod is Ready, and the Pod is not Ready until OIDC discovery has
+succeeded). Empty means "discover at the issuer URL", which is the normal case. */ -}}
 {{- define "oidcDiscoveryURL" -}}
-{{- ternary "http://localhost:5556/dex" "" .Values.dex.enable -}}
+{{- .Values.auth.oidc.discoveryURL -}}
 {{- end -}}
 
 {{- define "oidcClientID" -}}
-{{- ternary (print "antrea-ui") .Values.auth.oidc.clientID .Values.dex.enable -}}
+{{- .Values.auth.oidc.clientID -}}
 {{- end -}}
 
 {{- define "oidcClientSecret" -}}
-{{- ternary (randAlphaNum 64 | b64enc) .Values.auth.oidc.clientSecret .Values.dex.enable -}}
+{{- .Values.auth.oidc.clientSecret -}}
 {{- end -}}
 
 {{- define "oidcClientIDSecretName" -}}
@@ -102,19 +102,28 @@ clientSecret
 {{- end -}}
 {{- end -}}
 
-{{- if and ( not .Values.auth.basic.enable ) ( not .Values.auth.oidc.enable) -}}
-{{- fail "at least one authentication method must be enabled (Basic / OIDC)" -}}
+{{- /* The four modes are independent, and none of them is privileged over the others: a deployment
+that only lets users bring their own kubeconfig or paste a token is a supported (and more locked
+down) configuration than one with the shared admin password. Keep this list in step with
+AuthConfig.anyModeEnabled in pkg/config/server/config.go, which the backend enforces on startup. */ -}}
+{{- if not ( or .Values.auth.basic.enable .Values.auth.oidc.enable .Values.auth.kubeconfig.enable .Values.auth.serviceAccountToken.enable ) -}}
+{{- fail "at least one authentication method must be enabled (auth.basic, auth.oidc, auth.kubeconfig, auth.serviceAccountToken)" -}}
 {{- end -}}
 
-{{- if and .Values.dex.enable ( not .Values.auth.oidc.enable ) -}}
-{{- fail "cannot enable built-in Dex without enabling OIDC auth" -}}
+{{- /* Built-in Dex was removed: it ran as a sidecar on localhost, which the kube-apiserver has no
+route to and no reason to trust as an issuer. Now that the id_token is the credential Antrea UI
+presents upstream, a provider the apiserver does not trust cannot work at all. Fail loudly rather
+than silently ignoring leftover values, which would look like a working OIDC deployment right up
+until the first Kubernetes call. */ -}}
+{{- if .Values.dex -}}
+{{- fail "built-in Dex support has been removed; use auth.oidc.* to point Antrea UI at an OIDC provider that the kube-apiserver also trusts (see docs/oidc.md), and delete the dex.* values" -}}
 {{- end -}}
 
 {{- if and .Values.auth.oidc.enable ( empty .Values.url ) -}}
 {{- fail "url is required when OIDC is enabled" -}}
 {{- end -}}
 
-{{- if and .Values.auth.oidc.enable (not .Values.dex.enable) -}}
+{{- if .Values.auth.oidc.enable -}}
 {{- if empty .Values.auth.oidc.issuerURL -}}
 {{- fail "auth.oidc.issuerURL is required when OIDC is enabled" -}}
 {{- end -}}

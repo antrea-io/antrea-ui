@@ -42,7 +42,7 @@ linters:
       - linters: [ staticcheck ]
         text: 'ST1005:'
         path: pkg/handlers/antreasvc/client.go
-        source: return nil, fmt.Errorf\("Antrea
+        source: return nil, 0, fmt.Errorf\("Antrea
     paths:
       - third_party$
       - builtin$

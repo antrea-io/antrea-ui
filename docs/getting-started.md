@@ -157,3 +157,11 @@ for an example.
 
 Refer to this [document](oidc.md) for instructions on how to configure SSO for
 Antrea UI.
+
+### Logging in as your own Kubernetes identity
+
+Besides the admin password, Antrea UI can act as the logged-in user's *own*
+Kubernetes identity — via OIDC, an uploaded kubeconfig, or a pasted Kubernetes
+token — so that what each user can see and do is decided by their own RBAC.
+Refer to this [document](authentication.md) for the available login modes, the
+RBAC an administrator has to grant, and how sessions expire.

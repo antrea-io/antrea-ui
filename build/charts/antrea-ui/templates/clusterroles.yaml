@@ -42,6 +42,12 @@ aggregationRule:
 # explicitly (even to []) makes Helm's server-side apply fight the controller for ownership of
 # .rules on every upgrade ("conflict with clusterrole-aggregation-controller").
 ---
+# antrea-ui-admin-core is the base of that aggregation: exactly the permissions the UI's own pages
+# need, and nothing else. Unlike antrea-ui-admin, its rule list is static — it changes only when
+# this chart is upgraded — which makes it the sane model for a role of your own to bind to users
+# logging in with their own Kubernetes identity (OIDC, kubeconfig, token). See
+# docs/authentication.md; the trade-off is that such users do not pick up plugin permissions from
+# the aggregation and need those granted separately.
 kind: ClusterRole
 apiVersion: rbac.authorization.k8s.io/v1
 metadata:

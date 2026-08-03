@@ -21,91 +21,51 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sync"
 	"time"
+
+	authenticationv1 "k8s.io/api/authentication/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 
 	apisv1 "antrea.io/antrea-ui/apis/v1"
 )
 
-func parseAccessToken(body []byte) (string, error) {
-	var data apisv1.Token
-	if err := json.Unmarshal(body, &data); err != nil {
-		return "", fmt.Errorf("invalid response body format: %w", err)
-	}
-	return data.AccessToken, nil
-}
-
+// AuthProvider obtains a Kubernetes token for the antrea-ui-admin ServiceAccount and presents it
+// to the UI backend with the Authorization: Bearer fallback.
+//
+// This is deliberately not the browser flow: it skips the session cookie entirely, so the tests do
+// not have to maintain a cookie jar or track session expiry, and it exercises the same code path a
+// script or a controller would use.
 type AuthProvider struct {
-	refreshCookie *http.Cookie
+	mutex  sync.Mutex
+	token  string
+	expiry time.Time
 }
 
-func (p *AuthProvider) getAccessToken(ctx context.Context, host string) (string, error) {
-	login := func(ctx context.Context) (*http.Response, error) {
-		return Request(ctx, host, "POST", "auth/login", nil, func(req *http.Request) {
-			req.SetBasicAuth("admin", "admin") // default credentials
-		})
+const (
+	authProviderSAName   = "antrea-ui-admin"
+	authProviderTokenTTL = 1 * time.Hour
+)
+
+func (p *AuthProvider) getAccessToken(ctx context.Context) (string, error) {
+	p.mutex.Lock()
+	defer p.mutex.Unlock()
+	// Renew well before expiry, so a long test run never trips over it mid-request.
+	if p.token != "" && time.Now().Add(5*time.Minute).Before(p.expiry) {
+		return p.token, nil
 	}
-
-	refreshToken := func(ctx context.Context) (*http.Response, error) {
-		return Request(ctx, host, "GET", "auth/refresh_token", nil, func(req *http.Request) {
-			req.AddCookie(p.refreshCookie)
-		})
+	tr, err := k8sClient.CoreV1().ServiceAccounts(antreaNamespace).CreateToken(ctx, authProviderSAName, &authenticationv1.TokenRequest{
+		Spec: authenticationv1.TokenRequestSpec{
+			ExpirationSeconds: ptr.To(int64(authProviderTokenTTL / time.Second)),
+		},
+	}, metav1.CreateOptions{})
+	if err != nil {
+		return "", fmt.Errorf("failed to request a token for ServiceAccount %s/%s: %w", antreaNamespace, authProviderSAName, err)
 	}
-
-	token, err := func() (string, error) {
-		if p.refreshCookie == nil {
-			timer := time.NewTimer(0)
-			defer timer.Stop()
-			for {
-				select {
-				case <-ctx.Done():
-					return "", ctx.Err()
-				case <-timer.C:
-					resp, err := login(ctx)
-					if err != nil {
-						return "", err
-					}
-					body, err := io.ReadAll(resp.Body)
-					if err != nil {
-						return "", err
-					}
-					resp.Body.Close()
-					if resp.StatusCode == http.StatusOK {
-						p.refreshCookie = resp.Cookies()[0]
-						token, err := parseAccessToken(body)
-						if err != nil {
-							return "", err
-						}
-						return token, nil
-					} else if resp.StatusCode == http.StatusTooManyRequests {
-						timer.Reset(100 * time.Millisecond)
-						continue
-					} else {
-						return "", fmt.Errorf("failed to log in: %w", err)
-					}
-				}
-			}
-		} else {
-			resp, err := refreshToken(ctx)
-			if err != nil {
-				return "", err
-			}
-			body, err := io.ReadAll(resp.Body)
-			if err != nil {
-				return "", err
-			}
-			resp.Body.Close()
-			if resp.StatusCode != http.StatusOK {
-				return "", fmt.Errorf("failed to refresh token: %w", err)
-			}
-			token, err := parseAccessToken(body)
-			if err != nil {
-				return "", err
-			}
-			return token, nil
-		}
-	}()
-
-	return token, err
+	p.token = tr.Status.Token
+	p.expiry = tr.Status.ExpirationTimestamp.Time
+	return p.token, nil
 }
 
 var authProvider = &AuthProvider{}
@@ -156,10 +116,12 @@ func Request(
 	return RequestWithClient(ctx, http.DefaultClient, host, method, path, body, mutators...)
 }
 
+// GetAccessToken returns a Kubernetes bearer token that the UI backend accepts on the
+// Authorization header.
 func GetAccessToken(ctx context.Context, host string) (string, error) {
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	return authProvider.getAccessToken(ctx, host)
+	return authProvider.getAccessToken(ctx)
 }
 
 func GetFrontendSettings(ctx context.Context) (*apisv1.FrontendSettings, error) {
@@ -180,4 +142,14 @@ func GetFrontendSettings(ctx context.Context) (*apisv1.FrontendSettings, error) 
 		return nil, err
 	}
 	return &settings, nil
+}
+
+// setSameOriginMutator marks a request as same-origin, the way a browser would.
+//
+// Cookie-authenticated requests go through the backend's CSRF gate, which requires either
+// Sec-Fetch-Site: same-origin or a matching Origin header. Requests that authenticate with the
+// Authorization header instead are exempt (a browser cannot attach one cross-origin without CORS),
+// which is why the token-based tests do not need this.
+func setSameOriginMutator(req *http.Request) {
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
 }
