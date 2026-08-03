@@ -22,5 +22,9 @@ import (
 //go:generate mockgen -source=interface.go -package=testing -destination=testing/mock_interface.go -copyright_file=$MOCKGEN_COPYRIGHT_FILE
 
 type RequestsHandler interface {
-	Request(ctx context.Context, method string, path string, body io.Reader) ([]byte, error)
+	// Request forwards a request to the Antrea Service as the end user behind ctx, and returns
+	// the response body along with the upstream status code. Callers must keep an upstream 401
+	// (rejected credential, session is dead) distinct from a 403 (authorization failure, which
+	// must not end the session).
+	Request(ctx context.Context, method string, path string, body io.Reader) ([]byte, int, error)
 }

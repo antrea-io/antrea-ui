@@ -15,7 +15,6 @@
 package traceflow
 
 import (
-	"context"
 	"testing"
 	"time"
 
@@ -57,7 +56,7 @@ func getTraceflow() map[string]interface{} {
 }
 
 func TestRequestsHandler(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	testCases := []struct {
 		name  string
@@ -81,12 +80,12 @@ func TestRequestsHandler(t *testing.T) {
 				Object: getTraceflow(),
 			}
 
-			requestID, err := h.CreateRequest(ctx, request)
+			requestID, err := h.CreateRequest(ctx, k8sClient, request)
 			tfName := requestID
 			require.NoError(t, err)
 
 			// TF status not updated yet, hence request not ready
-			_, done, err := h.GetRequestResult(ctx, requestID)
+			_, done, err := h.GetRequestResult(ctx, k8sClient, requestID)
 			require.NoError(t, err)
 			assert.False(t, done)
 
@@ -98,7 +97,7 @@ func TestRequestsHandler(t *testing.T) {
 			_, err = k8sClient.Resource(traceflowGVR).Update(ctx, traceflow, metav1.UpdateOptions{})
 			require.NoError(t, err)
 
-			tf, done, err := h.GetRequestResult(ctx, requestID)
+			tf, done, err := h.GetRequestResult(ctx, k8sClient, requestID)
 			require.NoError(t, err)
 			require.True(t, done)
 			phase, ok, err := unstructured.NestedString(tf, "status", "phase")
@@ -114,7 +113,7 @@ func TestRequestsHandler(t *testing.T) {
 }
 
 func TestRequestsHandlerGC(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	now := time.Now()
 	clock := clocktesting.NewFakeClock(now)
 	h, k8sClient := setup(t, clock)
@@ -131,7 +130,7 @@ func TestRequestsHandlerGC(t *testing.T) {
 		Object: getTraceflow(),
 	}
 
-	requestID, err := h.CreateRequest(ctx, request)
+	requestID, err := h.CreateRequest(ctx, k8sClient, request)
 	tfName := requestID
 	require.NoError(t, err)
 
