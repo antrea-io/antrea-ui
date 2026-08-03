@@ -78,34 +78,43 @@ JSON and JS.
 
 A plugin is a standalone package — not part of the `client/web` Yarn
 workspace, and it doesn't depend on `@antrea/ui-components` internals. It
-relies on: `@antrea/ui-plugin-sdk` to register itself with the host, the
-`token` property/attribute the host sets on its custom element (for
-authenticated calls), and Antrea UI's REST API. Its own `vite.config.ts`
-must bundle dependencies like `lit` in, rather than externalizing them
-(unlike `@antrea/ui-components`) — there's no host-provided import map for
-a runtime `import()`.
+relies on `@antrea/ui-plugin-sdk` to register itself with the host, and on
+Antrea UI's REST API. Its own `vite.config.ts` must bundle dependencies like
+`lit` in, rather than externalizing them (unlike `@antrea/ui-components`) —
+there's no host-provided import map for a runtime `import()`.
+
+The host passes your element no credential, and there is none to ask for:
+requests to the Antrea UI backend authenticate with the `antrea-ui-session`
+cookie the browser already holds, so `credentials: 'include'` is the whole of
+it. (`apiFetch`/`apiFetchJSON` from `@antrea/ui-components` do this for you,
+along with turning a non-2xx response into an `APIError`, if you would rather
+not hand-roll it.) Never send an `Authorization` header of your own.
 
 `plugins/examples/pod-counter/src/index.ts`:
 
 ```ts
 import { LitElement, html } from 'lit';
-import { property, state } from 'lit/decorators.js';
+import { state } from 'lit/decorators.js';
 import { registerRoute, registerSidebarEntry } from '@antrea/ui-plugin-sdk';
 
 class AntreaPluginPodCounter extends LitElement {
-    @property() token = '';
     @state() private _count: number | null = null;
+    @state() private _error: string | null = null;
 
     connectedCallback() {
         super.connectedCallback();
-        fetch('/api/v1/k8s/api/v1/pods', {
-            headers: { Authorization: `Bearer ${this.token}` },
-        })
-            .then((res) => res.json())
-            .then((data) => { this._count = data.items?.length ?? 0; });
+        fetch('/api/v1/k8s/api/v1/pods', { credentials: 'include' })
+            .then((res) => {
+                if (res.status === 403) throw new Error('you do not have permission to list Pods');
+                if (!res.ok) throw new Error(`request failed: ${res.status}`);
+                return res.json();
+            })
+            .then((data) => { this._count = data.items?.length ?? 0; })
+            .catch((e) => { this._error = e instanceof Error ? e.message : String(e); });
     }
 
     render() {
+        if (this._error) return html`<p>Failed to load pod count: ${this._error}</p>`;
         return html`<h1>Pods in cluster: ${this._count ?? '...'}</h1>`;
     }
 }
@@ -133,21 +142,31 @@ cd ../../../plugins/examples/pod-counter
 npm install && npm run build   # vite build, then copies manifest.json into dist/
 ```
 
-If your plugin needs a K8s API path that isn't already proxied, add it to
-`allowedK8sPaths` in [`pkg/server/api/k8s.go`](../pkg/server/api/k8s.go) —
-this list is coarse and not scoped to your plugin (every path added becomes
-reachable by any authenticated Antrea UI user), so only add what's needed.
+Your plugin can proxy any K8s API path: there is no allowlist in front of the
+proxy, RBAC is the only guard (see
+[`pkg/server/api/k8s.go`](../pkg/server/api/k8s.go)). What decides whether the
+call succeeds is the RBAC of whoever is logged in — which is why the example
+handles a 403 rather than assuming the call goes through. Before the backend
+called Kubernetes as the end user, every UI user had the same access and that
+branch was dead code; now it is the ordinary outcome for a user whose role does
+not cover the path your plugin reads.
 
 RBAC for that path is **not** added to Antrea UI's own `clusterroles.yaml`.
 Instead, ship your own `ClusterRole` labeled
 `rbac.ui.antrea.io/aggregate-to-antrea-ui-admin: "true"`, which
 [aggregates](https://kubernetes.io/docs/reference/access-authn-authz/rbac/#aggregated-clusterroles)
-into the `antrea-ui-admin` ClusterRole automatically — the one Antrea UI
-impersonates for K8s API calls made on behalf of the UI user, which is what
-the K8s API proxy your plugin calls through does — see
+into the `antrea-ui-admin` ClusterRole automatically — see
 [`plugins/examples/pod-counter/clusterrole.yaml`](../plugins/examples/pod-counter/clusterrole.yaml).
 Creating (and RBAC-scoping) that ClusterRole is the responsibility of
 whoever deploys the plugin, not Antrea UI itself.
+
+That aggregation only covers the admin-password mode, which impersonates the
+`antrea-ui-admin` ServiceAccount. Users who log in with their own Kubernetes
+identity (OIDC, kubeconfig, token) are bound to a role the cluster admin wrote,
+which your ClusterRole does not aggregate into — so your plugin's pages will
+403 for them until that admin grants the same permissions deliberately. Say so
+in your plugin's install instructions. See
+[authentication.md](authentication.md).
 
 ## Extending an existing page
 

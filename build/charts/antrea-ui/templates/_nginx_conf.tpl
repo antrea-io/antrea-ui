@@ -75,15 +75,6 @@ server {
             {{- end }}
         }
 
-        {{- if .Values.dex.enable }}
-        location /dex {
-            proxy_http_version 1.1;
-            proxy_pass_request_headers on;
-            proxy_hide_header Access-Control-Allow-Origin;
-            proxy_pass http://127.0.0.1:5556;
-        }
-        {{- end }}
-
         location / {
             try_files $uri $uri/ /index.html;
         }

@@ -27,8 +27,9 @@ import (
 // TestPluginLoading exercises the production plugin-loading mechanism end to end: the
 // pod-counter example plugin is delivered as a labeled ConfigMap in antrea-ui's own namespace
 // (see docs/plugins.md), and this checks that the backend's ConfigMap watch serves the merged
-// manifest index and the plugin's JS bundle, and that the K8s proxy allow-list + RBAC
-// aggregation actually let the plugin's API call through.
+// manifest index and the plugin's JS bundle, and that the plugin's own K8s proxy call succeeds
+// under RBAC aggregation (the K8s proxy no longer applies its own path allowlist; RBAC is the
+// only guard).
 func TestPluginLoading(t *testing.T) {
 	ctx := t.Context()
 
