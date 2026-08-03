@@ -16,20 +16,33 @@ import { html, nothing } from 'lit';
 import { state, query } from 'lit/decorators.js';
 import { pageStyles } from '../lib/styles.js';
 import { apiFetch } from '../lib/api.js';
-import { TokenAwarePage } from '../lib/token-aware-page.js';
+import { apiSession, SessionMode } from '../lib/auth-api.js';
+import { SessionAwarePage } from '../lib/session-aware-page.js';
 import '../antrea-button';
 import '../antrea-alert';
 import '../antrea-card';
 import '../antrea-input';
 import type { AntreaInput } from '../antrea-input.js';
 
-export class AntreaSettingsPage extends TokenAwarePage {
+export class AntreaSettingsPage extends SessionAwarePage {
     static styles = pageStyles;
 
     @state() private _loading = false;
     @state() private _success = false;
     @state() private _error = '';
     @state() private _fieldErrors: Record<string, string> = {};
+    // Only a session authenticated with the admin password can change it — that endpoint 403s
+    // for everyone else (pkg/server/api/account.go). Undefined (mode not known yet, or the probe
+    // failed) hides the form: showing it and then always 403ing is worse than a brief delay.
+    @state() private _mode?: SessionMode;
+
+    protected override onSessionReady() {
+        apiSession().then(info => { this._mode = info.mode; }).catch(err => {
+            // A dead session is the host's business, not this page's: report it the same way
+            // every other call on this page does. Anything else leaves the form hidden.
+            if (this.isSessionExpiredError(err)) this.dispatchSessionExpired();
+        });
+    }
 
     @query('#current-password') private _currentPw!: AntreaInput;
     @query('#new-password') private _newPw!: AntreaInput;
@@ -53,7 +66,7 @@ export class AntreaSettingsPage extends TokenAwarePage {
         this._success = false;
         this._error = '';
         try {
-            await apiFetch('account/password', this.token, {
+            await apiFetch('account/password', {
                 method: 'PUT',
                 headers: { 'content-type': 'application/json' },
                 body: JSON.stringify({
@@ -98,20 +111,30 @@ export class AntreaSettingsPage extends TokenAwarePage {
                 <div class="page-layout">
                     <p class="page-title">Settings</p>
 
-                    <antrea-card heading="Change Password">
-                        ${this._success ? html`<antrea-alert status="success">Password changed successfully.</antrea-alert>` : nothing}
-                        ${this._error ? html`<antrea-alert status="danger">${this._error}</antrea-alert>` : nothing}
-                        <form class="form-stack" @submit=${this._submit}>
-                            ${this._field('current-password', 'Current Password')}
-                            ${this._field('new-password', 'New Password')}
-                            ${this._field('confirm-password', 'Confirm New Password')}
-                            <div class="btn-group">
-                                <antrea-button type="submit" ?disabled=${this._loading}>
-                                    ${this._loading ? 'Saving…' : 'Change Password'}
-                                </antrea-button>
-                            </div>
-                        </form>
-                    </antrea-card>
+                    ${this._mode === 'admin' ? html`
+                        <antrea-card heading="Change Password">
+                            ${this._success ? html`<antrea-alert status="success">Password changed successfully.</antrea-alert>` : nothing}
+                            ${this._error ? html`<antrea-alert status="danger">${this._error}</antrea-alert>` : nothing}
+                            <form class="form-stack" @submit=${this._submit}>
+                                ${this._field('current-password', 'Current Password')}
+                                ${this._field('new-password', 'New Password')}
+                                ${this._field('confirm-password', 'Confirm New Password')}
+                                <div class="btn-group">
+                                    <antrea-button type="submit" ?disabled=${this._loading}>
+                                        ${this._loading ? 'Saving…' : 'Change Password'}
+                                    </antrea-button>
+                                </div>
+                            </form>
+                        </antrea-card>
+                    ` : nothing}
+
+                    ${this._mode !== undefined && this._mode !== 'admin' ? html`
+                        <antrea-alert status="info">
+                            You are signed in with your own Kubernetes identity, so there is
+                            nothing to configure here. The admin password can only be changed
+                            from a session that logged in with it.
+                        </antrea-alert>
+                    ` : nothing}
                 </div>
             </main>
         `;

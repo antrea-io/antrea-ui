@@ -13,24 +13,25 @@
 // limitations under the License.
 
 import { LitElement, html } from 'lit';
-import { property, state } from 'lit/decorators.js';
+import { state } from 'lit/decorators.js';
 import { registerRoute, registerSidebarEntry } from '@antrea/ui-plugin-sdk';
 
-// Minimal example plugin: shows the total number of pods in the cluster. Contract with the
-// host shell (see client/web/antrea-ui/src/plugins.ts): the host sets the `token` property to
-// the current access token, same as it does for built-in pages.
+// Minimal example plugin: shows the total number of pods in the cluster.
+//
+// There is no credential to receive from the host: requests to the Antrea UI backend
+// authenticate with the session cookie the browser already holds, so `credentials: 'include'`
+// is all that is needed. Note that the backend now calls Kubernetes as the *end user*, so this
+// request can legitimately come back 403 if the viewing user has no RBAC for listing pods -
+// unlike before, when every UI user had the same access.
 class AntreaPluginPodCounter extends LitElement {
-    @property() token = '';
-
     @state() private _count: number | null = null;
     @state() private _error: string | null = null;
 
     connectedCallback() {
         super.connectedCallback();
-        fetch('/api/v1/k8s/api/v1/pods', {
-            headers: { Authorization: `Bearer ${this.token}` },
-        })
+        fetch('/api/v1/k8s/api/v1/pods', { credentials: 'include' })
             .then((res) => {
+                if (res.status === 403) throw new Error('you do not have permission to list Pods');
                 if (!res.ok) throw new Error(`request failed: ${res.status}`);
                 return res.json();
             })

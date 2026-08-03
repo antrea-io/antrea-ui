@@ -16,8 +16,7 @@ import { html, css, nothing } from 'lit';
 import { state, query, property } from 'lit/decorators.js';
 import * as d3 from 'd3';
 import { pageStyles } from '../lib/styles.js';
-import { TokenAwarePage } from '../lib/token-aware-page.js';
-import { apiFetchAppSettings } from '../lib/auth-api.js';
+import { SessionAwarePage } from '../lib/session-aware-page.js';
 import { FlowStore, FlowEntry, entryBitRate } from '../lib/flow-store.js';
 import {
     FlowType,
@@ -344,7 +343,7 @@ const BASE_COLUMNS: (FlowTableColumn & { field?: SortField })[] = [
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
-export class AntreaFlowVisibilityPage extends TokenAwarePage {
+export class AntreaFlowVisibilityPage extends SessionAwarePage {
     static styles = [pageStyles, css`
         .filter-bar { display: flex; flex-direction: column; gap: 0.75rem; }
         .filter-row { display: flex; align-items: flex-end; gap: 1rem; flex-wrap: wrap; }
@@ -497,25 +496,13 @@ export class AntreaFlowVisibilityPage extends TokenAwarePage {
         this._refreshTimer = setInterval(() => {
             if (this._store.size() > 0) this._entries = this._store.getAll();
         }, 5000);
-        // Only start the stream here if we already have a token. Hosts (e.g. Angular) set the
-        // `token` property binding only after the element connects to the DOM; starting eagerly
-        // with an empty token would auth-fail and spuriously dispatch antrea-session-expired
-        // before the real token even arrives. updated() starts the stream once it does.
-        if (this.token) this._startStream();
         window.addEventListener('pointerdown', this._handleDocClick);
+    }
 
-        // Unauthenticated — flow aggregation being enabled is server config, not
-        // user-specific — so this doesn't need to wait for the token like the stream does.
-        apiFetchAppSettings().then(settings => {
-            if (!this.isConnected) return;
-            if (settings.features?.flowVisibilityEnabled === false) {
-                this._flowVisibilityDisabled = true;
-                this._client?.stop();
-                this._client = null;
-                this._connected = false;
-                this._error = FLOW_VISIBILITY_DISABLED_MESSAGE;
-            }
-        }).catch(() => { /* settings failing to load isn't this page's concern; ignore */ });
+    protected override onSessionReady() {
+        // No credential to wait for: the browser attaches the session cookie to the SSE fetch
+        // itself, so the stream can open as soon as the element is in the DOM.
+        this._startStream();
     }
 
     override disconnectedCallback() {
@@ -558,14 +545,6 @@ export class AntreaFlowVisibilityPage extends TokenAwarePage {
         }
     }
 
-    protected override onTokenReady() {
-        if (this._client) {
-            this._client.updateToken(this.token);
-        } else {
-            this._startStream();
-        }
-    }
-
     private _dispatchEdgeSelected() {
         const edge = this._selectedEdgeKey ? this._graphRef.edgeMap.get(this._selectedEdgeKey) : undefined;
         const detail = edge ? edgeToSelection(edge) : null;
@@ -577,7 +556,7 @@ export class AntreaFlowVisibilityPage extends TokenAwarePage {
     private _startStream() {
         if (this._paused || this._flowVisibilityDisabled) return;
         this._client?.stop();
-        this._client = new FlowStreamClient(this.token, this._filter, {
+        this._client = new FlowStreamClient(this._filter, {
             onFlows: flows => {
                 this._store.upsertBatch(flows);
                 this._entries = this._store.getAll();
@@ -588,11 +567,17 @@ export class AntreaFlowVisibilityPage extends TokenAwarePage {
             onConnected: () => { this._connected = true; this._error = null; },
             onDisconnected: () => { this._connected = false; },
             onAuthError: () => {
-                // The client stops itself (running=false) on a 401, so updateToken() in
-                // onTokenReady() would otherwise be a no-op once a fresh token arrives. Drop
-                // the dead client so onTokenReady() starts a brand new one instead.
-                this._client = null;
+                // A 401 means the session is over; there is no refresh left to attempt. The
+                // client has already stopped itself, and the host will log the user out.
                 this.dispatchSessionExpired();
+            },
+            onDisabled: () => {
+                // A 501 means Flow Aggregator integration is off for this deployment. The
+                // client has already stopped itself; there is nothing to retry.
+                this._flowVisibilityDisabled = true;
+                this._client = null;
+                this._connected = false;
+                this._error = FLOW_VISIBILITY_DISABLED_MESSAGE;
             },
         });
         this._client.start();

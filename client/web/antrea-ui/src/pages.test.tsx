@@ -22,10 +22,6 @@ import { SummaryPage } from './pages';
 // AntreaSummaryPage is a Lit web component with its own shadow DOM; we only need
 // its host element here to dispatch the antrea-session-expired event.
 
-function jsonResponse(body: unknown, status = 200): Response {
-    return new Response(JSON.stringify(body), { status });
-}
-
 function stubLocationHref() {
     const hrefSetter = vi.fn();
     const originalLocation = Object.getOwnPropertyDescriptor(window, 'location');
@@ -48,15 +44,16 @@ afterEach(() => {
     vi.unstubAllGlobals();
 });
 
-describe('useLitPage — silent refresh on antrea-session-expired', () => {
-    test('401 -> refresh succeeds -> the store token is replaced and the page is not logged out', async () => {
-        const store = setupStore({ token: 'stale-token' });
-        vi.stubGlobal('fetch', vi.fn(async (url: string) => {
-            if (url === '/auth/refresh_token') {
-                return jsonResponse({ tokenType: 'Bearer', accessToken: 'fresh-token', expiresIn: 3600 });
-            }
+describe('useLitPage — antrea-session-expired', () => {
+    // There is no probe-then-retry any more. Credential refresh happens server-side, and the
+    // backend has already attempted the only refresh that exists, so a 401 is authoritative:
+    // the session is gone and the user has to log in again.
+    test('logs the user out immediately, without probing the backend first', async () => {
+        const store = setupStore({ session: 'authenticated' });
+        const fetchMock = vi.fn(async (url: string) => {
             throw new Error(`unexpected fetch to ${url}`);
-        }));
+        });
+        vi.stubGlobal('fetch', fetchMock);
         const location = stubLocationHref();
 
         try {
@@ -67,34 +64,14 @@ describe('useLitPage — silent refresh on antrea-session-expired', () => {
                 el.dispatchEvent(new CustomEvent('antrea-session-expired'));
             });
 
-            await waitFor(() => expect(store.getState().token).toBe('fresh-token'));
-            expect(location.hrefSetter).not.toHaveBeenCalled();
-        } finally {
-            location.restore();
-        }
-    });
-
-    test('401 -> refresh 401s -> the user is logged out', async () => {
-        const store = setupStore({ token: 'stale-token' });
-        vi.stubGlobal('fetch', vi.fn(async (url: string) => {
-            if (url === '/auth/refresh_token') {
-                return new Response('refresh cookie expired', { status: 401 });
-            }
-            throw new Error(`unexpected fetch to ${url}`);
-        }));
-        const location = stubLocationHref();
-
-        try {
-            render(<Provider store={store}><SummaryPage /></Provider>);
-            const el = document.querySelector('antrea-summary-page')!;
-
-            await act(async () => {
-                el.dispatchEvent(new CustomEvent('antrea-session-expired'));
-            });
-
-            await waitFor(() => expect(store.getState().token).toBe(''));
+            await waitFor(() => expect(store.getState().session).toBe('anonymous'));
             expect(location.hrefSetter).toHaveBeenCalledTimes(1);
-            expect(location.hrefSetter.mock.calls[0][0]).toContain('/auth/logout?');
+            const redirect = location.hrefSetter.mock.calls[0][0] as string;
+            expect(redirect).toContain('/auth/logout?');
+            // The message is nested inside the redirect_url parameter, hence double-encoded.
+            expect(decodeURIComponent(redirect)).toContain('session+has+expired');
+            // No /auth/* round-trip: the old code tried a token refresh here first.
+            expect(fetchMock.mock.calls.filter(([url]) => url.startsWith('/auth/'))).toHaveLength(0);
         } finally {
             location.restore();
         }

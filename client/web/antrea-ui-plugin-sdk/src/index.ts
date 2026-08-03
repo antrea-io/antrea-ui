@@ -35,8 +35,10 @@ export type { EdgeSelection, EdgeExtraRenderer, FlowEntry, FlowTableColumn, Flow
 import type { EdgeExtraRenderer, FlowTableColumnsProcessor } from '@antrea/ui-components';
 
 /** A route a whole-page plugin wants the host to mount. `tag` is the custom element the
- * plugin's entry module registers via customElements.define(...); the host renders it with
- * the same `token`/session-refresh wiring as its own built-in pages. */
+ * plugin's entry module registers via customElements.define(...); the host renders it with the
+ * same session-expiry wiring as its own built-in pages. Your element receives no credential:
+ * calls to the Antrea UI backend authenticate with the session cookie the browser already holds,
+ * so use apiFetch()/apiFetchJSON() from @antrea/ui-components and add nothing of your own. */
 export interface PluginRoute {
     // The in-app route path, e.g. "/plugin/pod-counter". Must not start with "/api/" — that
     // prefix is reserved for the backend API (including serving plugin static assets), so a

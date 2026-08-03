@@ -26,7 +26,6 @@ afterEach(() => {
 
 async function mount(): Promise<AntreaTraceflowPage> {
     el = document.createElement('antrea-traceflow-page') as AntreaTraceflowPage;
-    el.token = 'my-token';
     document.body.appendChild(el);
     await el.updateComplete;
     return el;

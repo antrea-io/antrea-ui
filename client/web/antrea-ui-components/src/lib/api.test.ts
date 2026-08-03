@@ -34,7 +34,7 @@ describe('setApiBase/getApiBase', () => {
         vi.stubGlobal('fetch', fetchMock);
         setApiBase('http://localhost:8080');
 
-        await apiFetch('summary', 'my-token');
+        await apiFetch('summary');
 
         expect(fetchMock.mock.calls[0][0]).toBe('http://localhost:8080/api/v1/summary');
     });
@@ -52,41 +52,34 @@ describe('APIError', () => {
 });
 
 describe('apiFetch', () => {
-    test('sends a Bearer Authorization header when a token is provided', async () => {
+    // Authentication is the session cookie, which the browser attaches by itself. The explicit
+    // credentials: 'include' is what makes that work cross-origin in local development.
+    test('sends the session cookie and no Authorization header', async () => {
         const fetchMock = vi.fn().mockResolvedValue(new Response('ok', { status: 200 }));
         vi.stubGlobal('fetch', fetchMock);
 
-        await apiFetch('summary', 'my-token');
+        await apiFetch('summary');
 
         expect(fetchMock).toHaveBeenCalledTimes(1);
         const [url, init] = fetchMock.mock.calls[0];
         expect(url).toBe('/api/v1/summary');
-        expect((init.headers as Headers).get('Authorization')).toBe('Bearer my-token');
-    });
-
-    test('omits the Authorization header when the token is empty', async () => {
-        const fetchMock = vi.fn().mockResolvedValue(new Response('ok', { status: 200 }));
-        vi.stubGlobal('fetch', fetchMock);
-
-        await apiFetch('summary', '');
-
-        const [, init] = fetchMock.mock.calls[0];
+        expect(init.credentials).toBe('include');
         expect((init.headers as Headers).has('Authorization')).toBe(false);
     });
 
-    test('preserves caller-supplied headers alongside Authorization', async () => {
+    test('preserves caller-supplied headers and method', async () => {
         const fetchMock = vi.fn().mockResolvedValue(new Response('ok', { status: 200 }));
         vi.stubGlobal('fetch', fetchMock);
 
-        await apiFetch('account/password', 'my-token', {
+        await apiFetch('account/password', {
             method: 'PUT',
             headers: { 'content-type': 'application/json' },
         });
 
         const [, init] = fetchMock.mock.calls[0];
         expect(init.method).toBe('PUT');
+        expect(init.credentials).toBe('include');
         expect((init.headers as Headers).get('content-type')).toBe('application/json');
-        expect((init.headers as Headers).get('Authorization')).toBe('Bearer my-token');
     });
 
     test('throws an APIError with the response body as the message on non-ok response', async () => {
@@ -95,7 +88,7 @@ describe('apiFetch', () => {
             statusText: 'Forbidden',
         })));
 
-        await expect(apiFetch('summary', 'my-token')).rejects.toMatchObject({
+        await expect(apiFetch('summary')).rejects.toMatchObject({
             code: 403,
             status: 'Forbidden',
             message: 'permission denied',
@@ -108,7 +101,7 @@ describe('apiFetch', () => {
             statusText: 'Unauthorized',
         })));
 
-        await expect(apiFetch('summary', 'my-token')).rejects.toMatchObject({
+        await expect(apiFetch('summary')).rejects.toMatchObject({
             code: 401,
             message: 'HTTP 401',
         });
@@ -117,7 +110,7 @@ describe('apiFetch', () => {
     test('normalizes a network-level fetch() rejection into an APIError', async () => {
         vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')));
 
-        const err = await apiFetch('summary', 'my-token').catch(e => e);
+        const err = await apiFetch('summary').catch(e => e);
         expect(err).toBeInstanceOf(APIError);
         expect(err.message).toBe('Failed to fetch');
     });
@@ -127,7 +120,7 @@ describe('apiFetchJSON', () => {
     test('parses the JSON response body', async () => {
         vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ version: 'v1.0.0' })));
 
-        const result = await apiFetchJSON<{ version: string }>('settings', 'my-token');
+        const result = await apiFetchJSON<{ version: string }>('settings');
 
         expect(result).toEqual({ version: 'v1.0.0' });
     });
@@ -135,6 +128,6 @@ describe('apiFetchJSON', () => {
     test('propagates APIError from the underlying fetch on failure', async () => {
         vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('nope', { status: 500 })));
 
-        await expect(apiFetchJSON('settings', 'my-token')).rejects.toBeInstanceOf(APIError);
+        await expect(apiFetchJSON('settings')).rejects.toBeInstanceOf(APIError);
     });
 });

@@ -13,7 +13,13 @@
 // limitations under the License.
 
 import { afterEach, describe, expect, test, vi } from 'vitest';
-import { apiLogin, apiRefreshToken, apiFetchAppSettings } from './auth-api';
+import {
+    apiLogin,
+    apiLoginWithToken,
+    apiLoginWithKubeconfig,
+    apiSession,
+    apiFetchAppSettings,
+} from './auth-api';
 import { APIError, setApiBase } from './api';
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -26,15 +32,13 @@ afterEach(() => {
 });
 
 describe('apiLogin', () => {
-    test('sends credentials as a Basic Authorization header', async () => {
-        const fetchMock = vi.fn().mockResolvedValue(jsonResponse({
-            tokenType: 'Bearer', accessToken: 'my-token', expiresIn: 3600,
-        }));
+    test('sends credentials as a Basic Authorization header and returns nothing', async () => {
+        const fetchMock = vi.fn().mockResolvedValue(new Response('', { status: 200 }));
         vi.stubGlobal('fetch', fetchMock);
 
-        const token = await apiLogin('admin', 'xyz');
+        // The response carries no token: on success the backend sets the session cookie.
+        await expect(apiLogin('admin', 'xyz')).resolves.toBeUndefined();
 
-        expect(token).toEqual({ tokenType: 'Bearer', accessToken: 'my-token', expiresIn: 3600 });
         const [url, init] = fetchMock.mock.calls[0];
         expect(url).toBe('/auth/login');
         expect(init.method).toBe('POST');
@@ -55,30 +59,103 @@ describe('apiLogin', () => {
     });
 });
 
-describe('apiRefreshToken', () => {
-    test('returns the refreshed token on success', async () => {
-        vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({
-            tokenType: 'Bearer', accessToken: 'refreshed-token', expiresIn: 3600,
-        })));
+describe('apiLoginWithToken', () => {
+    test('posts the token as JSON', async () => {
+        const fetchMock = vi.fn().mockResolvedValue(new Response('', { status: 200 }));
+        vi.stubGlobal('fetch', fetchMock);
 
-        const token = await apiRefreshToken();
+        await apiLoginWithToken('sa-token');
 
-        expect(token.accessToken).toBe('refreshed-token');
+        const [url, init] = fetchMock.mock.calls[0];
+        expect(url).toBe('/auth/login/token');
+        expect(init.method).toBe('POST');
+        expect(JSON.parse(init.body)).toEqual({ token: 'sa-token' });
+        expect(init.credentials).toBe('include');
     });
 
-    test('throws APIError(401) when there is no valid session cookie', async () => {
-        vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('cookie expired', {
+    test('surfaces the backend message when Kubernetes rejects the token', async () => {
+        vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('Kubernetes rejected this credential', {
             status: 401,
             statusText: 'Unauthorized',
         })));
 
-        await expect(apiRefreshToken()).rejects.toBeInstanceOf(APIError);
+        await expect(apiLoginWithToken('bad')).rejects.toMatchObject({
+            code: 401,
+            message: 'Kubernetes rejected this credential',
+        });
+    });
+});
+
+describe('apiLoginWithKubeconfig', () => {
+    test('posts the kubeconfig as JSON', async () => {
+        const fetchMock = vi.fn().mockResolvedValue(new Response('', { status: 200 }));
+        vi.stubGlobal('fetch', fetchMock);
+
+        await apiLoginWithKubeconfig('apiVersion: v1\nkind: Config\n');
+
+        const [url, init] = fetchMock.mock.calls[0];
+        expect(url).toBe('/auth/login/kubeconfig');
+        expect(JSON.parse(init.body)).toEqual({ kubeconfig: 'apiVersion: v1\nkind: Config\n' });
+    });
+
+    test('surfaces the explanation for an unsupported credential', async () => {
+        vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(
+            'kubeconfig uses an exec credential plugin, which Antrea UI cannot run on your behalf',
+            { status: 400, statusText: 'Bad Request' },
+        )));
+
+        await expect(apiLoginWithKubeconfig('...')).rejects.toMatchObject({
+            code: 400,
+            message: expect.stringContaining('exec credential plugin'),
+        });
+    });
+});
+
+describe('apiSession', () => {
+    test('returns the session info on success', async () => {
+        vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({
+            authenticated: true, mode: 'oidc', username: 'alice', expiresAt: '2026-08-02T12:00:00Z',
+        })));
+
+        const info = await apiSession();
+
+        expect(info.authenticated).toBe(true);
+        expect(info.mode).toBe('oidc');
+        expect(info.username).toBe('alice');
+    });
+
+    test('throws APIError(401) when there is no session', async () => {
+        vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('not logged in', {
+            status: 401,
+            statusText: 'Unauthorized',
+        })));
+
+        await expect(apiSession()).rejects.toBeInstanceOf(APIError);
+    });
+
+    test('sends the session cookie', async () => {
+        const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ authenticated: true }));
+        vi.stubGlobal('fetch', fetchMock);
+
+        await apiSession();
+
+        const [url, init] = fetchMock.mock.calls[0];
+        expect(url).toBe('/auth/session');
+        expect(init.credentials).toBe('include');
     });
 });
 
 describe('apiFetchAppSettings', () => {
     test('returns the parsed settings on success', async () => {
-        const settings = { version: 'v1.0.0', auth: { basicEnabled: true, oidcEnabled: false } };
+        const settings = {
+            version: 'v1.0.0',
+            auth: {
+                basicEnabled: true,
+                oidcEnabled: false,
+                kubeconfigEnabled: true,
+                serviceAccountTokenEnabled: true,
+            },
+        };
         vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(settings)));
 
         expect(await apiFetchAppSettings()).toEqual(settings);
@@ -96,7 +173,7 @@ describe('apiFetchAppSettings', () => {
         });
     });
 
-    test('does not send credentials — the settings endpoint does not read the refresh cookie', async () => {
+    test('does not send credentials — the settings endpoint does not read the session cookie', async () => {
         const fetchMock = vi.fn().mockResolvedValue(jsonResponse({}));
         vi.stubGlobal('fetch', fetchMock);
 
@@ -108,20 +185,24 @@ describe('apiFetchAppSettings', () => {
 });
 
 describe('apiBase prefixing', () => {
-    test('apiLogin, apiRefreshToken and apiFetchAppSettings prepend the configured base URL', async () => {
+    test('every auth call prepends the configured base URL', async () => {
         setApiBase('http://localhost:8080');
-        const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse({
-            tokenType: 'Bearer', accessToken: 'my-token', expiresIn: 3600,
-        })));
+        const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse({})));
         vi.stubGlobal('fetch', fetchMock);
 
         await apiLogin('admin', 'xyz');
         expect(fetchMock.mock.calls[0][0]).toBe('http://localhost:8080/auth/login');
 
-        await apiRefreshToken();
-        expect(fetchMock.mock.calls[1][0]).toBe('http://localhost:8080/auth/refresh_token');
+        await apiLoginWithToken('tok');
+        expect(fetchMock.mock.calls[1][0]).toBe('http://localhost:8080/auth/login/token');
+
+        await apiLoginWithKubeconfig('cfg');
+        expect(fetchMock.mock.calls[2][0]).toBe('http://localhost:8080/auth/login/kubeconfig');
+
+        await apiSession();
+        expect(fetchMock.mock.calls[3][0]).toBe('http://localhost:8080/auth/session');
 
         await apiFetchAppSettings();
-        expect(fetchMock.mock.calls[2][0]).toBe('http://localhost:8080/api/v1/settings');
+        expect(fetchMock.mock.calls[4][0]).toBe('http://localhost:8080/api/v1/settings');
     });
 });

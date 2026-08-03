@@ -16,7 +16,14 @@ import { LitElement, html, css, nothing } from 'lit';
 import { state, query } from 'lit/decorators.js';
 import { pageStyles } from '../lib/styles.js';
 import { APIError, getApiBase } from '../lib/api.js';
-import { Token, AppSettings, apiLogin, apiRefreshToken, apiFetchAppSettings } from '../lib/auth-api.js';
+import {
+    AppSettings,
+    apiLogin,
+    apiLoginWithToken,
+    apiLoginWithKubeconfig,
+    apiSession,
+    apiFetchAppSettings,
+} from '../lib/auth-api.js';
 import '../antrea-button.js';
 import '../antrea-alert.js';
 import '../antrea-input.js';
@@ -50,6 +57,55 @@ export class AntreaLoginPage extends LitElement {
                 flex-direction: column;
                 gap: var(--antrea-space-md, 1rem);
             }
+            .method {
+                display: flex;
+                flex-direction: column;
+                gap: var(--antrea-space-sm, 0.5rem);
+            }
+            .method-label {
+                font-family: var(--antrea-font-family, sans-serif);
+                font-size: var(--antrea-font-size-sm, 0.75rem);
+                font-weight: var(--antrea-font-weight-medium, 500);
+                color: var(--antrea-color-text-muted, #adbbc4);
+            }
+            .hint {
+                margin: 0;
+                font-family: var(--antrea-font-family, sans-serif);
+                font-size: var(--antrea-font-size-sm, 0.75rem);
+                color: var(--antrea-color-text-muted, #adbbc4);
+            }
+            textarea {
+                width: 100%;
+                box-sizing: border-box;
+                min-height: 8rem;
+                padding: var(--antrea-space-sm, 0.5rem);
+                background: var(--antrea-color-bg-surface, #243340);
+                border: 1px solid var(--antrea-color-border, #314351);
+                border-radius: var(--antrea-radius-md, 3px);
+                color: var(--antrea-color-text, #e9ecef);
+                font-family: var(--antrea-font-family-mono, monospace);
+                font-size: var(--antrea-font-size-sm, 0.75rem);
+                resize: vertical;
+            }
+            textarea:focus {
+                outline: none;
+                border-color: var(--antrea-color-border-focus, #4aaed9);
+            }
+            .separator {
+                display: flex;
+                align-items: center;
+                gap: var(--antrea-space-sm, 0.5rem);
+                color: var(--antrea-color-text-muted, #adbbc4);
+                font-family: var(--antrea-font-family, sans-serif);
+                font-size: var(--antrea-font-size-sm, 0.75rem);
+            }
+            .separator::before,
+            .separator::after {
+                content: '';
+                flex: 1;
+                height: 1px;
+                background: var(--antrea-color-border, #314351);
+            }
         `,
     ];
 
@@ -58,11 +114,14 @@ export class AntreaLoginPage extends LitElement {
     @state() private _settingsError = '';
     @state() private _loginError = '';
     @state() private _msg = '';
-    // true after we dispatched antrea-token — show spinner until the host unmounts us
-    @state() private _tokenDispatched = false;
+    // true after we dispatched antrea-authenticated — show spinner until the host unmounts us
+    @state() private _authenticated = false;
+    @state() private _submitting = false;
 
     @query('#username') private _usernameEl?: AntreaInput;
     @query('#password') private _passwordEl?: AntreaInput;
+    @query('#sa-token') private _tokenEl?: HTMLTextAreaElement;
+    @query('#kubeconfig') private _kubeconfigEl?: HTMLTextAreaElement;
 
     override connectedCallback() {
         super.connectedCallback();
@@ -88,9 +147,9 @@ export class AntreaLoginPage extends LitElement {
     }
 
     private async _init() {
-        const [settingsResult, refreshResult] = await Promise.allSettled([
+        const [settingsResult, sessionResult] = await Promise.allSettled([
             apiFetchAppSettings(),
-            apiRefreshToken(),
+            apiSession(),
         ]);
 
         if (settingsResult.status === 'fulfilled') {
@@ -105,16 +164,16 @@ export class AntreaLoginPage extends LitElement {
             this._settingsError = err instanceof Error ? err.message : 'Failed to load settings';
         }
 
-        if (refreshResult.status === 'fulfilled') {
-            // Existing session — dispatch token and wait for host to navigate away
-            this._tokenDispatched = true;
-            this._dispatchToken(refreshResult.value);
+        if (sessionResult.status === 'fulfilled') {
+            // Existing session — tell the host and wait for it to navigate away.
+            this._dispatchAuthenticated();
             return;
         }
 
-        const refreshErr = refreshResult.reason;
-        if (!(refreshErr instanceof APIError && refreshErr.code === 401)) {
-            this._loginError = refreshErr instanceof Error ? refreshErr.message : String(refreshErr);
+        // A 401 here just means "not logged in", which is the expected answer on a fresh visit.
+        const sessionErr = sessionResult.reason;
+        if (!(sessionErr instanceof APIError && sessionErr.code === 401)) {
+            this._loginError = sessionErr instanceof Error ? sessionErr.message : String(sessionErr);
         }
 
         this._loading = false;
@@ -126,29 +185,70 @@ export class AntreaLoginPage extends LitElement {
         }
     }
 
-    private _dispatchToken(token: Token) {
-        this.dispatchEvent(new CustomEvent('antrea-token', {
-            detail: { accessToken: token.accessToken },
-            bubbles: true,
-            composed: true,
-        }));
+    private _dispatchAuthenticated() {
+        this._authenticated = true;
+        // No token in the payload: the session lives in an HttpOnly cookie the host never sees.
+        this.dispatchEvent(new CustomEvent('antrea-authenticated', { bubbles: true, composed: true }));
+    }
+
+    /** Runs a login call, surfacing its error rather than letting it reject. */
+    private async _submit(login: () => Promise<void>) {
+        this._loginError = '';
+        this._submitting = true;
+        try {
+            await login();
+            this._dispatchAuthenticated();
+        } catch (err) {
+            this._loginError = err instanceof Error ? err.message : String(err);
+        } finally {
+            this._submitting = false;
+        }
     }
 
     private async _onBasicSubmit(e: Event) {
         e.preventDefault();
-        this._loginError = '';
         const username = this._usernameEl?.value ?? '';
         const password = this._passwordEl?.value ?? '';
         if (!username || !password) {
             this._loginError = 'Username and password are required';
             return;
         }
+        await this._submit(() => apiLogin(username, password));
+    }
+
+    private async _onTokenSubmit(e: Event) {
+        e.preventDefault();
+        const token = this._tokenEl?.value.trim() ?? '';
+        if (!token) {
+            this._loginError = 'A token is required';
+            return;
+        }
+        await this._submit(() => apiLoginWithToken(token));
+    }
+
+    private async _onKubeconfigSubmit(e: Event) {
+        e.preventDefault();
+        const kubeconfig = this._kubeconfigEl?.value ?? '';
+        if (!kubeconfig.trim()) {
+            this._loginError = 'A kubeconfig is required';
+            return;
+        }
+        await this._submit(() => apiLoginWithKubeconfig(kubeconfig));
+    }
+
+    /** Reads an uploaded kubeconfig into the textarea, so the user can review it before sending. */
+    private async _onKubeconfigFile(e: Event) {
+        const input = e.target as HTMLInputElement;
+        const file = input.files?.[0];
+        if (!file) return;
         try {
-            const token = await apiLogin(username, password);
-            this._tokenDispatched = true;
-            this._dispatchToken(token);
+            const text = await file.text();
+            if (this._kubeconfigEl) this._kubeconfigEl.value = text;
         } catch (err) {
             this._loginError = err instanceof Error ? err.message : String(err);
+        } finally {
+            // Allow re-selecting the same file after an edit.
+            input.value = '';
         }
     }
 
@@ -164,7 +264,7 @@ export class AntreaLoginPage extends LitElement {
                 <antrea-input id="username" label="Username" type="text" placeholder="admin" autocomplete="username"></antrea-input>
                 <antrea-input id="password" label="Password" type="password" autocomplete="current-password"></antrea-input>
                 <div class="btn-group">
-                    <antrea-button type="submit">Login</antrea-button>
+                    <antrea-button type="submit" ?disabled=${this._submitting}>Login</antrea-button>
                 </div>
             </form>
         `;
@@ -174,15 +274,59 @@ export class AntreaLoginPage extends LitElement {
         const name = this._settings?.auth.oidcProviderName ?? 'OIDC';
         return html`
             <div class="btn-group">
-                <antrea-button action="outline" @click=${this._doOidcLogin}>
+                <antrea-button action="outline" ?disabled=${this._submitting} @click=${this._doOidcLogin}>
                     Login with ${name}
                 </antrea-button>
             </div>
         `;
     }
 
+    private _renderTokenForm() {
+        return html`
+            <form class="method" @submit=${this._onTokenSubmit}>
+                <label class="method-label" for="sa-token">Kubernetes token</label>
+                <textarea id="sa-token" spellcheck="false" autocomplete="off"
+                    placeholder="eyJhbGciOiJSUzI1NiIsImtpZCI6..."></textarea>
+                <p class="hint">
+                    Antrea UI will act as the identity this token belongs to, so what you can see
+                    and do is decided by that identity's Kubernetes RBAC. Generate one with
+                    <code>kubectl create token &lt;serviceaccount&gt;</code>.
+                </p>
+                <div class="btn-group">
+                    <antrea-button type="submit" action="outline" ?disabled=${this._submitting}>
+                        Login with token
+                    </antrea-button>
+                </div>
+            </form>
+        `;
+    }
+
+    private _renderKubeconfigForm() {
+        return html`
+            <form class="method" @submit=${this._onKubeconfigSubmit}>
+                <label class="method-label" for="kubeconfig">Kubeconfig</label>
+                <textarea id="kubeconfig" spellcheck="false" autocomplete="off"
+                    placeholder="apiVersion: v1&#10;kind: Config&#10;..."></textarea>
+                <input type="file" accept=".yaml,.yml,.conf,.kubeconfig,text/*" @change=${this._onKubeconfigFile}>
+                <p class="hint">
+                    Only the current context's credential is kept, and only in memory for the
+                    duration of your session. Credentials that run a program on your machine
+                    (<code>exec</code> plugins, <code>auth-provider</code>) and references to local
+                    files are not supported — use
+                    <code>kubectl config view --raw --minify</code> to produce a self-contained
+                    kubeconfig.
+                </p>
+                <div class="btn-group">
+                    <antrea-button type="submit" action="outline" ?disabled=${this._submitting}>
+                        Login with kubeconfig
+                    </antrea-button>
+                </div>
+            </form>
+        `;
+    }
+
     override render() {
-        if (this._loading || this._tokenDispatched) {
+        if (this._loading || this._authenticated) {
             return html`
                 <div class="loading-row">
                     <div class="spinner" role="status" aria-label="Authenticating"></div>
@@ -195,6 +339,12 @@ export class AntreaLoginPage extends LitElement {
             return html`<antrea-alert status="danger">${this._settingsError}</antrea-alert>`;
         }
 
+        const auth = this._settings?.auth;
+        // The alternative methods are grouped below a separator so the primary (password or
+        // OIDC) stays the obvious one.
+        const hasPrimary = Boolean(auth?.basicEnabled || auth?.oidcEnabled);
+        const hasAlternative = Boolean(auth?.serviceAccountTokenEnabled || auth?.kubeconfigEnabled);
+
         return html`
             <div class="login-wall">
                 <h2>Please log in</h2>
@@ -204,8 +354,11 @@ export class AntreaLoginPage extends LitElement {
                     </antrea-alert>
                 ` : nothing}
                 ${this._loginError ? html`<antrea-alert status="danger">${this._loginError}</antrea-alert>` : nothing}
-                ${this._settings?.auth.basicEnabled ? this._renderBasicForm() : nothing}
-                ${this._settings?.auth.oidcEnabled ? this._renderOidcButton() : nothing}
+                ${auth?.basicEnabled ? this._renderBasicForm() : nothing}
+                ${auth?.oidcEnabled ? this._renderOidcButton() : nothing}
+                ${hasPrimary && hasAlternative ? html`<div class="separator">or</div>` : nothing}
+                ${auth?.serviceAccountTokenEnabled ? this._renderTokenForm() : nothing}
+                ${auth?.kubeconfigEnabled ? this._renderKubeconfigForm() : nothing}
             </div>
         `;
     }

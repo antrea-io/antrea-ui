@@ -16,13 +16,13 @@
 
 import { useDispatch } from 'react-redux';
 import { getApiBase } from '@antrea/ui-components';
-import { setToken } from './store';
+import { setSession } from './store';
 
 export function useLogout(): ((msg?: string) => Promise<void>) {
     const dispatch = useDispatch();
 
     async function logout(msg?: string) {
-        dispatch(setToken(""));
+        dispatch(setSession('anonymous'));
         localStorage.removeItem('ui.antrea.io/use-oidc');
         let redirectURL = window.location.origin;
         if (msg) {

@@ -16,32 +16,24 @@
 
 import React, { useRef, useEffect, useCallback } from 'react';
 import '@antrea/ui-components';
-import { apiRefreshToken } from '@antrea/ui-components';
-import { useSelector, useDispatch } from 'react-redux';
-import { RootState, setToken } from './store';
 import { useLogout } from './logout';
 import { getEdgeExtraRenderers, getFlowTableColumnsProcessors } from './plugins';
 
 function useLitPage() {
-    const token = useSelector((state: RootState) => state.token ?? '');
-    const dispatch = useDispatch();
     const ref = useRef<HTMLElement>(null);
     const logout = useLogout();
 
-    // The access token is short-lived (~10 min); the refresh token lives in a
-    // 24h HTTP-only cookie. A 401 from any page just means the access token
-    // expired — try a silent refresh (which relies on that cookie) before
-    // giving up and sending the user back to the login screen. Only logging
-    // out here would otherwise force a re-login every ~10 minutes instead of
-    // the intended 24h session.
-    const onSessionExpired = useCallback(async () => {
-        try {
-            const newToken = await apiRefreshToken();
-            dispatch(setToken(newToken.accessToken));
-        } catch {
-            logout('Your session has expired. Please log in again.');
-        }
-    }, [dispatch, logout]);
+    // A 401 from a page now means the session is genuinely gone: idle-expired, past its 12h
+    // lifetime cap, logged out in another tab, the backend restarted, or the identity provider
+    // revoked the refresh token. There is no short-lived access token to renew any more —
+    // credential refresh happens server-side, and the backend has already attempted the only
+    // refresh that exists — so a single 401 is authoritative and there is nothing to retry.
+    //
+    // A 403 is a different thing entirely (the user is logged in but lacks the Kubernetes RBAC
+    // for that call) and never reaches here: pages only dispatch this event for a 401.
+    const onSessionExpired = useCallback(() => {
+        logout('Your session has expired. Please log in again.');
+    }, [logout]);
 
     useEffect(() => {
         const el = ref.current;
@@ -50,25 +42,24 @@ function useLitPage() {
         return () => el.removeEventListener('antrea-session-expired', onSessionExpired);
     }, [onSessionExpired]);
 
-    return { ref, token };
+    return { ref };
 }
 
 export function SummaryPage() {
-    const { ref, token } = useLitPage();
-    return <antrea-summary-page ref={ref} token={token} />;
+    const { ref } = useLitPage();
+    return <antrea-summary-page ref={ref} />;
 }
 
 export function TraceflowPage() {
-    const { ref, token } = useLitPage();
-    return <antrea-traceflow-page ref={ref} token={token} />;
+    const { ref } = useLitPage();
+    return <antrea-traceflow-page ref={ref} />;
 }
 
 export function FlowVisibilityPage() {
-    const { ref, token } = useLitPage();
+    const { ref } = useLitPage();
     return (
         <antrea-flow-visibility-page
             ref={ref}
-            token={token}
             edgeExtraRenderers={getEdgeExtraRenderers()}
             flowTableColumnsProcessors={getFlowTableColumnsProcessors()}
         />
@@ -76,14 +67,14 @@ export function FlowVisibilityPage() {
 }
 
 export function SettingsPage() {
-    const { ref, token } = useLitPage();
-    return <antrea-settings-page ref={ref} token={token} />;
+    const { ref } = useLitPage();
+    return <antrea-settings-page ref={ref} />;
 }
 
 // Generic route element for plugin pages: any plugin calling registerRoute() (see plugins.ts)
-// gets its custom element mounted here, with the same ref/token/session-refresh wiring as
-// built-in pages, keyed off the tag name discovered at runtime instead of a compile-time import.
+// gets its custom element mounted here, with the same ref/session-expiry wiring as built-in
+// pages, keyed off the tag name discovered at runtime instead of a compile-time import.
 export function PluginPage({ tag }: { tag: string }) {
-    const { ref, token } = useLitPage();
-    return React.createElement(tag, { ref, token });
+    const { ref } = useLitPage();
+    return React.createElement(tag, { ref });
 }

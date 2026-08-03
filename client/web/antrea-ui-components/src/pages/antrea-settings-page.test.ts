@@ -24,11 +24,37 @@ afterEach(() => {
     vi.unstubAllGlobals();
 });
 
-async function mount(): Promise<AntreaSettingsPage> {
+function jsonResponse(body: unknown, status = 200): Response {
+    return new Response(JSON.stringify(body), { status });
+}
+
+// Every test needs /auth/session answered (onSessionReady probes it to decide whether to render
+// the password form at all) plus, for submit tests, a response for the PUT itself.
+function stubFetch(mode: 'admin' | 'oidc' | undefined, onPasswordPut?: () => Response | Promise<Response>) {
+    const fetchMock = vi.fn(async (url: string) => {
+        if (url === '/auth/session') {
+            return mode === undefined
+                ? new Response('not logged in', { status: 401 })
+                : jsonResponse({ authenticated: true, mode, username: 'someone' });
+        }
+        if (onPasswordPut) return onPasswordPut();
+        throw new Error(`unexpected fetch to ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    return fetchMock;
+}
+
+function passwordPutCalls(fetchMock: ReturnType<typeof vi.fn>) {
+    return fetchMock.mock.calls.filter(([url]: [string]) => url === '/api/v1/account/password');
+}
+
+async function mount(onSessionExpired?: () => void): Promise<AntreaSettingsPage> {
     el = document.createElement('antrea-settings-page') as AntreaSettingsPage;
-    el.token = 'my-token';
+    // Attached before the element connects: onSessionReady() fires from connectedCallback(), so
+    // a listener added after mount() would miss the event it dispatches.
+    if (onSessionExpired) el.addEventListener('antrea-session-expired', onSessionExpired);
     document.body.appendChild(el);
-    await el.updateComplete;
+    await flush(el);
     return el;
 }
 
@@ -88,29 +114,58 @@ describe('AntreaSettingsPage — validation', () => {
             expectedError: 'Passwords do not match',
         },
     ])('$name', async ({ inputs, fieldId, expectedError }) => {
-        const fetchMock = vi.fn();
-        vi.stubGlobal('fetch', fetchMock);
+        const fetchMock = stubFetch('admin');
         const page = await mount();
 
         fillAndSubmit(page, inputs);
         await flush(page);
 
         expect(fieldErrorText(page, fieldId)).toContain(expectedError);
-        expect(fetchMock).not.toHaveBeenCalled();
+        expect(passwordPutCalls(fetchMock)).toHaveLength(0);
+    });
+});
+
+describe('AntreaSettingsPage — password form visibility', () => {
+    // The endpoint 403s for anyone else (pkg/server/api/account.go), so showing the form and
+    // always failing would be worse than not showing it at all.
+    test('hidden for a non-admin session, which is explained rather than left blank', async () => {
+        stubFetch('oidc');
+        const page = await mount();
+        expect(page.shadowRoot!.querySelector('#current-password')).toBeNull();
+        expect(page.shadowRoot!.querySelector('antrea-alert[status="info"]')?.textContent)
+            .toContain('your own Kubernetes identity');
+    });
+
+    test('shown for an admin session', async () => {
+        stubFetch('admin');
+        const page = await mount();
+        expect(page.shadowRoot!.querySelector('#current-password')).not.toBeNull();
+        expect(page.shadowRoot!.querySelector('antrea-alert[status="info"]')).toBeNull();
+    });
+
+    // Neither the form nor the "nothing to configure here" message: the mode is unknown, and
+    // guessing either way would be wrong.
+    test('a dead session reports itself to the host and renders neither branch', async () => {
+        stubFetch(undefined);
+        const onSessionExpired = vi.fn();
+        const page = await mount(onSessionExpired);
+
+        expect(onSessionExpired).toHaveBeenCalledTimes(1);
+        expect(page.shadowRoot!.querySelector('#current-password')).toBeNull();
+        expect(page.shadowRoot!.querySelector('antrea-alert[status="info"]')).toBeNull();
     });
 });
 
 describe('AntreaSettingsPage — submit', () => {
     test('successful update shows a success banner, sends base64-encoded passwords, and clears the form', async () => {
-        const fetchMock = vi.fn().mockResolvedValue(new Response('', { status: 200 }));
-        vi.stubGlobal('fetch', fetchMock);
+        const fetchMock = stubFetch('admin', () => new Response('', { status: 200 }));
         const page = await mount();
 
         fillAndSubmit(page, { current: 'oldpassword1', next: 'newpassword1', confirm: 'newpassword1' });
         await flush(page);
 
-        expect(fetchMock).toHaveBeenCalledTimes(1);
-        const [url, init] = fetchMock.mock.calls[0];
+        expect(passwordPutCalls(fetchMock)).toHaveLength(1);
+        const [url, init] = passwordPutCalls(fetchMock)[0];
         expect(url).toBe('/api/v1/account/password');
         expect(init.method).toBe('PUT');
         const body = JSON.parse(init.body as string);
@@ -126,10 +181,10 @@ describe('AntreaSettingsPage — submit', () => {
     });
 
     test('failed update shows an error banner and does not clear the form', async () => {
-        vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('invalid current password', {
+        stubFetch('admin', () => new Response('invalid current password', {
             status: 400,
             statusText: 'Bad Request',
-        })));
+        }));
         const page = await mount();
 
         fillAndSubmit(page, { current: 'wrongpassword', next: 'newpassword1', confirm: 'newpassword1' });
@@ -141,7 +196,7 @@ describe('AntreaSettingsPage — submit', () => {
     });
 
     test('a 401 response dispatches antrea-session-expired instead of showing an error banner', async () => {
-        vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('', { status: 401 })));
+        stubFetch('admin', () => new Response('', { status: 401 }));
         const page = await mount();
         const onSessionExpired = vi.fn();
         page.addEventListener('antrea-session-expired', onSessionExpired);
