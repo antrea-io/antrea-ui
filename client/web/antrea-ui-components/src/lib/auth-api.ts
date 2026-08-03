@@ -14,18 +14,33 @@
 
 import { APIError, getApiBase } from './api.js';
 
-export interface Token {
-    tokenType: string
-    accessToken: string
-    expiresIn: number
+/** How the user authenticated. Mirrors the backend's session modes. */
+export type SessionMode = 'oidc' | 'kubeconfig' | 'admin' | 'serviceAccountToken';
+
+/** Describes the caller's session. Never contains any credential material: the Kubernetes
+ * credential lives only in the backend's memory, and the browser only holds an opaque cookie. */
+export interface SessionInfo {
+    authenticated: boolean
+    mode?: SessionMode
+    /** Display only. Authorization is always Kubernetes' decision. */
+    username?: string
+    /** RFC 3339 timestamp of the latest the session can possibly last: the backend's absolute
+     * lifetime cap, or the expiry of the credential behind it if that comes first. Activity does
+     * not extend it, and an idle session ends well before it. */
+    expiresAt?: string
 }
 
 export interface AppSettings {
     version: string
     auth: {
+        /** Static admin password. */
         basicEnabled: boolean
         oidcEnabled: boolean
         oidcProviderName?: string
+        /** Upload your own kubeconfig. */
+        kubeconfigEnabled: boolean
+        /** Paste a Kubernetes token. */
+        serviceAccountTokenEnabled: boolean
     }
     features?: {
         flowVisibilityEnabled?: boolean
@@ -39,27 +54,58 @@ async function throwIfNotOk(res: Response, fallback: string): Promise<Response> 
     throw new APIError(res.status, res.statusText, msg);
 }
 
-async function unauthFetch(url: string, options: RequestInit = {}): Promise<Response> {
-    const res = await fetch(url, { credentials: 'include', ...options });
+async function authFetch(path: string, options: RequestInit = {}): Promise<Response> {
+    const res = await fetch(`${getApiBase()}${path}`, { credentials: 'include', ...options });
     return throwIfNotOk(res, `HTTP ${res.status}`);
 }
 
-export async function apiLogin(username: string, password: string): Promise<Token> {
-    const res = await unauthFetch(`${getApiBase()}/auth/login`, {
+async function postJSON(path: string, body: unknown): Promise<void> {
+    await authFetch(path, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+    });
+}
+
+/**
+ * Logs in with the static admin password. On success the backend sets the session cookie; there
+ * is no token in the response for the client to hold onto.
+ */
+export async function apiLogin(username: string, password: string): Promise<void> {
+    await authFetch('/auth/login', {
         method: 'POST',
         headers: { 'Authorization': `Basic ${btoa(`${username}:${password}`)}` },
     });
-    return res.json();
 }
 
-export async function apiRefreshToken(): Promise<Token> {
-    const res = await unauthFetch(`${getApiBase()}/auth/refresh_token`);
+/** Logs in with a pasted Kubernetes bearer token (typically a ServiceAccount token). */
+export async function apiLoginWithToken(token: string): Promise<void> {
+    return postJSON('/auth/login/token', { token });
+}
+
+/**
+ * Logs in with a kubeconfig. The backend extracts the current context's credential and discards
+ * the rest immediately; `exec` and `auth-provider` credentials are rejected, since they describe
+ * something to run on your machine.
+ */
+export async function apiLoginWithKubeconfig(kubeconfig: string): Promise<void> {
+    return postJSON('/auth/login/kubeconfig', { kubeconfig });
+}
+
+/**
+ * Returns the caller's session, and throws an APIError with code 401 if there is none.
+ *
+ * This is both the app-start "am I logged in?" probe and the idle keepalive: every call bumps the
+ * session's last-seen time on the backend.
+ */
+export async function apiSession(): Promise<SessionInfo> {
+    const res = await authFetch('/auth/session');
     return res.json();
 }
 
 export async function apiFetchAppSettings(): Promise<AppSettings> {
-    // Deliberately a bare fetch(), not unauthFetch(): the settings endpoint doesn't read the
-    // refresh cookie, so it shouldn't send credentials cross-origin (that'd newly require the
+    // Deliberately a bare fetch(), not authFetch(): the settings endpoint doesn't read the
+    // session cookie, so it shouldn't send credentials cross-origin (that'd newly require the
     // server to send Access-Control-Allow-Credentials for no reason).
     const res = await fetch(`${getApiBase()}/api/v1/settings`);
     await throwIfNotOk(res, 'Failed to load app settings');

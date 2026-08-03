@@ -16,7 +16,7 @@ import { html } from 'lit';
 import { state } from 'lit/decorators.js';
 import { pageStyles } from '../lib/styles.js';
 import { apiFetchJSON } from '../lib/api.js';
-import { TokenAwarePage } from '../lib/token-aware-page.js';
+import { SessionAwarePage } from '../lib/session-aware-page.js';
 import { renderStaticTable } from '../lib/render-table.js';
 import '../antrea-card';
 import '../antrea-alert';
@@ -63,7 +63,7 @@ function conditionInfo(conditions: Condition[] | undefined, type: string): [stri
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
-export class AntreaSummaryPage extends TokenAwarePage {
+export class AntreaSummaryPage extends SessionAwarePage {
     static styles = pageStyles;
 
     @state() private _controller?: ControllerInfo;
@@ -73,12 +73,11 @@ export class AntreaSummaryPage extends TokenAwarePage {
     @state() private _loading = true;
     @state() private _error = '';
 
-    // onTokenReady() fires on every token change, including a silent refresh mid-load — bumped
-    // before each _load() and captured per-call, so a response from a superseded call can't
-    // overwrite state after a newer one has already resolved.
+    // Bumped before each _load() and captured per-call, so a response from a superseded call
+    // can't overwrite state after a newer one has already resolved.
     private _loadGeneration = 0;
 
-    protected override onTokenReady() {
+    protected override onSessionReady() {
         this._load();
     }
 
@@ -90,13 +89,11 @@ export class AntreaSummaryPage extends TokenAwarePage {
             const [controller, agentsResp, featureGates] = await Promise.all([
                 apiFetchJSON<ControllerInfo>(
                     'k8s/apis/crd.antrea.io/v1beta1/antreacontrollerinfos/antrea-controller',
-                    this.token,
                 ),
                 apiFetchJSON<{ items: AgentInfo[] }>(
                     'k8s/apis/crd.antrea.io/v1beta1/antreaagentinfos',
-                    this.token,
                 ),
-                apiFetchJSON<FeatureGate[]>('featuregates', this.token),
+                apiFetchJSON<FeatureGate[]>('featuregates'),
             ]);
             if (generation !== this._loadGeneration) return;
             this._controller = controller;
@@ -109,8 +106,8 @@ export class AntreaSummaryPage extends TokenAwarePage {
             if (this.isSessionExpiredError(e)) {
                 this.dispatchSessionExpired();
                 // Stay in the loading state: no controller/agent data was set, so falling
-                // through to render() would crash dereferencing it. The host is expected to
-                // refresh the token and re-set it, which re-triggers onTokenReady() -> _load().
+                // through to render() would crash dereferencing it. The host logs the user out
+                // and unmounts this page in response.
                 return;
             }
             this._error = e instanceof Error ? e.message : String(e);

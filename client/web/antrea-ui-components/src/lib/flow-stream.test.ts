@@ -57,6 +57,7 @@ describe('FlowStreamClient', () => {
         connected: number;
         disconnected: number;
         authErrors: number;
+        disabled: number;
     } {
         const cb = {
             flows: [] as unknown[],
@@ -65,12 +66,14 @@ describe('FlowStreamClient', () => {
             connected: 0,
             disconnected: 0,
             authErrors: 0,
+            disabled: 0,
             onFlows: (flows: unknown[]) => { cb.flows.push(...flows); },
             onError: (err: Error) => { cb.errors.push(err); },
             onDropped: (count: number) => { cb.dropped.push(count); },
             onConnected: () => { cb.connected++; },
             onDisconnected: () => { cb.disconnected++; },
             onAuthError: () => { cb.authErrors++; },
+            onDisabled: () => { cb.disabled++; },
         };
         return cb;
     }
@@ -92,10 +95,13 @@ describe('FlowStreamClient', () => {
         vi.stubGlobal('fetch', fetchMock);
     }
 
-    test('sends the Authorization header and connects', async () => {
+    // The SSE fetch authenticates with the session cookie, so it must opt into sending
+    // credentials (local development runs the frontend on a different origin) and must not send
+    // an Authorization header of its own.
+    test('sends the session cookie and connects', async () => {
         stubFetch(async () => sseResponse([]));
         const cb = makeCallbacks();
-        const client = new FlowStreamClient('my-token', {}, cb);
+        const client = new FlowStreamClient({}, cb);
 
         client.start();
         await vi.advanceTimersByTimeAsync(0);
@@ -103,7 +109,8 @@ describe('FlowStreamClient', () => {
         expect(fetchMock).toHaveBeenCalledTimes(1);
         const [url, init] = fetchMock.mock.calls[0];
         expect(url).toContain('/api/v1/flows/stream');
-        expect((init.headers as Record<string, string>).Authorization).toBe('Bearer my-token');
+        expect(init.credentials).toBe('include');
+        expect((init.headers as Record<string, string>).Authorization).toBeUndefined();
         expect(cb.connected).toBe(1);
 
         client.stop();
@@ -113,7 +120,7 @@ describe('FlowStreamClient', () => {
         setApiBase('http://localhost:8080');
         stubFetch(async () => sseResponse([]));
         const cb = makeCallbacks();
-        const client = new FlowStreamClient('my-token', {}, cb);
+        const client = new FlowStreamClient({}, cb);
 
         client.start();
         await vi.advanceTimersByTimeAsync(0);
@@ -130,7 +137,7 @@ describe('FlowStreamClient', () => {
             'event: flow\ndata: {"flows":[{"id":"b"}]}\n\n',
         ]));
         const cb = makeCallbacks();
-        const client = new FlowStreamClient('t', {}, cb, 10);
+        const client = new FlowStreamClient({}, cb, 10);
         client.start();
         await vi.advanceTimersByTimeAsync(0);
         await vi.advanceTimersByTimeAsync(10);
@@ -145,7 +152,7 @@ describe('FlowStreamClient', () => {
             ':"a"}]}\n\n',
         ]));
         const cb = makeCallbacks();
-        const client = new FlowStreamClient('t', {}, cb, 10);
+        const client = new FlowStreamClient({}, cb, 10);
         client.start();
         await vi.advanceTimersByTimeAsync(0);
         await vi.advanceTimersByTimeAsync(10);
@@ -159,7 +166,7 @@ describe('FlowStreamClient', () => {
             'event: flow\ndata:{"flows":[{"id":"a"}]}\n\n',
         ]));
         const cb = makeCallbacks();
-        const client = new FlowStreamClient('t', {}, cb, 10);
+        const client = new FlowStreamClient({}, cb, 10);
         client.start();
         await vi.advanceTimersByTimeAsync(0);
         await vi.advanceTimersByTimeAsync(10);
@@ -174,7 +181,7 @@ describe('FlowStreamClient', () => {
             'event: error\ndata: {"message":"boom"}\n\n',
         ]));
         const cb = makeCallbacks();
-        const client = new FlowStreamClient('t', {}, cb, 10);
+        const client = new FlowStreamClient({}, cb, 10);
         client.start();
         await vi.advanceTimersByTimeAsync(0);
 
@@ -188,7 +195,7 @@ describe('FlowStreamClient', () => {
             'event: flow\ndata: {"flows":[{"id":"a"}]}\n\n',
         ]));
         const cb = makeCallbacks();
-        const client = new FlowStreamClient('t', {}, cb, 50);
+        const client = new FlowStreamClient({}, cb, 50);
         client.start();
         await vi.advanceTimersByTimeAsync(0);
 
@@ -204,7 +211,7 @@ describe('FlowStreamClient', () => {
             'event: flow\ndata: {"flows":[{"id":"a"}]}\n\n',
         ]));
         const cb = makeCallbacks();
-        const client = new FlowStreamClient('t', {}, cb, 10_000);
+        const client = new FlowStreamClient({}, cb, 10_000);
         client.start();
         await vi.advanceTimersByTimeAsync(0);
 
@@ -217,7 +224,7 @@ describe('FlowStreamClient', () => {
     test('dispatches onAuthError on HTTP 401 and stops running', async () => {
         stubFetch(async () => sseResponse([], 401));
         const cb = makeCallbacks();
-        const client = new FlowStreamClient('t', {}, cb, 10);
+        const client = new FlowStreamClient({}, cb, 10);
         client.start();
         await vi.advanceTimersByTimeAsync(0);
 
@@ -227,39 +234,38 @@ describe('FlowStreamClient', () => {
         expect(fetchMock).toHaveBeenCalledTimes(1);
     });
 
-    test('recovers after a 401 once updateToken() is called with a fresh token', async () => {
-        let call = 0;
-        stubFetch(async () => {
-            call++;
-            if (call === 1) return sseResponse([], 401);
-            return sseResponse(['event: flow\ndata: {"flows":[{"id":"a"}]}\n\n']);
-        });
+    // A 401 is terminal: there is no token left to refresh, so the client stops for good rather
+    // than hammering a session that is gone. The host logs the user out in response.
+    test('a 401 stops the client and nothing restarts it on its own', async () => {
+        stubFetch(async () => sseResponse([], 401));
         const cb = makeCallbacks();
-        const client = new FlowStreamClient('stale-token', {}, cb, 10);
+        const client = new FlowStreamClient({}, cb, 10);
         client.start();
         await vi.advanceTimersByTimeAsync(0);
         expect(cb.authErrors).toBe(1);
 
-        // updateToken() on a client that a 401 already stopped is a no-op by design (see
-        // antrea-flow-visibility-page.ts, which drops the client and starts a fresh one
-        // instead) — this test documents that contract at the FlowStreamClient level.
-        client.updateToken('fresh-token');
-        await vi.advanceTimersByTimeAsync(10);
+        await vi.advanceTimersByTimeAsync(60_000);
         expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
 
-        // The actual recovery path: start a new client with the fresh token.
-        const client2 = new FlowStreamClient('fresh-token', {}, cb, 10);
-        client2.start();
+    // A 501 means Flow Aggregator integration is off for this deployment — a static config
+    // choice, not a transient failure — so it is terminal, the same way a 401 is.
+    test('dispatches onDisabled on HTTP 501 and does not reconnect', async () => {
+        stubFetch(async () => sseResponse([], 501));
+        const cb = makeCallbacks();
+        const client = new FlowStreamClient({}, cb, 10);
+        client.start();
         await vi.advanceTimersByTimeAsync(0);
-        await vi.advanceTimersByTimeAsync(10);
-        expect(cb.flows).toEqual([{ id: 'a' }]);
-        client2.stop();
+
+        expect(cb.disabled).toBe(1);
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
     });
 
     test('exponential backoff reconnects after a network error, then gives up after maxReconnectAttempts', async () => {
         stubFetch(async () => { throw new Error('network down'); });
         const cb = makeCallbacks();
-        const client = new FlowStreamClient('t', {}, cb, 10, 3);
+        const client = new FlowStreamClient({}, cb, 10, 3);
         client.start();
         await vi.advanceTimersByTimeAsync(0);
         expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -284,7 +290,7 @@ describe('FlowStreamClient', () => {
             return sseResponse([]);
         });
         const cb = makeCallbacks();
-        const client = new FlowStreamClient('t', {}, cb, 10);
+        const client = new FlowStreamClient({}, cb, 10);
         client.start();
         await vi.advanceTimersByTimeAsync(0);
 
@@ -296,7 +302,7 @@ describe('FlowStreamClient', () => {
     test('updateFilter() while running aborts and reconnects with the new filter', async () => {
         stubFetch(async () => sseResponse([]));
         const cb = makeCallbacks();
-        const client = new FlowStreamClient('t', {}, cb, 10);
+        const client = new FlowStreamClient({}, cb, 10);
         client.start();
         await vi.advanceTimersByTimeAsync(0);
         expect(fetchMock).toHaveBeenCalledTimes(1);

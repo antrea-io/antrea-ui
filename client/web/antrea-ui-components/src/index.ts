@@ -24,6 +24,13 @@ export { AntreaFlowVisibilityPage } from './pages/antrea-flow-visibility-page.js
 export type { EdgeSelection, EdgeExtraRenderer, FlowTableColumn, FlowTableColumnsProcessor } from './pages/antrea-flow-visibility-page.js';
 export type { FlowEntry } from './lib/flow-store.js';
 export { AntreaLoginPage } from './pages/antrea-login-page.js';
-export type { AppSettings, Token } from './lib/auth-api.js';
-export { apiLogin, apiRefreshToken, apiFetchAppSettings } from './lib/auth-api.js';
+export { SessionAwarePage } from './lib/session-aware-page.js';
+export type { AppSettings, SessionInfo, SessionMode } from './lib/auth-api.js';
+export {
+    apiLogin,
+    apiLoginWithToken,
+    apiLoginWithKubeconfig,
+    apiSession,
+    apiFetchAppSettings,
+} from './lib/auth-api.js';
 export { APIError, setApiBase, getApiBase } from './lib/api.js';

@@ -26,27 +26,43 @@ function errorResponse(status: number, statusText: string, body = ''): Response 
 
 interface MockFetchOptions {
     settings?: Response;
-    refreshToken?: Response;
+    session?: Response;
     login?: Response;
+    loginToken?: Response;
+    loginKubeconfig?: Response;
 }
 
 function mockFetch(opts: MockFetchOptions) {
     return vi.fn(async (url: string) => {
         if (url === '/api/v1/settings') return opts.settings ?? jsonResponse({});
-        if (url === '/auth/refresh_token') return opts.refreshToken ?? errorResponse(401, 'Unauthorized');
+        if (url === '/auth/session') return opts.session ?? errorResponse(401, 'Unauthorized');
         if (url === '/auth/login') return opts.login ?? errorResponse(401, 'Unauthorized');
+        if (url === '/auth/login/token') return opts.loginToken ?? errorResponse(401, 'Unauthorized');
+        if (url === '/auth/login/kubeconfig') return opts.loginKubeconfig ?? errorResponse(400, 'Bad Request');
         throw new Error(`unexpected fetch to ${url}`);
     });
 }
 
-const settingsBasicOnly = { version: 'v1.0.0', auth: { basicEnabled: true, oidcEnabled: false } };
-const settingsOidcOnly = { version: 'v1.0.0', auth: { basicEnabled: false, oidcEnabled: true } };
-const settingsBoth = { version: 'v1.0.0', auth: { basicEnabled: true, oidcEnabled: true } };
-const settingsNone = { version: 'v1.0.0', auth: { basicEnabled: false, oidcEnabled: false } };
-const settingsOidcNamed = {
-    version: 'v1.0.0',
-    auth: { basicEnabled: false, oidcEnabled: true, oidcProviderName: 'Dex' },
-};
+function authSettings(overrides: Record<string, unknown>) {
+    return {
+        version: 'v1.0.0',
+        auth: {
+            basicEnabled: false,
+            oidcEnabled: false,
+            kubeconfigEnabled: false,
+            serviceAccountTokenEnabled: false,
+            ...overrides,
+        },
+    };
+}
+
+const settingsBasicOnly = authSettings({ basicEnabled: true });
+const settingsOidcOnly = authSettings({ oidcEnabled: true });
+const settingsBoth = authSettings({ basicEnabled: true, oidcEnabled: true });
+const settingsNone = authSettings({});
+const settingsOidcNamed = authSettings({ oidcEnabled: true, oidcProviderName: 'Dex' });
+const settingsTokenOnly = authSettings({ serviceAccountTokenEnabled: true });
+const settingsKubeconfigOnly = authSettings({ kubeconfigEnabled: true });
 
 let el: AntreaLoginPage | undefined;
 
@@ -107,32 +123,32 @@ describe('AntreaLoginPage — auth method visibility', () => {
     });
 });
 
-describe('AntreaLoginPage — session refresh on connect', () => {
-    test('refresh success: dispatches antrea-token and does not show the login form', async () => {
-        // The element dispatches antrea-token from connectedCallback's async _init(), before
-        // mount() returns — attaching a listener afterwards would miss it. Assert on the
-        // rendered state instead, which stays stable once dispatched (see _tokenDispatched).
+describe('AntreaLoginPage — session probe on connect', () => {
+    test('existing session: dispatches antrea-authenticated and does not show the login form', async () => {
+        // The element dispatches antrea-authenticated from connectedCallback's async _init(),
+        // before mount() returns — attaching a listener afterwards would miss it. Assert on the
+        // rendered state instead, which stays stable once dispatched.
         const page = await mount({
             settings: jsonResponse(settingsBasicOnly),
-            refreshToken: jsonResponse({ tokenType: 'Bearer', accessToken: 'existing-token', expiresIn: 3600 }),
+            session: jsonResponse({ authenticated: true, mode: 'admin', username: 'admin' }),
         });
         expect(page.shadowRoot!.textContent).not.toContain('Please log in');
         expect(page.shadowRoot!.textContent).toContain('Authenticating');
     });
 
-    test('refresh 401 (no session): shows the login form without an error banner', async () => {
+    test('401 (no session): shows the login form without an error banner', async () => {
         const page = await mount({
             settings: jsonResponse(settingsBasicOnly),
-            refreshToken: errorResponse(401, 'Unauthorized', 'cookie expired'),
+            session: errorResponse(401, 'Unauthorized', 'not logged in'),
         });
         expect(page.shadowRoot!.textContent).toContain('Please log in');
         expect(page.shadowRoot!.querySelector('antrea-alert[status="danger"]')).toBeNull();
     });
 
-    test('refresh fails with a non-401 error: shows the login form with an error banner', async () => {
+    test('probe fails with a non-401 error: shows the login form with an error banner', async () => {
         const page = await mount({
             settings: jsonResponse(settingsBasicOnly),
-            refreshToken: errorResponse(404, 'Not Found', 'not found'),
+            session: errorResponse(404, 'Not Found', 'not found'),
         });
         expect(page.shadowRoot!.textContent).toContain('Please log in');
         const alert = page.shadowRoot!.querySelector('antrea-alert[status="danger"]');
@@ -142,7 +158,7 @@ describe('AntreaLoginPage — session refresh on connect', () => {
     test('settings fetch fails: shows the settings error and no login form', async () => {
         const page = await mount({
             settings: errorResponse(500, 'Internal Server Error', 'settings unavailable'),
-            refreshToken: errorResponse(401, 'Unauthorized'),
+            session: errorResponse(401, 'Unauthorized'),
         });
         expect(page.shadowRoot!.querySelector('antrea-alert[status="danger"]')?.textContent)
             .toContain('settings unavailable');
@@ -164,27 +180,29 @@ describe('AntreaLoginPage — basic login form', () => {
         await page.updateComplete;
     }
 
-    test('successful login dispatches antrea-token with the access token', async () => {
+    // No token crosses this boundary any more: the backend set an HttpOnly cookie, and the host
+    // only needs to know that a session now exists.
+    test('successful login dispatches antrea-authenticated with no payload', async () => {
         const page = await mount({
             settings: jsonResponse(settingsBasicOnly),
-            login: jsonResponse({ tokenType: 'Bearer', accessToken: 'new-token', expiresIn: 3600 }),
+            login: new Response('', { status: 200 }),
         });
-        const onToken = vi.fn();
-        page.addEventListener('antrea-token', onToken);
+        const onAuth = vi.fn();
+        page.addEventListener('antrea-authenticated', onAuth);
 
         await submitLogin(page, 'admin', 'xyz');
 
-        expect(onToken).toHaveBeenCalledTimes(1);
-        expect(onToken.mock.calls[0][0].detail).toEqual({ accessToken: 'new-token' });
+        expect(onAuth).toHaveBeenCalledTimes(1);
+        expect((onAuth.mock.calls[0][0] as CustomEvent).detail).toBeNull();
     });
 
-    test('failed login shows an error banner and does not dispatch antrea-token', async () => {
+    test('failed login shows an error banner and does not dispatch antrea-authenticated', async () => {
         const page = await mount({
             settings: jsonResponse(settingsBasicOnly),
             login: errorResponse(401, 'Unauthorized', 'invalid password'),
         });
         const onToken = vi.fn();
-        page.addEventListener('antrea-token', onToken);
+        page.addEventListener('antrea-authenticated', onToken);
 
         await submitLogin(page, 'admin', 'wrong');
 
@@ -248,10 +266,10 @@ describe('AntreaLoginPage — OIDC auto-redirect', () => {
         if (originalLocation) Object.defineProperty(window, 'location', originalLocation);
     });
 
-    test('?auth_method=oidc followed by a 401 refresh auto-triggers the OIDC redirect', async () => {
+    test('?auth_method=oidc with no session auto-triggers the OIDC redirect', async () => {
         await mount({
             settings: jsonResponse(settingsOidcOnly),
-            refreshToken: errorResponse(401, 'Unauthorized'),
+            session: errorResponse(401, 'Unauthorized'),
         });
 
         expect(localStorage.getItem('ui.antrea.io/use-oidc')).toBeNull();
@@ -263,5 +281,77 @@ describe('AntreaLoginPage — OIDC auto-redirect', () => {
         // the original one.
         const params = new URLSearchParams(redirectUrl.split('?')[1]);
         expect(params.get('redirect_url')).not.toContain('auth_method');
+    });
+});
+
+describe('AntreaLoginPage — Kubernetes credential login', () => {
+    async function submitFirstForm(page: AntreaLoginPage) {
+        page.shadowRoot!.querySelector('form')!
+            .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+        await page.updateComplete;
+        await new Promise(r => setTimeout(r, 0));
+        await page.updateComplete;
+    }
+
+    test('the token control is only rendered when that mode is enabled', async () => {
+        const page = await mount({ settings: jsonResponse(settingsBasicOnly) });
+        expect(page.shadowRoot!.querySelector('#sa-token')).toBeNull();
+        page.remove();
+
+        el = await mount({ settings: jsonResponse(settingsTokenOnly) });
+        expect(el.shadowRoot!.querySelector('#sa-token')).not.toBeNull();
+    });
+
+    test('the kubeconfig control is only rendered when that mode is enabled', async () => {
+        const page = await mount({ settings: jsonResponse(settingsBasicOnly) });
+        expect(page.shadowRoot!.querySelector('#kubeconfig')).toBeNull();
+        page.remove();
+
+        el = await mount({ settings: jsonResponse(settingsKubeconfigOnly) });
+        expect(el.shadowRoot!.querySelector('#kubeconfig')).not.toBeNull();
+    });
+
+    test('submitting a token posts it and dispatches antrea-authenticated', async () => {
+        const page = await mount({
+            settings: jsonResponse(settingsTokenOnly),
+            loginToken: new Response('', { status: 200 }),
+        });
+        const onAuth = vi.fn();
+        page.addEventListener('antrea-authenticated', onAuth);
+
+        page.shadowRoot!.querySelector<HTMLTextAreaElement>('#sa-token')!.value = '  my-sa-token  ';
+        await submitFirstForm(page);
+
+        const call = (fetch as Mock).mock.calls.find(([url]) => url === '/auth/login/token');
+        expect(call).toBeDefined();
+        // Pasted tokens often carry stray whitespace, so they are trimmed before being sent.
+        expect(JSON.parse(call![1].body)).toEqual({ token: 'my-sa-token' });
+        expect(onAuth).toHaveBeenCalledTimes(1);
+    });
+
+    test('a rejected kubeconfig surfaces the backend explanation', async () => {
+        const page = await mount({
+            settings: jsonResponse(settingsKubeconfigOnly),
+            loginKubeconfig: errorResponse(400, 'Bad Request',
+                'kubeconfig uses an exec credential plugin, which Antrea UI cannot run on your behalf'),
+        });
+
+        page.shadowRoot!.querySelector<HTMLTextAreaElement>('#kubeconfig')!.value = 'apiVersion: v1';
+        await submitFirstForm(page);
+
+        expect(page.shadowRoot!.querySelector('antrea-alert[status="danger"]')?.textContent)
+            .toContain('exec credential plugin');
+    });
+
+    test('an empty token is rejected client-side, without calling the API', async () => {
+        const page = await mount({ settings: jsonResponse(settingsTokenOnly) });
+        const fetchMock = fetch as Mock;
+        fetchMock.mockClear();
+
+        await submitFirstForm(page);
+
+        expect(fetchMock).not.toHaveBeenCalledWith('/auth/login/token', expect.anything());
+        expect(page.shadowRoot!.querySelector('antrea-alert[status="danger"]')?.textContent)
+            .toContain('required');
     });
 });

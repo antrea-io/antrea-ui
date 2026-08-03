@@ -14,14 +14,14 @@
 
 import { afterEach, describe, expect, test } from 'vitest';
 import { html } from 'lit';
-import { TokenAwarePage } from './token-aware-page';
+import { SessionAwarePage } from './session-aware-page';
 import { APIError } from './api';
 
-class TestPage extends TokenAwarePage {
-    onTokenReadyCallCount = 0;
+class TestPage extends SessionAwarePage {
+    onSessionReadyCallCount = 0;
 
-    protected override onTokenReady() {
-        this.onTokenReadyCallCount++;
+    protected override onSessionReady() {
+        this.onSessionReadyCallCount++;
     }
 
     // Expose the protected helpers for assertions.
@@ -34,10 +34,10 @@ class TestPage extends TokenAwarePage {
     }
 
     override render() {
-        return html`<p>token: ${this.token}</p>`;
+        return html`<p>ready: ${this.onSessionReadyCallCount}</p>`;
     }
 }
-customElements.define('test-token-aware-page', TestPage);
+customElements.define('test-session-aware-page', TestPage);
 
 let el: TestPage;
 
@@ -46,43 +46,31 @@ afterEach(() => {
 });
 
 async function mount(): Promise<TestPage> {
-    el = document.createElement('test-token-aware-page') as TestPage;
+    el = document.createElement('test-session-aware-page') as TestPage;
     document.body.appendChild(el);
     await el.updateComplete;
     return el;
 }
 
-describe('TokenAwarePage', () => {
-    test('does not call onTokenReady while the token is empty', async () => {
+describe('SessionAwarePage', () => {
+    // There is no credential to wait for any more: the browser sends the session cookie itself,
+    // so a page can fetch as soon as it is in the DOM.
+    test('calls onSessionReady once on connect', async () => {
         const page = await mount();
-        expect(page.onTokenReadyCallCount).toBe(0);
+        expect(page.onSessionReadyCallCount).toBe(1);
     });
 
-    test('calls onTokenReady once the token first becomes non-empty', async () => {
+    test('calls onSessionReady again if the element is re-attached', async () => {
         const page = await mount();
-        page.token = 'my-token';
+        page.remove();
+        document.body.appendChild(page);
         await page.updateComplete;
-        expect(page.onTokenReadyCallCount).toBe(1);
+        expect(page.onSessionReadyCallCount).toBe(2);
     });
 
-    test('calls onTokenReady again on a subsequent token change (e.g. refresh)', async () => {
-        const page = await mount();
-        page.token = 'my-token';
-        await page.updateComplete;
-        page.token = 'refreshed-token';
-        await page.updateComplete;
-        expect(page.onTokenReadyCallCount).toBe(2);
-    });
-
-    test('does not call onTokenReady when the token is cleared back to empty', async () => {
-        const page = await mount();
-        page.token = 'my-token';
-        await page.updateComplete;
-        page.token = '';
-        await page.updateComplete;
-        expect(page.onTokenReadyCallCount).toBe(1);
-    });
-
+    // A 403 means the user is logged in but lacks the Kubernetes RBAC for this call, which is
+    // routine now that each user acts as themselves. It must never be mistaken for a dead
+    // session, or an ordinary permissions error would log the user out.
     test('isSessionExpiredError is true only for a 401 APIError', async () => {
         const page = await mount();
         expect(page.checkIsSessionExpiredError(new APIError(401, 'Unauthorized', 'expired'))).toBe(true);

@@ -46,21 +46,29 @@ export function getApiBase(): string {
 /**
  * Authenticated fetch wrapper. All page components use this instead of axios.
  *
- * On 401 the caller receives an APIError with code 401 — the page component
- * should dispatch 'antrea-session-expired' so the host can refresh the token
- * and re-set the token property.
+ * Authentication is the `antrea-ui-session` cookie, which the backend sets at login and the
+ * browser attaches automatically — hence `credentials: 'include'`, needed because local
+ * development runs the frontend and the backend on different origins. No credential is ever
+ * held in JavaScript.
+ *
+ * On 401 the caller receives an APIError with code 401. That now means the session is genuinely
+ * over (idle timeout, absolute lifetime cap, logout in another tab, backend restart): credential
+ * refresh happens server-side, so there is nothing left for the client to retry. The page
+ * component should dispatch 'antrea-session-expired' and let the host log the user out.
+ *
+ * A 403, by contrast, is an ordinary authorization failure — the user is logged in but not
+ * allowed to do this — and must not be treated as a session problem.
  */
 export async function apiFetch(
     path: string,
-    token: string,
     options: RequestInit = {},
 ): Promise<Response> {
     const headers = new Headers(options.headers as HeadersInit | undefined);
-    if (token) headers.set('Authorization', `Bearer ${token}`);
 
     let response: Response;
     try {
         response = await fetch(`${apiBase}/api/v1/${path}`, {
+            credentials: 'include',
             ...options,
             headers,
         });
@@ -84,9 +92,8 @@ export async function apiFetch(
 
 export async function apiFetchJSON<T>(
     path: string,
-    token: string,
     options: RequestInit = {},
 ): Promise<T> {
-    const res = await apiFetch(path, token, options);
+    const res = await apiFetch(path, options);
     return res.json() as Promise<T>;
 }

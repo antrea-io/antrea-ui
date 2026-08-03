@@ -44,8 +44,12 @@ export interface FlowStreamCallbacks {
     onDropped?: (droppedCount: number) => void;
     onConnected?: () => void;
     onDisconnected?: () => void;
-    /** Called on HTTP 401. Host should refresh the token and call updateToken(). */
+    /** Called on HTTP 401, i.e. the session is over. There is nothing to retry: the host should
+     * log the user out. */
     onAuthError?: () => void;
+    /** Called on HTTP 501, i.e. Flow Aggregator integration is disabled for this deployment. This
+     * is a static configuration choice, not a transient failure: there is nothing to retry. */
+    onDisabled?: () => void;
 }
 
 interface SSEEvent { type: string; data: string; }
@@ -67,9 +71,12 @@ function buildStreamURL(filter: FlowStreamFilter): string {
 
 /**
  * FlowStreamClient manages an SSE connection to the flow stream endpoint.
- * Unlike the React version, the token is passed explicitly (not read from Redux).
- * On HTTP 401, onAuthError() is called and the stream stops; call updateToken()
- * with the new token to reconnect.
+ *
+ * Authentication is the session cookie, which the browser attaches to the SSE fetch itself. The
+ * backend keeps the session alive for as long as the stream is attached, and closes the stream if
+ * the session ends. On HTTP 401 the session is gone for good: onAuthError() fires and the stream
+ * stops for good too. On HTTP 501, Flow Aggregator integration is disabled for this deployment:
+ * onDisabled() fires and the stream stops for good, the same way.
  */
 export class FlowStreamClient {
     private abortController: AbortController | null = null;
@@ -82,16 +89,13 @@ export class FlowStreamClient {
     private batchIntervalMs: number;
     private maxReconnectAttempts: number;
     private running = false;
-    private token: string;
 
     constructor(
-        token: string,
         filter: FlowStreamFilter,
         callbacks: FlowStreamCallbacks,
         batchIntervalMs = 1000,
         maxReconnectAttempts = 10,
     ) {
-        this.token = token;
         this.filter = filter;
         this.callbacks = callbacks;
         this.batchIntervalMs = batchIntervalMs;
@@ -128,16 +132,6 @@ export class FlowStreamClient {
         }
     }
 
-    updateToken(token: string): void {
-        this.token = token;
-        if (this.running) {
-            this.abortController?.abort();
-            if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
-            this.reconnectAttempts = 0;
-            this.connect();
-        }
-    }
-
     private startBatchTimer(): void {
         this.batchTimer = setInterval(() => this.flushBatch(), this.batchIntervalMs);
     }
@@ -159,7 +153,8 @@ export class FlowStreamClient {
         const url = buildStreamURL(this.filter);
         try {
             const response = await fetch(url, {
-                headers: { 'Authorization': `Bearer ${this.token}`, 'Accept': 'text/event-stream' },
+                credentials: 'include',
+                headers: { 'Accept': 'text/event-stream' },
                 signal: this.abortController.signal,
             });
 
@@ -167,6 +162,14 @@ export class FlowStreamClient {
                 this.running = false;
                 this.stopBatchTimer();
                 this.callbacks.onAuthError?.();
+                this.callbacks.onDisconnected?.();
+                return;
+            }
+
+            if (response.status === 501) {
+                this.running = false;
+                this.stopBatchTimer();
+                this.callbacks.onDisabled?.();
                 this.callbacks.onDisconnected?.();
                 return;
             }

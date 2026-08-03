@@ -88,8 +88,6 @@ function flowEventChunk(flows: Flow[]): string {
     return `event: flow\ndata: ${JSON.stringify({ flows })}\n\n`;
 }
 
-// The page also fetches /api/v1/settings on connect (independently of the stream), so tests
-// asserting on stream-fetch count must filter to that URL rather than counting all fetch calls.
 function streamCalls(fetchMock: { mock: { calls: unknown[][] } }): unknown[][] {
     return fetchMock.mock.calls.filter(c => typeof c[0] === 'string' && c[0].includes('/api/v1/flows/stream'));
 }
@@ -109,10 +107,9 @@ afterEach(async () => {
     vi.unstubAllGlobals();
 });
 
-// Does NOT set `token` or advance timers — connectedCallback()'s eager start (if a token is
-// already set before connecting) and updated()'s onTokenReady() both race to start the first
-// fetch, so a test that wants to observe/count that first fetch must attach its listeners and
-// set the token itself, before advancing timers.
+// Does NOT advance timers: the stream only opens once the settings fetch in connectedCallback()
+// resolves, so a test that wants to observe or count that first stream request must attach its
+// listeners before letting the microtask queue drain.
 async function mount(fetchImpl: (url: string, init?: RequestInit) => Promise<Response>): Promise<AntreaFlowVisibilityPage> {
     vi.stubGlobal('fetch', vi.fn(fetchImpl));
     el = document.createElement('antrea-flow-visibility-page') as AntreaFlowVisibilityPage;
@@ -122,55 +119,48 @@ async function mount(fetchImpl: (url: string, init?: RequestInit) => Promise<Res
 }
 
 describe('AntreaFlowVisibilityPage — smoke and stream lifecycle', () => {
-    test('onTokenReady starts the stream and receives batched flows', async () => {
+    // There is no credential to wait for: the browser sends the session cookie itself, so the
+    // page opens the stream as soon as it knows the feature is enabled.
+    test('the stream starts on connect and receives batched flows', async () => {
         const fetchMock = vi.fn(async () => sseResponse([flowEventChunk([makeFlow()])]));
-        vi.stubGlobal('fetch', fetchMock);
-        el = document.createElement('antrea-flow-visibility-page') as AntreaFlowVisibilityPage;
-        document.body.appendChild(el);
-        await el.updateComplete;
-        el.token = 'my-token'; // onTokenReady() fires here, once the token first becomes non-empty
-        await el.updateComplete;
+        const page = await mount(fetchMock);
         await vi.advanceTimersByTimeAsync(0);
         await vi.advanceTimersByTimeAsync(1000); // default FlowStreamClient batch interval
 
         expect(streamCalls(fetchMock)).toHaveLength(1);
+        expect(page.shadowRoot).not.toBeNull();
     });
 
     test('a stream 401 dispatches antrea-session-expired', async () => {
-        const page = await mount(async () => sseResponse([], 401));
+        // The stream opens from connectedCallback(), so the 401 can land before mount() returns.
+        // Listen on document.body (the event bubbles and is composed) to catch it either way.
         const onSessionExpired = vi.fn();
-        page.addEventListener('antrea-session-expired', onSessionExpired);
-        page.token = 'my-token'; // set after connecting, like the "onTokenReady" test above
-        await page.updateComplete;
-        await vi.advanceTimersByTimeAsync(0);
-
-        expect(onSessionExpired).toHaveBeenCalledTimes(1);
+        document.body.addEventListener('antrea-session-expired', onSessionExpired);
+        try {
+            await mount(async () => sseResponse([], 401));
+            await vi.advanceTimersByTimeAsync(0);
+            expect(onSessionExpired).toHaveBeenCalledTimes(1);
+        } finally {
+            document.body.removeEventListener('antrea-session-expired', onSessionExpired);
+        }
     });
 
-    test('re-setting the token after a 401 restarts the stream (drops the dead client)', async () => {
+    // A 401 is terminal now: there is no token for the host to refresh, so nothing should try
+    // the stream again. The host logs the user out instead.
+    test('a 401 does not retry the stream', async () => {
         const fetchMock = vi.fn(async () => sseResponse([], 401));
-        const page = await mount(fetchMock);
-        page.token = 'my-token';
-        await page.updateComplete;
+        await mount(fetchMock);
         await vi.advanceTimersByTimeAsync(0);
         expect(streamCalls(fetchMock)).toHaveLength(1);
 
-        // Host refreshed the token and re-set it, without unmounting the page.
-        fetchMock.mockImplementation(async () => sseResponse([flowEventChunk([makeFlow()])]));
-        page.token = 'fresh-token';
-        await page.updateComplete;
-        await vi.advanceTimersByTimeAsync(0);
-
-        // A second, brand-new client was started (not a dead updateToken() no-op).
-        expect(streamCalls(fetchMock)).toHaveLength(2);
-        await vi.advanceTimersByTimeAsync(1000);
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(streamCalls(fetchMock)).toHaveLength(1);
     });
 });
 
 describe('AntreaFlowVisibilityPage — antrea-edge-selected extension point', () => {
     async function mountWithOneEdge(): Promise<AntreaFlowVisibilityPage> {
         const page = await mount(async () => sseResponse([flowEventChunk([makeFlow({ ingressPolicy: 'allow-client' })])]));
-        page.token = 'my-token';
         await page.updateComplete;
         await vi.advanceTimersByTimeAsync(0);
         await vi.advanceTimersByTimeAsync(1000);
@@ -243,10 +233,13 @@ describe('AntreaFlowVisibilityPage — filters, sort, text filter, pause/resume,
         ]),
     ]))): Promise<{ page: AntreaFlowVisibilityPage; fetchMock: typeof fetchMock }> {
         const page = await mount(fetchMock);
-        page.token = 'my-token';
-        await page.updateComplete;
-        await vi.advanceTimersByTimeAsync(0);
-        await vi.advanceTimersByTimeAsync(1000);
+        // The SSE reader needs several microtask turns to drain the chunk, and the client only
+        // hands flows over on its batch interval. Pump until the rows show up rather than
+        // guessing a fixed number of turns.
+        for (let i = 0; i < 5 && page.shadowRoot!.querySelectorAll('tbody tr').length < 2; i++) {
+            await vi.advanceTimersByTimeAsync(1000);
+            await page.updateComplete;
+        }
         return { page, fetchMock };
     }
 
@@ -355,7 +348,6 @@ describe('AntreaFlowVisibilityPage — filters, sort, text filter, pause/resume,
 describe('AntreaFlowVisibilityPage — multiselect dropdown', () => {
     test('opens on click, toggles a selection, and closes on an outside click', async () => {
         const page = await mount(async () => sseResponse([flowEventChunk([makeFlow()])]));
-        page.token = 'my-token';
         await page.updateComplete;
         await vi.advanceTimersByTimeAsync(0);
         await vi.advanceTimersByTimeAsync(1000);
@@ -381,28 +373,19 @@ describe('AntreaFlowVisibilityPage — multiselect dropdown', () => {
 });
 
 describe('AntreaFlowVisibilityPage — flow visibility disabled server-side', () => {
-    test('shows the disabled message and never starts the stream', async () => {
-        const fetchMock = vi.fn(async (url: string) => {
-            if (url === '/api/v1/settings') {
-                return new Response(JSON.stringify({
-                    version: 'v1.0.0',
-                    auth: { basicEnabled: true, oidcEnabled: false },
-                    features: { flowVisibilityEnabled: false },
-                }), { status: 200 });
-            }
-            return sseResponse([flowEventChunk([makeFlow()])]);
-        });
+    // The backend answers with 501 (a static per-deployment config choice, not a transient
+    // failure) when Flow Aggregator integration is off. This is terminal, like a 401: no retry.
+    test('a stream 501 shows the disabled message and does not retry the stream', async () => {
+        const fetchMock = vi.fn(async () => sseResponse([], 501));
         const page = await mount(fetchMock);
         await vi.advanceTimersByTimeAsync(0);
 
         expect(page.shadowRoot!.querySelector('antrea-alert[status="danger"]')?.textContent)
             .toContain('Flow visibility is disabled');
 
-        page.token = 'my-token';
-        await page.updateComplete;
-        await vi.advanceTimersByTimeAsync(0);
-
-        expect(streamCalls(fetchMock)).toHaveLength(0);
+        expect(streamCalls(fetchMock)).toHaveLength(1);
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(streamCalls(fetchMock)).toHaveLength(1);
     });
 });
 
@@ -410,7 +393,6 @@ describe('AntreaFlowVisibilityPage — teardown', () => {
     test('disconnectedCallback stops the stream client and removes the pointerdown listener', async () => {
         const fetchMock = vi.fn(async () => sseResponse([]));
         const page = await mount(fetchMock);
-        page.token = 'my-token';
         await page.updateComplete;
         await vi.advanceTimersByTimeAsync(0);
 

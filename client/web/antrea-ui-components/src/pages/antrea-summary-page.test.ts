@@ -84,7 +84,6 @@ async function mount(controllerInfo: unknown, agentInfo: unknown[] = []): Promis
         throw new Error(`unexpected fetch to ${url}`);
     }));
     el = document.createElement('antrea-summary-page') as AntreaSummaryPage;
-    el.token = 'my-token';
     document.body.appendChild(el);
     await el.updateComplete;
     await new Promise(r => setTimeout(r, 0));
@@ -177,7 +176,6 @@ describe('AntreaSummaryPage — errors', () => {
         const onSessionExpired = vi.fn();
         el.addEventListener('antrea-session-expired', onSessionExpired);
         document.body.appendChild(el);
-        el.token = 'my-token';
         await el.updateComplete;
         await new Promise(r => setTimeout(r, 0));
 
@@ -193,7 +191,6 @@ describe('AntreaSummaryPage — errors', () => {
         const onError = vi.fn();
         el.addEventListener('antrea-error', onError);
         document.body.appendChild(el);
-        el.token = 'my-token';
         await el.updateComplete;
         await new Promise(r => setTimeout(r, 0));
         await el.updateComplete;

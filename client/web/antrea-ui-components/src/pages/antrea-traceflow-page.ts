@@ -18,7 +18,7 @@ import { isIP, ipVersion } from 'is-ip';
 import { graphviz } from 'd3-graphviz';
 import { pageStyles } from '../lib/styles.js';
 import { apiFetch } from '../lib/api.js';
-import { TokenAwarePage } from '../lib/token-aware-page.js';
+import { SessionAwarePage } from '../lib/session-aware-page.js';
 import '../antrea-button';
 import '../antrea-alert';
 
@@ -194,7 +194,7 @@ function buildDot(spec: TraceflowSpec, status: TraceflowStatus): string {
 type Proto = 'TCP' | 'UDP' | 'ICMP';
 type DstType = 'Pod' | 'Service' | 'IP';
 
-export class AntreaTraceflowPage extends TokenAwarePage {
+export class AntreaTraceflowPage extends SessionAwarePage {
     static styles = [pageStyles, css`
         .tf-layout { display: flex; gap: 1.5rem; flex-wrap: wrap; }
         .tf-form { flex: 0 0 auto; min-width: 340px; }
@@ -326,7 +326,7 @@ export class AntreaTraceflowPage extends TokenAwarePage {
 
     private async _run(spec: TraceflowSpec) {
         try {
-            const createResp = await apiFetch('traceflow', this.token, {
+            const createResp = await apiFetch('traceflow', {
                 method: 'POST',
                 headers: { 'content-type': 'application/json' },
                 body: JSON.stringify({ spec }),
@@ -348,12 +348,12 @@ export class AntreaTraceflowPage extends TokenAwarePage {
                 if (isNaN(wait) || wait === 0) wait = 100;
                 await new Promise(r => setTimeout(r, wait));
                 if (!this.isConnected) return undefined;
-                pollResp = await apiFetch(statusURL.replace('/api/v1/', ''), this.token);
+                pollResp = await apiFetch(statusURL.replace('/api/v1/', ''));
                 const done = pollResp.url.endsWith('/result');
                 if (done) {
                     if (!this.isConnected) return undefined;
                     // Clean up
-                    apiFetch(location.replace('/api/v1/', ''), this.token, { method: 'DELETE' })
+                    apiFetch(location.replace('/api/v1/', ''), { method: 'DELETE' })
                         .catch(() => { /* best-effort */ });
                     const tf = await pollResp.json() as TraceflowResult;
                     return tf.status;
