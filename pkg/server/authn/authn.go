@@ -28,6 +28,7 @@ import (
 	"antrea.io/antrea-ui/pkg/auth/session"
 	serverconfig "antrea.io/antrea-ui/pkg/config/server"
 	"antrea.io/antrea-ui/pkg/env"
+	"antrea.io/antrea-ui/pkg/k8s"
 	servererrors "antrea.io/antrea-ui/pkg/server/errors"
 	cookieutils "antrea.io/antrea-ui/pkg/server/utils/cookie"
 )
@@ -48,22 +49,48 @@ type Config struct {
 	// deployment declares one, which today is only required for OIDC.
 	ServerURL    string
 	CookieSecure bool
+	// BearerFallbackEnabled mirrors auth.bearerToken.enabled: it allows a client to
+	// authenticate with "Authorization: Bearer <k8s-token>" instead of a session cookie. It is
+	// independent of the paste-a-token login mode (auth.serviceAccountToken.enabled), which
+	// accepts the same credential but creates a session from it.
+	BearerFallbackEnabled bool
+	// BearerValidator checks a bearer token with the Kubernetes API server. It is required
+	// whenever BearerFallbackEnabled is set: a bearer request has no login step, so this is the
+	// only place its credential is ever checked. See bearerValidator.
+	BearerValidator CredentialValidator
 	// DevMode relaxes the CSRF gate and the cookie's SameSite attribute so that the frontend
 	// dev server can talk to a backend on another port.
 	DevMode bool
 }
 
-// Authenticator resolves the session behind a request.
+// Authenticator resolves the session (or ephemeral bearer credential) behind a request.
 type Authenticator struct {
 	logger logr.Logger
 	config Config
 	// serverOrigin is the scheme://host form of Config.ServerURL, or "" if none was set.
 	serverOrigin string
+	// bearer validates Authorization: Bearer tokens. Nil when the fallback is disabled.
+	bearer *bearerValidator
 }
 
-// New builds an Authenticator. It fails if the configured server URL cannot be parsed.
+// New builds an Authenticator. It fails if the configured server URL cannot be parsed, or if the
+// bearer fallback is enabled with no way to validate the tokens it would accept.
 func New(logger logr.Logger, config Config) (*Authenticator, error) {
 	a := &Authenticator{logger: logger, config: config}
+	if config.BearerFallbackEnabled {
+		if config.BearerValidator == nil {
+			// Fail at startup rather than accept unvalidated tokens at runtime. There is
+			// no safe default here: without a validator, every bearer token would be
+			// believed, and the routes that never call Kubernetes would believe it to the
+			// end.
+			return nil, fmt.Errorf("bearer token authentication is enabled but no credential validator was provided")
+		}
+		bearer, err := newBearerValidator(config.BearerValidator)
+		if err != nil {
+			return nil, err
+		}
+		a.bearer = bearer
+	}
 	if config.ServerURL != "" {
 		u, err := url.Parse(config.ServerURL)
 		if err != nil || u.Host == "" {
@@ -80,6 +107,9 @@ func New(logger logr.Logger, config Config) (*Authenticator, error) {
 }
 
 // NewFromServerConfig builds an Authenticator from the parsed server configuration.
+//
+// It does not yet wire up the bearer fallback (auth.bearerToken.enabled): that requires a
+// config.Auth.BearerToken field that lands with the rest of the server wiring.
 func NewFromServerConfig(logger logr.Logger, config *serverconfig.Config, store session.Store) (*Authenticator, error) {
 	return New(logger, Config{
 		Store:        store,
@@ -162,6 +192,10 @@ func RequestAuthFromGin(c *gin.Context) (*session.RequestAuth, bool) {
 }
 
 // Resolve determines who is making this request.
+//
+// The session cookie always wins when both a cookie and an Authorization header are present, so
+// that adding a Bearer header can never be used to bypass the CSRF gate that only applies to
+// cookie-authenticated requests.
 func (a *Authenticator) Resolve(c *gin.Context) (*session.RequestAuth, *servererrors.ServerError) {
 	if id, ok := cookieutils.GetSessionCookie(c.Request); ok {
 		if sError := a.checkCSRF(c); sError != nil {
@@ -184,9 +218,35 @@ func (a *Authenticator) Resolve(c *gin.Context) (*session.RequestAuth, *serverer
 		return session.NewSessionAuth(a.config.Store, s), nil
 	}
 
+	// A browser cannot attach an Authorization header to a cross-origin request without the
+	// target opting in via CORS preflight, so bearer-authenticated requests are not exposed to
+	// CSRF and are exempt from the origin check above.
+	if token, ok := bearerToken(c.Request); ok {
+		if !a.config.BearerFallbackEnabled {
+			return nil, &servererrors.ServerError{
+				Code:    http.StatusUnauthorized,
+				Message: "Bearer token authentication is disabled (auth.bearerToken.enabled)",
+			}
+		}
+		cred := session.Credential{Kind: session.KindBearer, Token: []byte(token)}
+		// A bearer request has no login step, so this is where its credential is checked.
+		// It cannot be left to the upstream call: /auth/session and the flow stream resolve
+		// an identity and then never talk to Kubernetes at all.
+		username, sError := a.bearer.validate(c.Request.Context(), c.Request, cred.Token)
+		if sError != nil {
+			return nil, sError
+		}
+		// Only now, after the API server has accepted the token, is its "exp" claim worth
+		// anything: reading it off an unvalidated token would be trusting an attacker's own
+		// assertion. It is what bounds a long-running request that never presents the
+		// credential again - see RequestAuth.KeepAlive.
+		cred.ExpiresAt = k8s.JWTExpiry(cred.Token)
+		return session.NewEphemeralAuth(cred, username), nil
+	}
+
 	return nil, &servererrors.ServerError{
 		Code:    http.StatusUnauthorized,
-		Message: "No authentication present (session cookie)",
+		Message: "No authentication present (session cookie / Authorization header)",
 	}
 }
 
@@ -197,6 +257,18 @@ func sessionLookupError(err error) error {
 		return nil
 	}
 	return err
+}
+
+func bearerToken(req *http.Request) (string, bool) {
+	header := req.Header.Get("Authorization")
+	if header == "" {
+		return "", false
+	}
+	parts := strings.SplitN(header, " ", 2)
+	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") || parts[1] == "" {
+		return "", false
+	}
+	return parts[1], true
 }
 
 // checkCSRF guards cookie-authenticated requests. SameSite=Strict on the session cookie is the
