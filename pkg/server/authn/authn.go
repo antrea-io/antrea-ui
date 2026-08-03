@@ -106,16 +106,16 @@ func New(logger logr.Logger, config Config) (*Authenticator, error) {
 	return a, nil
 }
 
-// NewFromServerConfig builds an Authenticator from the parsed server configuration.
-//
-// It does not yet wire up the bearer fallback (auth.bearerToken.enabled): that requires a
-// config.Auth.BearerToken field that lands with the rest of the server wiring.
-func NewFromServerConfig(logger logr.Logger, config *serverconfig.Config, store session.Store) (*Authenticator, error) {
+// NewFromServerConfig builds an Authenticator from the parsed server configuration. validator is
+// what bearer tokens are checked against; it is required when auth.bearerToken.enabled is set.
+func NewFromServerConfig(logger logr.Logger, config *serverconfig.Config, store session.Store, validator CredentialValidator) (*Authenticator, error) {
 	return New(logger, Config{
-		Store:        store,
-		ServerURL:    config.URL,
-		CookieSecure: config.Auth.CookieSecure,
-		DevMode:      env.IsDevelopmentEnv(),
+		Store:                 store,
+		ServerURL:             config.URL,
+		CookieSecure:          config.Auth.CookieSecure,
+		BearerFallbackEnabled: config.Auth.BearerToken.Enabled,
+		BearerValidator:       validator,
+		DevMode:               env.IsDevelopmentEnv(),
 	})
 }
 

@@ -21,11 +21,23 @@ import (
 	"github.com/gin-gonic/gin"
 
 	apisv1 "antrea.io/antrea-ui/apis/v1"
+	"antrea.io/antrea-ui/pkg/auth/session"
+	"antrea.io/antrea-ui/pkg/server/authn"
 	"antrea.io/antrea-ui/pkg/server/errors"
 )
 
 func (s *Server) UpdatePassword(c *gin.Context) {
 	if sError := func() *errors.ServerError {
+		// The admin password is antrea-ui's own credential, not a Kubernetes one, so no RBAC
+		// stands behind this endpoint. Restrict it to sessions that authenticated with that
+		// password in the first place: a user who logged in with their own Kubernetes
+		// identity should not be able to change how everyone else logs in.
+		if ra, ok := authn.RequestAuthFromGin(c); !ok || ra.Mode != session.ModeAdmin {
+			return &errors.ServerError{
+				Code:    http.StatusForbidden,
+				Message: "Only a session authenticated with the admin password can change it",
+			}
+		}
 		var updatePassword apisv1.UpdatePassword
 		if err := c.BindJSON(&updatePassword); err != nil {
 			return &errors.ServerError{
@@ -56,7 +68,11 @@ func (s *Server) UpdatePassword(c *gin.Context) {
 }
 
 func (s *Server) AddAccountRoutes(r *gin.RouterGroup) {
+	// Without basic auth there is no admin password and no password store to talk to.
+	if s.passwordStore == nil {
+		return
+	}
 	r = r.Group("/account")
-	r.Use(s.checkBearerToken)
+	r.Use(s.authenticate())
 	r.PUT("/password", s.UpdatePassword)
 }

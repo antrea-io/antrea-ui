@@ -17,10 +17,8 @@ package server
 import (
 	"context"
 	"crypto/hmac"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -33,35 +31,18 @@ import (
 	"github.com/go-logr/logr"
 	"golang.org/x/oauth2"
 
+	"antrea.io/antrea-ui/pkg/auth/session"
 	"antrea.io/antrea-ui/pkg/server/errors"
-	cookieutils "antrea.io/antrea-ui/pkg/server/utils/cookie"
 	"antrea.io/antrea-ui/pkg/server/utils/template"
+	"antrea.io/antrea-ui/pkg/utils/random"
 )
 
-// After 30 minutes, the user will be redirected to the OIDC provider to
-// authenticate again. This does NOT mean that the user will need to enter his
-// credentials again, as the OIDC provider is likely to rely on its own cookies.
-const OIDCAuthRefreshTokenLifetime = 30 * time.Minute
-
 func genRandomBytes(bytes int) ([]byte, error) {
-	r := make([]byte, bytes)
-	_, err := rand.Read(r)
-	if err != nil {
-		return nil, fmt.Errorf("error when generating random data: %w", err)
-	}
-	return r, nil
-}
-
-func genRandomHexString(bytes int) (string, error) {
-	r, err := genRandomBytes(bytes)
-	if err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(r), nil
+	return random.Bytes(bytes)
 }
 
 func genNonce() (string, error) {
-	return genRandomHexString(32)
+	return random.HexString(32)
 }
 
 func hashOIDCNonce(nonce string) string {
@@ -87,6 +68,15 @@ type OIDCProvider struct {
 	oauth2StateSecret []byte
 }
 
+// DefaultOIDCScopes are the scopes requested when none are configured.
+//
+// "offline_access" is what makes the provider issue a refresh token, without which a session could
+// not outlive the id_token. "groups" populates the group claims that group-based Kubernetes RBAC
+// needs. "email" is here because --oidc-username-claim=email is the most common apiserver
+// configuration by a wide margin, and a provider omits the claim entirely if the scope was not
+// requested - which surfaces as an opaque "claim not present" rejection at login.
+var DefaultOIDCScopes = []string{oidc.ScopeOpenID, "email", "groups", "offline_access"}
+
 func NewOIDCProvider(
 	logger logr.Logger,
 	serverURL string,
@@ -95,6 +85,7 @@ func NewOIDCProvider(
 	clientID string,
 	clientSecret string,
 	logoutURLTemplate string,
+	scopes []string,
 ) (*OIDCProvider, error) {
 	u, err := url.Parse(serverURL)
 	if err != nil {
@@ -119,6 +110,10 @@ func NewOIDCProvider(
 		return nil, fmt.Errorf("logout URL is not a valid template: %w", err)
 	}
 
+	if len(scopes) == 0 {
+		scopes = DefaultOIDCScopes
+	}
+
 	return &OIDCProvider{
 		logger:            logger,
 		serverURL:         serverURL,
@@ -129,9 +124,7 @@ func NewOIDCProvider(
 		callbackURL:       callbackURL,
 		logoutURLTemplate: tpl,
 		logoutReturnURL:   logoutReturnURL.String(),
-		// "openid" is a required scope for OpenID Connect flows.
-		// Other scopes, such as "email" & "groups" can be requested.
-		scopes:            []string{oidc.ScopeOpenID},
+		scopes:            scopes,
 		oauth2StateSecret: secret,
 	}, nil
 }
@@ -188,6 +181,58 @@ func (p *OIDCProvider) OAuth2Config() *oauth2.Config {
 
 func (p *OIDCProvider) Verify(ctx context.Context, rawIDToken string) (*oidc.IDToken, error) {
 	return p.verifier.Verify(ctx, rawIDToken)
+}
+
+// Scopes returns the scopes requested from the provider.
+func (p *OIDCProvider) Scopes() []string {
+	return p.scopes
+}
+
+// Refresher returns the session.Refresher that renews an id_token before it expires, using the
+// refresh token stored alongside it. Without this, an OIDC session would end as soon as the
+// id_token did - typically after a few minutes.
+func (p *OIDCProvider) Refresher() session.Refresher {
+	return &oidcRefresher{provider: p}
+}
+
+type oidcRefresher struct {
+	provider *OIDCProvider
+}
+
+func (r *oidcRefresher) Refresh(ctx context.Context, refreshToken []byte) (session.Credential, []byte, error) {
+	fail := func(format string, args ...interface{}) (session.Credential, []byte, error) {
+		return session.Credential{}, nil, fmt.Errorf(format, args...)
+	}
+	if len(refreshToken) == 0 {
+		return fail("session has no refresh token")
+	}
+	// The token has no access token and no expiry, so the source treats it as expired and
+	// performs the refresh_token grant immediately.
+	tokenSource := r.provider.OAuth2Config().TokenSource(ctx, &oauth2.Token{RefreshToken: string(refreshToken)})
+	newToken, err := tokenSource.Token()
+	if err != nil {
+		// The provider's error can echo the refresh token back, so it is not wrapped.
+		return fail("refresh token was rejected by the OIDC provider")
+	}
+	rawIDToken, ok := newToken.Extra("id_token").(string)
+	if !ok {
+		return fail("no id_token in refresh response")
+	}
+	idToken, err := r.provider.Verify(ctx, rawIDToken)
+	if err != nil {
+		return fail("failed to verify refreshed id_token")
+	}
+	// Providers that rotate refresh tokens return a new one; those that do not return the same
+	// one (or none), in which case the session keeps what it has.
+	var newRefreshToken []byte
+	if newToken.RefreshToken != "" && newToken.RefreshToken != string(refreshToken) {
+		newRefreshToken = []byte(newToken.RefreshToken)
+	}
+	return session.Credential{
+		Kind:      session.KindBearer,
+		Token:     []byte(rawIDToken),
+		ExpiresAt: idToken.Expiry,
+	}, newRefreshToken, nil
 }
 
 type oauth2State struct {
@@ -260,7 +305,11 @@ func (p *OIDCProvider) BuildLogoutURL(idToken string) (string, error) {
 
 func (s *Server) OAuth2Login(c *gin.Context) {
 	if sError := func() *errors.ServerError {
-		redirectURL := c.Query("redirect_url")
+		// Validated before it is signed into the state, so the callback can redirect to it
+		// without further checks. Unvalidated, it would make /auth/oauth2/login an open
+		// redirect, and the signature would not help: an attacker crafting the link is the
+		// one who supplies the value in the first place.
+		redirectURL := s.authenticator.SafeRedirectURL(c, c.Query("redirect_url"))
 
 		// See https://auth0.com/docs/secure/attack-protection/state-parameters
 		// Our state is a JSON message which consists of a random nonce alongside
@@ -389,7 +438,7 @@ func (s *Server) OAuth2Callback(c *gin.Context) {
 		if err != nil {
 			return &errors.ServerError{
 				Code: http.StatusInternalServerError,
-				Err:  fmt.Errorf("failed to verify id_token"),
+				Err:  fmt.Errorf("failed to verify id_token: %w", err),
 			}
 		}
 
@@ -408,33 +457,55 @@ func (s *Server) OAuth2Callback(c *gin.Context) {
 			}
 		}
 
-		// at the moment, we are not doing anything with the id_token claims (e.g. email address)
-
-		refreshToken, err := s.tokenManager.GetRefreshToken(OIDCAuthRefreshTokenLifetime, idToken.Subject)
-		if err != nil {
-			return &errors.ServerError{
-				Code: http.StatusInternalServerError,
-				Err:  fmt.Errorf("error when getting JWT refresh token: %w", err),
-			}
+		// The id_token is the credential antrea-ui will present to the kube-apiserver on
+		// this user's behalf, so it is kept (server-side, in the session) rather than
+		// discarded. This is what makes the UI act as the real end user, and it is why mode 1
+		// requires the kube-apiserver to be configured to trust the same issuer.
+		var refreshTokenBytes []byte
+		if oauth2Token.RefreshToken != "" {
+			refreshTokenBytes = []byte(oauth2Token.RefreshToken)
+		} else {
+			// Without a refresh token the session cannot outlive the id_token, which is
+			// typically minutes. Worth saying out loud, since it usually means the
+			// "offline_access" scope was not granted.
+			s.logger.Info("OIDC provider returned no refresh token: sessions will end when the id_token expires",
+				"scopes", s.oidcProvider.Scopes())
 		}
-		cookieutils.SetRefreshTokenCookie(c.Writer, refreshToken.Raw, s.config.CookieSecure)
 
-		idTokenCookie := &http.Cookie{
-			Name:  "antrea-ui-oidc-id-token",
-			Value: rawIDToken,
-			// the id_token is only needed for logging out (from the OIDC provider)
-			Path:     "/auth",
-			MaxAge:   0, // make it a session cookie
-			Secure:   s.config.CookieSecure,
-			HttpOnly: true,
-			SameSite: http.SameSiteStrictMode,
+		spec := &session.Spec{
+			Mode: session.ModeOIDC,
+			Credential: session.Credential{
+				Kind:      session.KindBearer,
+				Token:     []byte(rawIDToken),
+				ExpiresAt: idToken.Expiry,
+			},
+			RefreshToken: refreshTokenBytes,
+			Refresher:    s.oidcProvider.Refresher(),
 		}
-		// this cookie can potentially be larger than 4KB, so we split it if needed
-		if err := cookieutils.SetLargeCookie(c.Writer, idTokenCookie); err != nil {
-			return &errors.ServerError{
-				Code: http.StatusInternalServerError,
-				Err:  fmt.Errorf("failed to set large cookie for OIDC id_token: %w", err),
-			}
+
+		// Verifying the id_token only proves the *provider* issued it. It says nothing about
+		// whether the kube-apiserver will accept it, which is what actually matters now that
+		// the id_token is the credential we present upstream. So ask the API server, the same
+		// way the token and kubeconfig modes do at login.
+		//
+		// Without this the misconfiguration is invisible and destructive: the session is
+		// created, the first K8s call 401s, that 401 invalidates the session, and the user is
+		// bounced back to the login page with no explanation - every time they log in.
+		username, sError := s.validateCredential(c, &spec.Credential)
+		if sError != nil {
+			spec.Zero()
+			// The generic "Kubernetes rejected this credential" is unhelpful here: the
+			// overwhelmingly likely cause is one specific, fixable server-side mistake.
+			sError.Message = "Kubernetes rejected the id_token issued by the OIDC provider. " +
+				"The kube-apiserver must be configured to trust the same issuer and client ID " +
+				"as Antrea UI (--oidc-issuer-url / --oidc-client-id, or the equivalent " +
+				"structured authentication configuration). See docs/oidc.md."
+			return sError
+		}
+		spec.Username = username
+
+		if sError := s.createSession(c, spec); sError != nil {
+			return sError
 		}
 
 		// at this point, it seems reasonable to delete the cookies used for oauth2

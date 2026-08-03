@@ -31,6 +31,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/tonglil/buflogr"
+
+	cookieutils "antrea.io/antrea-ui/pkg/server/utils/cookie"
 )
 
 // HTTP client that does not follow redirects
@@ -81,7 +83,6 @@ func doOAuth2Callback(t *testing.T, ts *testServer, url *url.URL, cookies []*htt
 		req.AddCookie(cookie)
 	}
 	rr := httptest.NewRecorder()
-	ts.tokenManager.EXPECT().GetRefreshToken(OIDCAuthRefreshTokenLifetime, mockoidc.DefaultUser().Subject).Return(getTestToken(), nil)
 	ts.router.ServeHTTP(rr, req)
 	require.Equal(t, http.StatusFound, rr.Code)
 	resp := rr.Result()
@@ -110,6 +111,38 @@ func TestOAuth2(t *testing.T) {
 		"auth_method": []string{"oidc"},
 	}.Encode()
 	assert.Equal(t, expectedLocation, userRedirectLocation)
+}
+
+// Verifying the id_token only proves the OIDC provider issued it. The kube-apiserver is a separate
+// trust decision, and it is the one that matters, since the id_token is the credential Antrea UI
+// presents upstream. A deployment whose apiserver does not trust the issuer must fail visibly at
+// login: without this check the session is created, the first K8s call 401s, that 401 destroys the
+// session, and the user is bounced back to the login page with no explanation, every single time.
+func TestOAuth2CallbackRejectedByKubernetes(t *testing.T) {
+	ts := newTestServer(t, enableOIDCAuth())
+	ts.k8sAPIServer.rejectAll = true
+
+	userPage, err := url.JoinPath(testServerAddr, "somepage")
+	require.NoError(t, err)
+	authorizeLocation, cookies := doOAuth2Login(t, ts, userPage)
+	callbackLocation := doOIDCAuthorize(t, authorizeLocation)
+
+	req := httptest.NewRequest("GET", callbackLocation.String(), nil)
+	for _, cookie := range cookies {
+		req.AddCookie(cookie)
+	}
+	rr := httptest.NewRecorder()
+	ts.router.ServeHTTP(rr, req)
+
+	// The login fails outright instead of redirecting the user into the app.
+	require.Equal(t, http.StatusUnauthorized, rr.Code)
+	assert.Contains(t, rr.Body.String(), "--oidc-issuer-url")
+
+	// No session cookie, and nothing left in the store.
+	for _, cookie := range rr.Result().Cookies() {
+		assert.NotEqual(t, cookieutils.SessionCookieName, cookie.Name,
+			"a rejected OIDC login must not set a session cookie")
+	}
 }
 
 func TestOAuth2InvalidCallback(t *testing.T) {
@@ -200,6 +233,7 @@ func TestOAuth2LogoutURL(t *testing.T) {
 			clientID,
 			clientSecret,
 			template,
+			nil,
 		)
 	}
 
@@ -249,11 +283,12 @@ func TestOAuth2DiscoveryURL(t *testing.T) {
 			oidcConfig.ClientID,
 			oidcConfig.ClientSecret,
 			"", // logoutURL
+			nil,
 		)
 		require.NoError(t, err)
 		// provider.Init will not spawn any goroutine and will attempt OIDC discover right
 		// away, so 1s should be more than enough.
-		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+		ctx, cancel := context.WithTimeout(t.Context(), 1*time.Second)
 		defer cancel()
 		return provider.Init(ctx)
 	}

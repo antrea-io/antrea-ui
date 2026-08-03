@@ -16,7 +16,6 @@ package main
 
 import (
 	"context"
-	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
@@ -35,7 +34,7 @@ import (
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 
-	"antrea.io/antrea-ui/pkg/auth"
+	"antrea.io/antrea-ui/pkg/auth/session"
 	serverconfig "antrea.io/antrea-ui/pkg/config/server"
 	"antrea.io/antrea-ui/pkg/env"
 	antreasvchandler "antrea.io/antrea-ui/pkg/handlers/antreasvc"
@@ -125,6 +124,14 @@ func run() error {
 		return fmt.Errorf("failed to create impersonated K8s clients for antrea-ui-admin: %w", err)
 	}
 
+	// clientFactory turns the credential resolved for a request into a K8s client that acts as
+	// that user. Nothing routes through it yet: every handler below still acts through the
+	// shared antrea-ui-admin client, which is a following change.
+	clientFactory, err := k8s.NewClientFactory(k8sRESTConfig, k8sHTTPClient.Transport, "k8s-apiserver")
+	if err != nil {
+		return fmt.Errorf("failed to create K8s client factory: %w", err)
+	}
+
 	traceflowHandler := traceflowhandler.NewRequestsHandler(logger, k8sAdminDynamicClient)
 	k8sProxyHandler := k8sproxy.NewK8sProxyHandler(logger, k8sServerURL, k8sAdminHTTPClient.Transport)
 
@@ -152,20 +159,17 @@ func run() error {
 		passwordStore = store
 	}
 
-	var jwtKey *rsa.PrivateKey
-	if config.Auth.JWTKeyPath != "" {
-		var err error
-		if jwtKey, err = auth.LoadPrivateKeyFromFile(config.Auth.JWTKeyPath); err != nil {
-			return fmt.Errorf("failed to load JWT key from file: %w", err)
-		}
-	} else {
-		logger.Info("Generating RSA key for JWT")
-		var err error
-		if jwtKey, err = auth.GeneratePrivateKey(); err != nil {
-			return fmt.Errorf("failed to generate JWT key: %w", err)
-		}
-	}
-	tokenManager := auth.NewTokenManager("jwt-key", jwtKey)
+	// The session store is memory-only by design: it holds users' Kubernetes credentials, which
+	// are never written to a Secret, a ConfigMap, or a volume. A restart logs everyone out, and
+	// the deployment is single-replica for the same reason.
+	sessionStore := session.NewStore(logger, session.Options{
+		IdleTimeout: config.Session.IdleTimeout,
+		MaxLifetime: config.Session.MaxLifetime,
+		MaxSessions: config.Session.MaxSessions,
+		// Bounds how much of MaxSessions one identity can hold, so a single user scripting
+		// logins cannot fill the store and lock everyone else out.
+		MaxSessionsPerUser: config.Session.MaxSessionsPerUser,
+	})
 
 	var oidcProvider *server.OIDCProvider
 	if config.Auth.OIDC.Enabled {
@@ -179,6 +183,7 @@ func run() error {
 				config.Auth.OIDC.ClientID,
 				config.Auth.OIDC.ClientSecret,
 				config.Auth.OIDC.LogoutURL,
+				config.Auth.OIDC.Scopes,
 			)
 			if err != nil {
 				return nil, err
@@ -234,18 +239,23 @@ func run() error {
 		flowStreamSubscriber = grpcSubscriber
 	}
 
-	s := server.NewServer(
-		logger,
-		traceflowHandler,
-		k8sProxyHandler,
-		antreaSvcHandler,
-		flowStreamSubscriber,
-		passwordStore,
-		tokenManager,
-		oidcProvider,
-		pluginRegistry,
-		config,
-	)
+	s, err := server.NewServer(server.Options{
+		Logger:                   logger,
+		Config:                   config,
+		TraceflowRequestsHandler: traceflowHandler,
+		K8sProxyHandler:          k8sProxyHandler,
+		AntreaSvcRequestsHandler: antreaSvcHandler,
+		FlowStreamSubscriber:     flowStreamSubscriber,
+		PasswordStore:            passwordStore,
+		SessionStore:             sessionStore,
+		ClientFactory:            clientFactory,
+		OIDCProvider:             oidcProvider,
+		PluginRegistry:           pluginRegistry,
+		AdminUserName:            antreaUIAdminUser,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create server: %w", err)
+	}
 
 	var router *gin.Engine
 	if env.IsDevelopmentEnv() {
@@ -274,7 +284,7 @@ func run() error {
 
 	go traceflowHandler.Run(stopCh)
 	go antreaSvcHandler.Run(stopCh)
-	go tokenManager.Run(stopCh)
+	go sessionStore.Run(stopCh)
 	go pluginRegistry.Run(stopCh)
 
 	// Initializing the server in a goroutine so that

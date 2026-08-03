@@ -17,6 +17,7 @@ package server
 import (
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
@@ -25,6 +26,11 @@ import (
 const (
 	DefaultMaxLoginsPerSecond   = 1
 	DefaultMaxTraceflowsPerHour = 100
+
+	DefaultSessionIdleTimeout = 30 * time.Minute
+	DefaultSessionMaxLifetime = 12 * time.Hour
+	DefaultMaxSessions        = 1000
+	DefaultMaxSessionsPerUser = 10
 )
 
 type FlowAggregatorConfig struct {
@@ -50,6 +56,7 @@ type Config struct {
 	Addr           string
 	URL            string
 	Auth           AuthConfig
+	Session        SessionConfig
 	FlowAggregator FlowAggregatorConfig
 	Limits         struct {
 		MaxLoginsPerSecond   int
@@ -69,10 +76,32 @@ type PluginsConfig struct {
 	Namespace string
 }
 
+// SessionConfig configures the server-side session store, which holds the Kubernetes credential
+// for every logged-in user.
+type SessionConfig struct {
+	// IdleTimeout is how long a session survives with no request. The frontend pings
+	// /auth/session while a tab is visible, so "idle" means no open visible tab.
+	IdleTimeout time.Duration
+	// MaxLifetime caps a session's lifetime regardless of activity.
+	MaxLifetime time.Duration
+	// MaxSessions bounds the number of concurrent sessions the store will hold.
+	MaxSessions int
+	// MaxSessionsPerUser bounds how many of those one identity may hold, so that a single user
+	// cannot fill the store and deny logins to everyone else. Logging in past the cap evicts
+	// that user's own least-recently-seen session.
+	MaxSessionsPerUser int
+}
+
+// AuthConfig enables the supported login modes. They are independent: any combination may be
+// enabled.
 type AuthConfig struct {
+	// Basic is the static admin password (mode 4). K8s calls are impersonated as the
+	// antrea-ui-admin ServiceAccount, so every mode-4 user has the same access.
 	Basic struct {
 		Enabled bool
 	}
+	// OIDC (mode 1) requires the kube-apiserver to trust the same issuer, since the
+	// id_token is what antrea-ui presents to it.
 	OIDC struct {
 		Enabled      bool
 		ProviderName string
@@ -83,9 +112,41 @@ type AuthConfig struct {
 		// In the general case, it is not recommended to use this
 		DiscoveryURL string
 		LogoutURL    string
+		// Scopes requested from the provider. "offline_access" is required to obtain a
+		// refresh token; "groups" to populate group-based RBAC.
+		Scopes []string
 	}
-	JWTKeyPath   string
+	// Kubeconfig lets a user upload their own kubeconfig (mode 3).
+	Kubeconfig struct {
+		Enabled bool
+	}
+	// ServiceAccountToken lets a user paste a bearer token (mode 5) on the login page, which
+	// creates a session like any other login mode.
+	ServiceAccountToken struct {
+		Enabled bool
+	}
+	// BearerToken gates the "Authorization: Bearer <k8s-token>" fallback: a non-browser client
+	// (a script, a controller, the e2e suite) authenticating each API request with a Kubernetes
+	// token instead of holding a session cookie.
+	//
+	// It is deliberately separate from ServiceAccountToken even though both accept the same
+	// credential. They are different exposures: the login mode is a page a human uses, while
+	// this one is an authentication path on every API route, used by clients that are not
+	// browsers and therefore not covered by the cross-origin gate. A deployment that wants the
+	// paste-a-token login for its users without leaving a header-authenticated API open (or the
+	// reverse - API clients, no token login page) can have either one on its own.
+	BearerToken struct {
+		Enabled bool
+	}
 	CookieSecure bool
+}
+
+// anyModeEnabled reports whether any *login* mode is enabled, i.e. whether a user can obtain a
+// session. BearerToken is not one: it authenticates individual API requests and creates no
+// session, so a deployment with only that enabled has a working API and a login page with nothing
+// on it, which is a misconfiguration rather than a supported topology.
+func (a *AuthConfig) anyModeEnabled() bool {
+	return a.Basic.Enabled || a.OIDC.Enabled || a.Kubeconfig.Enabled || a.ServiceAccountToken.Enabled
 }
 
 func validateConfig(config *Config) error {
@@ -97,8 +158,27 @@ func validateConfig(config *Config) error {
 		return fmt.Errorf("URL is required when enabling OIDC authentication")
 	}
 
-	if !config.Auth.Basic.Enabled && !config.Auth.OIDC.Enabled {
-		return fmt.Errorf("at least one of auth.basic.enabled and auth.oidc.enabled must be true")
+	if !config.Auth.anyModeEnabled() {
+		return fmt.Errorf("at least one authentication mode must be enabled (auth.basic, auth.oidc, auth.kubeconfig, auth.serviceAccountToken)")
+	}
+
+	if config.Session.IdleTimeout <= 0 {
+		return fmt.Errorf("session.idleTimeout must be positive")
+	}
+	if config.Session.MaxLifetime <= 0 {
+		return fmt.Errorf("session.maxLifetime must be positive")
+	}
+	if config.Session.MaxLifetime < config.Session.IdleTimeout {
+		return fmt.Errorf("session.maxLifetime must be >= session.idleTimeout")
+	}
+	if config.Session.MaxSessions <= 0 {
+		return fmt.Errorf("session.maxSessions must be positive")
+	}
+	if config.Session.MaxSessionsPerUser <= 0 {
+		return fmt.Errorf("session.maxSessionsPerUser must be positive")
+	}
+	if config.Session.MaxSessionsPerUser > config.Session.MaxSessions {
+		return fmt.Errorf("session.maxSessionsPerUser must be <= session.maxSessions")
 	}
 
 	return nil
@@ -140,6 +220,17 @@ func LoadConfig() (*Config, error) {
 	v.SetDefault("auth.cookieSecure", true)
 	v.SetDefault("auth.basic.enabled", true)
 	v.SetDefault("auth.oidc.enabled", false)
+	// Keep in sync with server.DefaultOIDCScopes and the chart's auth.oidc.scopes. Because a
+	// default is always set here, the fallback in NewOIDCProvider never fires, so omitting a
+	// scope here omits it for every deployment that does not spell the list out.
+	v.SetDefault("auth.oidc.scopes", []string{"openid", "email", "groups", "offline_access"})
+	v.SetDefault("auth.kubeconfig.enabled", false)
+	v.SetDefault("auth.serviceAccountToken.enabled", true)
+	v.SetDefault("auth.bearerToken.enabled", true)
+	v.SetDefault("session.idleTimeout", DefaultSessionIdleTimeout)
+	v.SetDefault("session.maxLifetime", DefaultSessionMaxLifetime)
+	v.SetDefault("session.maxSessions", DefaultMaxSessions)
+	v.SetDefault("session.maxSessionsPerUser", DefaultMaxSessionsPerUser)
 	v.SetDefault("antreaNamespace", "kube-system")
 	v.SetDefault("plugins.labelSelector", "ui.antrea.io/plugin=true")
 	v.SetDefault("flowAggregator.enabled", false)
