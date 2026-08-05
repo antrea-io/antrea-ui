@@ -37,6 +37,7 @@ import (
 	"antrea.io/antrea-ui/pkg/auth/session"
 	serverconfig "antrea.io/antrea-ui/pkg/config/server"
 	"antrea.io/antrea-ui/pkg/env"
+	accesshandler "antrea.io/antrea-ui/pkg/handlers/access"
 	antreasvchandler "antrea.io/antrea-ui/pkg/handlers/antreasvc"
 	"antrea.io/antrea-ui/pkg/handlers/flowstream"
 	"antrea.io/antrea-ui/pkg/handlers/k8sproxy"
@@ -144,6 +145,7 @@ func run() error {
 		pluginsNamespace = env.GetNamespace()
 	}
 	pluginRegistry := pluginregistry.NewRegistry(logger, k8sClientset, pluginsNamespace, config.Plugins.LabelSelector)
+	accessResolver := accesshandler.NewResolver(logger, k8sClientset)
 
 	antreaSvcHandler, err := antreasvchandler.NewRequestsHandler(logger, k8sRESTConfig, config.AntreaNamespace)
 	if err != nil {
@@ -252,6 +254,7 @@ func run() error {
 		OIDCProvider:             oidcProvider,
 		PluginRegistry:           pluginRegistry,
 		AdminUserName:            antreaUIAdminUser,
+		AccessResolver:           accessResolver,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create server: %w", err)
@@ -286,6 +289,7 @@ func run() error {
 	go antreaSvcHandler.Run(stopCh)
 	go sessionStore.Run(stopCh)
 	go pluginRegistry.Run(stopCh)
+	go accessResolver.Run(stopCh)
 
 	// Initializing the server in a goroutine so that
 	// it won't block the graceful shutdown handling below

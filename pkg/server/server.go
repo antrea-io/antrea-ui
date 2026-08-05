@@ -22,6 +22,7 @@ import (
 
 	"antrea.io/antrea-ui/pkg/auth/session"
 	serverconfig "antrea.io/antrea-ui/pkg/config/server"
+	accesshandler "antrea.io/antrea-ui/pkg/handlers/access"
 	"antrea.io/antrea-ui/pkg/handlers/antreasvc"
 	"antrea.io/antrea-ui/pkg/handlers/flowstream"
 	"antrea.io/antrea-ui/pkg/handlers/traceflow"
@@ -65,6 +66,9 @@ type Options struct {
 	PluginRegistry *plugins.Registry
 	// AdminUserName is the Kubernetes identity impersonated for admin-password sessions.
 	AdminUserName string
+	// AccessResolver answers namespace-discovery and cluster-scope-probe questions for
+	// GET /api/v1/access-summary.
+	AccessResolver accesshandler.Resolver
 }
 
 type Server struct {
@@ -110,6 +114,7 @@ func NewServer(o Options) (*Server, error) {
 			PluginRegistry:           o.PluginRegistry,
 			Authenticator:            authenticator,
 			ClientFactory:            o.ClientFactory,
+			AccessResolver:           o.AccessResolver,
 		}),
 		passwordStore: o.PasswordStore,
 		sessionStore:  o.SessionStore,

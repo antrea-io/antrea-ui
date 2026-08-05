@@ -24,6 +24,7 @@ import (
 
 	apisv1 "antrea.io/antrea-ui/apis/v1"
 	serverconfig "antrea.io/antrea-ui/pkg/config/server"
+	accesshandler "antrea.io/antrea-ui/pkg/handlers/access"
 	"antrea.io/antrea-ui/pkg/handlers/antreasvc"
 	"antrea.io/antrea-ui/pkg/handlers/flowstream"
 	"antrea.io/antrea-ui/pkg/handlers/traceflow"
@@ -54,6 +55,9 @@ type Options struct {
 	Authenticator *authn.Authenticator
 	// ClientFactory builds Kubernetes clients that act as the caller.
 	ClientFactory *k8s.ClientFactory
+	// AccessResolver answers namespace-discovery and cluster-scope-probe questions for
+	// GET /api/v1/access-summary.
+	AccessResolver accesshandler.Resolver
 }
 
 type Server struct {
@@ -68,6 +72,7 @@ type Server struct {
 	config                   serverConfig
 	frontendSettings         *apisv1.FrontendSettings
 	pluginRegistry           *plugins.Registry
+	accessResolver           accesshandler.Resolver
 }
 
 func NewServer(o Options) *Server {
@@ -91,6 +96,7 @@ func NewServer(o Options) *Server {
 		config:                   c,
 		frontendSettings:         buildFrontendSettingsFromConfig(o.Config),
 		pluginRegistry:           o.PluginRegistry,
+		accessResolver:           o.AccessResolver,
 	}
 }
 
@@ -121,6 +127,7 @@ func (s *Server) AddRoutes(r *gin.RouterGroup) {
 	s.AddK8sRoutes(apiv1)
 	apiv1.GET("/featuregates", s.authenticate(), s.GetFeatureGates)
 	s.AddFlowStreamRoutes(apiv1)
+	s.AddAccessRoutes(apiv1)
 }
 
 func (s *Server) AddFlowStreamRoutes(r *gin.RouterGroup) {

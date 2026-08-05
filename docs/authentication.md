@@ -200,16 +200,115 @@ grant mechanism for end users.
 
 ```bash
 # A role of your own, scoped deliberately. Start from antrea-ui-admin-core's
-# rules and remove what this group should not have.
+# rules and remove what this group should not have — but keep its `list` on
+# `namespaces`, or the namespace filters will come up empty (see below).
 kubectl create clusterrolebinding antrea-ui-network-operators \
   --clusterrole=your-antrea-ui-viewer --group=network-operators
 ```
 
 Granting less is fine and expected — a user bound only to a namespace-scoped
-subset simply sees less. Note that a partially-authorized user is a rough
-experience today: a page that needs three resources fails as a whole if the user
-lacks one of them, and navigation entries are not hidden based on permissions.
-Improving that is follow-up work.
+subset simply sees less. The UI hides what a partially-authorized user cannot
+do, described next, rather than letting them hit a page and get a 403.
+
+## What the frontend knows about your permissions
+
+`GET /api/v1/access-summary` (optional `?namespace=<ns>`) tells the frontend
+what the logged-in user is allowed to do, so it can hide navigation entries and
+routes it would otherwise only get a 403 from. It runs four requests against
+the API server as the caller's own identity — a `SelfSubjectReview`, a
+`SelfSubjectRulesReview`, and two `SelfSubjectAccessReview`s — the same APIs
+[Kubernetes documents for this exact
+purpose](https://kubernetes.io/docs/reference/access-authn-authz/authorization/#checking-api-access).
+The response looks like:
+
+```json
+{
+  "username": "system:serviceaccount:rbac-test-alpha:sa-ns-edit",
+  "groups": ["system:serviceaccounts", "system:serviceaccounts:rbac-test-alpha", "system:authenticated"],
+  "clusterAdmin": false,
+  "rules": {
+    "resourceRules": [{"verbs": ["get"], "apiGroups": ["crd.antrea.io"], "resources": ["antreaagentinfos"]}],
+    "nonResourceRules": [{"verbs": ["get"], "nonResourceURLs": ["/featuregates"]}],
+    "incomplete": false
+  },
+  "namespaces": ["rbac-test-alpha", "rbac-test-beta"]
+}
+```
+
+**This is a rendering hint, never an authorization decision.** Every real
+request the UI makes is still authorized by the API server exactly as before;
+a wrong answer here costs a spurious 403 (or a spuriously hidden button) and
+nothing more.
+
+There is no partial answer. A `200` means every field is authoritative;
+anything else means the frontend shows everything, exactly as it did before
+this endpoint existed. Successful responses are cached for the session, failed
+ones are not, so the next page to ask for the summary re-requests it rather
+than reusing a failure.
+
+- `rules` is the raw `SelfSubjectRulesReview` result. Rules are additive: a
+  rule appearing there means the user definitely has that permission, but a
+  rule *not* appearing only means "not allowed" when `rules.incomplete` is
+  `false`. When `incomplete` is `true` — the API server saying its rule list is
+  not exhaustive, e.g. because a webhook authorizer is in play and cannot be
+  enumerated — the frontend fails open and shows everything, exactly like
+  today's pre-access-summary behaviour.
+- `clusterAdmin` is computed from a `SelfSubjectAccessReview` for `*` verb, `*`
+  group, `*` resource, which is true for any wildcard ClusterRole (not only one
+  literally named `cluster-admin`).
+- `namespaces` is `["*"]` when the user can `list` namespaces cluster-wide.
+  Otherwise it is derived from a cluster-wide watch on RoleBindings, kept
+  in-memory by antrea-ui using its own ServiceAccount: the namespaces where a
+  RoleBinding names the user, or one of their groups, as a subject. Kubernetes
+  has no self-service API for "which namespaces can I see", so this is a
+  heuristic and may under-report; it is never used to block access. This is the
+  only privileged read antrea-ui performs on the user's behalf, and it is why
+  the `antrea-ui` ClusterRole (antrea-ui's own operations role, not
+  `antrea-ui-admin`) grants `list`/`watch` on
+  `rolebindings.rbac.authorization.k8s.io` cluster-wide.
+
+  The scan sees RoleBindings only, so it cannot see a **ClusterRoleBinding**: a
+  user granted namespaced access cluster-wide is the subject of no RoleBinding
+  and would be reported with no accessible namespaces at all. This is why
+  `antrea-ui-admin-core` grants `list` on `namespaces` — it takes the `["*"]`
+  branch above and never reaches the scan. Keep that rule in any role you model
+  on it.
+
+  An empty list means "you are the subject of no RoleBinding, and you cannot
+  list namespaces", which is a real answer. When antrea-ui cannot answer at all — the RoleBinding cache has not
+  synced yet, or the `rolebindings` grant above was never applied — the endpoint
+  returns **503** rather than an empty list, since the two would otherwise be
+  indistinguishable. Static-admin sessions are unaffected: their answer never
+  comes from the resolver, so a broken resolver cannot lock an operator out of
+  the one login used to fix cluster RBAC.
+
+### The cluster-scope sentinel namespace
+
+`SelfSubjectRulesReview` always requires a namespace, and its response mixes
+cluster-scoped rules and that namespace's rules into one flat list with
+nothing marking which is which. Evaluating it against `kube-system` — the
+obvious choice — would misreport a user whose only RoleBinding happens to live
+in `kube-system` as having cluster-wide rights.
+
+Instead antrea-ui evaluates cluster-scoped queries against a namespace that
+holds no RoleBindings at all: **`antrea-ui-cluster-scope-probe`**. It does not
+need to exist as a Kubernetes object — `SelfSubjectRulesReview` never looks it
+up, it only needs to be a non-empty string — but if an administrator creates
+it and adds a RoleBinding there, that RoleBinding's rules would silently leak
+into every user's cluster-scoped result.
+
+**Administrators should not create RoleBindings in
+`antrea-ui-cluster-scope-probe`.** antrea-ui detects it if they do — the same
+RoleBinding watch behind `namespaces` above also watches this one namespace —
+and reacts by marking `rules.incomplete: true` for cluster-scoped queries
+(namespaced `?namespace=` queries are unaffected, since the probe is irrelevant
+to them) until the offending RoleBinding is removed. The UI then falls back to
+showing everything, exactly as if the endpoint were unavailable. This is
+logged once, at error level, on the backend, naming the offending
+RoleBinding(s), and it recovers automatically with no antrea-ui restart. The
+blast radius of that fallback is cosmetic, not a security boundary: the API
+server still authorizes every real request regardless of what
+`access-summary` reports.
 
 ## Sessions
 
