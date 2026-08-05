@@ -17,6 +17,8 @@ import { state, query, property } from 'lit/decorators.js';
 import * as d3 from 'd3';
 import { pageStyles } from '../lib/styles.js';
 import { SessionAwarePage } from '../lib/session-aware-page.js';
+import { accessSummary, accessibleNamespaces } from '../lib/access-api.js';
+import type { AccessSummary } from '../lib/access-api.js';
 import { FlowStore, FlowEntry, entryBitRate } from '../lib/flow-store.js';
 import {
     FlowType,
@@ -432,6 +434,11 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
     @state() private _viewMode: 'list' | 'map' = 'list';
     @state() private _paused = false;
 
+    // Namespace filter menu is intersected with this once loaded, so users only see namespaces
+    // both present in the current flows and accessible to them. Null (not loaded, fetch failed,
+    // or ["*"]) means no restriction.
+    @state() private _accessSummary: AccessSummary | null = null;
+
     // Stream
     @state() private _entries: FlowEntry[] = [];
     @state() private _connected = false;
@@ -503,6 +510,11 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         // No credential to wait for: the browser attaches the session cookie to the SSE fetch
         // itself, so the stream can open as soon as the element is in the DOM.
         this._startStream();
+        // The flow stream itself is not filtered by this (see accessSummary()'s doc): this only
+        // narrows the namespace filter menu, and fails open on failure.
+        accessSummary()
+            .then(s => { this._accessSummary = s; })
+            .catch(() => { this._accessSummary = null; });
     }
 
     override disconnectedCallback() {
@@ -654,6 +666,13 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         for (const e of this._entries) {
             if (e.flow.k8s.sourcePodNamespace) ns.add(e.flow.k8s.sourcePodNamespace);
             if (e.flow.k8s.destinationPodNamespace) ns.add(e.flow.k8s.destinationPodNamespace);
+        }
+        const accessible = accessibleNamespaces(this._accessSummary);
+        if (accessible !== null) {
+            const accessibleSet = new Set(accessible);
+            for (const n of ns) {
+                if (!accessibleSet.has(n)) ns.delete(n);
+            }
         }
         return Array.from(ns).sort();
     }

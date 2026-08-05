@@ -18,11 +18,12 @@ import { useRef, useEffect } from 'react';
 import logo from './logo.svg';
 import './App.css';
 import '@antrea/ui-components';
-import { apiSession, APIError } from '@antrea/ui-components';
+import { apiSession, APIError, resetAccessSummary } from '@antrea/ui-components';
 import { Outlet, Link } from 'react-router';
 import NavTab from './nav';
 import { useLogout } from './logout';
 import { AppErrorProvider, AppErrorNotification } from './errors';
+import { AccessProvider } from './access';
 import { Provider, useSelector, useDispatch } from 'react-redux';
 import type { RootState } from './store';
 import { store, setSession } from './store';
@@ -74,7 +75,12 @@ function AuthShell({ pluginSidebarEntries }: { pluginSidebarEntries: PluginSideb
         // The login page probes GET /auth/session on mount and logs in on submit; either way it
         // tells us when there is a session. There is no token in the event: the credential
         // lives server-side, keyed by an HttpOnly cookie.
-        const onAuthenticated = () => dispatch(setSession('authenticated'));
+        const onAuthenticated = () => {
+            // A fresh login: any access-summary fetched (or attempted) for a previous session
+            // must not leak into this one.
+            resetAccessSummary();
+            dispatch(setSession('authenticated'));
+        };
         el.addEventListener('antrea-authenticated', onAuthenticated);
         return () => el.removeEventListener('antrea-authenticated', onAuthenticated);
     }, [dispatch]);
@@ -121,7 +127,9 @@ function App({ pluginSidebarEntries = [] }: { pluginSidebarEntries?: PluginSideb
                 </header>
                 <div className="app-body">
                     <AppErrorProvider>
-                        <AuthShell pluginSidebarEntries={pluginSidebarEntries} />
+                        <AccessProvider>
+                            <AuthShell pluginSidebarEntries={pluginSidebarEntries} />
+                        </AccessProvider>
                         <AppErrorNotification />
                     </AppErrorProvider>
                 </div>

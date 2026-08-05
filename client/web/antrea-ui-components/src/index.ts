@@ -34,3 +34,16 @@ export {
     apiFetchAppSettings,
 } from './lib/auth-api.js';
 export { APIError, setApiBase, getApiBase } from './lib/api.js';
+export type { AccessSummary, ResourceRule, NonResourceRule, SubjectRules, ResourceQuery } from './lib/access-api.js';
+export {
+    accessSummary,
+    resetAccessSummary,
+    can,
+    canNonResource,
+    accessibleNamespaces,
+    canViewSummary,
+    GATE_TRACEFLOW_CREATE,
+    GATE_AGENT_INFO_LIST,
+    GATE_CONTROLLER_INFO_GET,
+    GATE_FEATUREGATES,
+} from './lib/access-api.js';
