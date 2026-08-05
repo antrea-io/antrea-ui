@@ -16,6 +16,17 @@ rules:
     resourceNames:
       - antrea-config
       - antrea-ca
+  # Namespace discovery for GET /api/v1/access-summary: Kubernetes has no self-service API for
+  # "which namespaces can I see", so antrea-ui watches RoleBindings and reports the ones naming the
+  # user as a subject. This is a cluster-wide read of RBAC topology; it is the only privileged read
+  # antrea-ui performs on the user's behalf.
+  - apiGroups:
+      - rbac.authorization.k8s.io
+    resources:
+      - rolebindings
+    verbs:
+      - list
+      - watch
 ---
 # antrea-ui-admin holds every permission needed to serve K8s API requests made on behalf of the
 # UI user (as opposed to antrea-ui's own operations, see the antrea-ui ClusterRole above), e.g.
@@ -84,3 +95,15 @@ rules:
       - /featuregates
     verbs:
       - get
+  # Namespaces are useful to the UI in their own right — filter menus and pickers are the obvious
+  # consumers — and granting the rule here also lets GET /api/v1/access-summary answer
+  # namespaces: ["*"] directly, from a SelfSubjectAccessReview, instead of falling back to its
+  # RoleBinding scan. That scan cannot see a ClusterRoleBinding, so without this rule a user bound
+  # to this role cluster-wide is reported as having no accessible namespaces at all. If you model
+  # a role of your own on this one, keep this rule for the same reason.
+  - apiGroups:
+      - ""
+    resources:
+      - namespaces
+    verbs:
+      - list

@@ -21,6 +21,7 @@ import (
 
 	utilnet "k8s.io/apimachinery/pkg/util/net"
 	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/transport"
 
@@ -116,6 +117,15 @@ func (f *ClientFactory) DynamicClientForRequest(ctx context.Context) (dynamic.In
 		return nil, err
 	}
 	return f.DynamicClient(rt)
+}
+
+// KubernetesClientForRequest builds a typed clientset that acts as this request's identity.
+func (f *ClientFactory) KubernetesClientForRequest(ctx context.Context) (kubernetes.Interface, error) {
+	rt, err := f.TransportForRequest(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return kubernetes.NewForConfigAndClient(f.config, f.HTTPClient(rt))
 }
 
 // HTTPClient wraps rt in an http.Client with the factory's configured timeout.
