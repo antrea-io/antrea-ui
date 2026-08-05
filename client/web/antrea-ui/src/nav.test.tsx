@@ -18,10 +18,29 @@ import { render } from '@testing-library/react';
 import { MemoryRouter } from 'react-router';
 import NavTab from './nav';
 import type { PluginSidebarEntry } from './plugins';
+import type { AccessSummary } from '@antrea/ui-components';
+import { useAccess } from './access';
+
+vi.mock('./access', () => ({ useAccess: vi.fn() }));
+const mockUseAccess = vi.mocked(useAccess);
 
 const podCounterEntry: PluginSidebarEntry = { label: 'Pod Counter', path: '/plugin/pod-counter' };
 
+function summaryAllowing(rules: Partial<AccessSummary['rules']> = {}): AccessSummary {
+    return {
+        username: 'alice',
+        groups: [],
+        clusterAdmin: false,
+        rules: { resourceRules: [], nonResourceRules: [], incomplete: false, ...rules },
+        namespaces: [],
+    };
+}
+
 describe('NavTab', () => {
+    beforeEach(() => {
+        mockUseAccess.mockReturnValue({ summary: null, loaded: true });
+    });
+
     test('no plugin sidebar entries renders no extra items', () => {
         render(<NavTab pluginSidebarEntries={[]} />, { wrapper: MemoryRouter });
 
@@ -61,5 +80,46 @@ describe('NavTab', () => {
         const link = document.querySelector('a[href="/plugin/pod-counter"]');
         const navItem = link!.closest('antrea-nav-item') as unknown as { active?: boolean };
         expect(navItem.active).toBeFalsy();
+    });
+});
+
+describe('NavTab — permission gating', () => {
+    test('while unloaded, renders no core items', () => {
+        mockUseAccess.mockReturnValue({ summary: null, loaded: false });
+        render(<NavTab pluginSidebarEntries={[]} />, { wrapper: MemoryRouter });
+
+        expect(document.querySelector('a[href="/summary"]')).toBeNull();
+        expect(document.querySelector('a[href="/traceflow"]')).toBeNull();
+        // Flow Visibility and Settings have no per-user RBAC, so they are not gated on load.
+        expect(document.querySelector('a[href="/flows"]')).not.toBeNull();
+        expect(document.querySelector('a[href="/settings"]')).not.toBeNull();
+    });
+
+    test('a null summary (fetch failed) fails open: both core tabs show', () => {
+        mockUseAccess.mockReturnValue({ summary: null, loaded: true });
+        render(<NavTab pluginSidebarEntries={[]} />, { wrapper: MemoryRouter });
+
+        expect(document.querySelector('a[href="/summary"]')).not.toBeNull();
+        expect(document.querySelector('a[href="/traceflow"]')).not.toBeNull();
+    });
+
+    test('Traceflow is hidden without create permission, Summary still shows', () => {
+        mockUseAccess.mockReturnValue({
+            summary: summaryAllowing({
+                resourceRules: [{ apiGroups: ['crd.antrea.io'], resources: ['antreaagentinfos'], verbs: ['list'] }],
+            }),
+            loaded: true,
+        });
+        render(<NavTab pluginSidebarEntries={[]} />, { wrapper: MemoryRouter });
+
+        expect(document.querySelector('a[href="/summary"]')).not.toBeNull();
+        expect(document.querySelector('a[href="/traceflow"]')).toBeNull();
+    });
+
+    test('Summary is hidden when none of its three gates is granted', () => {
+        mockUseAccess.mockReturnValue({ summary: summaryAllowing(), loaded: true });
+        render(<NavTab pluginSidebarEntries={[]} />, { wrapper: MemoryRouter });
+
+        expect(document.querySelector('a[href="/summary"]')).toBeNull();
     });
 });

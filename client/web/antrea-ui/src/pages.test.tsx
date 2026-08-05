@@ -18,6 +18,7 @@ import { act, render, waitFor } from '@testing-library/react';
 import { Provider } from 'react-redux';
 import { setupStore } from './store';
 import { SummaryPage } from './pages';
+import { AccessProvider } from './access';
 
 // AntreaSummaryPage is a Lit web component with its own shadow DOM; we only need
 // its host element here to dispatch the antrea-session-expired event.
@@ -57,7 +58,10 @@ describe('useLitPage — antrea-session-expired', () => {
         const location = stubLocationHref();
 
         try {
-            render(<Provider store={store}><SummaryPage /></Provider>);
+            render(<Provider store={store}><AccessProvider><SummaryPage /></AccessProvider></Provider>);
+            // The access summary fetch fails (fetchMock throws for every URL) and fails open,
+            // so the page renders once that resolves.
+            await waitFor(() => expect(document.querySelector('antrea-summary-page')).not.toBeNull());
             const el = document.querySelector('antrea-summary-page')!;
 
             await act(async () => {

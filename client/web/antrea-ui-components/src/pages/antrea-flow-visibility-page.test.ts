@@ -23,6 +23,7 @@ import {
     NetworkPolicyType,
     NetworkPolicyRuleAction,
 } from '../lib/flow-types';
+import { resetAccessSummary } from '../lib/access-api';
 
 function makeFlow(overrides: { srcPod?: string; dstPod?: string; ingressPolicy?: string; srcIP?: string } = {}): Flow {
     return {
@@ -105,6 +106,7 @@ afterEach(async () => {
     }
     vi.useRealTimers();
     vi.unstubAllGlobals();
+    resetAccessSummary();
 });
 
 // Does NOT advance timers: the stream only opens once the settings fetch in connectedCallback()
@@ -386,6 +388,58 @@ describe('AntreaFlowVisibilityPage — flow visibility disabled server-side', ()
         expect(streamCalls(fetchMock)).toHaveLength(1);
         await vi.advanceTimersByTimeAsync(60_000);
         expect(streamCalls(fetchMock)).toHaveLength(1);
+    });
+});
+
+describe('AntreaFlowVisibilityPage — namespace menu intersects accessible namespaces', () => {
+    function jsonResponse(body: unknown, status = 200): Response {
+        return new Response(JSON.stringify(body), { status });
+    }
+
+    function accessSummaryResponse(namespaces: string[]): Response {
+        return jsonResponse({
+            username: 'alice',
+            groups: [],
+            clusterAdmin: false,
+            rules: { resourceRules: [], nonResourceRules: [], incomplete: false },
+            namespaces,
+        });
+    }
+
+    async function mountWithNamespacesAndAccess(namespaces: string[]): Promise<AntreaFlowVisibilityPage> {
+        const twoNsFlows = [
+            makeFlow({ srcPod: 'a-abc12', srcIP: '10.0.0.1' }),
+            { ...makeFlow({ srcPod: 'b-xyz34', srcIP: '10.0.0.2' }), k8s: { ...makeFlow().k8s, sourcePodNamespace: 'kube-system', destinationPodNamespace: 'kube-system' } },
+        ];
+        const page = await mount(async (url: string) => {
+            if (url.includes('/access-summary')) return accessSummaryResponse(namespaces);
+            return sseResponse([flowEventChunk(twoNsFlows)]);
+        });
+        for (let i = 0; i < 5 && page.shadowRoot!.querySelectorAll('tbody tr').length < 2; i++) {
+            await vi.advanceTimersByTimeAsync(1000);
+            await page.updateComplete;
+        }
+        // Let the accessSummary() promise resolve and the resulting re-render land.
+        await vi.advanceTimersByTimeAsync(0);
+        await page.updateComplete;
+        return page;
+    }
+
+    async function namespaceOptions(page: AntreaFlowVisibilityPage): Promise<string[]> {
+        const nsToggle = page.shadowRoot!.querySelector<HTMLButtonElement>('.multiselect-btn')!;
+        nsToggle.click();
+        await page.updateComplete;
+        return Array.from(page.shadowRoot!.querySelectorAll('.multiselect-option')).map(el => el.textContent!.trim());
+    }
+
+    test('a concrete namespace list narrows the menu to the intersection', async () => {
+        const page = await mountWithNamespacesAndAccess(['default']);
+        expect(await namespaceOptions(page)).toEqual(['default']);
+    });
+
+    test('["*"] passes through with no restriction', async () => {
+        const page = await mountWithNamespacesAndAccess(['*']);
+        expect(await namespaceOptions(page)).toEqual(['default', 'kube-system']);
     });
 });
 

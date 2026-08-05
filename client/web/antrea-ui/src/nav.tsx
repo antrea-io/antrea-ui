@@ -18,7 +18,9 @@ import React from 'react';
 import { useLocation } from 'react-router';
 import { Link } from 'react-router';
 import '@antrea/ui-components';
+import { can, canViewSummary, GATE_TRACEFLOW_CREATE } from '@antrea/ui-components';
 import type { PluginSidebarEntry } from './plugins';
+import { useAccess } from './access';
 
 function DashboardIcon() {
     return (
@@ -59,21 +61,31 @@ function GearIcon() {
 
 export default function NavTab({ pluginSidebarEntries }: { pluginSidebarEntries: PluginSidebarEntry[] }) {
     const { pathname } = useLocation();
+    const { summary, loaded } = useAccess();
+
+    // While the access summary hasn't loaded yet, render no core items: entries popping in once
+    // loaded reads better than entries vanishing if the answer turns out to restrict something.
+    const showSummary = loaded && canViewSummary(summary);
+    const showTraceflow = loaded && can(summary, GATE_TRACEFLOW_CREATE);
 
     return (
         <antrea-nav>
-            <antrea-nav-item {...(pathname === '/summary' || pathname === '/' ? { active: true } : {})}>
-                <Link to="/summary">
-                    <DashboardIcon />
-                    <span className="nav-label">Summary</span>
-                </Link>
-            </antrea-nav-item>
-            <antrea-nav-item {...(pathname.startsWith('/traceflow') ? { active: true } : {})}>
-                <Link to="/traceflow">
-                    <TraceflowIcon />
-                    <span className="nav-label">Traceflow</span>
-                </Link>
-            </antrea-nav-item>
+            {showSummary && (
+                <antrea-nav-item {...(pathname === '/summary' || pathname === '/' ? { active: true } : {})}>
+                    <Link to="/summary">
+                        <DashboardIcon />
+                        <span className="nav-label">Summary</span>
+                    </Link>
+                </antrea-nav-item>
+            )}
+            {showTraceflow && (
+                <antrea-nav-item {...(pathname.startsWith('/traceflow') ? { active: true } : {})}>
+                    <Link to="/traceflow">
+                        <TraceflowIcon />
+                        <span className="nav-label">Traceflow</span>
+                    </Link>
+                </antrea-nav-item>
+            )}
             <antrea-nav-item {...(pathname.startsWith('/flows') ? { active: true } : {})}>
                 <Link to="/flows">
                     <EyeIcon />

@@ -21,7 +21,7 @@ import { RouterProvider } from 'react-router/dom';
 import { setApiBase } from '@antrea/ui-components';
 import './index.css';
 import App from './App';
-import { SummaryPage, TraceflowPage, FlowVisibilityPage, SettingsPage, PluginPage } from './pages';
+import { SummaryPage, TraceflowPage, FlowVisibilityPage, SettingsPage, PluginPage, HomeRedirect } from './pages';
 import reportWebVitals from './reportWebVitals';
 import config from './config';
 import { loadPlugins, getPluginRoutes, getPluginSidebarEntries } from './plugins';
@@ -46,7 +46,7 @@ async function main() {
             children: [
                 {
                     index: true,
-                    element: <SummaryPage />,
+                    element: <HomeRedirect />,
                 },
                 {
                     path: "summary",

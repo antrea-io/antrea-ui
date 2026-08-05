@@ -15,6 +15,8 @@
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import './antrea-summary-page';
 import type { AntreaSummaryPage } from './antrea-summary-page';
+import { resetAccessSummary } from '../lib/access-api';
+import type { AccessSummary } from '../lib/access-api';
 
 interface K8sRef { namespace?: string; name: string; }
 interface Condition { type: string; status: string; lastHeartbeatTime: string; reason: string; message: string; }
@@ -68,27 +70,56 @@ const featureGates = [
     { component: 'agent', name: 'AntreaProxy', status: 'Enabled', version: 'BETA' },
 ];
 
+function fullAccessSummary(): AccessSummary {
+    return {
+        username: 'alice',
+        groups: [],
+        clusterAdmin: true,
+        rules: {
+            resourceRules: [{ apiGroups: ['*'], resources: ['*'], verbs: ['*'] }],
+            nonResourceRules: [{ nonResourceURLs: ['*'], verbs: ['*'] }],
+            incomplete: false,
+        },
+        namespaces: ['*'],
+    };
+}
+
 let el: AntreaSummaryPage | undefined;
 
 afterEach(() => {
     el?.remove();
     el = undefined;
     vi.unstubAllGlobals();
+    resetAccessSummary();
 });
 
-async function mount(controllerInfo: unknown, agentInfo: unknown[] = []): Promise<AntreaSummaryPage> {
-    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
-        if (url.endsWith('/antreacontrollerinfos/antrea-controller')) return jsonResponse(controllerInfo);
-        if (url.endsWith('/antreaagentinfos')) return jsonResponse({ items: agentInfo });
-        if (url.endsWith('/featuregates')) return jsonResponse(featureGates);
-        throw new Error(`unexpected fetch to ${url}`);
-    }));
+/** Mounts the page against an arbitrary fetch handler, for the cases mount()'s fixed routing
+ * cannot express (per-URL status codes). */
+async function mountWith(handler: (url: string) => Promise<Response>): Promise<AntreaSummaryPage> {
+    vi.stubGlobal('fetch', vi.fn(handler));
     el = document.createElement('antrea-summary-page') as AntreaSummaryPage;
     document.body.appendChild(el);
     await el.updateComplete;
     await new Promise(r => setTimeout(r, 0));
+    await new Promise(r => setTimeout(r, 0));
     await el.updateComplete;
     return el;
+}
+
+async function mount(
+    controllerInfo: unknown,
+    agentInfo: unknown[] = [],
+    summary: AccessSummary | null = fullAccessSummary(),
+): Promise<AntreaSummaryPage> {
+    return mountWith(async (url: string) => {
+        if (url.endsWith('/access-summary')) {
+            return summary === null ? new Response('', { status: 500 }) : jsonResponse(summary);
+        }
+        if (url.endsWith('/antreacontrollerinfos/antrea-controller')) return jsonResponse(controllerInfo);
+        if (url.endsWith('/antreaagentinfos')) return jsonResponse({ items: agentInfo });
+        if (url.endsWith('/featuregates')) return jsonResponse(featureGates);
+        throw new Error(`unexpected fetch to ${url}`);
+    });
 }
 
 function tableRows(page: AntreaSummaryPage, heading: string): string[][] {
@@ -96,6 +127,15 @@ function tableRows(page: AntreaSummaryPage, heading: string): string[][] {
     return Array.from(table?.querySelectorAll('tbody tr') ?? []).map(
         row => Array.from(row.querySelectorAll('td')).map(cell => cell.textContent ?? ''),
     );
+}
+
+function hasCard(page: AntreaSummaryPage, heading: string): boolean {
+    return page.shadowRoot!.querySelector(`antrea-card[heading="${heading}"]`) !== null;
+}
+
+function alertText(page: AntreaSummaryPage, status: 'info' | 'danger'): string | null {
+    const alert = page.shadowRoot!.querySelector(`antrea-alert[status="${status}"]`);
+    return alert === null ? null : (alert.textContent ?? '').trim();
 }
 
 describe('AntreaSummaryPage', () => {
@@ -167,10 +207,83 @@ describe('AntreaSummaryPage', () => {
     });
 });
 
+describe('AntreaSummaryPage — per-card degradation', () => {
+    test('a card the user cannot read is skipped, not fetched, and a note is shown', async () => {
+        const controller = makeControllerInfo(0, []);
+        const summary: AccessSummary = {
+            ...fullAccessSummary(),
+            rules: {
+                resourceRules: [{ apiGroups: ['crd.antrea.io'], resources: ['antreacontrollerinfos'], verbs: ['get'] }],
+                nonResourceRules: [{ nonResourceURLs: ['/featuregates'], verbs: ['get'] }],
+                incomplete: false,
+            },
+        };
+        const page = await mount(controller, [], summary);
+
+        expect(hasCard(page, 'Controller')).toBe(true);
+        expect(hasCard(page, 'Agents')).toBe(false);
+        expect(page.shadowRoot!.querySelector('antrea-alert[status="info"]')).not.toBeNull();
+    });
+
+    test('one card 403ing degrades that card while the others still render', async () => {
+        const controller = makeControllerInfo(1, [makeCondition('ControllerHealthy', 'True', new Date())]);
+        const page = await mountWith(async (url: string) => {
+            if (url.endsWith('/access-summary')) return jsonResponse(fullAccessSummary());
+            if (url.endsWith('/antreacontrollerinfos/antrea-controller')) return jsonResponse(controller);
+            if (url.endsWith('/antreaagentinfos')) return new Response('forbidden', { status: 403 });
+            if (url.endsWith('/featuregates')) return jsonResponse(featureGates);
+            throw new Error(`unexpected fetch to ${url}`);
+        });
+
+        expect(hasCard(page, 'Controller')).toBe(true);
+        expect(hasCard(page, 'Agents')).toBe(false);
+        expect(hasCard(page, 'Controller Feature Gates')).toBe(true);
+        expect(alertText(page, 'info')).not.toBeNull();
+        // A 403 is a permissions problem, not a failure: no danger alert.
+        expect(alertText(page, 'danger')).toBeNull();
+    });
+
+    test('access-summary fetch failure fails open: every card is fetched', async () => {
+        const controller = makeControllerInfo(0, []);
+        const page = await mount(controller, [], null);
+
+        expect(hasCard(page, 'Controller')).toBe(true);
+        expect(hasCard(page, 'Agents')).toBe(true);
+        expect(page.shadowRoot!.querySelector('antrea-alert[status="info"]')).toBeNull();
+    });
+});
+
 describe('AntreaSummaryPage — errors', () => {
+    test('a non-403 card failure shows a danger alert carrying the error, not the permissions note', async () => {
+        // The scenario the permissions note must not claim: the backend is down, so the
+        // access-summary fetch fails too, every gate fails open, and every card errors out.
+        const page = await mountWith(async () => new Response('backend exploded', { status: 500 }));
+
+        expect(hasCard(page, 'Controller')).toBe(false);
+        expect(alertText(page, 'info')).toBeNull();
+        expect(alertText(page, 'danger')).toContain('backend exploded');
+    });
+
+    test('a 403 on one card and a 500 on another show both alerts', async () => {
+        const controller = makeControllerInfo(1, [makeCondition('ControllerHealthy', 'True', new Date())]);
+        const page = await mountWith(async (url: string) => {
+            if (url.endsWith('/access-summary')) return jsonResponse(fullAccessSummary());
+            if (url.endsWith('/antreacontrollerinfos/antrea-controller')) return jsonResponse(controller);
+            if (url.endsWith('/antreaagentinfos')) return new Response('forbidden', { status: 403 });
+            if (url.endsWith('/featuregates')) return new Response('boom', { status: 500 });
+            throw new Error(`unexpected fetch to ${url}`);
+        });
+
+        expect(hasCard(page, 'Controller')).toBe(true);
+        expect(alertText(page, 'info')).not.toBeNull();
+        expect(alertText(page, 'danger')).toContain('boom');
+        // The failing card is named, since only some of them failed.
+        expect(alertText(page, 'danger')).toContain('Feature Gates');
+    });
+
     test('a 401 response dispatches antrea-session-expired', async () => {
-        // Each of the 3 concurrent apiFetchJSON() calls reads its own Response body, so the
-        // mock must hand out a fresh Response per call rather than one shared instance.
+        // Each concurrent apiFetchJSON() call reads its own Response body, so the mock must
+        // hand out a fresh Response per call rather than one shared instance.
         vi.stubGlobal('fetch', vi.fn(async () => new Response('', { status: 401 })));
         el = document.createElement('antrea-summary-page') as AntreaSummaryPage;
         const onSessionExpired = vi.fn();
@@ -178,25 +291,8 @@ describe('AntreaSummaryPage — errors', () => {
         document.body.appendChild(el);
         await el.updateComplete;
         await new Promise(r => setTimeout(r, 0));
+        await new Promise(r => setTimeout(r, 0));
 
         expect(onSessionExpired).toHaveBeenCalledTimes(1);
-    });
-
-    test('a non-401 error shows a danger alert and fires antrea-error', async () => {
-        vi.stubGlobal('fetch', vi.fn(async () => new Response('backend unavailable', {
-            status: 500,
-            statusText: 'Internal Server Error',
-        })));
-        el = document.createElement('antrea-summary-page') as AntreaSummaryPage;
-        const onError = vi.fn();
-        el.addEventListener('antrea-error', onError);
-        document.body.appendChild(el);
-        await el.updateComplete;
-        await new Promise(r => setTimeout(r, 0));
-        await el.updateComplete;
-
-        expect(onError).toHaveBeenCalledTimes(1);
-        expect(el.shadowRoot!.querySelector('antrea-alert[status="danger"]')?.textContent)
-            .toContain('backend unavailable');
     });
 });
