@@ -23,7 +23,11 @@ server {
     {{- end }}
 
     location / {
-        proxy_set_header Host $host;
+        # $host strips the port from the Host header; $http_host preserves it. The backend
+        # compares this against a redirect target's host (e.g. /auth/logout's redirect_url) to
+        # decide whether it stays on antrea-ui's own origin, so a stripped port makes every such
+        # comparison fail whenever antrea-ui is served on a non-default port.
+        proxy_set_header Host $http_host;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Real-IP $remote_addr;
 
