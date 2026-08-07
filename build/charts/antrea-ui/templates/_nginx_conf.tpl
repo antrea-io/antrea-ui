@@ -1,5 +1,13 @@
 {{- define "antrea-ui.nginx.conf" }}
 {{- $port := .Values.frontend.port -}}
+# $http_host is empty for HTTP/1.0 clients (and other clients) that send no Host header, and
+# nginx drops a proxy_set_header whose value is empty, so the backend would see no Host at all.
+# Fall back to $host (which is always set) in that case.
+map $http_host $forwarded_host {
+    default $http_host;
+    ''      $host;
+}
+
 server {
     {{- if .Values.https.enable }}
     listen       {{ $port }} ssl;
@@ -23,7 +31,11 @@ server {
     {{- end }}
 
     location / {
-        proxy_set_header Host $host;
+        # $host strips the port from the Host header; $http_host preserves it. The backend
+        # compares this against a redirect target's host (e.g. /auth/logout's redirect_url) to
+        # decide whether it stays on antrea-ui's own origin, so a stripped port makes every such
+        # comparison fail whenever antrea-ui is served on a non-default port.
+        proxy_set_header Host $forwarded_host;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Real-IP $remote_addr;
 
@@ -33,6 +45,11 @@ server {
             proxy_http_version 1.1;
             proxy_pass_request_headers on;
             proxy_hide_header Access-Control-Allow-Origin;
+            # proxy_set_header directives are inherited from the outer location only if this
+            # level defines none of its own; Connection below forces re-declaring the rest.
+            proxy_set_header Host $forwarded_host;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Real-IP $remote_addr;
             proxy_set_header Connection '';
             proxy_buffering off;
             proxy_read_timeout 86400s;
