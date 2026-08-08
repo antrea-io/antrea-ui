@@ -8,7 +8,7 @@
   ],
   "resolutions": {
     "@hpcc-js/wasm": "2.35.0",
-    "postcss": "8.5.24"
+    "postcss": "8.5.25"
   },
   "packageManager": "yarn@4.18.0"
 }
