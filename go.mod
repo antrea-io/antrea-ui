@@ -34,7 +34,7 @@ require (
 	k8s.io/utils v0.0.0-20260210185600-b8788abfbbc2
 )
 
-require google.golang.org/protobuf v1.36.12-0.20260810132945-cdd4c5f7406e
+require google.golang.org/protobuf v1.36.12
 
 require (
 	filippo.io/edwards25519 v1.1.0 // indirect
