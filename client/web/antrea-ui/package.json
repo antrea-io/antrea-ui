@@ -49,7 +49,7 @@
     "@antrea/ui-plugin-sdk": "workspace:*",
     "@eslint/create-config": "^2.0.0",
     "@testing-library/dom": "^10.4.1",
-    "@testing-library/jest-dom": "^6.6.3",
+    "@testing-library/jest-dom": "^7.0.0",
     "@types/base-64": "^1.0.2",
     "@types/d3": "^7.4.3",
     "@types/d3-graphviz": "^2.6.10",
