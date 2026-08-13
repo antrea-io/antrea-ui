@@ -110,11 +110,26 @@ func TestRegistrySkipsInvalidConfigMaps(t *testing.T) {
 				"index.js":      "x",
 			},
 		},
+		"federation missing remoteEntry": {
+			ObjectMeta: metav1.ObjectMeta{Name: "cm"},
+			Data: map[string]string{
+				"manifest.json": `{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"exposedModule":"./Page"}}`,
+				"index.js":      "x",
+			},
+		},
 		"federation missing exposedModule": {
 			ObjectMeta: metav1.ObjectMeta{Name: "cm"},
 			Data: map[string]string{
-				"manifest.json":    `{"name":"plugin","version":"0.1.0","entry":"remoteEntry.json","federation":{}}`,
+				"manifest.json":    `{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json"}}`,
+				"index.js":         "x",
 				"remoteEntry.json": "x",
+			},
+		},
+		"federation remoteEntry file not present": {
+			ObjectMeta: metav1.ObjectMeta{Name: "cm"},
+			Data: map[string]string{
+				"manifest.json": `{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","exposedModule":"./Page"}}`,
+				"index.js":      "x",
 			},
 		},
 	}
@@ -136,10 +151,11 @@ func TestRegistryIndexIncludesRouteAndFederation(t *testing.T) {
 			"manifest.json": `{
 				"name": "policy-management",
 				"version": "0.2.0",
-				"entry": "remoteEntry.json",
-				"route": {"path": "/policy-management", "sidebarLabel": "Policy Management", "icon": "M0 0h16v16H0z"},
-				"federation": {"exposedModule": "./PolicyManagementPage"}
+				"entry": "index.js",
+				"route": {"path": "/policies", "sidebarLabel": "Policy Management", "icon": "M0 0h16v16H0z"},
+				"federation": {"remoteEntry": "remoteEntry.json", "exposedModule": "./PolicyManagementPage"}
 			}`,
+			"index.js":         "x",
 			"remoteEntry.json": "{}",
 		},
 	})
@@ -147,13 +163,13 @@ func TestRegistryIndexIncludesRouteAndFederation(t *testing.T) {
 	assert.Equal(t, []apisv1.PluginManifest{{
 		Name:    "policy-management",
 		Version: "0.2.0",
-		Entry:   "remoteEntry.json",
+		Entry:   "index.js",
 		Route: &apisv1.PluginRoute{
-			Path:         "/policy-management",
+			Path:         "/policies",
 			SidebarLabel: "Policy Management",
 			Icon:         "M0 0h16v16H0z",
 		},
-		Federation: &apisv1.PluginFederation{ExposedModule: "./PolicyManagementPage"},
+		Federation: &apisv1.PluginFederation{RemoteEntry: "remoteEntry.json", ExposedModule: "./PolicyManagementPage"},
 	}}, r.Index())
 }
 

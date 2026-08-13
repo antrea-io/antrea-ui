@@ -18,9 +18,15 @@ package v1
 // labeled ConfigMap. It carries just enough for the host to fetch and
 // import() the right file. Page extensions (e.g. edge details, flow table
 // columns) are always registered by the plugin's own code, since the host
-// needs an actual function reference for those; a whole-page route is the
-// one exception - Route lets the host build it from data alone, without
-// running any of the plugin's code first (see Route's own doc).
+// needs an actual function reference for those - Entry is always eagerly
+// imported for that purpose alone, whether or not Route/Federation are also
+// present. A whole-page route is the one exception - Route lets the host
+// build it from data alone, without running any of the plugin's code first
+// (see Route's own doc). A plugin can do both at once (e.g. an eager Entry
+// that only registers a page-extension renderer, plus a Route/Federation
+// pair describing an unrelated, separately-built, lazily-loaded page) -
+// Federation.RemoteEntry is deliberately its own file, not Entry, so the two
+// concerns never have to share one build artifact.
 type PluginManifest struct {
 	Name    string `json:"name"`
 	Version string `json:"version"`
@@ -30,18 +36,19 @@ type PluginManifest struct {
 	// plugin as data the host can act on immediately, instead of waiting for
 	// the plugin's own code to call registerRoute()/registerSidebarEntry()
 	// (see antrea-ui-plugin-sdk) as a side effect of loading it. Chiefly
-	// useful for a plugin loaded via module federation (see Federation),
-	// where the point of the exercise is to defer fetching/running the
-	// plugin's code until its route is actually visited - which requires the
-	// host to already know the route before that happens.
+	// useful paired with Federation (see below), where the point of the
+	// exercise is to defer fetching/running the plugin's page code until its
+	// route is actually visited - which requires the host to already know
+	// the route before that happens.
 	Route *PluginRoute `json:"route,omitempty"`
 
-	// Federation optionally declares that Entry is a module federation
-	// remote entry (e.g. a Native Federation "remoteEntry.json"), rather
-	// than a module the host can plainly import(). A host that understands
-	// this field loads ExposedModule out of it via its federation runtime
-	// instead; a host that doesn't (or a plugin that omits this field
-	// entirely) keeps using Entry as a plain ES module, unaffected.
+	// Federation optionally declares a module federation remote (e.g. a
+	// Native Federation "remoteEntry.json") the host can lazily load a
+	// component out of - normally paired with Route, to render at that
+	// route. Deliberately a file of its own rather than reusing Entry: Entry
+	// stays reserved for whatever a plugin needs eagerly loaded (page
+	// extensions), which may have nothing to do with, and may be far
+	// cheaper than, a lazily-loaded federated page.
 	Federation *PluginFederation `json:"federation,omitempty"`
 }
 
@@ -57,11 +64,14 @@ type PluginRoute struct {
 	Icon string `json:"icon,omitempty"`
 }
 
-// PluginFederation carries the one extra piece of information a federation
-// runtime needs beyond a remote entry URL: which of that remote's exposed
-// modules to load. Shared-dependency negotiation is otherwise handled
-// entirely by the remote entry file itself (e.g. by the plugin's own
-// federation.config.js at build time), so nothing else belongs here.
+// PluginFederation carries the two things a federation runtime needs beyond
+// what Entry already provides: its own remote entry file (see
+// PluginManifest's doc for why this isn't just Entry), and which of that
+// remote's exposed modules to load. Shared-dependency negotiation is
+// otherwise handled entirely by the remote entry file itself (e.g. by the
+// plugin's own federation.config.js at build time), so nothing else belongs
+// here.
 type PluginFederation struct {
+	RemoteEntry   string `json:"remoteEntry"`
 	ExposedModule string `json:"exposedModule"`
 }

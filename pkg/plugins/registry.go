@@ -154,8 +154,16 @@ func parsePluginConfigMap(cm *corev1.ConfigMap) (*pluginEntry, error) {
 	if manifest.Route != nil && manifest.Route.Path == "" {
 		return nil, fmt.Errorf("manifest's route is missing 'path'")
 	}
-	if manifest.Federation != nil && manifest.Federation.ExposedModule == "" {
-		return nil, fmt.Errorf("manifest's federation is missing 'exposedModule'")
+	if manifest.Federation != nil {
+		if manifest.Federation.RemoteEntry == "" {
+			return nil, fmt.Errorf("manifest's federation is missing 'remoteEntry'")
+		}
+		if manifest.Federation.ExposedModule == "" {
+			return nil, fmt.Errorf("manifest's federation is missing 'exposedModule'")
+		}
+		if _, ok := files[manifest.Federation.RemoteEntry]; !ok {
+			return nil, fmt.Errorf("remote entry file %q referenced by manifest's federation not found in ConfigMap", manifest.Federation.RemoteEntry)
+		}
 	}
 	return &pluginEntry{manifest: manifest, files: files}, nil
 }
