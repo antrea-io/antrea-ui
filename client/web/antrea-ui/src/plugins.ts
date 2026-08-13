@@ -21,10 +21,11 @@
 // fetches that index and loads the plugins it lists at app startup.
 //
 // A plugin's ConfigMap data contains:
-//   - manifest.json: bare metadata (name/version/entry) — just enough to know which JS module
-//     to fetch and import(). It carries no UI-affecting fields; those are all registered in
-//     code (see below), so a plugin's actual shape (routes, sidebar entries, page extensions)
-//     is never split between JSON and JS.
+//   - manifest.json: bare metadata (name/version/entry), plus two fields this host doesn't act
+//     on (route/federation - see apis/v1/plugins.go) for a plugin whose whole page is a module
+//     federation remote, letting an Angular-based host lazily load it. entry is unaffected
+//     either way: it's always a plain ES module this host can import() unconditionally, exactly
+//     as below, regardless of whether a manifest also carries route/federation.
 //   - <entry>: an ES module that, as an import side effect, registers a custom element
 //     (customElements.define(tag, ...)) for anything it wants to render, and calls into the
 //     plugin registry below via @antrea/ui-plugin-sdk to tell the host about it.
@@ -115,10 +116,15 @@ export function getFlowTableColumnsProcessors(): FlowTableColumnsProcessor[] {
     return flowTableColumnsProcessors;
 }
 
+// route/federation are declared here for parity with apis/v1/plugins.go, but this host doesn't
+// act on them - it has no module federation loader, and has no reason to grow one, since it
+// keeps import()-ing entry eagerly for every plugin regardless (see loadPlugins() below).
 export interface PluginManifest {
     name: string;
     version: string;
     entry: string;
+    route?: { path: string; sidebarLabel: string; icon?: string };
+    federation?: { remoteEntry: string; exposedModule: string };
 }
 
 export async function loadPlugins(): Promise<PluginManifest[]> {

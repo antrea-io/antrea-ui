@@ -110,6 +110,29 @@ func TestRegistrySkipsInvalidConfigMaps(t *testing.T) {
 				"index.js":      "x",
 			},
 		},
+		"route missing sidebarLabel": {
+			ObjectMeta: metav1.ObjectMeta{Name: "cm"},
+			Data: map[string]string{
+				"manifest.json":    `{"name":"plugin","version":"0.1.0","entry":"index.js","route":{"path":"/plugin"},"federation":{"remoteEntry":"remoteEntry.json","exposedModule":"./Page"}}`,
+				"index.js":         "x",
+				"remoteEntry.json": "x",
+			},
+		},
+		"route without federation": {
+			ObjectMeta: metav1.ObjectMeta{Name: "cm"},
+			Data: map[string]string{
+				"manifest.json": `{"name":"plugin","version":"0.1.0","entry":"index.js","route":{"path":"/plugin","sidebarLabel":"Plugin"}}`,
+				"index.js":      "x",
+			},
+		},
+		"route path under reserved api/ prefix": {
+			ObjectMeta: metav1.ObjectMeta{Name: "cm"},
+			Data: map[string]string{
+				"manifest.json":    `{"name":"plugin","version":"0.1.0","entry":"index.js","route":{"path":"/api/v1/plugin","sidebarLabel":"Plugin"},"federation":{"remoteEntry":"remoteEntry.json","exposedModule":"./Page"}}`,
+				"index.js":         "x",
+				"remoteEntry.json": "x",
+			},
+		},
 		"federation missing remoteEntry": {
 			ObjectMeta: metav1.ObjectMeta{Name: "cm"},
 			Data: map[string]string{

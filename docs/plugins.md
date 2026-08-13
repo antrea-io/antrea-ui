@@ -66,13 +66,19 @@ complete, minimal example.
 | --- | --- | --- |
 | `name` | yes | Unique name; also the path segment used to serve the plugin, e.g. `/api/v1/plugins/<name>/`. |
 | `version` | yes | Informational only. |
-| `entry` | yes | Plugin's JS module filename; must be a key in the same ConfigMap's data. |
+| `entry` | yes | Plugin's JS module filename; must be a key in the same ConfigMap's data. Always eagerly `import()`-ed by the host at startup, for whatever page-extension registration the plugin's code performs (see below) — independent of `route`/`federation`. |
+| `route` | no | `{path, sidebarLabel, icon?}` — a whole-page route/sidebar entry as data, instead of registering one in code (see below). Currently requires `federation` alongside it. |
+| `federation` | no | `{remoteEntry, exposedModule}` — a [Native Federation](https://www.npmjs.com/package/@angular-architects/native-federation) remote (its own file, separate from `entry`) the host lazily loads a component out of at `route.path`, only once that route is actually visited. |
 
-That's the whole schema — the manifest only carries enough for the host to
-fetch and `import()` the right file. Everything that affects the UI (routes,
-sidebar entries, page extensions) is registered in code, via
-`@antrea/ui-plugin-sdk`, so a plugin's actual shape is never split between
-JSON and JS.
+For most plugins, that's the whole schema: the manifest only carries enough
+for the host to fetch and `import()` the right file, and everything that
+affects the UI (routes, sidebar entries, page extensions) is registered in
+code, via `@antrea/ui-plugin-sdk`, so a plugin's actual shape is never split
+between JSON and JS. `route`/`federation` are the one exception, for a plugin
+whose page is a module federation remote — deferring code execution until
+the route is visited requires the host to know the route beforehand, which
+requires it to be data rather than something only running the plugin's code
+would reveal.
 
 ## Writing a plugin
 

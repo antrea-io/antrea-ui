@@ -30,16 +30,27 @@ package v1
 type PluginManifest struct {
 	Name    string `json:"name"`
 	Version string `json:"version"`
-	Entry   string `json:"entry"`
+	// Entry is always eagerly import()-ed by the host at startup, for
+	// whatever page-extension registration the plugin's code performs via
+	// antrea-ui-plugin-sdk (registerEdgeExtraRenderer() etc) - regardless of
+	// whether Route/Federation below are also present. A plugin with
+	// nothing to register eagerly still needs a (possibly no-op) Entry: it
+	// remains required.
+	Entry string `json:"entry"`
 
 	// Route optionally declares a whole-page route/sidebar entry for this
 	// plugin as data the host can act on immediately, instead of waiting for
 	// the plugin's own code to call registerRoute()/registerSidebarEntry()
-	// (see antrea-ui-plugin-sdk) as a side effect of loading it. Chiefly
-	// useful paired with Federation (see below), where the point of the
-	// exercise is to defer fetching/running the plugin's page code until its
-	// route is actually visited - which requires the host to already know
-	// the route before that happens.
+	// (see antrea-ui-plugin-sdk) as a side effect of loading it. Currently
+	// only meaningful paired with Federation (required whenever Route is
+	// set - see parsePluginConfigMap): Federation.ExposedModule is what the
+	// host actually mounts at Route.Path. A plain custom-element plugin has
+	// no equivalent here (there's no "Tag" field, unlike the SDK's
+	// PluginRoute) because registering such a route via code is already
+	// cheap - the data-only path exists specifically to defer loading a
+	// route's code, which only pays for itself when there's a nontrivial
+	// federated bundle behind it. Nothing prevents adding a lighter,
+	// Federation-less variant later if a use case for it shows up.
 	Route *PluginRoute `json:"route,omitempty"`
 
 	// Federation optionally declares a module federation remote (e.g. a

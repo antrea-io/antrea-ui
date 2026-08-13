@@ -23,6 +23,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/go-logr/logr"
@@ -151,8 +152,27 @@ func parsePluginConfigMap(cm *corev1.ConfigMap) (*pluginEntry, error) {
 	if _, ok := files[manifest.Entry]; !ok {
 		return nil, fmt.Errorf("entry file %q referenced by manifest not found in ConfigMap", manifest.Entry)
 	}
-	if manifest.Route != nil && manifest.Route.Path == "" {
-		return nil, fmt.Errorf("manifest's route is missing 'path'")
+	if manifest.Route != nil {
+		if manifest.Route.Path == "" {
+			return nil, fmt.Errorf("manifest is missing 'route.path'")
+		}
+		if manifest.Route.SidebarLabel == "" {
+			return nil, fmt.Errorf("manifest is missing 'route.sidebarLabel'")
+		}
+		// See PluginRoute's doc: there's currently nothing else that can supply what the host
+		// mounts at Route.Path.
+		if manifest.Federation == nil {
+			return nil, fmt.Errorf("manifest's 'route' requires 'federation'")
+		}
+		// The one reservation the backend can enforce on Route.Path itself - "api/" is its own
+		// reserved prefix (see GetPluginFile), not something specific to any one frontend. A
+		// route colliding with a given host's own built-in pages (e.g. "/settings") is instead
+		// the host's job to reject, the same way it already does for code-registered routes
+		// (see plugins.ts's RESERVED_PATHS/dedupeByPath in either frontend) - the backend has no
+		// way to know a given host's built-in path list.
+		if trimmed := strings.TrimPrefix(manifest.Route.Path, "/"); strings.HasPrefix(trimmed, "api/") {
+			return nil, fmt.Errorf("manifest's 'route.path' %q falls under the reserved 'api/' prefix", manifest.Route.Path)
+		}
 	}
 	if manifest.Federation != nil {
 		if manifest.Federation.RemoteEntry == "" {
