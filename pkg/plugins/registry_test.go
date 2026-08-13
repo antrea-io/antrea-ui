@@ -103,6 +103,20 @@ func TestRegistrySkipsInvalidConfigMaps(t *testing.T) {
 		"missing name":           configMap("cm", "", "0.1.0", "index.js", map[string]string{"index.js": "x"}),
 		"missing entry":          configMap("cm", "plugin", "0.1.0", "", map[string]string{"index.js": "x"}),
 		"entry file not present": configMap("cm", "plugin", "0.1.0", "index.js", nil),
+		"route missing path": {
+			ObjectMeta: metav1.ObjectMeta{Name: "cm"},
+			Data: map[string]string{
+				"manifest.json": `{"name":"plugin","version":"0.1.0","entry":"index.js","route":{"sidebarLabel":"Plugin"}}`,
+				"index.js":      "x",
+			},
+		},
+		"federation missing exposedModule": {
+			ObjectMeta: metav1.ObjectMeta{Name: "cm"},
+			Data: map[string]string{
+				"manifest.json":    `{"name":"plugin","version":"0.1.0","entry":"remoteEntry.json","federation":{}}`,
+				"remoteEntry.json": "x",
+			},
+		},
 	}
 	for name, cm := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -111,6 +125,36 @@ func TestRegistrySkipsInvalidConfigMaps(t *testing.T) {
 			assert.Empty(t, r.Index())
 		})
 	}
+}
+
+func TestRegistryIndexIncludesRouteAndFederation(t *testing.T) {
+	r := newTestRegistry(t)
+
+	r.handleUpsert(&corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "policy-management-plugin", Namespace: "antrea-ui"},
+		Data: map[string]string{
+			"manifest.json": `{
+				"name": "policy-management",
+				"version": "0.2.0",
+				"entry": "remoteEntry.json",
+				"route": {"path": "/policy-management", "sidebarLabel": "Policy Management", "icon": "M0 0h16v16H0z"},
+				"federation": {"exposedModule": "./PolicyManagementPage"}
+			}`,
+			"remoteEntry.json": "{}",
+		},
+	})
+
+	assert.Equal(t, []apisv1.PluginManifest{{
+		Name:    "policy-management",
+		Version: "0.2.0",
+		Entry:   "remoteEntry.json",
+		Route: &apisv1.PluginRoute{
+			Path:         "/policy-management",
+			SidebarLabel: "Policy Management",
+			Icon:         "M0 0h16v16H0z",
+		},
+		Federation: &apisv1.PluginFederation{ExposedModule: "./PolicyManagementPage"},
+	}}, r.Index())
 }
 
 func TestRegistryDuplicatePluginNameKeepsLowerConfigMapName(t *testing.T) {
