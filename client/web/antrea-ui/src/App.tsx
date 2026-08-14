@@ -14,11 +14,12 @@
  * limitations under the License.
  */
 
-import { useRef, useEffect } from 'react';
+import { useRef, useEffect, useState } from 'react';
 import logo from './logo.svg';
 import './App.css';
 import '@antrea/ui-components';
-import { apiSession, APIError, resetAccessSummary } from '@antrea/ui-components';
+import { apiSession, APIError, resetAccessSummary, displaySessionMode, displaySessionUsername } from '@antrea/ui-components';
+import type { SessionInfo } from '@antrea/ui-components';
 import { Outlet, Link } from 'react-router';
 import NavTab from './nav';
 import { useLogout } from './logout';
@@ -112,27 +113,64 @@ function Logout() {
     );
 }
 
+// Shows the logged-in username and login mode, straight from GET /auth/session — the same
+// source the keepalive ping and the settings page use. Renders nothing until that resolves, and
+// nothing at all if it fails, since the rest of the shell already fails open on that same
+// condition.
+function UserIdentity() {
+    const session = useSelector((state: RootState) => state.session);
+    const [info, setInfo] = useState<SessionInfo | null>(null);
+
+    // Same pattern as AccessProvider (access.tsx): drop stale info during render rather than in
+    // an effect, so a session change never paints a previous identity for one frame.
+    const [sessionForInfo, setSessionForInfo] = useState(session);
+    if (sessionForInfo !== session) {
+        setSessionForInfo(session);
+        setInfo(null);
+    }
+
+    useEffect(() => {
+        if (session !== 'authenticated') return;
+        let cancelled = false;
+        apiSession()
+            .then((i) => { if (!cancelled) setInfo(i); })
+            .catch(() => { if (!cancelled) setInfo(null); });
+        return () => { cancelled = true; };
+    }, [session]);
+
+    if (!info?.username || !info.mode) return null;
+    return (
+        <div className="app-user-identity">
+            <span className="app-user-identity-name">{displaySessionUsername(info.mode, info.username)}</span>
+            <span className="app-user-identity-role">{displaySessionMode(info.mode)}</span>
+        </div>
+    );
+}
+
 function App({ pluginSidebarEntries = [] }: { pluginSidebarEntries?: PluginSidebarEntry[] }) {
     return (
         <div className="app-shell">
             <Provider store={store}>
-                <header className="app-header">
-                    <div className="app-header-left">
-                        <Link to="/">
-                            <img src={logo} alt="Antrea logo" className="App-logo" />
-                        </Link>
-                        <h1>Antrea UI</h1>
-                    </div>
-                    <Logout />
-                </header>
-                <div className="app-body">
-                    <AppErrorProvider>
-                        <AccessProvider>
+                <AppErrorProvider>
+                    <AccessProvider>
+                        <header className="app-header">
+                            <div className="app-header-left">
+                                <Link to="/">
+                                    <img src={logo} alt="Antrea logo" className="App-logo" />
+                                </Link>
+                                <h1>Antrea UI</h1>
+                            </div>
+                            <div className="app-header-right">
+                                <UserIdentity />
+                                <Logout />
+                            </div>
+                        </header>
+                        <div className="app-body">
                             <AuthShell pluginSidebarEntries={pluginSidebarEntries} />
-                        </AccessProvider>
-                        <AppErrorNotification />
-                    </AppErrorProvider>
-                </div>
+                            <AppErrorNotification />
+                        </div>
+                    </AccessProvider>
+                </AppErrorProvider>
             </Provider>
         </div>
     );

@@ -30,6 +30,32 @@ export interface SessionInfo {
     expiresAt?: string
 }
 
+const SESSION_MODE_LABELS: Record<SessionMode, string> = {
+    oidc: 'OIDC User',
+    kubeconfig: 'Kubeconfig User',
+    admin: 'Local Admin Account',
+    serviceAccountToken: 'Service Account',
+};
+
+/** A short, human-readable label for how the session authenticated, for display next to the
+ * username (e.g. in the app header) — not an authorization decision. */
+export function displaySessionMode(mode: SessionMode): string {
+    return SESSION_MODE_LABELS[mode];
+}
+
+// A ServiceAccount's Kubernetes username: "system:serviceaccount:<namespace>:<name>". Only the
+// namespace/name pair is useful for display — the "system:serviceaccount:" prefix is implied by
+// the "Service Account" mode label already shown alongside it.
+const SERVICE_ACCOUNT_USERNAME = /^system:serviceaccount:(.+:.+)$/;
+
+/** A display-friendly form of `username` for the given session mode — not an authorization
+ * decision, `username` itself is unchanged everywhere else. For a Service Account login this
+ * drops the redundant "system:serviceaccount:" prefix, keeping `<namespace>:<name>`. */
+export function displaySessionUsername(mode: SessionMode, username: string): string {
+    if (mode !== 'serviceAccountToken') return username;
+    return username.match(SERVICE_ACCOUNT_USERNAME)?.[1] ?? username;
+}
+
 export interface AppSettings {
     version: string
     auth: {

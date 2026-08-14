@@ -19,7 +19,10 @@ import {
     apiLoginWithKubeconfig,
     apiSession,
     apiFetchAppSettings,
+    displaySessionMode,
+    displaySessionUsername,
 } from './auth-api';
+import type { SessionMode } from './auth-api';
 import { APIError, setApiBase } from './api';
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -204,5 +207,36 @@ describe('apiBase prefixing', () => {
 
         await apiFetchAppSettings();
         expect(fetchMock.mock.calls[4][0]).toBe('http://localhost:8080/api/v1/settings');
+    });
+});
+
+describe('displaySessionMode', () => {
+    test.each<[SessionMode, string]>([
+        ['oidc', 'OIDC User'],
+        ['kubeconfig', 'Kubeconfig User'],
+        ['admin', 'Local Admin Account'],
+        ['serviceAccountToken', 'Service Account'],
+    ])('labels %s as %s', (mode, label) => {
+        expect(displaySessionMode(mode)).toBe(label);
+    });
+});
+
+describe('displaySessionUsername', () => {
+    test('strips the system:serviceaccount: prefix, keeping namespace:name', () => {
+        expect(displaySessionUsername('serviceAccountToken', 'system:serviceaccount:antrea-ui:antrea-ui-admin'))
+            .toBe('antrea-ui:antrea-ui-admin');
+    });
+
+    test('leaves a non-ServiceAccount username untouched', () => {
+        expect(displaySessionUsername('oidc', 'alice@example.com')).toBe('alice@example.com');
+    });
+
+    test('leaves a malformed ServiceAccount-mode username untouched', () => {
+        expect(displaySessionUsername('serviceAccountToken', 'not-a-service-account-username')).toBe('not-a-service-account-username');
+    });
+
+    test.each<SessionMode>(['kubeconfig', 'admin'])('does not touch usernames for %s mode', (mode) => {
+        expect(displaySessionUsername(mode, 'system:serviceaccount:antrea-ui:antrea-ui-admin'))
+            .toBe('system:serviceaccount:antrea-ui:antrea-ui-admin');
     });
 });

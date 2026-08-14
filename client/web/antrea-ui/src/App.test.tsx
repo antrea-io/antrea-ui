@@ -37,12 +37,12 @@ const defaultSettings = {
     },
 };
 
-function stubFetchWithSession(authenticated: boolean) {
+function stubFetchWithSession(authenticated: boolean, session: { mode: string, username: string } = { mode: 'admin', username: 'admin' }) {
     const fetchMock = vi.fn(async (url: string) => {
         if (url === '/api/v1/settings') return jsonResponse(defaultSettings);
         if (url === '/auth/session') {
             return authenticated
-                ? jsonResponse({ authenticated: true, mode: 'admin', username: 'admin' })
+                ? jsonResponse({ authenticated: true, ...session })
                 : new Response('not logged in', { status: 401 });
         }
         throw new Error(`unexpected fetch to ${url}`);
@@ -64,6 +64,28 @@ describe('App', () => {
 
         await waitFor(() => expect(document.querySelector('antrea-login-page')).toBeNull());
         expect(store.getState().session).toBe('authenticated');
+    });
+
+    test('an existing session shows the username and login mode in the header', async () => {
+        stubFetchWithSession(true);
+
+        render(<App />, { wrapper: MemoryRouter });
+
+        await waitFor(() => {
+            expect(document.querySelector('.app-user-identity-name')?.textContent).toBe('admin');
+        });
+        expect(document.querySelector('.app-user-identity-role')?.textContent).toBe('Local Admin Account');
+    });
+
+    test('a Service Account session shows namespace:name, not the full system:serviceaccount: username', async () => {
+        stubFetchWithSession(true, { mode: 'serviceAccountToken', username: 'system:serviceaccount:antrea-ui:antrea-ui-admin' });
+
+        render(<App />, { wrapper: MemoryRouter });
+
+        await waitFor(() => {
+            expect(document.querySelector('.app-user-identity-name')?.textContent).toBe('antrea-ui:antrea-ui-admin');
+        });
+        expect(document.querySelector('.app-user-identity-role')?.textContent).toBe('Service Account');
     });
 
     test('no session keeps the login page up', async () => {
@@ -153,8 +175,11 @@ describe('App', () => {
             render(<App />, { wrapper: MemoryRouter });
             await waitFor(() => expect(document.querySelector('antrea-login-page')).toBeNull());
 
+            // 2 calls before the timer even advances: the login page's own probe, and
+            // UserIdentity's one-shot fetch once session flips to authenticated. Both already
+            // landed by the time the login page disappears above.
             await act(async () => { await vi.advanceTimersByTimeAsync(5 * 60 * 1000); });
-            expect(sessionCalls).toBe(2);
+            expect(sessionCalls).toBe(3);
             expect(store.getState().session).toBe('authenticated');
         } finally {
             vi.useRealTimers();

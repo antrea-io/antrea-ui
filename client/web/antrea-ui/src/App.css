@@ -51,6 +51,40 @@ body {
     gap: 0.75rem;
 }
 
+.app-header-right {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    min-width: 0;
+}
+
+.app-user-identity {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    line-height: 1.2;
+    min-width: 0;
+}
+
+.app-user-identity-name,
+.app-user-identity-role {
+    max-width: 16rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.app-user-identity-name {
+    color: var(--antrea-color-text, #e9ecef);
+    font-size: var(--antrea-font-size-base, 0.875rem);
+    font-weight: var(--antrea-font-weight-bold, 600);
+}
+
+.app-user-identity-role {
+    font-size: var(--antrea-font-size-sm, 0.75rem);
+    color: var(--antrea-color-text-muted, #adbbc4);
+}
+
 .app-header h1 {
     margin: 0;
     font-size: var(--antrea-font-size-heading, 1.25rem);

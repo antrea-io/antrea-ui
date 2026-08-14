@@ -32,6 +32,8 @@ export {
     apiLoginWithKubeconfig,
     apiSession,
     apiFetchAppSettings,
+    displaySessionMode,
+    displaySessionUsername,
 } from './lib/auth-api.js';
 export { APIError, setApiBase, getApiBase } from './lib/api.js';
 export type { AccessSummary, ResourceRule, NonResourceRule, SubjectRules, ResourceQuery } from './lib/access-api.js';
