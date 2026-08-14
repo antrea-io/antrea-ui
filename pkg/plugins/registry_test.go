@@ -106,7 +106,7 @@ func TestRegistrySkipsInvalidConfigMaps(t *testing.T) {
 		"route missing path": {
 			ObjectMeta: metav1.ObjectMeta{Name: "cm"},
 			Data: map[string]string{
-				"manifest.json":    `{"name":"plugin","version":"0.1.0","entry":"index.js","routes":[{"sidebarLabel":"Plugin","exposedModule":"./Page"}],"federation":{"remoteEntry":"remoteEntry.json"}}`,
+				"manifest.json":    `{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"sidebarLabel":"Plugin","exposedModule":"./Page"}]}}`,
 				"index.js":         "x",
 				"remoteEntry.json": "x",
 			},
@@ -114,7 +114,7 @@ func TestRegistrySkipsInvalidConfigMaps(t *testing.T) {
 		"route missing sidebarLabel": {
 			ObjectMeta: metav1.ObjectMeta{Name: "cm"},
 			Data: map[string]string{
-				"manifest.json":    `{"name":"plugin","version":"0.1.0","entry":"index.js","routes":[{"path":"/plugin","exposedModule":"./Page"}],"federation":{"remoteEntry":"remoteEntry.json"}}`,
+				"manifest.json":    `{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"path":"/plugin","exposedModule":"./Page"}]}}`,
 				"index.js":         "x",
 				"remoteEntry.json": "x",
 			},
@@ -122,22 +122,15 @@ func TestRegistrySkipsInvalidConfigMaps(t *testing.T) {
 		"route missing exposedModule": {
 			ObjectMeta: metav1.ObjectMeta{Name: "cm"},
 			Data: map[string]string{
-				"manifest.json":    `{"name":"plugin","version":"0.1.0","entry":"index.js","routes":[{"path":"/plugin","sidebarLabel":"Plugin"}],"federation":{"remoteEntry":"remoteEntry.json"}}`,
+				"manifest.json":    `{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"path":"/plugin","sidebarLabel":"Plugin"}]}}`,
 				"index.js":         "x",
 				"remoteEntry.json": "x",
-			},
-		},
-		"route without federation": {
-			ObjectMeta: metav1.ObjectMeta{Name: "cm"},
-			Data: map[string]string{
-				"manifest.json": `{"name":"plugin","version":"0.1.0","entry":"index.js","routes":[{"path":"/plugin","sidebarLabel":"Plugin","exposedModule":"./Page"}]}`,
-				"index.js":      "x",
 			},
 		},
 		"route path under reserved api/ prefix": {
 			ObjectMeta: metav1.ObjectMeta{Name: "cm"},
 			Data: map[string]string{
-				"manifest.json":    `{"name":"plugin","version":"0.1.0","entry":"index.js","routes":[{"path":"/api/v1/plugin","sidebarLabel":"Plugin","exposedModule":"./Page"}],"federation":{"remoteEntry":"remoteEntry.json"}}`,
+				"manifest.json":    `{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"path":"/api/v1/plugin","sidebarLabel":"Plugin","exposedModule":"./Page"}]}}`,
 				"index.js":         "x",
 				"remoteEntry.json": "x",
 			},
@@ -145,10 +138,10 @@ func TestRegistrySkipsInvalidConfigMaps(t *testing.T) {
 		"duplicate route path in the same manifest": {
 			ObjectMeta: metav1.ObjectMeta{Name: "cm"},
 			Data: map[string]string{
-				"manifest.json": `{"name":"plugin","version":"0.1.0","entry":"index.js","routes":[
+				"manifest.json": `{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[
 					{"path":"/plugin","sidebarLabel":"Plugin","exposedModule":"./Page"},
 					{"path":"/plugin","sidebarLabel":"Plugin Again","exposedModule":"./OtherPage"}
-				],"federation":{"remoteEntry":"remoteEntry.json"}}`,
+				]}}`,
 				"index.js":         "x",
 				"remoteEntry.json": "x",
 			},
@@ -187,11 +180,13 @@ func TestRegistryIndexIncludesRoutesAndFederation(t *testing.T) {
 				"name": "policy-management",
 				"version": "0.2.0",
 				"entry": "index.js",
-				"routes": [
-					{"path": "/policies", "sidebarLabel": "Policy Management", "icon": "M0 0h16v16H0z", "exposedModule": "./PolicyManagementPage"},
-					{"path": "/policies/audit", "sidebarLabel": "Policy Audit Log", "exposedModule": "./PolicyAuditPage"}
-				],
-				"federation": {"remoteEntry": "remoteEntry.json"}
+				"federation": {
+					"remoteEntry": "remoteEntry.json",
+					"routes": [
+						{"path": "/policies", "sidebarLabel": "Policy Management", "icon": "M0 0h16v16H0z", "exposedModule": "./PolicyManagementPage"},
+						{"path": "/policies/audit", "sidebarLabel": "Policy Audit Log", "exposedModule": "./PolicyAuditPage"}
+					]
+				}
 			}`,
 			"index.js":         "x",
 			"remoteEntry.json": "{}",
@@ -202,11 +197,13 @@ func TestRegistryIndexIncludesRoutesAndFederation(t *testing.T) {
 		Name:    "policy-management",
 		Version: "0.2.0",
 		Entry:   "index.js",
-		Routes: []apisv1.PluginRoute{
-			{Path: "/policies", SidebarLabel: "Policy Management", Icon: "M0 0h16v16H0z", ExposedModule: "./PolicyManagementPage"},
-			{Path: "/policies/audit", SidebarLabel: "Policy Audit Log", ExposedModule: "./PolicyAuditPage"},
+		Federation: &apisv1.PluginFederation{
+			RemoteEntry: "remoteEntry.json",
+			Routes: []apisv1.PluginRoute{
+				{Path: "/policies", SidebarLabel: "Policy Management", Icon: "M0 0h16v16H0z", ExposedModule: "./PolicyManagementPage"},
+				{Path: "/policies/audit", SidebarLabel: "Policy Audit Log", ExposedModule: "./PolicyAuditPage"},
+			},
 		},
-		Federation: &apisv1.PluginFederation{RemoteEntry: "remoteEntry.json"},
 	}}, r.Index())
 }
 

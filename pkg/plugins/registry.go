@@ -152,11 +152,6 @@ func parsePluginConfigMap(cm *corev1.ConfigMap) (*pluginEntry, error) {
 	if _, ok := files[manifest.Entry]; !ok {
 		return nil, fmt.Errorf("entry file %q referenced by manifest not found in ConfigMap", manifest.Entry)
 	}
-	// See PluginRoute's doc: there's currently nothing else that can supply what the host mounts
-	// at any of Routes' Paths.
-	if len(manifest.Routes) > 0 && manifest.Federation == nil {
-		return nil, fmt.Errorf("manifest's 'routes' requires 'federation'")
-	}
 	if manifest.Federation != nil {
 		if manifest.Federation.RemoteEntry == "" {
 			return nil, fmt.Errorf("manifest's federation is missing 'remoteEntry'")
@@ -164,31 +159,31 @@ func parsePluginConfigMap(cm *corev1.ConfigMap) (*pluginEntry, error) {
 		if _, ok := files[manifest.Federation.RemoteEntry]; !ok {
 			return nil, fmt.Errorf("remote entry file %q referenced by manifest's federation not found in ConfigMap", manifest.Federation.RemoteEntry)
 		}
-	}
-	seenPaths := make(map[string]bool, len(manifest.Routes))
-	for i, route := range manifest.Routes {
-		if route.Path == "" {
-			return nil, fmt.Errorf("manifest's 'routes[%d]' is missing 'path'", i)
+		seenPaths := make(map[string]bool, len(manifest.Federation.Routes))
+		for i, route := range manifest.Federation.Routes {
+			if route.Path == "" {
+				return nil, fmt.Errorf("manifest's 'federation.routes[%d]' is missing 'path'", i)
+			}
+			if route.SidebarLabel == "" {
+				return nil, fmt.Errorf("manifest's 'federation.routes[%d]' is missing 'sidebarLabel'", i)
+			}
+			if route.ExposedModule == "" {
+				return nil, fmt.Errorf("manifest's 'federation.routes[%d]' is missing 'exposedModule'", i)
+			}
+			// The one reservation the backend can enforce on a route's Path itself - "api/" is
+			// its own reserved prefix (see GetPluginFile), not something specific to any one
+			// frontend. A route colliding with a given host's own built-in pages (e.g.
+			// "/settings") is instead the host's job to reject, the same way it already does for
+			// code-registered routes (see plugins.ts's RESERVED_PATHS/dedupeByPath in either
+			// frontend) - the backend has no way to know a given host's built-in path list.
+			if trimmed := strings.TrimPrefix(route.Path, "/"); strings.HasPrefix(trimmed, "api/") {
+				return nil, fmt.Errorf("manifest's 'federation.routes[%d].path' %q falls under the reserved 'api/' prefix", i, route.Path)
+			}
+			if seenPaths[route.Path] {
+				return nil, fmt.Errorf("manifest's 'federation.routes[%d].path' %q duplicates an earlier route in the same manifest", i, route.Path)
+			}
+			seenPaths[route.Path] = true
 		}
-		if route.SidebarLabel == "" {
-			return nil, fmt.Errorf("manifest's 'routes[%d]' is missing 'sidebarLabel'", i)
-		}
-		if route.ExposedModule == "" {
-			return nil, fmt.Errorf("manifest's 'routes[%d]' is missing 'exposedModule'", i)
-		}
-		// The one reservation the backend can enforce on a route's Path itself - "api/" is its
-		// own reserved prefix (see GetPluginFile), not something specific to any one frontend. A
-		// route colliding with a given host's own built-in pages (e.g. "/settings") is instead
-		// the host's job to reject, the same way it already does for code-registered routes (see
-		// plugins.ts's RESERVED_PATHS/dedupeByPath in either frontend) - the backend has no way
-		// to know a given host's built-in path list.
-		if trimmed := strings.TrimPrefix(route.Path, "/"); strings.HasPrefix(trimmed, "api/") {
-			return nil, fmt.Errorf("manifest's 'routes[%d].path' %q falls under the reserved 'api/' prefix", i, route.Path)
-		}
-		if seenPaths[route.Path] {
-			return nil, fmt.Errorf("manifest's 'routes[%d].path' %q duplicates an earlier route in the same manifest", i, route.Path)
-		}
-		seenPaths[route.Path] = true
 	}
 	return &pluginEntry{manifest: manifest, files: files}, nil
 }

@@ -66,19 +66,18 @@ complete, minimal example.
 | --- | --- | --- |
 | `name` | yes | Unique name; also the path segment used to serve the plugin, e.g. `/api/v1/plugins/<name>/`. |
 | `version` | yes | Informational only. |
-| `entry` | yes | Plugin's JS module filename; must be a key in the same ConfigMap's data. Always eagerly `import()`-ed by the host at startup, for whatever page-extension registration the plugin's code performs (see below) — independent of `routes`/`federation`. |
-| `routes` | no | `[{path, sidebarLabel, icon?, exposedModule}]` — one or more whole-page routes/sidebar entries as data, instead of registering them in code (see below). Currently requires `federation` alongside it. |
-| `federation` | no | `{remoteEntry}` — a [Native Federation](https://www.npmjs.com/package/@angular-architects/native-federation) remote (its own file, separate from `entry`) the host lazily loads a `routes` entry's `exposedModule` out of, only once that entry's route is actually visited. |
+| `entry` | yes | Plugin's JS module filename; must be a key in the same ConfigMap's data. Always eagerly `import()`-ed by the host at startup, for whatever page-extension registration the plugin's code performs (see below) — independent of `federation`. |
+| `federation` | no | `{remoteEntry, routes: [{path, sidebarLabel, icon?, exposedModule}]}` — a [Native Federation](https://www.npmjs.com/package/@angular-architects/native-federation) remote (its own file, separate from `entry`) plus the whole-page routes/sidebar entries it serves, as data instead of registering them in code (see below). The host lazily loads a route's `exposedModule` out of `remoteEntry`, only once that route is actually visited. |
 
 For most plugins, that's the whole schema: the manifest only carries enough
 for the host to fetch and `import()` the right file, and everything that
 affects the UI (routes, sidebar entries, page extensions) is registered in
 code, via `@antrea/ui-plugin-sdk`, so a plugin's actual shape is never split
-between JSON and JS. `routes`/`federation` are the one exception, for a
-plugin whose page(s) are a module federation remote — deferring code
-execution until a route is visited requires the host to know the route
-beforehand, which requires it to be data rather than something only running
-the plugin's code would reveal.
+between JSON and JS. `federation` is the one exception, for a plugin whose
+page(s) are a module federation remote — deferring code execution until a
+route is visited requires the host to know the route beforehand, which
+requires it to be data rather than something only running the plugin's code
+would reveal.
 
 ## Writing a plugin
 
