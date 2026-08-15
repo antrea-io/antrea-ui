@@ -15,6 +15,7 @@
 package e2e_helm
 
 import (
+	"context"
 	"crypto/tls"
 	"flag"
 	"fmt"
@@ -24,10 +25,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gruntwork-io/terratest/modules/helm"
-	http_helper "github.com/gruntwork-io/terratest/modules/http-helper"
-	"github.com/gruntwork-io/terratest/modules/k8s"
-	"github.com/gruntwork-io/terratest/modules/random"
+	"github.com/gruntwork-io/terratest/modules/core/v2/random"
+	"github.com/gruntwork-io/terratest/modules/helm/v2"
+	"github.com/gruntwork-io/terratest/modules/httphelper/v2"
+	"github.com/gruntwork-io/terratest/modules/k8s/v2"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -51,10 +52,12 @@ func checkAPIAccess(scheme string, tlsConfig *tls.Config) func(t *testing.T, end
 			Host:   endpoint,
 			Path:   "api/v1/version",
 		}
-		http_helper.HttpGetWithRetryWithCustomValidation(
+		httphelper.HttpGetWithRetryWithCustomValidationWithOptions(
 			t,
-			url.String(),
-			tlsConfig,
+			httphelper.HttpGetOptions{
+				Url:       url.String(),
+				TlsConfig: tlsConfig,
+			},
 			30,            // retries
 			1*time.Second, // sleep between retries
 			func(statusCode int, body string) bool {
@@ -66,7 +69,7 @@ func checkAPIAccess(scheme string, tlsConfig *tls.Config) func(t *testing.T, end
 
 func TestInstall(t *testing.T) {
 	// These are Kubeconfig options to configure the K8s Go client
-	kubectlOptions := k8s.NewKubectlOptions(kubeconfigPath, kubeconfigContext, antreaNamespace)
+	kubectlOptions := k8s.NewKubectlOptions(kubeconfigContext, kubeconfigPath, antreaNamespace)
 
 	testCases := []struct {
 		name          string
@@ -108,9 +111,10 @@ stringData:
   clientID: "kbyuFDidLLm280LIwVFiazOqjO3ty8KH"
   clientSecret: "60Op4HFM0I8ajz0WdiStAbziZ-VFQttXuxixHHs2R7r7-CW8GR79l-mmLqMhc-Sa"
 `
-				k8s.KubectlApplyFromString(t, kubectlOptions, secretManifest)
+				k8s.KubectlApplyFromStringContext(t, t.Context(), kubectlOptions, secretManifest)
 				t.Cleanup(func() {
-					k8s.RunKubectl(t, kubectlOptions, "delete", "secret", "test-oidc-credentials")
+					// t.Context() is already canceled by the time Cleanup functions run.
+					k8s.RunKubectlContext(t, context.Background(), kubectlOptions, "delete", "secret", "test-oidc-credentials")
 				})
 			},
 			helmSetValues: map[string]string{
@@ -128,7 +132,7 @@ stringData:
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			releaseName := fmt.Sprintf("antrea-ui-%s", strings.ToLower(random.UniqueId()))
+			releaseName := fmt.Sprintf("antrea-ui-%s", strings.ToLower(random.UniqueID()))
 			helmOptions := &helm.Options{
 				KubectlOptions: kubectlOptions,
 				SetValues:      tc.helmSetValues,
@@ -140,9 +144,9 @@ stringData:
 			}
 
 			// the test will fail immediately in case of error
-			helm.Install(t, helmOptions, helmChartPath, releaseName)
+			helm.InstallContext(t, t.Context(), helmOptions, helmChartPath, releaseName)
 			defer func() {
-				helm.Delete(t, helmOptions, releaseName, true)
+				helm.DeleteContext(t, t.Context(), helmOptions, releaseName, true)
 				// the chart's resource names (e.g., the antrea-ui Deployment and Service) are not
 				// templated with the release name, so they are shared across subtests. "helm delete"
 				// only waits for the resources it manages (the Deployment/Service objects) to be
@@ -152,13 +156,13 @@ stringData:
 				// matches the Service's label selector, so the next subtest's tunnel can attach to
 				// the old, dying Pod instead of the newly installed one. Wait for the Pod to be
 				// fully gone before returning.
-				k8s.WaitUntilNumPodsCreated(t, kubectlOptions, metav1.ListOptions{LabelSelector: "app=antrea-ui"}, 0, 60, 1*time.Second)
+				k8s.WaitUntilNumPodsCreatedContext(t, t.Context(), kubectlOptions, metav1.ListOptions{LabelSelector: "app=antrea-ui"}, 0, 60, 1*time.Second)
 			}()
 
 			// retry at most 60 times, with a 1s delay
 			// this is actually a no-op except for LoadBalancer Services
-			k8s.WaitUntilServiceAvailable(t, kubectlOptions, antreaUIServiceName, 60, 1*time.Second)
-			k8s.WaitUntilDeploymentAvailable(t, kubectlOptions, antreaUIDeploymentName, 60, 1*time.Second)
+			k8s.WaitUntilServiceAvailableContext(t, t.Context(), kubectlOptions, antreaUIServiceName, 60, 1*time.Second)
+			k8s.WaitUntilDeploymentAvailableContext(t, t.Context(), kubectlOptions, antreaUIDeploymentName, 60, 1*time.Second)
 
 			// create a tunnel to the Service, so we can access it from the test
 			tunnel := k8s.NewTunnel(kubectlOptions, k8s.ResourceTypeService, antreaUIServiceName, 0, antreaUIServicePort)
