@@ -289,6 +289,9 @@ func run() error {
 	go antreaSvcHandler.Run(stopCh)
 	go sessionStore.Run(stopCh)
 	go pluginRegistry.Run(stopCh)
+	if config.Plugins.Directory != "" {
+		go pluginRegistry.RunDirectoryWatch(config.Plugins.Directory, stopCh)
+	}
 	go accessResolver.Run(stopCh)
 
 	// Initializing the server in a goroutine so that

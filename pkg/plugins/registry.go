@@ -12,11 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package plugins watches labeled ConfigMaps for frontend plugin bundles
-// (a manifest.json plus the plugin's JS entry file, as ConfigMap data) and
-// keeps an in-memory index that the backend's /api/v1/plugins routes serve.
-// A ConfigMap can be created or deleted at any time; the registry reflects
-// the change on the next request, with no antrea-ui restart required.
+// Package plugins discovers frontend plugin bundles (a manifest.json plus
+// the plugin's JS entry file) from two sources - labeled ConfigMaps, and
+// optionally a filesystem directory - and keeps an in-memory index that the
+// backend's /api/v1/plugins routes serve. Either source can change at any
+// time; the registry reflects the change on the next request, with no
+// antrea-ui restart required. See registry.go for the ConfigMap source and
+// disk.go for the directory source.
 package plugins
 
 import (
@@ -49,8 +51,9 @@ type Registry struct {
 	namespace     string
 	labelSelector string
 
-	mu      sync.RWMutex
-	plugins map[string]pluginEntry // keyed by the backing ConfigMap's name
+	mu          sync.RWMutex
+	plugins     map[string]pluginEntry // keyed by the backing ConfigMap's name
+	diskPlugins map[string]pluginEntry // keyed by the backing directory's name
 }
 
 func NewRegistry(logger logr.Logger, clientset kubernetes.Interface, namespace, labelSelector string) *Registry {
@@ -60,6 +63,7 @@ func NewRegistry(logger logr.Logger, clientset kubernetes.Interface, namespace, 
 		namespace:     namespace,
 		labelSelector: labelSelector,
 		plugins:       make(map[string]pluginEntry),
+		diskPlugins:   make(map[string]pluginEntry),
 	}
 }
 
@@ -135,6 +139,13 @@ func parsePluginConfigMap(cm *corev1.ConfigMap) (*pluginEntry, error) {
 	for k, v := range cm.BinaryData {
 		files[k] = v
 	}
+	return parseManifestAndFiles(files)
+}
+
+// parseManifestAndFiles validates a plugin bundle's flat file set - shared by the ConfigMap
+// source (registry.go) and the directory source (disk.go), which differ only in how they collect
+// files into this same map[string][]byte shape.
+func parseManifestAndFiles(files map[string][]byte) (*pluginEntry, error) {
 	manifestData, ok := files[manifestFileName]
 	if !ok {
 		return nil, fmt.Errorf("missing %s", manifestFileName)
@@ -150,14 +161,14 @@ func parsePluginConfigMap(cm *corev1.ConfigMap) (*pluginEntry, error) {
 		return nil, fmt.Errorf("manifest is missing 'entry'")
 	}
 	if _, ok := files[manifest.Entry]; !ok {
-		return nil, fmt.Errorf("entry file %q referenced by manifest not found in ConfigMap", manifest.Entry)
+		return nil, fmt.Errorf("entry file %q referenced by manifest not found in plugin bundle", manifest.Entry)
 	}
 	if manifest.Federation != nil {
 		if manifest.Federation.RemoteEntry == "" {
 			return nil, fmt.Errorf("manifest's federation is missing 'remoteEntry'")
 		}
 		if _, ok := files[manifest.Federation.RemoteEntry]; !ok {
-			return nil, fmt.Errorf("remote entry file %q referenced by manifest's federation not found in ConfigMap", manifest.Federation.RemoteEntry)
+			return nil, fmt.Errorf("remote entry file %q referenced by manifest's federation not found in plugin bundle", manifest.Federation.RemoteEntry)
 		}
 		seenPaths := make(map[string]bool, len(manifest.Federation.Routes))
 		for i, route := range manifest.Federation.Routes {
@@ -188,55 +199,71 @@ func parsePluginConfigMap(cm *corev1.ConfigMap) (*pluginEntry, error) {
 	return &pluginEntry{manifest: manifest, files: files}, nil
 }
 
-// sortedConfigMapNames returns the currently known backing ConfigMap names in
-// a deterministic order, so that dedup-by-plugin-name (in Index and File)
-// consistently picks the same winner on every call.
-func (r *Registry) sortedConfigMapNames() []string {
-	names := make([]string, 0, len(r.plugins))
-	for name := range r.plugins {
-		names = append(names, name)
+// resolvedEntries merges the ConfigMap and directory sources into one set of pluginEntry values,
+// keyed by plugin name, deduplicated the same way Index/File always have: when two sources
+// declare the same plugin name, whichever source key sorts first wins and the other is dropped
+// (and logged) - mirrors the frontend's dedupeByPath in plugins.ts. ConfigMap-backed keys are
+// compared as "configmap/<name>" and directory-backed keys as "directory/<name>", so a ConfigMap
+// and a directory sharing a literal name never collide with each other. Callers must hold at
+// least r.mu.RLock().
+func (r *Registry) resolvedEntries() map[string]pluginEntry {
+	type sourced struct {
+		sortKey string
+		entry   pluginEntry
 	}
-	sort.Strings(names)
-	return names
+	all := make([]sourced, 0, len(r.plugins)+len(r.diskPlugins))
+	for name, entry := range r.plugins {
+		all = append(all, sourced{sortKey: "configmap/" + name, entry: entry})
+	}
+	for name, entry := range r.diskPlugins {
+		all = append(all, sourced{sortKey: "directory/" + name, entry: entry})
+	}
+	sort.Slice(all, func(i, j int) bool { return all[i].sortKey < all[j].sortKey })
+
+	winnerSortKey := make(map[string]string, len(all)) // plugin name -> source key that claimed it
+	resolved := make(map[string]pluginEntry, len(all))
+	for _, s := range all {
+		if owner, ok := winnerSortKey[s.entry.manifest.Name]; ok {
+			r.logger.Info("Duplicate plugin name, dropping", "plugin", s.entry.manifest.Name, "source", s.sortKey, "keptSource", owner)
+			continue
+		}
+		winnerSortKey[s.entry.manifest.Name] = s.sortKey
+		resolved[s.entry.manifest.Name] = s.entry
+	}
+	return resolved
 }
 
-// Index returns the current set of plugin manifests, deduplicated by
-// manifest name. If two ConfigMaps declare the same plugin name, the one
-// whose backing ConfigMap name sorts first wins and the other is dropped
-// (and logged) - mirrors the frontend's dedupeByPath in plugins.ts.
+// Index returns the current set of plugin manifests, deduplicated by manifest name across both
+// the ConfigMap and directory sources (see resolvedEntries), sorted by name for a deterministic
+// response.
 func (r *Registry) Index() []apisv1.PluginManifest {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	seen := make(map[string]string) // plugin name -> ConfigMap name that claimed it
-	manifests := make([]apisv1.PluginManifest, 0, len(r.plugins))
-	for _, cmName := range r.sortedConfigMapNames() {
-		entry := r.plugins[cmName]
-		if owner, ok := seen[entry.manifest.Name]; ok {
-			r.logger.Info("Duplicate plugin name, dropping", "plugin", entry.manifest.Name, "configMap", cmName, "keptConfigMap", owner)
-			continue
-		}
-		seen[entry.manifest.Name] = cmName
-		manifests = append(manifests, entry.manifest)
+	resolved := r.resolvedEntries()
+	names := make([]string, 0, len(resolved))
+	for name := range resolved {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	manifests := make([]apisv1.PluginManifest, 0, len(resolved))
+	for _, name := range names {
+		manifests = append(manifests, resolved[name].manifest)
 	}
 	return manifests
 }
 
-// File returns the contents of filename belonging to the plugin named
-// pluginName, as currently known to the registry. When the plugin name is
-// claimed by more than one ConfigMap, it resolves to the same one Index()
-// would keep.
+// File returns the contents of filename belonging to the plugin named pluginName, as currently
+// known to the registry. When the plugin name is claimed by more than one source, it resolves to
+// the same one Index() would keep.
 func (r *Registry) File(pluginName, filename string) ([]byte, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	for _, cmName := range r.sortedConfigMapNames() {
-		entry := r.plugins[cmName]
-		if entry.manifest.Name != pluginName {
-			continue
-		}
-		data, ok := entry.files[filename]
-		return data, ok
+	entry, ok := r.resolvedEntries()[pluginName]
+	if !ok {
+		return nil, false
 	}
-	return nil, false
+	data, ok := entry.files[filename]
+	return data, ok
 }

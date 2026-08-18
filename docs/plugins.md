@@ -11,6 +11,12 @@ complete, minimal example.
 
 ## How it works
 
+A plugin bundle can come from either of two sources, watched at the same
+time: a labeled Kubernetes `ConfigMap`, or a subdirectory of a filesystem
+directory the backend is pointed at (`plugins.directory`). Both are
+described below; if a plugin name is delivered by both, the ConfigMap wins
+and the directory copy is dropped (and logged).
+
 1. A plugin is delivered as a Kubernetes `ConfigMap`, in the namespace the
    backend watches for plugins (`plugins.namespace`, default: antrea-ui's own
    release namespace), labeled to match `plugins.labelSelector` (default:
@@ -27,19 +33,34 @@ complete, minimal example.
    `helm install`/`upgrade` needs permission to create a `Role`/`RoleBinding`
    there too — the chart can't grant permissions outside its own release
    namespace.
-2. The Go backend watches ConfigMaps matching that label (see
-   [`pkg/plugins`](../pkg/plugins) and
-   [`pkg/server/api/plugins.go`](../pkg/server/api/plugins.go)) and serves
-   them, unauthenticated, at `GET /api/v1/plugins/index.json` (the merged
-   list of manifests) and `GET /api/v1/plugins/<name>/<file>` (any file from
-   that plugin's ConfigMap). A ConfigMap can be created, updated, or deleted
-   at any time — the backend picks up the change immediately, with no
-   antrea-ui restart. Both routes are served with `Cache-Control: no-store`
-   for exactly that reason. If a plugin's entry file is stored as
-   gzip-compressed `binaryData` (worth doing once bundled with dependencies —
-   detected by its magic number, no manifest changes needed), the backend
-   passes it through as-is with `Content-Encoding: gzip` rather than
-   decompressing and re-serving it.
+
+   Alternatively, a plugin can be delivered from a plain filesystem
+   directory instead of a `ConfigMap`: set `plugins.directory` (or the
+   `ANTREA_UI_PLUGINS_DIRECTORY` env var) to a path, and put each plugin in
+   its own immediate subdirectory there, e.g.
+   `<plugins.directory>/pod-counter/manifest.json` and
+   `<plugins.directory>/pod-counter/index.js`. This needs no RBAC and no
+   cluster round-trip, which is why it's the easiest way to iterate on a
+   plugin locally (see "Trying it locally" below); it's also there as a
+   fallback if a deployment's plugins outgrow a `ConfigMap`'s 1MiB cap,
+   backed by whatever shared volume the deployment wires up between the
+   backend Pod and whoever writes the plugin bundle there. A plugin name
+   can only come from one source at a time — if both a `ConfigMap` and a
+   directory declare the same `name`, the `ConfigMap` wins and the
+   directory copy is dropped (and logged).
+2. The Go backend watches ConfigMaps matching that label, and the
+   `plugins.directory` path if set (see [`pkg/plugins`](../pkg/plugins) and
+   [`pkg/server/api/plugins.go`](../pkg/server/api/plugins.go)), and serves
+   the merged result, unauthenticated, at `GET /api/v1/plugins/index.json`
+   (the merged list of manifests) and `GET /api/v1/plugins/<name>/<file>`
+   (any file from that plugin's ConfigMap or directory). Either source can
+   be created, updated, or deleted at any time — the backend picks up the
+   change immediately, with no antrea-ui restart. Both routes are served
+   with `Cache-Control: no-store` for exactly that reason. If a plugin's
+   entry file is stored as gzip-compressed `binaryData` (worth doing once
+   bundled with dependencies — detected by its magic number, no manifest
+   changes needed), the backend passes it through as-is with
+   `Content-Encoding: gzip` rather than decompressing and re-serving it.
 3. On load, Antrea UI fetches `/api/v1/plugins/index.json` and `import()`s
    each plugin's JS module at runtime — the code doesn't need to exist when
    the frontend is built. See [`plugins.ts`](../client/web/antrea-ui/src/plugins.ts).
@@ -66,7 +87,7 @@ complete, minimal example.
 | --- | --- | --- |
 | `name` | yes | Unique name; also the path segment used to serve the plugin, e.g. `/api/v1/plugins/<name>/`. |
 | `version` | yes | Informational only. |
-| `entry` | yes | Plugin's JS module filename; must be a key in the same ConfigMap's data. Always eagerly `import()`-ed by the host at startup, for whatever page-extension registration the plugin's code performs (see below) — independent of `federation`. |
+| `entry` | yes | Plugin's JS module filename; must be a key in the same ConfigMap's data, or a file in the same plugin directory. Always eagerly `import()`-ed by the host at startup, for whatever page-extension registration the plugin's code performs (see below) — independent of `federation`. |
 | `federation` | no | `{remoteEntry, routes: [{path, sidebarLabel, icon?, exposedModule}]}` — a [Native Federation](https://www.npmjs.com/package/@angular-architects/native-federation) remote (its own file, separate from `entry`) plus the whole-page routes/sidebar entries it serves, as data instead of registering them in code (see below). The host lazily loads a route's `exposedModule` out of `remoteEntry`, only once that route is actually visited. |
 
 For most plugins, that's the whole schema: the manifest only carries enough
@@ -229,11 +250,30 @@ stay in sync with what the host actually expects.
 ## Trying it locally
 
 Antrea UI only makes sense running against a real cluster, so test against
-one directly rather than a standalone dev server. The commands below assume
-`@antrea/ui-plugin-sdk` is already built (see "Writing a plugin" above), and
-that `<namespace>` is wherever the backend watches for plugins —
-`plugins.namespace` if set, otherwise Antrea UI's own release namespace (see
-"How it works" above).
+one directly rather than a standalone dev server. Everything below is about
+the plugin bundle itself, not the cluster — the fastest way to iterate is
+`plugins.directory`, not a `ConfigMap`:
+
+```bash
+cd plugins/examples/pod-counter
+npm install && npm run build   # vite build, then copies manifest.json into dist/
+mkdir -p <plugins.directory>/pod-counter
+cp dist/index.js dist/manifest.json <plugins.directory>/pod-counter/
+```
+
+The backend's directory watch picks this up immediately, no restart needed
+— refresh the browser and the plugin's page shows up. To iterate, just
+rebuild and `cp` again; to remove it, delete
+`<plugins.directory>/pod-counter`. RBAC still applies (see below), so
+`kubectl apply -f clusterrole.yaml` once against whatever cluster the
+backend is pointed at.
+
+The rest of this section instead delivers the same plugin as a `ConfigMap`,
+useful for testing that path specifically (e.g. before a real deployment, or
+in the e2e test below). The commands below assume `@antrea/ui-plugin-sdk` is
+already built (see "Writing a plugin" above), and that `<namespace>` is
+wherever the backend watches for plugins — `plugins.namespace` if set,
+otherwise Antrea UI's own release namespace (see "How it works" above).
 
 ```bash
 cd plugins/examples/pod-counter

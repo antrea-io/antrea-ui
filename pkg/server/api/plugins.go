@@ -23,14 +23,16 @@ import (
 )
 
 // GetPluginsIndex serves the list of frontend plugins currently known to the
-// backend, discovered from labeled ConfigMaps (see pkg/plugins). Like
-// /settings, this is unauthenticated: it carries no confidential data, and
-// the frontend needs it before a user has authenticated.
+// backend, discovered from labeled ConfigMaps and/or a configured plugin
+// directory (see pkg/plugins). Like /settings, this is unauthenticated: it
+// carries no confidential data, and the frontend needs it before a user has
+// authenticated.
 func (s *Server) GetPluginsIndex(c *gin.Context) {
-	// The set of installed plugins can change at any time (a ConfigMap can be created,
-	// updated, or deleted independently of antrea-ui), so this must never be cached - an
-	// aggressively-caching browser or proxy would otherwise keep serving a stale index (or
-	// worse, a stale plugin bundle below) after an upgrade, with no visible error.
+	// The set of installed plugins can change at any time (a ConfigMap or a plugin directory
+	// entry can be created, updated, or deleted independently of antrea-ui), so this must
+	// never be cached - an aggressively-caching browser or proxy would otherwise keep serving
+	// a stale index (or worse, a stale plugin bundle below) after an upgrade, with no visible
+	// error.
 	c.Header("Cache-Control", "no-store")
 	c.JSON(http.StatusOK, s.pluginRegistry.Index())
 }
@@ -41,7 +43,8 @@ func (s *Server) GetPluginFile(c *gin.Context) {
 	name := c.Param("name")
 	// filename is used only as a literal key into the registry's files map (see
 	// pkg/plugins), never as a filesystem path, so a "../.." segment can't escape it in
-	// practice - ConfigMap data/binaryData keys can't contain "/" at all. Worth keeping in
+	// practice - neither ConfigMap data/binaryData keys nor plugin-directory entry names (see
+	// pkg/plugins/disk.go, which skips subdirectories) can contain "/" at all. Worth keeping in
 	// mind if that backing store ever stops being a flat map.
 	filename := strings.TrimPrefix(c.Param("filepath"), "/")
 	data, ok := s.pluginRegistry.File(name, filename)

@@ -74,6 +74,13 @@ type PluginsConfig struct {
 	// Namespace is the Kubernetes namespace the backend watches for plugin ConfigMaps.
 	// Empty means antrea-ui's own namespace (see env.GetNamespace()).
 	Namespace string
+	// Directory, if set, is a filesystem path the backend also watches for plugin bundles - one
+	// subdirectory per plugin, each holding a manifest.json plus the files it references, the
+	// on-disk mirror of a plugin ConfigMap's Data (see pkg/plugins/disk.go). Meant for local
+	// development, and as a fallback if a deployment's plugins outgrow a ConfigMap's 1MiB cap
+	// and it mounts a shared volume here instead. Unset (the default) disables directory-based
+	// loading entirely; ConfigMap-based loading is unaffected either way.
+	Directory string
 }
 
 // SessionConfig configures the server-side session store, which holds the Kubernetes credential
@@ -213,6 +220,9 @@ func LoadConfig() (*Config, error) {
 	// Configuration variables that can be set through environment
 	v.MustBindEnv("auth.oidc.clientId", "ANTREA_UI_AUTH_OIDC_CLIENT_ID")
 	v.MustBindEnv("auth.oidc.clientSecret", "ANTREA_UI_AUTH_OIDC_CLIENT_SECRET")
+	// A path, not a secret, but still machine-specific rather than something to check into a
+	// shared config file - env var is the convenient way to point a local dev server at it.
+	v.MustBindEnv("plugins.directory", "ANTREA_UI_PLUGINS_DIRECTORY")
 
 	// You can set defaults for configuration parameters here
 	v.SetDefault("limits.maxLoginsPerSecond", DefaultMaxLoginsPerSecond)

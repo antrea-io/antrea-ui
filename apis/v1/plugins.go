@@ -14,8 +14,8 @@
 
 package v1
 
-// PluginManifest describes a frontend plugin discovered by the backend from a
-// labeled ConfigMap. Page extensions (edge details, flow table columns) are
+// PluginManifest describes a frontend plugin discovered by the backend from a labeled ConfigMap
+// or a plugin directory (see pkg/plugins). Page extensions (edge details, flow table columns) are
 // always registered by the plugin's own code - the host needs an actual
 // function reference for those. Federation is the one exception: it lets the
 // host build whole-page routes from data alone, without running the plugin's
@@ -23,8 +23,8 @@ package v1
 type PluginManifest struct {
 	Name    string `json:"name"`
 	Version string `json:"version"`
-	// Entry is the plugin's entry file: a filename, a key in the same
-	// ConfigMap's data. Always eagerly import()-ed at startup, for whatever
+	// Entry is the plugin's entry file: a filename, a key in the same ConfigMap's data or a
+	// file in the same plugin directory. Always eagerly import()-ed at startup, for whatever
 	// page-extension registration the plugin's code performs (see
 	// antrea-ui-plugin-sdk) - regardless of whether Federation below is also
 	// set.
