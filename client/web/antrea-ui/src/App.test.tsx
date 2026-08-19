@@ -74,18 +74,18 @@ describe('App', () => {
         await waitFor(() => {
             expect(document.querySelector('.app-user-identity-name')?.textContent).toBe('admin');
         });
-        expect(document.querySelector('.app-user-identity-role')?.textContent).toBe('Local Admin Account');
+        expect(document.querySelector('.app-user-identity-kind')?.textContent).toBe('Local Admin Account');
     });
 
     test('a Service Account session shows namespace:name, not the full system:serviceaccount: username', async () => {
-        stubFetchWithSession(true, { mode: 'serviceAccountToken', username: 'system:serviceaccount:antrea-ui:antrea-ui-admin' });
+        stubFetchWithSession(true, { mode: 'token', username: 'system:serviceaccount:antrea-ui:antrea-ui-admin' });
 
         render(<App />, { wrapper: MemoryRouter });
 
         await waitFor(() => {
             expect(document.querySelector('.app-user-identity-name')?.textContent).toBe('antrea-ui:antrea-ui-admin');
         });
-        expect(document.querySelector('.app-user-identity-role')?.textContent).toBe('Service Account');
+        expect(document.querySelector('.app-user-identity-kind')?.textContent).toBe('Service Account');
     });
 
     test('no session keeps the login page up', async () => {
@@ -175,11 +175,11 @@ describe('App', () => {
             render(<App />, { wrapper: MemoryRouter });
             await waitFor(() => expect(document.querySelector('antrea-login-page')).toBeNull());
 
-            // 2 calls before the timer even advances: the login page's own probe, and
-            // UserIdentity's one-shot fetch once session flips to authenticated. Both already
-            // landed by the time the login page disappears above.
+            // 1 call before the timer even advances: the login page's own probe, already landed
+            // by the time it disappears above. UserIdentity reads that same result from the
+            // store rather than fetching its own.
             await act(async () => { await vi.advanceTimersByTimeAsync(5 * 60 * 1000); });
-            expect(sessionCalls).toBe(3);
+            expect(sessionCalls).toBe(2);
             expect(store.getState().session).toBe('authenticated');
         } finally {
             vi.useRealTimers();

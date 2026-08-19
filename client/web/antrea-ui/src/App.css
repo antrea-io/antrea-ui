@@ -67,7 +67,7 @@ body {
 }
 
 .app-user-identity-name,
-.app-user-identity-role {
+.app-user-identity-kind {
     max-width: 16rem;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -80,7 +80,7 @@ body {
     font-weight: var(--antrea-font-weight-bold, 600);
 }
 
-.app-user-identity-role {
+.app-user-identity-kind {
     font-size: var(--antrea-font-size-sm, 0.75rem);
     color: var(--antrea-color-text-muted, #adbbc4);
 }

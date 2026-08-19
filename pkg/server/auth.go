@@ -149,7 +149,7 @@ func (s *Server) LoginWithToken(c *gin.Context) {
 			return sError
 		}
 		return s.createSession(c, &session.Spec{
-			Mode:       session.ModeSAToken,
+			Mode:       session.ModeToken,
 			Username:   username,
 			Credential: cred,
 		})

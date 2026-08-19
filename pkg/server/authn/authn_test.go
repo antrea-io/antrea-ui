@@ -112,7 +112,7 @@ func newRouter(a *Authenticator) *gin.Engine {
 func newSessionCookie(t *testing.T, store session.Store) *http.Cookie {
 	t.Helper()
 	sess, err := store.Create(&session.Spec{
-		Mode:       session.ModeSAToken,
+		Mode:       session.ModeToken,
 		Credential: session.Credential{Kind: session.KindBearer, Token: []byte("tok")},
 	})
 	require.NoError(t, err)

@@ -15,6 +15,7 @@
  */
 
 import { configureStore, createSlice, PayloadAction } from '@reduxjs/toolkit';
+import type { SessionInfo } from '@antrea/ui-components';
 
 // The app never holds a credential: authentication is an HttpOnly session cookie that the
 // browser attaches on its own. All the app needs to track is whether there is a session.
@@ -25,11 +26,17 @@ export type SessionState = 'unknown' | 'authenticated' | 'anonymous';
 
 interface state {
     session: SessionState
+    // Populated by setAuthenticated, straight from the login page's own GET /auth/session probe
+    // or login call — so nothing else needs a second round-trip just to display who is logged
+    // in. null whenever session isn't 'authenticated', and also when setAuthenticated itself
+    // couldn't get it (display-only; never blocks authentication).
+    sessionInfo: SessionInfo | null
 }
 
-const initialState = {
+const initialState: state = {
     session: 'unknown',
-} as state;
+    sessionInfo: null,
+};
 
 const authSlice = createSlice({
     name: 'auth',
@@ -37,7 +44,12 @@ const authSlice = createSlice({
     reducers: {
         setSession(state, action: PayloadAction<SessionState>) {
             state.session = action.payload;
-        }
+            state.sessionInfo = null;
+        },
+        setAuthenticated(state, action: PayloadAction<SessionInfo | null>) {
+            state.session = 'authenticated';
+            state.sessionInfo = action.payload;
+        },
     }
 });
 
@@ -50,7 +62,7 @@ export const setupStore = (preloadedState?: RootState) => {
 
 export const store = setupStore();
 
-export const { setSession } = authSlice.actions;
+export const { setSession, setAuthenticated } = authSlice.actions;
 
 export type RootState = ReturnType<typeof authSlice.reducer>
 export type AppStore = ReturnType<typeof setupStore>

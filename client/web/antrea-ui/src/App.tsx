@@ -14,11 +14,11 @@
  * limitations under the License.
  */
 
-import { useRef, useEffect, useState } from 'react';
+import { useRef, useEffect } from 'react';
 import logo from './logo.svg';
 import './App.css';
 import '@antrea/ui-components';
-import { apiSession, APIError, resetAccessSummary, displaySessionMode, displaySessionUsername } from '@antrea/ui-components';
+import { apiSession, APIError, resetAccessSummary, sessionIdentity } from '@antrea/ui-components';
 import type { SessionInfo } from '@antrea/ui-components';
 import { Outlet, Link } from 'react-router';
 import NavTab from './nav';
@@ -27,7 +27,7 @@ import { AppErrorProvider, AppErrorNotification } from './errors';
 import { AccessProvider } from './access';
 import { Provider, useSelector, useDispatch } from 'react-redux';
 import type { RootState } from './store';
-import { store, setSession } from './store';
+import { store, setSession, setAuthenticated } from './store';
 import type { PluginSidebarEntry } from './plugins';
 
 // How often to ping GET /auth/session while a tab is visible. The backend expires a session
@@ -74,13 +74,15 @@ function AuthShell({ pluginSidebarEntries }: { pluginSidebarEntries: PluginSideb
         const el = loginRef.current;
         if (!el) return;
         // The login page probes GET /auth/session on mount and logs in on submit; either way it
-        // tells us when there is a session. There is no token in the event: the credential
-        // lives server-side, keyed by an HttpOnly cookie.
-        const onAuthenticated = () => {
+        // tells us when there is a session, and hands over the SessionInfo it already fetched
+        // (or fetched to confirm the login) as the event detail — no token in it, the credential
+        // lives server-side, keyed by an HttpOnly cookie. detail is null when that fetch failed;
+        // the login itself still succeeded, there is just nothing to display for it.
+        const onAuthenticated = (e: Event) => {
             // A fresh login: any access-summary fetched (or attempted) for a previous session
             // must not leak into this one.
             resetAccessSummary();
-            dispatch(setSession('authenticated'));
+            dispatch(setAuthenticated((e as CustomEvent<SessionInfo>).detail ?? null));
         };
         el.addEventListener('antrea-authenticated', onAuthenticated);
         return () => el.removeEventListener('antrea-authenticated', onAuthenticated);
@@ -113,36 +115,18 @@ function Logout() {
     );
 }
 
-// Shows the logged-in username and login mode, straight from GET /auth/session — the same
-// source the keepalive ping and the settings page use. Renders nothing until that resolves, and
-// nothing at all if it fails, since the rest of the shell already fails open on that same
-// condition.
+// Shows the logged-in username and account kind, from the SessionInfo the login page already
+// fetched (see the antrea-authenticated listener above) — no fetch of its own, and nothing to
+// render before that arrives or if it never does, since the rest of the shell already fails open
+// on that same condition.
 function UserIdentity() {
-    const session = useSelector((state: RootState) => state.session);
-    const [info, setInfo] = useState<SessionInfo | null>(null);
-
-    // Same pattern as AccessProvider (access.tsx): drop stale info during render rather than in
-    // an effect, so a session change never paints a previous identity for one frame.
-    const [sessionForInfo, setSessionForInfo] = useState(session);
-    if (sessionForInfo !== session) {
-        setSessionForInfo(session);
-        setInfo(null);
-    }
-
-    useEffect(() => {
-        if (session !== 'authenticated') return;
-        let cancelled = false;
-        apiSession()
-            .then((i) => { if (!cancelled) setInfo(i); })
-            .catch(() => { if (!cancelled) setInfo(null); });
-        return () => { cancelled = true; };
-    }, [session]);
-
-    if (!info?.username || !info.mode) return null;
+    const info = useSelector((state: RootState) => state.sessionInfo);
+    if (!info?.username) return null;
+    const identity = sessionIdentity({ mode: info.mode, username: info.username });
     return (
         <div className="app-user-identity">
-            <span className="app-user-identity-name">{displaySessionUsername(info.mode, info.username)}</span>
-            <span className="app-user-identity-role">{displaySessionMode(info.mode)}</span>
+            <span className="app-user-identity-name">{identity.name}</span>
+            <span className="app-user-identity-kind">{identity.kind}</span>
         </div>
     );
 }
@@ -151,26 +135,26 @@ function App({ pluginSidebarEntries = [] }: { pluginSidebarEntries?: PluginSideb
     return (
         <div className="app-shell">
             <Provider store={store}>
-                <AppErrorProvider>
-                    <AccessProvider>
-                        <header className="app-header">
-                            <div className="app-header-left">
-                                <Link to="/">
-                                    <img src={logo} alt="Antrea logo" className="App-logo" />
-                                </Link>
-                                <h1>Antrea UI</h1>
-                            </div>
-                            <div className="app-header-right">
-                                <UserIdentity />
-                                <Logout />
-                            </div>
-                        </header>
-                        <div className="app-body">
+                <header className="app-header">
+                    <div className="app-header-left">
+                        <Link to="/">
+                            <img src={logo} alt="Antrea logo" className="App-logo" />
+                        </Link>
+                        <h1>Antrea UI</h1>
+                    </div>
+                    <div className="app-header-right">
+                        <UserIdentity />
+                        <Logout />
+                    </div>
+                </header>
+                <div className="app-body">
+                    <AppErrorProvider>
+                        <AccessProvider>
                             <AuthShell pluginSidebarEntries={pluginSidebarEntries} />
-                            <AppErrorNotification />
-                        </div>
-                    </AccessProvider>
-                </AppErrorProvider>
+                        </AccessProvider>
+                        <AppErrorNotification />
+                    </AppErrorProvider>
+                </div>
             </Provider>
         </div>
     );

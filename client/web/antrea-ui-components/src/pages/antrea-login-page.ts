@@ -18,6 +18,7 @@ import { pageStyles } from '../lib/styles.js';
 import { APIError, getApiBase } from '../lib/api.js';
 import {
     AppSettings,
+    SessionInfo,
     apiLogin,
     apiLoginWithToken,
     apiLoginWithKubeconfig,
@@ -165,8 +166,10 @@ export class AntreaLoginPage extends LitElement {
         }
 
         if (sessionResult.status === 'fulfilled') {
-            // Existing session — tell the host and wait for it to navigate away.
-            this._dispatchAuthenticated();
+            // Existing session — tell the host and wait for it to navigate away. We already have
+            // the session info from this probe, so the host doesn't need a round-trip of its own
+            // just to display who is logged in.
+            this._dispatchAuthenticated(sessionResult.value);
             return;
         }
 
@@ -185,10 +188,12 @@ export class AntreaLoginPage extends LitElement {
         }
     }
 
-    private _dispatchAuthenticated() {
+    // info is display-only: the credential itself never crosses this boundary, it lives in an
+    // HttpOnly cookie the host never sees. undefined when the login succeeded but a subsequent
+    // GET /auth/session to fetch it did not — the host just shows nothing extra in that case.
+    private _dispatchAuthenticated(info?: SessionInfo) {
         this._authenticated = true;
-        // No token in the payload: the session lives in an HttpOnly cookie the host never sees.
-        this.dispatchEvent(new CustomEvent('antrea-authenticated', { bubbles: true, composed: true }));
+        this.dispatchEvent(new CustomEvent('antrea-authenticated', { bubbles: true, composed: true, detail: info }));
     }
 
     /** Runs a login call, surfacing its error rather than letting it reject. */
@@ -197,7 +202,11 @@ export class AntreaLoginPage extends LitElement {
         this._submitting = true;
         try {
             await login();
-            this._dispatchAuthenticated();
+            // The login response itself carries no session info (just a Set-Cookie), so fetch it
+            // for the host to display — best-effort, a failure here must not undo a successful
+            // login.
+            const info = await apiSession().catch(() => undefined);
+            this._dispatchAuthenticated(info);
         } catch (err) {
             this._loginError = err instanceof Error ? err.message : String(err);
         } finally {

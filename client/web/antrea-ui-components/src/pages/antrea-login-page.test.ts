@@ -136,6 +136,26 @@ describe('AntreaLoginPage — session probe on connect', () => {
         expect(page.shadowRoot!.textContent).toContain('Authenticating');
     });
 
+    test('existing session: the event detail carries the session info from the same probe, not a second fetch', async () => {
+        vi.stubGlobal('fetch', mockFetch({
+            settings: jsonResponse(settingsBasicOnly),
+            session: jsonResponse({ authenticated: true, mode: 'admin', username: 'admin' }),
+        }));
+        el = document.createElement('antrea-login-page') as AntreaLoginPage;
+        const onAuth = vi.fn();
+        // Attached before the element joins the DOM: connectedCallback's _init() dispatches
+        // synchronously with respect to its own microtasks, so a listener added after
+        // appendChild (as the shared mount() helper does) would miss it.
+        el.addEventListener('antrea-authenticated', onAuth);
+        document.body.appendChild(el);
+        await el.updateComplete;
+        await new Promise(r => setTimeout(r, 0));
+
+        expect(onAuth).toHaveBeenCalledTimes(1);
+        expect((onAuth.mock.calls[0][0] as CustomEvent).detail).toEqual({ authenticated: true, mode: 'admin', username: 'admin' });
+        expect((fetch as Mock).mock.calls.filter(([url]) => url === '/auth/session')).toHaveLength(1);
+    });
+
     test('401 (no session): shows the login form without an error banner', async () => {
         const page = await mount({
             settings: jsonResponse(settingsBasicOnly),
@@ -180,12 +200,47 @@ describe('AntreaLoginPage — basic login form', () => {
         await page.updateComplete;
     }
 
-    // No token crosses this boundary any more: the backend set an HttpOnly cookie, and the host
-    // only needs to know that a session now exists.
-    test('successful login dispatches antrea-authenticated with no payload', async () => {
+    // No token crosses this boundary any more: the backend set an HttpOnly cookie. The login
+    // response itself carries no session info, so a successful login fetches it with one more
+    // GET /auth/session before telling the host — that's the same info the host would otherwise
+    // have to fetch itself just to display who is logged in.
+    test('successful login fetches the session info and dispatches it as the event payload', async () => {
+        // The initial connect-time probe must still see "no session" (401) so the login form
+        // renders at all; only the post-submit probe should find the newly-created session.
+        let sessionCalls = 0;
+        const fetchMock = vi.fn(async (url: string) => {
+            if (url === '/api/v1/settings') return jsonResponse(settingsBasicOnly);
+            if (url === '/auth/session') {
+                sessionCalls++;
+                return sessionCalls === 1
+                    ? errorResponse(401, 'Unauthorized')
+                    : jsonResponse({ authenticated: true, mode: 'admin', username: 'admin' });
+            }
+            if (url === '/auth/login') return new Response('', { status: 200 });
+            throw new Error(`unexpected fetch to ${url}`);
+        });
+        vi.stubGlobal('fetch', fetchMock);
+        el = document.createElement('antrea-login-page') as AntreaLoginPage;
+        document.body.appendChild(el);
+        await el.updateComplete;
+        await new Promise(r => setTimeout(r, 0));
+        await el.updateComplete;
+
+        const onAuth = vi.fn();
+        el.addEventListener('antrea-authenticated', onAuth);
+        await submitLogin(el, 'admin', 'xyz');
+
+        expect(onAuth).toHaveBeenCalledTimes(1);
+        expect((onAuth.mock.calls[0][0] as CustomEvent).detail).toEqual({ authenticated: true, mode: 'admin', username: 'admin' });
+    });
+
+    // The login itself already succeeded (the cookie is set) — losing this best-effort follow-up
+    // fetch must not turn into losing the login. The host just gets no identity to display.
+    test('a successful login still dispatches antrea-authenticated even if the follow-up session fetch fails', async () => {
         const page = await mount({
             settings: jsonResponse(settingsBasicOnly),
             login: new Response('', { status: 200 }),
+            session: errorResponse(401, 'Unauthorized'),
         });
         const onAuth = vi.fn();
         page.addEventListener('antrea-authenticated', onAuth);

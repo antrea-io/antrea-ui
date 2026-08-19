@@ -14,8 +14,11 @@
 
 import { APIError, getApiBase } from './api.js';
 
-/** How the user authenticated. Mirrors the backend's session modes. */
-export type SessionMode = 'oidc' | 'kubeconfig' | 'admin' | 'serviceAccountToken';
+/** How the user authenticated: the mechanism the credential reached us through — not what kind
+ * of account it belongs to. A kubeconfig can carry a ServiceAccount token, and a pasted bearer
+ * token need not be one; see sessionIdentity(), which derives the account kind from `username`
+ * instead. Mirrors the backend's session modes. */
+export type SessionMode = 'oidc' | 'kubeconfig' | 'admin' | 'token';
 
 /** Describes the caller's session. Never contains any credential material: the Kubernetes
  * credential lives only in the backend's memory, and the browser only holds an opaque cookie. */
@@ -30,30 +33,32 @@ export interface SessionInfo {
     expiresAt?: string
 }
 
-const SESSION_MODE_LABELS: Record<SessionMode, string> = {
-    oidc: 'OIDC User',
-    kubeconfig: 'Kubeconfig User',
-    admin: 'Local Admin Account',
-    serviceAccountToken: 'Service Account',
-};
-
-/** A short, human-readable label for how the session authenticated, for display next to the
- * username (e.g. in the app header) — not an authorization decision. */
-export function displaySessionMode(mode: SessionMode): string {
-    return SESSION_MODE_LABELS[mode];
+/** How to present a session in the UI: the identity Kubernetes knows, plus what kind of account
+ * it is. */
+export interface SessionIdentity {
+    name: string
+    kind: string
 }
 
 // A ServiceAccount's Kubernetes username: "system:serviceaccount:<namespace>:<name>". Only the
-// namespace/name pair is useful for display — the "system:serviceaccount:" prefix is implied by
-// the "Service Account" mode label already shown alongside it.
-const SERVICE_ACCOUNT_USERNAME = /^system:serviceaccount:(.+:.+)$/;
+// namespace/name pair is useful for display.
+const SERVICE_ACCOUNT_USERNAME = /^system:serviceaccount:([^:]+:[^:]+)$/;
 
-/** A display-friendly form of `username` for the given session mode — not an authorization
- * decision, `username` itself is unchanged everywhere else. For a Service Account login this
- * drops the redundant "system:serviceaccount:" prefix, keeping `<namespace>:<name>`. */
-export function displaySessionUsername(mode: SessionMode, username: string): string {
-    if (mode !== 'serviceAccountToken') return username;
-    return username.match(SERVICE_ACCOUNT_USERNAME)?.[1] ?? username;
+/** Derived from `username`, which is what the API server actually authenticated as — not from
+ * `mode`, which only says how the credential reached us. Display only; authorization is always
+ * the API server's decision. */
+export function sessionIdentity({ mode, username }: { mode?: SessionMode, username: string }): SessionIdentity {
+    // The static admin password is not a Kubernetes identity: the session impersonates the
+    // antrea-ui-admin ServiceAccount, and `username` is the local login name, not that
+    // ServiceAccount's.
+    if (mode === 'admin') return { name: username, kind: 'Local Admin Account' };
+    const serviceAccount = username.match(SERVICE_ACCOUNT_USERNAME)?.[1];
+    if (serviceAccount) return { name: serviceAccount, kind: 'Service Account' };
+    // Kubernetes reserves the "system:" prefix for the control plane's own identities, so a
+    // login as one (a kubelet's kubeconfig, say) is an infrastructure identity, not a person.
+    // Must come after the ServiceAccount case, which is itself a "system:" name.
+    if (username.startsWith('system:')) return { name: username, kind: 'System User' };
+    return { name: username, kind: 'User' };
 }
 
 export interface AppSettings {
