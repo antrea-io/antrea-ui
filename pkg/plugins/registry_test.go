@@ -103,6 +103,63 @@ func TestRegistrySkipsInvalidConfigMaps(t *testing.T) {
 		"missing name":           configMap("cm", "", "0.1.0", "index.js", map[string]string{"index.js": "x"}),
 		"missing entry":          configMap("cm", "plugin", "0.1.0", "", map[string]string{"index.js": "x"}),
 		"entry file not present": configMap("cm", "plugin", "0.1.0", "index.js", nil),
+		"route missing path": {
+			ObjectMeta: metav1.ObjectMeta{Name: "cm"},
+			Data: map[string]string{
+				"manifest.json":    `{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"sidebarLabel":"Plugin","exposedModule":"./Page"}]}}`,
+				"index.js":         "x",
+				"remoteEntry.json": "x",
+			},
+		},
+		"route missing sidebarLabel": {
+			ObjectMeta: metav1.ObjectMeta{Name: "cm"},
+			Data: map[string]string{
+				"manifest.json":    `{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"path":"/plugin","exposedModule":"./Page"}]}}`,
+				"index.js":         "x",
+				"remoteEntry.json": "x",
+			},
+		},
+		"route missing exposedModule": {
+			ObjectMeta: metav1.ObjectMeta{Name: "cm"},
+			Data: map[string]string{
+				"manifest.json":    `{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"path":"/plugin","sidebarLabel":"Plugin"}]}}`,
+				"index.js":         "x",
+				"remoteEntry.json": "x",
+			},
+		},
+		"route path under reserved api/ prefix": {
+			ObjectMeta: metav1.ObjectMeta{Name: "cm"},
+			Data: map[string]string{
+				"manifest.json":    `{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"path":"/api/v1/plugin","sidebarLabel":"Plugin","exposedModule":"./Page"}]}}`,
+				"index.js":         "x",
+				"remoteEntry.json": "x",
+			},
+		},
+		"duplicate route path in the same manifest": {
+			ObjectMeta: metav1.ObjectMeta{Name: "cm"},
+			Data: map[string]string{
+				"manifest.json": `{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[
+					{"path":"/plugin","sidebarLabel":"Plugin","exposedModule":"./Page"},
+					{"path":"/plugin","sidebarLabel":"Plugin Again","exposedModule":"./OtherPage"}
+				]}}`,
+				"index.js":         "x",
+				"remoteEntry.json": "x",
+			},
+		},
+		"federation missing remoteEntry": {
+			ObjectMeta: metav1.ObjectMeta{Name: "cm"},
+			Data: map[string]string{
+				"manifest.json": `{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{}}`,
+				"index.js":      "x",
+			},
+		},
+		"federation remoteEntry file not present": {
+			ObjectMeta: metav1.ObjectMeta{Name: "cm"},
+			Data: map[string]string{
+				"manifest.json": `{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json"}}`,
+				"index.js":      "x",
+			},
+		},
 	}
 	for name, cm := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -111,6 +168,43 @@ func TestRegistrySkipsInvalidConfigMaps(t *testing.T) {
 			assert.Empty(t, r.Index())
 		})
 	}
+}
+
+func TestRegistryIndexIncludesRoutesAndFederation(t *testing.T) {
+	r := newTestRegistry(t)
+
+	r.handleUpsert(&corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "policy-management-plugin", Namespace: "antrea-ui"},
+		Data: map[string]string{
+			"manifest.json": `{
+				"name": "policy-management",
+				"version": "0.2.0",
+				"entry": "index.js",
+				"federation": {
+					"remoteEntry": "remoteEntry.json",
+					"routes": [
+						{"path": "/policies", "sidebarLabel": "Policy Management", "icon": "M0 0h16v16H0z", "exposedModule": "./PolicyManagementPage"},
+						{"path": "/policies/audit", "sidebarLabel": "Policy Audit Log", "exposedModule": "./PolicyAuditPage"}
+					]
+				}
+			}`,
+			"index.js":         "x",
+			"remoteEntry.json": "{}",
+		},
+	})
+
+	assert.Equal(t, []apisv1.PluginManifest{{
+		Name:    "policy-management",
+		Version: "0.2.0",
+		Entry:   "index.js",
+		Federation: &apisv1.PluginFederation{
+			RemoteEntry: "remoteEntry.json",
+			Routes: []apisv1.PluginRoute{
+				{Path: "/policies", SidebarLabel: "Policy Management", Icon: "M0 0h16v16H0z", ExposedModule: "./PolicyManagementPage"},
+				{Path: "/policies/audit", SidebarLabel: "Policy Audit Log", ExposedModule: "./PolicyAuditPage"},
+			},
+		},
+	}}, r.Index())
 }
 
 func TestRegistryDuplicatePluginNameKeepsLowerConfigMapName(t *testing.T) {
