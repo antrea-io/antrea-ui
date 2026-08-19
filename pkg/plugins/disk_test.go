@@ -166,6 +166,34 @@ func TestParsePluginDirectoryInvalid(t *testing.T) {
 	}
 }
 
+func TestParsePluginDirectoryRejectsOversizedBundle(t *testing.T) {
+	originalMax := maxDiskPluginBundleBytes
+	maxDiskPluginBundleBytes = 20
+	t.Cleanup(func() { maxDiskPluginBundleBytes = originalMax })
+
+	dir := t.TempDir()
+	writePluginDir(t, dir, "plugin", map[string]string{
+		"manifest.json": `{"name":"plugin","version":"0.1.0","entry":"index.js"}`,
+		"index.js":      "this file alone is already well over twenty bytes",
+	})
+
+	_, err := parsePluginDirectory(filepath.Join(dir, "plugin"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "exceeds")
+}
+
+func TestParsePluginDirectoryAcceptsBundleUnderTheLimit(t *testing.T) {
+	originalMax := maxDiskPluginBundleBytes
+	maxDiskPluginBundleBytes = 1024
+	t.Cleanup(func() { maxDiskPluginBundleBytes = originalMax })
+
+	dir := t.TempDir()
+	writePluginDir(t, dir, "plugin", podCounterFiles("plugin", "0.1.0"))
+
+	_, err := parsePluginDirectory(filepath.Join(dir, "plugin"))
+	require.NoError(t, err)
+}
+
 func TestRunDirectoryWatchLoadsExistingPlugins(t *testing.T) {
 	dir := t.TempDir()
 	writePluginDir(t, dir, "pod-counter", podCounterFiles("pod-counter", "0.1.0"))
@@ -185,6 +213,12 @@ func TestRunDirectoryWatchLoadsExistingPlugins(t *testing.T) {
 }
 
 func TestRunDirectoryWatchPicksUpNewAndUpdatedAndRemovedPlugins(t *testing.T) {
+	// requeueDelay debounces live fsnotify-driven reloads (see disk.go); shrink it so this test
+	// doesn't have to race its own waitFor windows against the real 1s production delay.
+	originalRequeueDelay := requeueDelay
+	requeueDelay = 10 * time.Millisecond
+	t.Cleanup(func() { requeueDelay = originalRequeueDelay })
+
 	dir := t.TempDir()
 
 	r := NewRegistry(testr.New(t), nil, "antrea-ui", "ui.antrea.io/plugin=true")

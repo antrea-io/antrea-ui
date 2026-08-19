@@ -114,9 +114,7 @@ func (r *Registry) handleUpsert(obj interface{}) {
 		r.logger.Error(err, "skipping invalid plugin ConfigMap", "configMap", cm.Name)
 		return
 	}
-	r.mu.Lock()
-	r.plugins[cm.Name] = *entry
-	r.mu.Unlock()
+	r.addConfigMapPlugin(cm.Name, *entry)
 	r.logger.Info("Loaded plugin from ConfigMap", "configMap", cm.Name, "plugin", entry.manifest.Name, "version", entry.manifest.Version)
 }
 
@@ -125,10 +123,20 @@ func (r *Registry) handleDelete(obj interface{}) {
 	if cm == nil {
 		return
 	}
-	r.mu.Lock()
-	delete(r.plugins, cm.Name)
-	r.mu.Unlock()
+	r.deleteConfigMapPlugin(cm.Name)
 	r.logger.Info("Removed plugin ConfigMap", "configMap", cm.Name)
+}
+
+func (r *Registry) addConfigMapPlugin(name string, entry pluginEntry) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.plugins[name] = entry
+}
+
+func (r *Registry) deleteConfigMapPlugin(name string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.plugins, name)
 }
 
 func parsePluginConfigMap(cm *corev1.ConfigMap) (*pluginEntry, error) {
