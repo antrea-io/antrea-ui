@@ -186,7 +186,7 @@ func newTestServerWithLogger(t *testing.T, logger logr.Logger, options ...testSe
 		SessionStore:   sessionStore,
 		ClientFactory:  clientFactory,
 		OIDCProvider:   oidcProvider,
-		PluginRegistry: plugins.NewRegistry(logger, nil, "", ""),
+		PluginRegistry: plugins.NewRegistry(logger, nil, "", "", 0, 0, 0),
 		AdminUserName:  testAdminUserName,
 	})
 	require.NoError(t, err)

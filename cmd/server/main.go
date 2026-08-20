@@ -144,7 +144,7 @@ func run() error {
 	if pluginsNamespace == "" {
 		pluginsNamespace = env.GetNamespace()
 	}
-	pluginRegistry := pluginregistry.NewRegistry(logger, k8sClientset, pluginsNamespace, config.Plugins.LabelSelector)
+	pluginRegistry := pluginregistry.NewRegistry(logger, k8sClientset, pluginsNamespace, config.Plugins.LabelSelector, config.Plugins.MaxConfigMapPlugins, config.Plugins.MaxDirectoryPlugins, config.Plugins.MaxConfigMapBundleBytes)
 	accessResolver := accesshandler.NewResolver(logger, k8sClientset)
 
 	antreaSvcHandler, err := antreasvchandler.NewRequestsHandler(logger, k8sRESTConfig, config.AntreaNamespace)

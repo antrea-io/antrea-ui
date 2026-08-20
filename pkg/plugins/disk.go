@@ -15,7 +15,9 @@
 package plugins
 
 import (
+	"archive/zip"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -32,27 +34,29 @@ import (
 // overriding this value.
 const requeueDelay = time.Second
 
-// maxDiskPluginBundleBytes bounds how much of a single plugin's directory parsePluginDirectory
-// will load into memory. A ConfigMap-backed plugin is bounded for free by etcd's own ~1MiB
-// object size limit; a plugin directory has no such limit built into its delivery mechanism, so
-// without this check a misbehaving build (or anyone with write access to the shared volume)
-// could make the backend read an arbitrarily large amount of content onto the Go heap on every
-// reload. Checked via os.Stat in parsePluginDirectory - before any file content is read - so an
-// oversized plugin costs a few stat syscalls, not a multi-gigabyte allocation. A var, not a
-// const, so tests can shrink it instead of writing a real 20MiB fixture.
-var maxDiskPluginBundleBytes int64 = 20 * 1024 * 1024 // 20MiB
-
 // RunDirectoryWatch watches dir for plugin bundle subdirectories - one directory per plugin, each
-// holding a manifest.json plus the files it references, the on-disk mirror of a plugin
-// ConfigMap's Data. Meant for local development (no cluster round-trip to iterate on a plugin),
-// and as a fallback if a deployment's plugins outgrow a ConfigMap's 1MiB cap and it mounts a
-// shared volume here instead. A plugin subdirectory can be created, changed, or removed at any
-// time; the registry reflects the change shortly after (see requeueDelay), with no antrea-ui
-// restart required. Blocks and should be called from a goroutine. A no-op if dir is empty.
+// holding a manifest.json plus a bundle.zip with everything else it references, the on-disk
+// mirror of a plugin ConfigMap's Data/BinaryData. Meant for local development (no cluster
+// round-trip to iterate on a plugin), and as a fallback if a deployment's plugins outgrow a
+// ConfigMap's 1MiB cap and it mounts a shared volume here instead. A plugin subdirectory can be
+// created, changed, or removed at any time; the registry reflects the change shortly after (see
+// requeueDelay), with no antrea-ui restart required. Blocks and should be called from a
+// goroutine. A no-op if dir is empty.
 func (r *Registry) RunDirectoryWatch(dir string, stopCh <-chan struct{}) {
 	if dir == "" {
 		return
 	}
+
+	// bundle.zip is extracted here, never back into dir itself: dir is what's being watched
+	// below, so writing extracted output into it would make this function see its own writes as
+	// new fsnotify events. Removed on return - this is a cache, not a source of truth, and
+	// nothing else needs it to survive a restart.
+	cacheRoot, err := os.MkdirTemp("", "antrea-ui-plugins-*")
+	if err != nil {
+		r.logger.Error(err, "failed to create plugin extraction cache directory")
+		return
+	}
+	defer os.RemoveAll(cacheRoot)
 
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
@@ -72,7 +76,7 @@ func (r *Registry) RunDirectoryWatch(dir string, stopCh <-chan struct{}) {
 	// - see the invalid-plugin-directory branch in loadDiskPlugin.
 	queue := workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[string]())
 	defer queue.ShutDown()
-	go r.runDiskPluginWorker(dir, watcher, queue)
+	go r.runDiskPluginWorker(dir, cacheRoot, watcher, queue)
 
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -121,18 +125,18 @@ func (r *Registry) RunDirectoryWatch(dir string, stopCh <-chan struct{}) {
 // backends guard their internal watch-list mutations with their own mutex (see fsnotify's
 // backend_inotify.go/backend_kqueue.go) - this isn't a special case this code has to account for
 // itself, it's how fsnotify.Watcher is meant to be used from multiple goroutines.
-func (r *Registry) runDiskPluginWorker(dir string, watcher *fsnotify.Watcher, queue workqueue.TypedRateLimitingInterface[string]) {
+func (r *Registry) runDiskPluginWorker(dir, cacheRoot string, watcher *fsnotify.Watcher, queue workqueue.TypedRateLimitingInterface[string]) {
 	for {
 		pluginName, shutdown := queue.Get()
 		if shutdown {
 			return
 		}
-		r.processDiskPluginQueueItem(dir, pluginName, watcher, queue)
+		r.processDiskPluginQueueItem(dir, cacheRoot, pluginName, watcher, queue)
 		queue.Done(pluginName)
 	}
 }
 
-func (r *Registry) processDiskPluginQueueItem(dir, pluginName string, watcher *fsnotify.Watcher, queue workqueue.TypedRateLimitingInterface[string]) {
+func (r *Registry) processDiskPluginQueueItem(dir, cacheRoot, pluginName string, watcher *fsnotify.Watcher, queue workqueue.TypedRateLimitingInterface[string]) {
 	pluginDir := filepath.Join(dir, pluginName)
 	if info, err := os.Stat(pluginDir); err != nil || !info.IsDir() {
 		// The plugin's subdirectory itself is gone (removed or renamed away); drop it if we
@@ -140,10 +144,11 @@ func (r *Registry) processDiskPluginQueueItem(dir, pluginName string, watcher *f
 		// for a file, not the subdirectory) - harmless, nothing to clean up in that case.
 		r.deleteDiskPlugin(pluginName)
 		_ = watcher.Remove(pluginDir)
+		_ = os.RemoveAll(filepath.Join(cacheRoot, pluginName))
 		queue.Forget(pluginName)
 		return
 	}
-	if r.loadDiskPlugin(dir, pluginName, watcher) {
+	if r.loadDiskPlugin(dir, cacheRoot, pluginName, watcher) {
 		queue.Forget(pluginName)
 	} else {
 		// A transient failure (e.g. this fired mid-write, before every referenced file exists
@@ -168,26 +173,35 @@ func pluginNameFromEventPath(dir, path string) (string, bool) {
 // for future file changes - fsnotify does not watch recursively, so a freshly-seen subdirectory
 // needs its own explicit watch. Reports whether the load succeeded, so the caller can decide
 // whether to retry.
-func (r *Registry) loadDiskPlugin(rootDir, pluginName string, watcher *fsnotify.Watcher) bool {
+func (r *Registry) loadDiskPlugin(rootDir, cacheRoot, pluginName string, watcher *fsnotify.Watcher) bool {
 	pluginDir := filepath.Join(rootDir, pluginName)
 	if err := watcher.Add(pluginDir); err != nil {
 		r.logger.Error(err, "failed to watch plugin directory", "directory", pluginDir)
 	}
-	entry, err := parsePluginDirectory(pluginDir)
+	entry, err := parsePluginArchive(pluginDir, cacheRoot, pluginName)
 	if err != nil {
 		r.logger.Error(err, "skipping invalid plugin directory", "directory", pluginDir)
 		r.deleteDiskPlugin(pluginName)
 		return false
 	}
-	r.addDiskPlugin(pluginName, *entry)
+	if !r.addDiskPlugin(pluginName, *entry) {
+		r.logger.Error(fmt.Errorf("plugins.maxDirectoryPlugins (%d) reached", r.maxDirectoryPlugins), "too many plugin directories, dropping", "directory", pluginDir)
+		return false
+	}
 	r.logger.Info("Loaded plugin from directory", "directory", pluginDir, "plugin", entry.manifest.Name, "version", entry.manifest.Version)
 	return true
 }
 
-func (r *Registry) addDiskPlugin(name string, entry pluginEntry) {
+// addDiskPlugin records entry under name, unless name is new and the source is already at
+// maxDirectoryPlugins - reports whether it was recorded.
+func (r *Registry) addDiskPlugin(name string, entry pluginEntry) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if _, exists := r.diskPlugins[name]; !exists && r.maxDirectoryPlugins > 0 && len(r.diskPlugins) >= r.maxDirectoryPlugins {
+		return false
+	}
 	r.diskPlugins[name] = entry
+	return true
 }
 
 func (r *Registry) deleteDiskPlugin(name string) {
@@ -196,52 +210,102 @@ func (r *Registry) deleteDiskPlugin(name string) {
 	delete(r.diskPlugins, name)
 }
 
-// parsePluginDirectory reads one plugin bundle directory - flat files only, no nested
-// subdirectories, mirroring a ConfigMap's flat Data/BinaryData namespace - into a pluginEntry.
-// Stats every file before reading any of them, rejecting the whole bundle up front if their
-// combined size would exceed maxDiskPluginBundleBytes (see that constant's comment for why a
-// directory needs this check where a ConfigMap doesn't).
-func parsePluginDirectory(dir string) (*pluginEntry, error) {
-	entries, err := os.ReadDir(dir)
+// parsePluginArchive reads pluginDir/manifest.json and pluginDir/bundle.zip, validates the
+// manifest against the archive's file names (cheap: bundle.zip's central directory lists names
+// and sizes without decompressing anything), and only then extracts bundle.zip into
+// cacheRoot/pluginName - no reason to write a bundle to disk that's going to be rejected anyway.
+func parsePluginArchive(pluginDir, cacheRoot, pluginName string) (*pluginEntry, error) {
+	manifestData, err := os.ReadFile(filepath.Join(pluginDir, manifestFileName))
 	if err != nil {
-		return nil, fmt.Errorf("failed to read plugin directory: %w", err)
+		return nil, fmt.Errorf("failed to read %s: %w", manifestFileName, err)
 	}
 
-	type statted struct {
-		name string
-		size int64
+	zr, err := zip.OpenReader(filepath.Join(pluginDir, bundleFileName))
+	if err != nil {
+		return nil, fmt.Errorf("failed to open %s: %w", bundleFileName, err)
 	}
-	toRead := make([]statted, 0, len(entries))
-	var totalSize int64
-	for _, e := range entries {
-		if e.IsDir() {
+	defer zr.Close()
+
+	names := make(map[string]bool, len(zr.File))
+	for _, f := range zr.File {
+		if !f.FileInfo().IsDir() {
+			names[f.Name] = true
+		}
+	}
+	manifest, err := validateManifest(manifestData, names)
+	if err != nil {
+		return nil, err
+	}
+
+	extractRoot, err := extractZip(&zr.Reader, cacheRoot, pluginName)
+	if err != nil {
+		return nil, err
+	}
+	return &pluginEntry{manifest: *manifest, diskRoot: extractRoot}, nil
+}
+
+// maxDiskPluginBundleBytes bounds how much a single plugin's bundle.zip may decompress to in
+// total, across every entry combined. Checked while extracting (extractZipFile), one entry at a
+// time against however much of the budget earlier entries in the same bundle already spent - a
+// backstop against a "zip bomb" (a small compressed bundle with an extreme compression ratio),
+// which would otherwise let io.CopyN below write an unbounded amount to local disk. A var, not a
+// const, so tests can shrink it instead of constructing a real 10MiB fixture.
+var maxDiskPluginBundleBytes int64 = 10 * 1024 * 1024 // 10MiB
+
+// extractZip extracts every regular file entry of zr into a fresh cacheRoot/pluginName,
+// replacing any previous extraction under that name - a clean, all-or-nothing copy per reload
+// rather than layering a new bundle's files over a previous one's leftovers (which could leave a
+// file the new bundle no longer references still being served).
+func extractZip(zr *zip.Reader, cacheRoot, pluginName string) (string, error) {
+	dest := filepath.Join(cacheRoot, pluginName)
+	if err := os.RemoveAll(dest); err != nil {
+		return "", fmt.Errorf("failed to clear previous extraction of %q: %w", pluginName, err)
+	}
+	if err := os.MkdirAll(dest, 0o700); err != nil {
+		return "", fmt.Errorf("failed to create extraction directory for %q: %w", pluginName, err)
+	}
+	var written int64
+	for _, f := range zr.File {
+		if f.FileInfo().IsDir() {
 			continue
 		}
-		info, err := e.Info()
+		// safeJoin neutralizes a malicious entry name (e.g. "../../etc/cron.d/evil") the same
+		// way it neutralizes a malicious URL filename in pluginEntry.open - this is exactly the
+		// "zip slip" vulnerability class, on the write side instead of the read side.
+		target := safeJoin(dest, f.Name)
+		if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+			return "", fmt.Errorf("failed to create directory for %q: %w", f.Name, err)
+		}
+		n, err := extractZipFile(f, target, maxDiskPluginBundleBytes-written)
 		if err != nil {
-			return nil, fmt.Errorf("failed to stat %q: %w", e.Name(), err)
+			return "", err
 		}
-		totalSize += info.Size()
-		if totalSize > maxDiskPluginBundleBytes {
-			return nil, fmt.Errorf("plugin bundle exceeds the %d byte limit", maxDiskPluginBundleBytes)
-		}
-		toRead = append(toRead, statted{name: e.Name(), size: info.Size()})
+		written += n
 	}
+	return dest, nil
+}
 
-	files := make(map[string][]byte, len(toRead))
-	for _, f := range toRead {
-		data, err := os.ReadFile(filepath.Join(dir, f.name))
-		if err != nil {
-			return nil, fmt.Errorf("failed to read %q: %w", f.name, err)
-		}
-		// A file that grew between the stat above and this read would otherwise let a bundle
-		// slip past the size check it just passed; fail loudly rather than silently accept a
-		// bundle whose actual size was never checked. The next reload (this one gets retried,
-		// see processDiskPluginQueueItem) re-stats from scratch.
-		if int64(len(data)) != f.size {
-			return nil, fmt.Errorf("%q changed size while being read", f.name)
-		}
-		files[f.name] = data
+// extractZipFile writes f's decompressed content to target, stopping and returning an error if
+// it would write more than budget bytes - budget is whatever's left of maxDiskPluginBundleBytes
+// after every earlier entry in the same bundle (see extractZip), so the limit applies to the
+// bundle as a whole rather than resetting per file. Returns the number of bytes written.
+func extractZipFile(f *zip.File, target string, budget int64) (int64, error) {
+	rc, err := f.Open()
+	if err != nil {
+		return 0, fmt.Errorf("failed to open %q in %s: %w", f.Name, bundleFileName, err)
 	}
-	return parseManifestAndFiles(files)
+	defer rc.Close()
+	out, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return 0, fmt.Errorf("failed to create %q: %w", target, err)
+	}
+	defer out.Close()
+	written, err := io.CopyN(out, rc, budget+1)
+	if err != nil && err != io.EOF {
+		return 0, fmt.Errorf("failed to write %q: %w", target, err)
+	}
+	if written > budget {
+		return 0, fmt.Errorf("plugin bundle exceeds the %d byte limit while extracting %q, refusing to extract further (possible zip bomb)", maxDiskPluginBundleBytes, f.Name)
+	}
+	return written, nil
 }

@@ -15,8 +15,12 @@
 package plugins
 
 import (
+	"archive/zip"
+	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -30,20 +34,23 @@ import (
 	apisv1 "antrea.io/antrea-ui/apis/v1"
 )
 
-func writePluginDir(t *testing.T, root, name string, files map[string]string) {
+// writePluginDir writes a plugin's on-disk bundle in the current manifest.json + bundle.zip
+// shape (see registry.go's package doc): manifestJSON goes to disk as-is, bundleFiles get zipped
+// into bundle.zip.
+func writePluginDir(t *testing.T, root, name, manifestJSON string, bundleFiles map[string]string) {
 	t.Helper()
 	dir := filepath.Join(root, name)
 	require.NoError(t, os.MkdirAll(dir, 0o755))
-	for filename, content := range files {
-		require.NoError(t, os.WriteFile(filepath.Join(dir, filename), []byte(content), 0o600))
-	}
+	require.NoError(t, os.WriteFile(filepath.Join(dir, manifestFileName), []byte(manifestJSON), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, bundleFileName), buildZip(t, bundleFiles), 0o600))
 }
 
-func podCounterFiles(pluginName, version string) map[string]string {
-	return map[string]string{
-		"manifest.json": `{"name":"` + pluginName + `","version":"` + version + `","entry":"index.js"}`,
-		"index.js":      "console.log('hi')",
-	}
+func podCounterManifest(pluginName, version string) string {
+	return fmt.Sprintf(`{"name":%q,"version":%q,"entry":"index.js"}`, pluginName, version)
+}
+
+func podCounterBundle() map[string]string {
+	return map[string]string{"index.js": "console.log('hi')"}
 }
 
 // waitFor polls cond until it returns true or the timeout elapses, failing the test otherwise -
@@ -60,35 +67,111 @@ func waitFor(t *testing.T, timeout time.Duration, cond func() bool) {
 	require.True(t, cond(), "condition not met within %s", timeout)
 }
 
-func TestParsePluginDirectory(t *testing.T) {
+func TestParsePluginArchive(t *testing.T) {
 	dir := t.TempDir()
-	writePluginDir(t, dir, "pod-counter", podCounterFiles("pod-counter", "0.1.0"))
+	writePluginDir(t, dir, "pod-counter", podCounterManifest("pod-counter", "0.1.0"), podCounterBundle())
 
-	entry, err := parsePluginDirectory(filepath.Join(dir, "pod-counter"))
+	entry, err := parsePluginArchive(filepath.Join(dir, "pod-counter"), t.TempDir(), "pod-counter")
 	require.NoError(t, err)
 	assert.Equal(t, apisv1.PluginManifest{Name: "pod-counter", Version: "0.1.0", Entry: "index.js"}, entry.manifest)
-	assert.Equal(t, "console.log('hi')", string(entry.files["index.js"]))
+	rc, size, ok := entry.open("index.js")
+	require.True(t, ok)
+	assert.Equal(t, int64(len("console.log('hi')")), size)
+	assert.Equal(t, "console.log('hi')", readAll(t, rc))
 }
 
-func TestParsePluginDirectorySkipsNestedSubdirectories(t *testing.T) {
+func TestParsePluginArchiveIncludesNestedPaths(t *testing.T) {
 	dir := t.TempDir()
-	pluginDir := filepath.Join(dir, "pod-counter")
-	writePluginDir(t, dir, "pod-counter", podCounterFiles("pod-counter", "0.1.0"))
-	require.NoError(t, os.MkdirAll(filepath.Join(pluginDir, "nested"), 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(pluginDir, "nested", "extra.js"), []byte("x"), 0o600))
+	writePluginDir(t, dir, "pod-counter", podCounterManifest("pod-counter", "0.1.0"), map[string]string{
+		"index.js":        "console.log('hi')",
+		"assets/logo.png": "fake-png-bytes",
+	})
 
-	entry, err := parsePluginDirectory(pluginDir)
+	entry, err := parsePluginArchive(filepath.Join(dir, "pod-counter"), t.TempDir(), "pod-counter")
 	require.NoError(t, err)
-	_, ok := entry.files["nested/extra.js"]
-	assert.False(t, ok)
-	_, ok = entry.files["nested"]
-	assert.False(t, ok)
+	rc, _, ok := entry.open("assets/logo.png")
+	require.True(t, ok, "a bundle.zip entry under a subdirectory must be extracted and servable")
+	assert.Equal(t, "fake-png-bytes", readAll(t, rc))
 }
 
-func TestParsePluginDirectoryIncludesRoutesAndFederation(t *testing.T) {
+func TestExtractZipNeutralizesPathTraversal(t *testing.T) {
 	dir := t.TempDir()
-	writePluginDir(t, dir, "policy-management", map[string]string{
-		"manifest.json": `{
+	pluginDir := filepath.Join(dir, "plugin")
+	require.NoError(t, os.MkdirAll(pluginDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(pluginDir, manifestFileName),
+		[]byte(`{"name":"plugin","version":"0.1.0","entry":"index.js"}`), 0o600))
+
+	// buildZip can't produce a traversal-shaped entry name via its map[string]string files
+	// argument in a way that's clearer than just writing the zip directly here.
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for name, content := range map[string]string{
+		"index.js":          "console.log('hi')",
+		"../../../evil.txt": "should not escape",
+	} {
+		w, err := zw.Create(name)
+		require.NoError(t, err)
+		_, err = w.Write([]byte(content))
+		require.NoError(t, err)
+	}
+	require.NoError(t, zw.Close())
+	require.NoError(t, os.WriteFile(filepath.Join(pluginDir, bundleFileName), buf.Bytes(), 0o600))
+
+	cacheParent := t.TempDir()
+	cacheRoot := filepath.Join(cacheParent, "cache")
+	require.NoError(t, os.MkdirAll(cacheRoot, 0o755))
+
+	entry, err := parsePluginArchive(pluginDir, cacheRoot, "plugin")
+	require.NoError(t, err)
+
+	// The malicious entry lands safely inside the plugin's own extraction directory...
+	rc, _, ok := entry.open("evil.txt")
+	require.True(t, ok)
+	assert.Equal(t, "should not escape", readAll(t, rc))
+
+	// ...and does not actually escape onto the filesystem outside cacheRoot ("zip slip").
+	_, err = os.Stat(filepath.Join(cacheParent, "evil.txt"))
+	assert.True(t, os.IsNotExist(err), "path traversal entry must not escape the cache root")
+}
+
+func TestExtractZipRejectsSingleEntryPastTheDecompressedSizeLimit(t *testing.T) {
+	original := maxDiskPluginBundleBytes
+	maxDiskPluginBundleBytes = 100
+	t.Cleanup(func() { maxDiskPluginBundleBytes = original })
+
+	dir := t.TempDir()
+	writePluginDir(t, dir, "plugin", `{"name":"plugin","version":"0.1.0","entry":"index.js"}`, map[string]string{
+		"index.js": strings.Repeat("x", 200),
+	})
+
+	_, err := parsePluginArchive(filepath.Join(dir, "plugin"), t.TempDir(), "plugin")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "zip bomb")
+}
+
+// TestExtractZipRejectsCombinedEntriesPastTheDecompressedSizeLimit exercises the case a single
+// oversized entry can't: maxDiskPluginBundleBytes bounds the bundle's total decompressed size, not
+// any one entry's, so several individually-small entries that together exceed it must also be
+// rejected.
+func TestExtractZipRejectsCombinedEntriesPastTheDecompressedSizeLimit(t *testing.T) {
+	original := maxDiskPluginBundleBytes
+	maxDiskPluginBundleBytes = 100
+	t.Cleanup(func() { maxDiskPluginBundleBytes = original })
+
+	dir := t.TempDir()
+	writePluginDir(t, dir, "plugin", `{"name":"plugin","version":"0.1.0","entry":"index.js"}`, map[string]string{
+		"index.js": strings.Repeat("x", 60),
+		"other.js": strings.Repeat("y", 60),
+	})
+
+	_, err := parsePluginArchive(filepath.Join(dir, "plugin"), t.TempDir(), "plugin")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "zip bomb")
+}
+
+func TestParsePluginArchiveIncludesRoutesAndFederation(t *testing.T) {
+	dir := t.TempDir()
+	writePluginDir(t, dir, "policy-management", `{
 			"name": "policy-management",
 			"version": "0.2.0",
 			"entry": "index.js",
@@ -99,12 +182,12 @@ func TestParsePluginDirectoryIncludesRoutesAndFederation(t *testing.T) {
 					{"path": "/policies/audit", "sidebarLabel": "Policy Audit Log", "exposedModule": "./PolicyAuditPage"}
 				]
 			}
-		}`,
+		}`, map[string]string{
 		"index.js":         "x",
 		"remoteEntry.json": "{}",
 	})
 
-	entry, err := parsePluginDirectory(filepath.Join(dir, "policy-management"))
+	entry, err := parsePluginArchive(filepath.Join(dir, "policy-management"), t.TempDir(), "policy-management")
 	require.NoError(t, err)
 	assert.Equal(t, apisv1.PluginManifest{
 		Name:    "policy-management",
@@ -120,88 +203,72 @@ func TestParsePluginDirectoryIncludesRoutesAndFederation(t *testing.T) {
 	}, entry.manifest)
 }
 
-func TestParsePluginDirectoryRejectsInvalidFederationRoutes(t *testing.T) {
-	cases := map[string]map[string]string{
+func TestParsePluginArchiveRejectsInvalidFederationRoutes(t *testing.T) {
+	cases := map[string]struct {
+		manifest string
+		bundle   map[string]string
+	}{
 		"route missing path": {
-			"manifest.json":    `{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"sidebarLabel":"Plugin","exposedModule":"./Page"}]}}`,
-			"index.js":         "x",
-			"remoteEntry.json": "x",
+			`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"sidebarLabel":"Plugin","exposedModule":"./Page"}]}}`,
+			map[string]string{"index.js": "x", "remoteEntry.json": "x"},
 		},
 		"route path under reserved api/ prefix": {
-			"manifest.json":    `{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"path":"/api/v1/plugin","sidebarLabel":"Plugin","exposedModule":"./Page"}]}}`,
-			"index.js":         "x",
-			"remoteEntry.json": "x",
+			`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"path":"/api/v1/plugin","sidebarLabel":"Plugin","exposedModule":"./Page"}]}}`,
+			map[string]string{"index.js": "x", "remoteEntry.json": "x"},
 		},
 		"federation remoteEntry file not present": {
-			"manifest.json": `{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json"}}`,
-			"index.js":      "x",
+			`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json"}}`,
+			map[string]string{"index.js": "x"},
 		},
 	}
-	for name, files := range cases {
+	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
 			dir := t.TempDir()
-			writePluginDir(t, dir, "plugin", files)
-			_, err := parsePluginDirectory(filepath.Join(dir, "plugin"))
+			writePluginDir(t, dir, "plugin", c.manifest, c.bundle)
+			_, err := parsePluginArchive(filepath.Join(dir, "plugin"), t.TempDir(), "plugin")
 			assert.Error(t, err)
 		})
 	}
 }
 
-func TestParsePluginDirectoryInvalid(t *testing.T) {
-	cases := map[string]map[string]string{
-		"missing manifest.json": {"index.js": "x"},
-		"malformed manifest.json": {
-			"manifest.json": "not json",
-		},
-		"missing name":  {"manifest.json": `{"version":"0.1.0","entry":"index.js"}`, "index.js": "x"},
-		"missing entry": {"manifest.json": `{"name":"plugin","version":"0.1.0"}`, "index.js": "x"},
-		"entry file not present": {
-			"manifest.json": `{"name":"plugin","version":"0.1.0","entry":"index.js"}`,
-		},
-	}
-	for name, files := range cases {
+func TestParsePluginArchiveInvalid(t *testing.T) {
+	dir := t.TempDir()
+	writePluginDir(t, dir, "missing-name", `{"version":"0.1.0","entry":"index.js"}`, map[string]string{"index.js": "x"})
+	writePluginDir(t, dir, "missing-entry", `{"name":"plugin","version":"0.1.0"}`, map[string]string{"index.js": "x"})
+	writePluginDir(t, dir, "entry-not-present", `{"name":"plugin","version":"0.1.0","entry":"index.js"}`, map[string]string{"other.js": "x"})
+	writePluginDir(t, dir, "malformed-manifest", "not json", map[string]string{"index.js": "x"})
+
+	// missing manifest.json entirely
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "missing-manifest"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "missing-manifest", bundleFileName), buildZip(t, map[string]string{"index.js": "x"}), 0o600))
+
+	// missing bundle.zip entirely
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "missing-bundle"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "missing-bundle", manifestFileName),
+		[]byte(`{"name":"plugin","version":"0.1.0","entry":"index.js"}`), 0o600))
+
+	// malformed bundle.zip (not a zip at all)
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "malformed-bundle"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "malformed-bundle", manifestFileName),
+		[]byte(`{"name":"plugin","version":"0.1.0","entry":"index.js"}`), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "malformed-bundle", bundleFileName), []byte("not a zip"), 0o600))
+
+	for _, name := range []string{
+		"missing-name", "missing-entry", "entry-not-present", "malformed-manifest",
+		"missing-manifest", "missing-bundle", "malformed-bundle",
+	} {
 		t.Run(name, func(t *testing.T) {
-			dir := t.TempDir()
-			writePluginDir(t, dir, "plugin", files)
-			_, err := parsePluginDirectory(filepath.Join(dir, "plugin"))
+			_, err := parsePluginArchive(filepath.Join(dir, name), t.TempDir(), name)
 			assert.Error(t, err)
 		})
 	}
-}
-
-func TestParsePluginDirectoryRejectsOversizedBundle(t *testing.T) {
-	originalMax := maxDiskPluginBundleBytes
-	maxDiskPluginBundleBytes = 20
-	t.Cleanup(func() { maxDiskPluginBundleBytes = originalMax })
-
-	dir := t.TempDir()
-	writePluginDir(t, dir, "plugin", map[string]string{
-		"manifest.json": `{"name":"plugin","version":"0.1.0","entry":"index.js"}`,
-		"index.js":      "this file alone is already well over twenty bytes",
-	})
-
-	_, err := parsePluginDirectory(filepath.Join(dir, "plugin"))
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "exceeds")
-}
-
-func TestParsePluginDirectoryAcceptsBundleUnderTheLimit(t *testing.T) {
-	originalMax := maxDiskPluginBundleBytes
-	maxDiskPluginBundleBytes = 1024
-	t.Cleanup(func() { maxDiskPluginBundleBytes = originalMax })
-
-	dir := t.TempDir()
-	writePluginDir(t, dir, "plugin", podCounterFiles("plugin", "0.1.0"))
-
-	_, err := parsePluginDirectory(filepath.Join(dir, "plugin"))
-	require.NoError(t, err)
 }
 
 func TestRunDirectoryWatchLoadsExistingPlugins(t *testing.T) {
 	dir := t.TempDir()
-	writePluginDir(t, dir, "pod-counter", podCounterFiles("pod-counter", "0.1.0"))
+	writePluginDir(t, dir, "pod-counter", podCounterManifest("pod-counter", "0.1.0"), podCounterBundle())
 
-	r := NewRegistry(testr.New(t), nil, "antrea-ui", "ui.antrea.io/plugin=true")
+	r := NewRegistry(testr.New(t), nil, "antrea-ui", "ui.antrea.io/plugin=true", 0, 0, 0)
 	stopCh := make(chan struct{})
 	defer close(stopCh)
 	go r.RunDirectoryWatch(dir, stopCh)
@@ -210,9 +277,9 @@ func TestRunDirectoryWatchLoadsExistingPlugins(t *testing.T) {
 	assert.Equal(t, []apisv1.PluginManifest{
 		{Name: "pod-counter", Version: "0.1.0", Entry: "index.js"},
 	}, r.Index())
-	data, ok := r.File("pod-counter", "index.js")
-	assert.True(t, ok)
-	assert.Equal(t, "console.log('hi')", string(data))
+	rc, _, ok := r.File("pod-counter", "index.js")
+	require.True(t, ok)
+	assert.Equal(t, "console.log('hi')", readAll(t, rc))
 }
 
 func TestRunDirectoryWatchPicksUpNewAndUpdatedAndRemovedPlugins(t *testing.T) {
@@ -225,7 +292,7 @@ func TestRunDirectoryWatchPicksUpNewAndUpdatedAndRemovedPlugins(t *testing.T) {
 
 	dir := t.TempDir()
 
-	r := NewRegistry(testr.New(t), nil, "antrea-ui", "ui.antrea.io/plugin=true")
+	r := NewRegistry(testr.New(t), nil, "antrea-ui", "ui.antrea.io/plugin=true", 0, 0, 0)
 	stopCh := make(chan struct{})
 	defer close(stopCh)
 	go r.RunDirectoryWatch(dir, stopCh)
@@ -233,19 +300,38 @@ func TestRunDirectoryWatchPicksUpNewAndUpdatedAndRemovedPlugins(t *testing.T) {
 	waitFor(t, time.Second, func() bool { return len(r.Index()) == 0 })
 
 	// A plugin subdirectory created after the watch started is picked up.
-	writePluginDir(t, dir, "pod-counter", podCounterFiles("pod-counter", "0.1.0"))
+	writePluginDir(t, dir, "pod-counter", podCounterManifest("pod-counter", "0.1.0"), podCounterBundle())
 	waitFor(t, liveChangeTimeout, func() bool { return len(r.Index()) == 1 })
 
 	// A file changed within an already-known plugin subdirectory reloads that plugin.
-	writePluginDir(t, dir, "pod-counter", podCounterFiles("pod-counter", "0.2.0"))
+	writePluginDir(t, dir, "pod-counter", podCounterManifest("pod-counter", "0.2.0"), podCounterBundle())
 	waitFor(t, liveChangeTimeout, func() bool {
-		data, ok := r.File("pod-counter", "index.js")
-		return ok && string(data) == "console.log('hi')" && len(r.Index()) == 1 && r.Index()[0].Version == "0.2.0"
+		rc, _, ok := r.File("pod-counter", "index.js")
+		if !ok {
+			return false
+		}
+		return readAll(t, rc) == "console.log('hi')" && len(r.Index()) == 1 && r.Index()[0].Version == "0.2.0"
 	})
 
 	// Removing the plugin subdirectory drops it.
 	require.NoError(t, os.RemoveAll(filepath.Join(dir, "pod-counter")))
 	waitFor(t, liveChangeTimeout, func() bool { return len(r.Index()) == 0 })
+}
+
+func TestRunDirectoryWatchRejectsNewPluginPastLimit(t *testing.T) {
+	dir := t.TempDir()
+	writePluginDir(t, dir, "first", podCounterManifest("first", "0.1.0"), podCounterBundle())
+	writePluginDir(t, dir, "second", podCounterManifest("second", "0.1.0"), podCounterBundle())
+
+	r := NewRegistry(testr.New(t), nil, "antrea-ui", "ui.antrea.io/plugin=true", 0, 1, 0)
+	stopCh := make(chan struct{})
+	defer close(stopCh)
+	go r.RunDirectoryWatch(dir, stopCh)
+
+	waitFor(t, time.Second, func() bool { return len(r.Index()) == 1 })
+	// Give a would-be second load a moment to (not) land, then confirm it's still just one.
+	time.Sleep(50 * time.Millisecond)
+	assert.Len(t, r.Index(), 1)
 }
 
 // TestDebounceCollapsesBurstIntoOneDelayedReload exercises requeueDelay's exact timing via
@@ -259,20 +345,21 @@ func TestRunDirectoryWatchPicksUpNewAndUpdatedAndRemovedPlugins(t *testing.T) {
 // *Watcher for loadDiskPlugin's watcher.Add call.
 func TestDebounceCollapsesBurstIntoOneDelayedReload(t *testing.T) {
 	dir := t.TempDir()
-	writePluginDir(t, dir, "pod-counter", podCounterFiles("pod-counter", "0.1.0"))
+	writePluginDir(t, dir, "pod-counter", podCounterManifest("pod-counter", "0.1.0"), podCounterBundle())
+	cacheRoot := t.TempDir()
 
 	watcher, err := fsnotify.NewWatcher()
 	require.NoError(t, err)
 	defer watcher.Close()
 
 	synctest.Test(t, func(t *testing.T) {
-		r := NewRegistry(testr.New(t), nil, "antrea-ui", "ui.antrea.io/plugin=true")
+		r := NewRegistry(testr.New(t), nil, "antrea-ui", "ui.antrea.io/plugin=true", 0, 0, 0)
 		queue := workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[string]())
 		defer func() {
 			queue.ShutDown()
 			synctest.Wait()
 		}()
-		go r.runDiskPluginWorker(dir, watcher, queue)
+		go r.runDiskPluginWorker(dir, cacheRoot, watcher, queue)
 
 		// Five events for the same plugin in a tight burst - as if a build wrote five files in
 		// a row - collapse into the one delayed entry the workqueue already knows about: a
@@ -295,7 +382,7 @@ func TestDebounceCollapsesBurstIntoOneDelayedReload(t *testing.T) {
 }
 
 func TestRunDirectoryWatchIsNoopWhenDirectoryEmpty(t *testing.T) {
-	r := NewRegistry(testr.New(t), nil, "antrea-ui", "ui.antrea.io/plugin=true")
+	r := NewRegistry(testr.New(t), nil, "antrea-ui", "ui.antrea.io/plugin=true", 0, 0, 0)
 	stopCh := make(chan struct{})
 	done := make(chan struct{})
 	go func() {
@@ -312,10 +399,10 @@ func TestRunDirectoryWatchIsNoopWhenDirectoryEmpty(t *testing.T) {
 
 func TestDirectoryAndConfigMapPluginsMerge(t *testing.T) {
 	dir := t.TempDir()
-	writePluginDir(t, dir, "disk-plugin", podCounterFiles("disk-plugin", "0.1.0"))
+	writePluginDir(t, dir, "disk-plugin", podCounterManifest("disk-plugin", "0.1.0"), podCounterBundle())
 
-	r := NewRegistry(testr.New(t), nil, "antrea-ui", "ui.antrea.io/plugin=true")
-	r.handleUpsert(configMap("cm-plugin", "cm-plugin", "0.1.0", "index.js", map[string]string{"index.js": "x"}))
+	r := NewRegistry(testr.New(t), nil, "antrea-ui", "ui.antrea.io/plugin=true", 0, 0, 0)
+	r.handleUpsert(configMap(t, "cm-plugin", "cm-plugin", "0.1.0", "index.js", map[string]string{"index.js": "x"}))
 
 	stopCh := make(chan struct{})
 	defer close(stopCh)
@@ -326,10 +413,10 @@ func TestDirectoryAndConfigMapPluginsMerge(t *testing.T) {
 
 func TestDirectoryPluginLosesNameCollisionToConfigMap(t *testing.T) {
 	dir := t.TempDir()
-	writePluginDir(t, dir, "shared-name", podCounterFiles("shared", "from-disk"))
+	writePluginDir(t, dir, "shared-name", podCounterManifest("shared", "from-disk"), podCounterBundle())
 
-	r := NewRegistry(testr.New(t), nil, "antrea-ui", "ui.antrea.io/plugin=true")
-	r.handleUpsert(configMap("shared-name", "shared", "from-configmap", "index.js", map[string]string{"index.js": "x"}))
+	r := NewRegistry(testr.New(t), nil, "antrea-ui", "ui.antrea.io/plugin=true", 0, 0, 0)
+	r.handleUpsert(configMap(t, "shared-name", "shared", "from-configmap", "index.js", map[string]string{"index.js": "x"}))
 
 	stopCh := make(chan struct{})
 	defer close(stopCh)
