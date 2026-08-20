@@ -32,7 +32,7 @@ func writePluginDir(t *testing.T, root, name string, files map[string]string) {
 	dir := filepath.Join(root, name)
 	require.NoError(t, os.MkdirAll(dir, 0o755))
 	for filename, content := range files {
-		require.NoError(t, os.WriteFile(filepath.Join(dir, filename), []byte(content), 0o644))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, filename), []byte(content), 0o600))
 	}
 }
 
@@ -72,7 +72,7 @@ func TestParsePluginDirectorySkipsNestedSubdirectories(t *testing.T) {
 	pluginDir := filepath.Join(dir, "pod-counter")
 	writePluginDir(t, dir, "pod-counter", podCounterFiles("pod-counter", "0.1.0"))
 	require.NoError(t, os.MkdirAll(filepath.Join(pluginDir, "nested"), 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(pluginDir, "nested", "extra.js"), []byte("x"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(pluginDir, "nested", "extra.js"), []byte("x"), 0o600))
 
 	entry, err := parsePluginDirectory(pluginDir)
 	require.NoError(t, err)
