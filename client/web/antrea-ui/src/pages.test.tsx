@@ -50,7 +50,7 @@ describe('useLitPage — antrea-session-expired', () => {
     // backend has already attempted the only refresh that exists, so a 401 is authoritative:
     // the session is gone and the user has to log in again.
     test('logs the user out immediately, without probing the backend first', async () => {
-        const store = setupStore({ session: 'authenticated', sessionInfo: null });
+        const store = setupStore({ session: 'authenticated' });
         const fetchMock = vi.fn(async (url: string) => {
             throw new Error(`unexpected fetch to ${url}`);
         });

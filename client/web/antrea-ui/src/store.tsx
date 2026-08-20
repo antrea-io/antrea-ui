@@ -53,10 +53,13 @@ const authSlice = createSlice({
     }
 });
 
-export const setupStore = (preloadedState?: RootState) => {
+// Partial, not RootState: callers (mainly tests) usually only care about overriding one field,
+// and merging over initialState here means adding a field never forces every existing caller to
+// spell it out.
+export const setupStore = (preloadedState?: Partial<RootState>) => {
     return configureStore({
         reducer: authSlice.reducer,
-        preloadedState,
+        preloadedState: preloadedState && { ...initialState, ...preloadedState },
     });
 };
 

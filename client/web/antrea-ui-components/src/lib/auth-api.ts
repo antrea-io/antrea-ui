@@ -37,7 +37,7 @@ export interface SessionInfo {
  * it is. */
 export interface SessionIdentity {
     name: string
-    kind: string
+    kind: 'User' | 'Service Account' | 'System User' | 'Local Admin Account'
 }
 
 // A ServiceAccount's Kubernetes username: "system:serviceaccount:<namespace>:<name>". Only the

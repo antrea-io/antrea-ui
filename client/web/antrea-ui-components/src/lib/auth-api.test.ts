@@ -246,7 +246,7 @@ describe('sessionIdentity', () => {
             .toEqual({ name: 'kubernetes-admin', kind: 'User' });
     });
 
-    test('a malformed ServiceAccount-looking username (extra colons) is left as a User, not split wrong', () => {
+    test('a malformed ServiceAccount-looking username (extra colons) falls through to System User, not split wrong', () => {
         expect(sessionIdentity({ mode: 'token', username: 'system:serviceaccount:a:b:c' }))
             .toEqual({ name: 'system:serviceaccount:a:b:c', kind: 'System User' });
     });

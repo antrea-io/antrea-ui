@@ -52,7 +52,7 @@ describe('AccessProvider', () => {
     test('fetches accessSummary once the session is authenticated', async () => {
         const fetchMock = vi.fn().mockResolvedValue(jsonResponse(summaryWith()));
         vi.stubGlobal('fetch', fetchMock);
-        const store = setupStore({ session: 'authenticated', sessionInfo: null });
+        const store = setupStore({ session: 'authenticated' });
 
         render(
             <Provider store={store}>
@@ -69,7 +69,7 @@ describe('AccessProvider', () => {
     test('does not fetch while the session is not authenticated', () => {
         const fetchMock = vi.fn();
         vi.stubGlobal('fetch', fetchMock);
-        const store = setupStore({ session: 'unknown', sessionInfo: null });
+        const store = setupStore({ session: 'unknown' });
 
         render(
             <Provider store={store}>
@@ -83,7 +83,7 @@ describe('AccessProvider', () => {
 
     test('a fetch failure fails open: loaded becomes true with a null summary', async () => {
         vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('network down')));
-        const store = setupStore({ session: 'authenticated', sessionInfo: null });
+        const store = setupStore({ session: 'authenticated' });
 
         render(
             <Provider store={store}>
@@ -99,7 +99,7 @@ describe('AccessProvider', () => {
     test('resetAccessSummary() followed by re-authentication re-fetches', async () => {
         const fetchMock = vi.fn().mockResolvedValue(jsonResponse(summaryWith()));
         vi.stubGlobal('fetch', fetchMock);
-        const store = setupStore({ session: 'authenticated', sessionInfo: null });
+        const store = setupStore({ session: 'authenticated' });
 
         render(
             <Provider store={store}>
@@ -120,7 +120,7 @@ describe('AccessProvider', () => {
     test('leaving the authenticated session clears the previous summary', async () => {
         const fetchMock = vi.fn().mockResolvedValue(jsonResponse(summaryWith()));
         vi.stubGlobal('fetch', fetchMock);
-        const store = setupStore({ session: 'authenticated', sessionInfo: null });
+        const store = setupStore({ session: 'authenticated' });
 
         render(
             <Provider store={store}>
@@ -143,7 +143,7 @@ describe('AccessProvider', () => {
 describe('HomeRedirect', () => {
     function renderAt(summary: AccessSummary | null) {
         vi.stubGlobal('fetch', vi.fn().mockResolvedValue(summary ? jsonResponse(summary) : new Response('', { status: 500 })));
-        const store = setupStore({ session: 'authenticated', sessionInfo: null });
+        const store = setupStore({ session: 'authenticated' });
         return render(
             <Provider store={store}>
                 <AccessProvider>

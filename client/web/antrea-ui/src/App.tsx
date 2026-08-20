@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { useRef, useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import logo from './logo.svg';
 import './App.css';
 import '@antrea/ui-components';
@@ -66,13 +66,16 @@ function useSessionKeepalive(enabled: boolean) {
 function AuthShell({ pluginSidebarEntries }: { pluginSidebarEntries: PluginSidebarEntry[] }) {
     const session = useSelector((state: RootState) => state.session);
     const dispatch = useDispatch();
-    const loginRef = useRef<HTMLElement>(null);
+    // A callback ref, not useRef: a keepalive 401 flips session back to 'anonymous' while
+    // AuthShell stays mounted, so React swaps in a brand new <antrea-login-page> element. A
+    // plain ref wouldn't tell the effect below that its target changed, so it would go on
+    // listening to the unmounted one and miss the re-login entirely.
+    const [loginEl, setLoginEl] = useState<HTMLElement | null>(null);
 
     useSessionKeepalive(session === 'authenticated');
 
     useEffect(() => {
-        const el = loginRef.current;
-        if (!el) return;
+        if (!loginEl) return;
         // The login page probes GET /auth/session on mount and logs in on submit; either way it
         // tells us when there is a session, and hands over the SessionInfo it already fetched
         // (or fetched to confirm the login) as the event detail — no token in it, the credential
@@ -84,12 +87,12 @@ function AuthShell({ pluginSidebarEntries }: { pluginSidebarEntries: PluginSideb
             resetAccessSummary();
             dispatch(setAuthenticated((e as CustomEvent<SessionInfo>).detail ?? null));
         };
-        el.addEventListener('antrea-authenticated', onAuthenticated);
-        return () => el.removeEventListener('antrea-authenticated', onAuthenticated);
-    }, [dispatch]);
+        loginEl.addEventListener('antrea-authenticated', onAuthenticated);
+        return () => loginEl.removeEventListener('antrea-authenticated', onAuthenticated);
+    }, [loginEl, dispatch]);
 
     if (session !== 'authenticated') {
-        return <antrea-login-page ref={loginRef} />;
+        return <antrea-login-page ref={setLoginEl} />;
     }
 
     return (
