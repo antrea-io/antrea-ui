@@ -27,8 +27,10 @@ import (
 
 // requeueDelay debounces a burst of fsnotify events for the same plugin (an editor's
 // temp-file-swap on save, or a multi-file build writing several files in quick succession) into
-// one reload instead of one per individual event. A var, not a const, so tests can shrink it.
-var requeueDelay = time.Second
+// one reload instead of one per individual event. See TestDebounce* in disk_test.go for the
+// timing behavior this produces, exercised via testing/synctest's fake clock rather than by
+// overriding this value.
+const requeueDelay = time.Second
 
 // maxDiskPluginBundleBytes bounds how much of a single plugin's directory parsePluginDirectory
 // will load into memory. A ConfigMap-backed plugin is bounded for free by etcd's own ~1MiB
