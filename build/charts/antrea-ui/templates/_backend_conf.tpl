@@ -29,6 +29,9 @@ logVerbosity: {{ .Values.backend.logVerbosity }}
 plugins:
   labelSelector: {{ .Values.plugins.labelSelector | quote }}
   namespace: {{ .Values.plugins.namespace | default .Release.Namespace | quote }}
+  maxConfigMapPlugins: {{ .Values.plugins.maxConfigMapPlugins }}
+  maxDirectoryPlugins: {{ .Values.plugins.maxDirectoryPlugins }}
+  maxConfigMapBundleBytes: {{ .Values.plugins.maxConfigMapBundleBytes }}
 flowAggregator:
   enabled: {{ .Values.flowAggregator.enabled }}
   address: {{ .Values.flowAggregator.address | quote }}

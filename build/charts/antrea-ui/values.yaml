@@ -46,6 +46,19 @@ plugins:
   # If set to anything other than the release namespace, whoever runs `helm install`/`upgrade`
   # needs permission to create a Role/RoleBinding in that other namespace too.
   namespace: ""
+  # -- Caps how many distinct ConfigMap-backed plugins the backend tracks at once. A new plugin
+  # past this limit is rejected and logged; updates to an already-tracked one are never blocked
+  # by it. 0 means unbounded.
+  maxConfigMapPlugins: 10
+  # -- Same as maxConfigMapPlugins, but for the backend's optional filesystem-directory plugin
+  # source (see docs/plugins.md) - not itself exposed as a chart value, since how a deployment
+  # would deliver a shared plugin directory to the backend Pod isn't settled yet.
+  maxDirectoryPlugins: 10
+  # -- Caps how many bytes a single ConfigMap-backed plugin's bundle.zip may decompress to in
+  # total. A ConfigMap's own ~1MiB etcd size limit only bounds the compressed bytes, not what
+  # they decompress to, so this is what actually protects the backend from a maliciously
+  # high-ratio archive ("zip bomb") exhausting its memory. 0 means unbounded.
+  maxConfigMapBundleBytes: 5242880
 
 # Flow Aggregator gRPC integration (live flow visibility in the UI).
 flowAggregator:

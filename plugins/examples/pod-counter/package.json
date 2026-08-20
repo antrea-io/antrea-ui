@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "vite build && cp manifest.json dist/manifest.json"
+    "build": "vite build && cp manifest.json dist/manifest.json && cd dist && zip -rX bundle.zip index.js && rm index.js"
   },
   "dependencies": {
     "@antrea/ui-plugin-sdk": "file:../../../client/web/antrea-ui-plugin-sdk",
