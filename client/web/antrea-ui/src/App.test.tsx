@@ -66,7 +66,7 @@ describe('App', () => {
         expect(store.getState().session).toBe('authenticated');
     });
 
-    test('an existing session shows the username and login mode in the header', async () => {
+    test('an existing session shows the username and account kind in the header', async () => {
         stubFetchWithSession(true);
 
         render(<App />, { wrapper: MemoryRouter });
