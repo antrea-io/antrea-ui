@@ -154,7 +154,7 @@ describe('apiFetchAppSettings', () => {
                 basicEnabled: true,
                 oidcEnabled: false,
                 kubeconfigEnabled: true,
-                serviceAccountTokenEnabled: true,
+                tokenEnabled: true,
             },
         };
         vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(settings)));

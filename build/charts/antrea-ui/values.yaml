@@ -149,7 +149,7 @@ auth:
     # on their behalf. Credentials that would have to run a program on the user's machine (exec
     # plugins, auth-provider) are rejected.
     enable: false
-  serviceAccountToken:
+  token:
     # -- Enable Kubernetes token authentication on the login page: the user pastes a bearer token
     # (typically a ServiceAccount token) and Antrea UI creates a session from it, like any other
     # login mode. Independent of auth.bearerToken below, which accepts the same credential as a

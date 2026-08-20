@@ -71,7 +71,7 @@ export interface AppSettings {
         /** Upload your own kubeconfig. */
         kubeconfigEnabled: boolean
         /** Paste a Kubernetes token. */
-        serviceAccountTokenEnabled: boolean
+        tokenEnabled: boolean
     }
     features?: {
         flowVisibilityEnabled?: boolean

@@ -50,7 +50,7 @@ function authSettings(overrides: Record<string, unknown>) {
             basicEnabled: false,
             oidcEnabled: false,
             kubeconfigEnabled: false,
-            serviceAccountTokenEnabled: false,
+            tokenEnabled: false,
             ...overrides,
         },
     };
@@ -61,7 +61,7 @@ const settingsOidcOnly = authSettings({ oidcEnabled: true });
 const settingsBoth = authSettings({ basicEnabled: true, oidcEnabled: true });
 const settingsNone = authSettings({});
 const settingsOidcNamed = authSettings({ oidcEnabled: true, oidcProviderName: 'Dex' });
-const settingsTokenOnly = authSettings({ serviceAccountTokenEnabled: true });
+const settingsTokenOnly = authSettings({ tokenEnabled: true });
 const settingsKubeconfigOnly = authSettings({ kubeconfigEnabled: true });
 
 let el: AntreaLoginPage | undefined;

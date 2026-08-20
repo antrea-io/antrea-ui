@@ -115,7 +115,7 @@ func enableKubeconfigAuth() testServerOptions {
 
 func disableSATokenAuth() testServerOptions {
 	return func(c *serverconfig.Config) {
-		c.Auth.ServiceAccountToken.Enabled = false
+		c.Auth.Token.Enabled = false
 	}
 }
 
@@ -132,7 +132,7 @@ func newTestServerWithLogger(t *testing.T, logger logr.Logger, options ...testSe
 	config := &serverconfig.Config{}
 	// enable basic auth, the token login mode and the bearer API fallback by default
 	config.Auth.Basic.Enabled = true
-	config.Auth.ServiceAccountToken.Enabled = true
+	config.Auth.Token.Enabled = true
 	config.Auth.BearerToken.Enabled = true
 	config.Session.IdleTimeout = 30 * time.Minute
 	config.Session.MaxLifetime = 12 * time.Hour

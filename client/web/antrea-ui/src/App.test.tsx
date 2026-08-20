@@ -34,7 +34,7 @@ const defaultSettings = {
         basicEnabled: true,
         oidcEnabled: false,
         kubeconfigEnabled: false,
-        serviceAccountTokenEnabled: true,
+        tokenEnabled: true,
     },
 };
 

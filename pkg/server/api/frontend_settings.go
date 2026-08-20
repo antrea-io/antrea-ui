@@ -28,11 +28,11 @@ func buildFrontendSettingsFromConfig(config *serverconfig.Config) *apisv1.Fronte
 	return &apisv1.FrontendSettings{
 		Version: version.GetFullVersion(),
 		Auth: apisv1.FrontendAuthSettings{
-			BasicEnabled:               config.Auth.Basic.Enabled,
-			OIDCEnabled:                config.Auth.OIDC.Enabled,
-			OIDCProviderName:           config.Auth.OIDC.ProviderName,
-			KubeconfigEnabled:          config.Auth.Kubeconfig.Enabled,
-			ServiceAccountTokenEnabled: config.Auth.ServiceAccountToken.Enabled,
+			BasicEnabled:      config.Auth.Basic.Enabled,
+			OIDCEnabled:       config.Auth.OIDC.Enabled,
+			OIDCProviderName:  config.Auth.OIDC.ProviderName,
+			KubeconfigEnabled: config.Auth.Kubeconfig.Enabled,
+			TokenEnabled:      config.Auth.Token.Enabled,
 		},
 		Features: apisv1.FrontendFeatureSettings{
 			FlowVisibilityEnabled: config.FlowAggregator.Enabled,

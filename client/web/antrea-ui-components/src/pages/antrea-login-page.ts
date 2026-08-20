@@ -352,7 +352,7 @@ export class AntreaLoginPage extends LitElement {
         // The alternative methods are grouped below a separator so the primary (password or
         // OIDC) stays the obvious one.
         const hasPrimary = Boolean(auth?.basicEnabled || auth?.oidcEnabled);
-        const hasAlternative = Boolean(auth?.serviceAccountTokenEnabled || auth?.kubeconfigEnabled);
+        const hasAlternative = Boolean(auth?.tokenEnabled || auth?.kubeconfigEnabled);
 
         return html`
             <div class="login-wall">
@@ -366,7 +366,7 @@ export class AntreaLoginPage extends LitElement {
                 ${auth?.basicEnabled ? this._renderBasicForm() : nothing}
                 ${auth?.oidcEnabled ? this._renderOidcButton() : nothing}
                 ${hasPrimary && hasAlternative ? html`<div class="separator">or</div>` : nothing}
-                ${auth?.serviceAccountTokenEnabled ? this._renderTokenForm() : nothing}
+                ${auth?.tokenEnabled ? this._renderTokenForm() : nothing}
                 ${auth?.kubeconfigEnabled ? this._renderKubeconfigForm() : nothing}
             </div>
         `;
