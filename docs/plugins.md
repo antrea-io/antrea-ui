@@ -66,7 +66,10 @@ and the directory copy is dropped (and logged).
    locally (see "Trying it locally" below); it's also there as a fallback
    if a deployment's plugins outgrow a `ConfigMap`'s 1MiB cap, backed by
    whatever shared volume the deployment wires up between the backend Pod
-   and whoever writes the plugin bundle there. `plugins.maxDirectoryPlugins`
+   and whoever writes the plugin bundle there - the Helm chart's
+   `plugins.directory` value sets the path, while the volume itself (a
+   `hostPath`, a `PVC`, ...) is mounted via the chart's generic
+   `extraVolumes`/`backend.extraVolumeMounts` values. `plugins.maxDirectoryPlugins`
    (default 10) caps this source the same way `plugins.maxConfigMapPlugins`
    caps the ConfigMap one. A plugin name can only come from one source at a
    time — if both a `ConfigMap` and a directory declare the same `name`,
