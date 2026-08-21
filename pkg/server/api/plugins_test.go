@@ -138,9 +138,35 @@ func TestGetPluginFileNestedPath(t *testing.T) {
 	rr := httptest.NewRecorder()
 	ts.router.ServeHTTP(rr, req)
 	require.Equal(t, http.StatusOK, rr.Code)
+	assert.Equal(t, "image/png", rr.Header().Get("Content-Type"))
 	b, err := io.ReadAll(rr.Result().Body)
 	require.NoError(t, err)
 	assert.Equal(t, "fake-png-bytes", string(b))
+}
+
+func TestPluginFileContentType(t *testing.T) {
+	cases := map[string]string{
+		"index.js":          "application/javascript",
+		"module.mjs":        "application/javascript",
+		"manifest.json":     "application/json",
+		"styles.css":        "text/css",
+		"assets/logo.svg":   "image/svg+xml",
+		"assets/logo.png":   "image/png",
+		"assets/photo.jpg":  "image/jpeg",
+		"assets/photo.jpeg": "image/jpeg",
+		"assets/anim.gif":   "image/gif",
+		"assets/photo.webp": "image/webp",
+		"favicon.ico":       "image/x-icon",
+		"font.woff":         "font/woff",
+		"font.woff2":        "font/woff2",
+		"data.bin":          "application/octet-stream",
+		"no-extension":      "application/octet-stream",
+	}
+	for filename, want := range cases {
+		t.Run(filename, func(t *testing.T) {
+			assert.Equal(t, want, pluginFileContentType(filename))
+		})
+	}
 }
 
 func TestGetPluginFileGzipped(t *testing.T) {

@@ -87,6 +87,29 @@ func pluginFileContentType(filename string) string {
 		return "application/javascript"
 	case ".json":
 		return "application/json"
+	case ".css":
+		return "text/css"
+	// A bundle.zip's assets/ subdirectory (see docs/plugins.md) can hold anything a plugin's UI
+	// references by a relative runtime URL rather than pulls into its JS module graph - most
+	// commonly images and fonts. application/octet-stream (the default below) makes a browser
+	// treat the response as an opaque download rather than the image/font it actually is - e.g.
+	// an <img> tag renders a broken-image placeholder instead of the icon.
+	case ".svg":
+		return "image/svg+xml"
+	case ".png":
+		return "image/png"
+	case ".jpg", ".jpeg":
+		return "image/jpeg"
+	case ".gif":
+		return "image/gif"
+	case ".webp":
+		return "image/webp"
+	case ".ico":
+		return "image/x-icon"
+	case ".woff":
+		return "font/woff"
+	case ".woff2":
+		return "font/woff2"
 	default:
 		return "application/octet-stream"
 	}
