@@ -128,7 +128,7 @@ function UserIdentity() {
     const identity = sessionIdentity({ mode: info.mode, username: info.username });
     return (
         <div className="app-user-identity">
-            <span className="app-user-identity-name">{identity.name}</span>
+            <span className="app-user-identity-name" title={identity.name}>{identity.name}</span>
             <span className="app-user-identity-kind">{identity.kind}</span>
         </div>
     );

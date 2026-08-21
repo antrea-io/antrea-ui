@@ -207,7 +207,7 @@ func TestLoginWithToken(t *testing.T) {
 	})
 
 	t.Run("disabled", func(t *testing.T) {
-		ts := newTestServer(t, disableSATokenAuth())
+		ts := newTestServer(t, disableTokenAuth())
 		rr := postJSON(ts, "/auth/login/token", apisv1.LoginTokenRequest{Token: "tok"})
 		assert.Equal(t, http.StatusNotFound, rr.Code)
 	})

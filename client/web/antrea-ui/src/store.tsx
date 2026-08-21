@@ -42,7 +42,11 @@ const authSlice = createSlice({
     name: 'auth',
     initialState: initialState,
     reducers: {
-        setSession(state, action: PayloadAction<SessionState>) {
+        // 'authenticated' is excluded: setAuthenticated is the only path into that state, so it
+        // is always paired with the SessionInfo (or explicit null) that goes with it, rather than
+        // leaving sessionInfo stale from whatever setSession('authenticated') last happened to
+        // see.
+        setSession(state, action: PayloadAction<Exclude<SessionState, 'authenticated'>>) {
             state.session = action.payload;
             state.sessionInfo = null;
         },

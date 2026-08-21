@@ -113,7 +113,7 @@ func enableKubeconfigAuth() testServerOptions {
 	}
 }
 
-func disableSATokenAuth() testServerOptions {
+func disableTokenAuth() testServerOptions {
 	return func(c *serverconfig.Config) {
 		c.Auth.Token.Enabled = false
 	}
