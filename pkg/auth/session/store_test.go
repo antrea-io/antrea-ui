@@ -51,7 +51,7 @@ func bearerSpec(token string) *Spec {
 
 func bearerSpecForUser(username, token string) *Spec {
 	return &Spec{
-		Mode:       ModeSAToken,
+		Mode:       ModeToken,
 		Username:   username,
 		Credential: Credential{Kind: KindBearer, Token: []byte(token)},
 	}
@@ -74,7 +74,7 @@ func TestCreateAndGet(t *testing.T) {
 	got, err := st.Get(t.Context(), s.ID())
 	require.NoError(t, err)
 	assert.Same(t, s, got)
-	assert.Equal(t, ModeSAToken, got.Mode())
+	assert.Equal(t, ModeToken, got.Mode())
 	assert.Equal(t, "system:serviceaccount:default:tester", got.Username())
 }
 
@@ -236,7 +236,7 @@ func TestGCSweepsExpiredNonRefreshableCredential(t *testing.T) {
 	st, fakeClock := newTestStore(t, func(o *Options) { o.IdleTimeout = 24 * time.Hour })
 	token := []byte("super-secret-token")
 	s, err := st.Create(&Spec{
-		Mode:       ModeSAToken,
+		Mode:       ModeToken,
 		Credential: Credential{Kind: KindBearer, Token: token, ExpiresAt: testStartTime.Add(1 * time.Hour)},
 	})
 	require.NoError(t, err)

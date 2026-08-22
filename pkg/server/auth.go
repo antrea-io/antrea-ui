@@ -149,7 +149,7 @@ func (s *Server) LoginWithToken(c *gin.Context) {
 			return sError
 		}
 		return s.createSession(c, &session.Spec{
-			Mode:       session.ModeSAToken,
+			Mode:       session.ModeToken,
 			Username:   username,
 			Credential: cred,
 		})
@@ -326,7 +326,7 @@ func (s *Server) AddAuthRoutes(r *gin.RouterGroup) {
 	if s.config.BasicAuthEnabled {
 		r.POST("/login", s.loginHandlers(rateLimitMiddleware, s.Login)...)
 	}
-	if s.config.SATokenAuthEnabled {
+	if s.config.TokenAuthEnabled {
 		r.POST("/login/token", s.loginHandlers(rateLimitMiddleware, s.LoginWithToken)...)
 	}
 	if s.config.KubeconfigAuthEnabled {

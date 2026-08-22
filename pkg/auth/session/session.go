@@ -62,8 +62,10 @@ const (
 	// ModeAdmin is mode 4: the user authenticated with the static admin password, and K8s
 	// calls are impersonated as the antrea-ui-admin ServiceAccount.
 	ModeAdmin Mode = "admin"
-	// ModeSAToken is mode 5: the user pasted a ServiceAccount (or any bearer) token.
-	ModeSAToken Mode = "serviceAccountToken"
+	// ModeToken is mode 5: the user pasted a bearer token, typically (but not necessarily) for a
+	// ServiceAccount. This names the mechanism, not the account kind — see the Username field of
+	// the resolved RequestAuth for what kind of account actually authenticated.
+	ModeToken Mode = "token"
 )
 
 // Credential is the Kubernetes credential antrea-ui presents on behalf of the end user.

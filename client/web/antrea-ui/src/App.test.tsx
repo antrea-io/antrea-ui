@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+import type { Mock } from 'vitest';
 import { act, fireEvent, render, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router';
 import App from './App';
@@ -33,16 +34,16 @@ const defaultSettings = {
         basicEnabled: true,
         oidcEnabled: false,
         kubeconfigEnabled: false,
-        serviceAccountTokenEnabled: true,
+        tokenEnabled: true,
     },
 };
 
-function stubFetchWithSession(authenticated: boolean) {
+function stubFetchWithSession(authenticated: boolean, session: { mode: string, username: string } = { mode: 'admin', username: 'admin' }) {
     const fetchMock = vi.fn(async (url: string) => {
         if (url === '/api/v1/settings') return jsonResponse(defaultSettings);
         if (url === '/auth/session') {
             return authenticated
-                ? jsonResponse({ authenticated: true, mode: 'admin', username: 'admin' })
+                ? jsonResponse({ authenticated: true, ...session })
                 : new Response('not logged in', { status: 401 });
         }
         throw new Error(`unexpected fetch to ${url}`);
@@ -66,6 +67,28 @@ describe('App', () => {
         expect(store.getState().session).toBe('authenticated');
     });
 
+    test('an existing session shows the username and account kind in the header', async () => {
+        stubFetchWithSession(true);
+
+        render(<App />, { wrapper: MemoryRouter });
+
+        await waitFor(() => {
+            expect(document.querySelector('.app-user-identity-name')?.textContent).toBe('admin');
+        });
+        expect(document.querySelector('.app-user-identity-kind')?.textContent).toBe('Local Admin Account');
+    });
+
+    test('a Service Account session shows namespace:name, not the full system:serviceaccount: username', async () => {
+        stubFetchWithSession(true, { mode: 'token', username: 'system:serviceaccount:antrea-ui:antrea-ui-admin' });
+
+        render(<App />, { wrapper: MemoryRouter });
+
+        await waitFor(() => {
+            expect(document.querySelector('.app-user-identity-name')?.textContent).toBe('antrea-ui:antrea-ui-admin');
+        });
+        expect(document.querySelector('.app-user-identity-kind')?.textContent).toBe('Service Account');
+    });
+
     test('no session keeps the login page up', async () => {
         stubFetchWithSession(false);
 
@@ -76,10 +99,23 @@ describe('App', () => {
     });
 
     test('logout: clicking Logout clears the session and shows the login page again', async () => {
-        stubFetchWithSession(true);
-        // useLogout() navigates via window.location.href — intercept the setter only, so
-        // jsdom doesn't attempt a real navigation.
+        // useLogout() navigates via window.location.href — intercept the setter only, so jsdom
+        // doesn't attempt a real navigation. That interception is also why /auth/session must
+        // start returning 401 once it fires: unlike a real browser, jsdom does not unload the
+        // page, so AuthShell mounts a fresh <antrea-login-page>, which re-probes the session —
+        // and a real backend would already have cleared the cookie via GET /auth/logout by then.
         const hrefSetter = vi.fn();
+        stubFetchWithSession(true);
+        const fetchMock = fetch as Mock;
+        fetchMock.mockImplementation(async (url: string) => {
+            if (url === '/api/v1/settings') return jsonResponse(defaultSettings);
+            if (url === '/auth/session') {
+                return hrefSetter.mock.calls.length === 0
+                    ? jsonResponse({ authenticated: true, mode: 'admin', username: 'admin' })
+                    : new Response('not logged in', { status: 401 });
+            }
+            throw new Error(`unexpected fetch to ${url}`);
+        });
         const originalLocation = Object.getOwnPropertyDescriptor(window, 'location');
         Object.defineProperty(window, 'location', {
             value: new Proxy(window.location, {
@@ -153,6 +189,9 @@ describe('App', () => {
             render(<App />, { wrapper: MemoryRouter });
             await waitFor(() => expect(document.querySelector('antrea-login-page')).toBeNull());
 
+            // 1 call before the timer even advances: the login page's own probe, already landed
+            // by the time it disappears above. UserIdentity reads that same result from the
+            // store rather than fetching its own.
             await act(async () => { await vi.advanceTimersByTimeAsync(5 * 60 * 1000); });
             expect(sessionCalls).toBe(2);
             expect(store.getState().session).toBe('authenticated');
@@ -183,6 +222,58 @@ describe('App', () => {
 
             await act(async () => { await vi.advanceTimersByTimeAsync(5 * 60 * 1000); });
             expect(store.getState().session).toBe('anonymous');
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    // Regression test: a keepalive 401 flips session to 'anonymous' while AuthShell stays
+    // mounted, so React swaps in a brand new <antrea-login-page> rather than remounting AuthShell
+    // itself. If the antrea-authenticated listener were attached with a plain ref (whose identity
+    // never changes across renders) instead of a callback ref, it would still be listening to the
+    // now-detached old element, and a subsequent successful re-login would dispatch into the
+    // void: the cookie gets set, but the app never learns about it.
+    test('re-login after a keepalive 401 is not lost', async () => {
+        vi.useFakeTimers({ shouldAdvanceTime: true });
+        try {
+            let authenticated = true;
+            const fetchMock = vi.fn(async (url: string) => {
+                if (url === '/api/v1/settings') return jsonResponse(defaultSettings);
+                if (url === '/auth/session') {
+                    return authenticated
+                        ? jsonResponse({ authenticated: true, mode: 'admin', username: 'admin' })
+                        : new Response('not logged in', { status: 401 });
+                }
+                if (url === '/auth/login') {
+                    authenticated = true;
+                    return new Response('', { status: 200 });
+                }
+                throw new Error(`unexpected fetch to ${url}`);
+            });
+            vi.stubGlobal('fetch', fetchMock);
+
+            render(<App />, { wrapper: MemoryRouter });
+            await waitFor(() => expect(document.querySelector('antrea-login-page')).toBeNull());
+
+            authenticated = false;
+            await act(async () => { await vi.advanceTimersByTimeAsync(5 * 60 * 1000); });
+            expect(store.getState().session).toBe('anonymous');
+            await waitFor(() => expect(document.querySelector('antrea-login-page')).not.toBeNull());
+
+            const loginPage = document.querySelector('antrea-login-page')!;
+            await (loginPage as unknown as { updateComplete: Promise<unknown> }).updateComplete;
+            const usernameEl = loginPage.shadowRoot!.querySelector<HTMLInputElement>('#username')!;
+            const passwordEl = loginPage.shadowRoot!.querySelector<HTMLInputElement>('#password')!;
+            usernameEl.value = 'admin';
+            passwordEl.value = 'xyz';
+            const form = loginPage.shadowRoot!.querySelector('form')!;
+            await act(async () => {
+                form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+                await new Promise(r => setTimeout(r, 0));
+            });
+
+            expect(store.getState().session).toBe('authenticated');
+            await waitFor(() => expect(document.querySelector('.app-user-identity-name')?.textContent).toBe('admin'));
         } finally {
             vi.useRealTimers();
         }

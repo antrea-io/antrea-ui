@@ -106,8 +106,8 @@ clientSecret
 that only lets users bring their own kubeconfig or paste a token is a supported (and more locked
 down) configuration than one with the shared admin password. Keep this list in step with
 AuthConfig.anyModeEnabled in pkg/config/server/config.go, which the backend enforces on startup. */ -}}
-{{- if not ( or .Values.auth.basic.enable .Values.auth.oidc.enable .Values.auth.kubeconfig.enable .Values.auth.serviceAccountToken.enable ) -}}
-{{- fail "at least one authentication method must be enabled (auth.basic, auth.oidc, auth.kubeconfig, auth.serviceAccountToken)" -}}
+{{- if not ( or .Values.auth.basic.enable .Values.auth.oidc.enable .Values.auth.kubeconfig.enable .Values.auth.token.enable ) -}}
+{{- fail "at least one authentication method must be enabled (auth.basic, auth.oidc, auth.kubeconfig, auth.token)" -}}
 {{- end -}}
 
 {{- /* Built-in Dex was removed: it ran as a sidecar on localhost, which the kube-apiserver has no

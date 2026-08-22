@@ -120,16 +120,16 @@ type AuthConfig struct {
 	Kubeconfig struct {
 		Enabled bool
 	}
-	// ServiceAccountToken lets a user paste a bearer token (mode 5) on the login page, which
+	// Token lets a user paste a bearer token (mode 5) on the login page, which
 	// creates a session like any other login mode.
-	ServiceAccountToken struct {
+	Token struct {
 		Enabled bool
 	}
 	// BearerToken gates the "Authorization: Bearer <k8s-token>" fallback: a non-browser client
 	// (a script, a controller, the e2e suite) authenticating each API request with a Kubernetes
 	// token instead of holding a session cookie.
 	//
-	// It is deliberately separate from ServiceAccountToken even though both accept the same
+	// It is deliberately separate from Token even though both accept the same
 	// credential. They are different exposures: the login mode is a page a human uses, while
 	// this one is an authentication path on every API route, used by clients that are not
 	// browsers and therefore not covered by the cross-origin gate. A deployment that wants the
@@ -146,7 +146,7 @@ type AuthConfig struct {
 // session, so a deployment with only that enabled has a working API and a login page with nothing
 // on it, which is a misconfiguration rather than a supported topology.
 func (a *AuthConfig) anyModeEnabled() bool {
-	return a.Basic.Enabled || a.OIDC.Enabled || a.Kubeconfig.Enabled || a.ServiceAccountToken.Enabled
+	return a.Basic.Enabled || a.OIDC.Enabled || a.Kubeconfig.Enabled || a.Token.Enabled
 }
 
 func validateConfig(config *Config) error {
@@ -159,7 +159,7 @@ func validateConfig(config *Config) error {
 	}
 
 	if !config.Auth.anyModeEnabled() {
-		return fmt.Errorf("at least one authentication mode must be enabled (auth.basic, auth.oidc, auth.kubeconfig, auth.serviceAccountToken)")
+		return fmt.Errorf("at least one authentication mode must be enabled (auth.basic, auth.oidc, auth.kubeconfig, auth.token)")
 	}
 
 	if config.Session.IdleTimeout <= 0 {
@@ -225,7 +225,7 @@ func LoadConfig() (*Config, error) {
 	// scope here omits it for every deployment that does not spell the list out.
 	v.SetDefault("auth.oidc.scopes", []string{"openid", "email", "groups", "offline_access"})
 	v.SetDefault("auth.kubeconfig.enabled", false)
-	v.SetDefault("auth.serviceAccountToken.enabled", true)
+	v.SetDefault("auth.token.enabled", true)
 	v.SetDefault("auth.bearerToken.enabled", true)
 	v.SetDefault("session.idleTimeout", DefaultSessionIdleTimeout)
 	v.SetDefault("session.maxLifetime", DefaultSessionMaxLifetime)

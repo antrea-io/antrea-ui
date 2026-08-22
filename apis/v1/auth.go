@@ -33,7 +33,7 @@ type LoginKubeconfigRequest struct {
 // includes any credential material.
 type SessionInfo struct {
 	Authenticated bool `json:"authenticated"`
-	// Mode is how the user logged in: "oidc", "kubeconfig", "admin" or "serviceAccountToken".
+	// Mode is how the user logged in: "oidc", "kubeconfig", "admin" or "token".
 	Mode string `json:"mode,omitempty"`
 	// Username is for display only. Authorization is always the API server's decision.
 	Username string `json:"username,omitempty"`

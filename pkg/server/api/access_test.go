@@ -143,7 +143,7 @@ func TestGetAccessSummaryClusterWideViewer(t *testing.T) {
 	}
 
 	req := httptest.NewRequest("GET", "/api/v1/access-summary", nil)
-	ts.authorizeRequestAs(req, session.ModeSAToken)
+	ts.authorizeRequestAs(req, session.ModeToken)
 	rr := httptest.NewRecorder()
 	ts.router.ServeHTTP(rr, req)
 	require.Equal(t, http.StatusOK, rr.Code)
@@ -165,7 +165,7 @@ func TestGetAccessSummaryNamespaceScoped(t *testing.T) {
 	fakeAPIServer.listNamespacesAllowed = false
 
 	req := httptest.NewRequest("GET", "/api/v1/access-summary", nil)
-	ts.authorizeRequestAs(req, session.ModeSAToken)
+	ts.authorizeRequestAs(req, session.ModeToken)
 	rr := httptest.NewRecorder()
 	ts.router.ServeHTTP(rr, req)
 	require.Equal(t, http.StatusOK, rr.Code)
@@ -201,7 +201,7 @@ func TestGetAccessSummaryQueryNamespaceEchoedAndPassedToSSRR(t *testing.T) {
 	ts, fakeAPIServer := newTestServerForAccess(t, resolver)
 
 	req := httptest.NewRequest("GET", "/api/v1/access-summary?namespace=rbac-test-alpha", nil)
-	ts.authorizeRequestAs(req, session.ModeSAToken)
+	ts.authorizeRequestAs(req, session.ModeToken)
 	rr := httptest.NewRecorder()
 	ts.router.ServeHTTP(rr, req)
 	require.Equal(t, http.StatusOK, rr.Code)
@@ -216,7 +216,7 @@ func TestGetAccessSummaryInvalidQueryNamespace(t *testing.T) {
 	ts, _ := newTestServerForAccess(t, nil)
 
 	req := httptest.NewRequest("GET", "/api/v1/access-summary?namespace=Not_Valid!", nil)
-	ts.authorizeRequestAs(req, session.ModeSAToken)
+	ts.authorizeRequestAs(req, session.ModeToken)
 	rr := httptest.NewRecorder()
 	ts.router.ServeHTTP(rr, req)
 	assert.Equal(t, http.StatusBadRequest, rr.Code)
@@ -230,7 +230,7 @@ func TestGetAccessSummaryForbiddenPropagates(t *testing.T) {
 	fakeAPIServer.statusOverride["selfsubjectrulesreviews"] = http.StatusForbidden
 
 	req := httptest.NewRequest("GET", "/api/v1/access-summary", nil)
-	ts.authorizeRequestAs(req, session.ModeSAToken)
+	ts.authorizeRequestAs(req, session.ModeToken)
 	rr := httptest.NewRecorder()
 	ts.router.ServeHTTP(rr, req)
 	assert.Equal(t, http.StatusForbidden, rr.Code)
@@ -241,7 +241,7 @@ func TestGetAccessSummaryUnauthorizedInvalidatesSession(t *testing.T) {
 	fakeAPIServer.statusOverride["selfsubjectreviews"] = http.StatusUnauthorized
 
 	req := httptest.NewRequest("GET", "/api/v1/access-summary", nil)
-	ts.authorizeRequestAs(req, session.ModeSAToken)
+	ts.authorizeRequestAs(req, session.ModeToken)
 	rr := httptest.NewRecorder()
 	ts.router.ServeHTTP(rr, req)
 	assert.Equal(t, http.StatusUnauthorized, rr.Code)
@@ -259,7 +259,7 @@ func TestGetAccessSummaryResolverErrorReturns503(t *testing.T) {
 	fakeAPIServer.listNamespacesAllowed = false
 
 	req := httptest.NewRequest("GET", "/api/v1/access-summary", nil)
-	ts.authorizeRequestAs(req, session.ModeSAToken)
+	ts.authorizeRequestAs(req, session.ModeToken)
 	rr := httptest.NewRecorder()
 	ts.router.ServeHTTP(rr, req)
 	assert.Equal(t, http.StatusServiceUnavailable, rr.Code)
@@ -276,7 +276,7 @@ func TestGetAccessSummaryNoNamespacesIsEmptyArrayNotNull(t *testing.T) {
 	fakeAPIServer.listNamespacesAllowed = false
 
 	req := httptest.NewRequest("GET", "/api/v1/access-summary", nil)
-	ts.authorizeRequestAs(req, session.ModeSAToken)
+	ts.authorizeRequestAs(req, session.ModeToken)
 	rr := httptest.NewRecorder()
 	ts.router.ServeHTTP(rr, req)
 	require.Equal(t, http.StatusOK, rr.Code)
@@ -322,7 +322,7 @@ func TestGetAccessSummaryClusterScopeProbeUnusable(t *testing.T) {
 	ts, _ := newTestServerForAccess(t, resolver)
 
 	req := httptest.NewRequest("GET", "/api/v1/access-summary", nil)
-	ts.authorizeRequestAs(req, session.ModeSAToken)
+	ts.authorizeRequestAs(req, session.ModeToken)
 	rr := httptest.NewRecorder()
 	ts.router.ServeHTTP(rr, req)
 	require.Equal(t, http.StatusOK, rr.Code)
@@ -341,7 +341,7 @@ func TestGetAccessSummaryClusterScopeProbeIrrelevantForNamespacedQuery(t *testin
 	ts, _ := newTestServerForAccess(t, resolver)
 
 	req := httptest.NewRequest("GET", "/api/v1/access-summary?namespace=rbac-test-alpha", nil)
-	ts.authorizeRequestAs(req, session.ModeSAToken)
+	ts.authorizeRequestAs(req, session.ModeToken)
 	rr := httptest.NewRecorder()
 	ts.router.ServeHTTP(rr, req)
 	require.Equal(t, http.StatusOK, rr.Code)

@@ -14,11 +14,12 @@
  * limitations under the License.
  */
 
-import { useRef, useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import logo from './logo.svg';
 import './App.css';
 import '@antrea/ui-components';
-import { apiSession, APIError, resetAccessSummary } from '@antrea/ui-components';
+import { apiSession, APIError, resetAccessSummary, sessionIdentity } from '@antrea/ui-components';
+import type { SessionInfo } from '@antrea/ui-components';
 import { Outlet, Link } from 'react-router';
 import NavTab from './nav';
 import { useLogout } from './logout';
@@ -26,7 +27,7 @@ import { AppErrorProvider, AppErrorNotification } from './errors';
 import { AccessProvider } from './access';
 import { Provider, useSelector, useDispatch } from 'react-redux';
 import type { RootState } from './store';
-import { store, setSession } from './store';
+import { store, setSession, setAuthenticated } from './store';
 import type { PluginSidebarEntry } from './plugins';
 
 // How often to ping GET /auth/session while a tab is visible. The backend expires a session
@@ -65,28 +66,33 @@ function useSessionKeepalive(enabled: boolean) {
 function AuthShell({ pluginSidebarEntries }: { pluginSidebarEntries: PluginSidebarEntry[] }) {
     const session = useSelector((state: RootState) => state.session);
     const dispatch = useDispatch();
-    const loginRef = useRef<HTMLElement>(null);
+    // A callback ref, not useRef: a keepalive 401 flips session back to 'anonymous' while
+    // AuthShell stays mounted, so React swaps in a brand new <antrea-login-page> element. A
+    // plain ref wouldn't tell the effect below that its target changed, so it would go on
+    // listening to the unmounted one and miss the re-login entirely.
+    const [loginEl, setLoginEl] = useState<HTMLElement | null>(null);
 
     useSessionKeepalive(session === 'authenticated');
 
     useEffect(() => {
-        const el = loginRef.current;
-        if (!el) return;
+        if (!loginEl) return;
         // The login page probes GET /auth/session on mount and logs in on submit; either way it
-        // tells us when there is a session. There is no token in the event: the credential
-        // lives server-side, keyed by an HttpOnly cookie.
-        const onAuthenticated = () => {
+        // tells us when there is a session, and hands over the SessionInfo it already fetched
+        // (or fetched to confirm the login) as the event detail — no token in it, the credential
+        // lives server-side, keyed by an HttpOnly cookie. detail is null when that fetch failed;
+        // the login itself still succeeded, there is just nothing to display for it.
+        const onAuthenticated = (e: Event) => {
             // A fresh login: any access-summary fetched (or attempted) for a previous session
             // must not leak into this one.
             resetAccessSummary();
-            dispatch(setSession('authenticated'));
+            dispatch(setAuthenticated((e as CustomEvent<SessionInfo>).detail ?? null));
         };
-        el.addEventListener('antrea-authenticated', onAuthenticated);
-        return () => el.removeEventListener('antrea-authenticated', onAuthenticated);
-    }, [dispatch]);
+        loginEl.addEventListener('antrea-authenticated', onAuthenticated);
+        return () => loginEl.removeEventListener('antrea-authenticated', onAuthenticated);
+    }, [loginEl, dispatch]);
 
     if (session !== 'authenticated') {
-        return <antrea-login-page ref={loginRef} />;
+        return <antrea-login-page ref={setLoginEl} />;
     }
 
     return (
@@ -112,6 +118,22 @@ function Logout() {
     );
 }
 
+// Shows the logged-in username and account kind, from the SessionInfo the login page already
+// fetched (see the antrea-authenticated listener above) — no fetch of its own, and nothing to
+// render before that arrives or if it never does, since the rest of the shell already fails open
+// on that same condition.
+function UserIdentity() {
+    const info = useSelector((state: RootState) => state.sessionInfo);
+    if (!info?.username) return null;
+    const identity = sessionIdentity({ mode: info.mode, username: info.username });
+    return (
+        <div className="app-user-identity">
+            <span className="app-user-identity-name" title={identity.name}>{identity.name}</span>
+            <span className="app-user-identity-kind">{identity.kind}</span>
+        </div>
+    );
+}
+
 function App({ pluginSidebarEntries = [] }: { pluginSidebarEntries?: PluginSidebarEntry[] }) {
     return (
         <div className="app-shell">
@@ -123,7 +145,10 @@ function App({ pluginSidebarEntries = [] }: { pluginSidebarEntries?: PluginSideb
                         </Link>
                         <h1>Antrea UI</h1>
                     </div>
-                    <Logout />
+                    <div className="app-header-right">
+                        <UserIdentity />
+                        <Logout />
+                    </div>
                 </header>
                 <div className="app-body">
                     <AppErrorProvider>

@@ -22,8 +22,8 @@ type FrontendAuthSettings struct {
 	OIDCProviderName string `json:"oidcProviderName,omitempty"`
 	// KubeconfigEnabled is "bring your own kubeconfig" (mode 3).
 	KubeconfigEnabled bool `json:"kubeconfigEnabled"`
-	// ServiceAccountTokenEnabled is "paste a Kubernetes token" (mode 5).
-	ServiceAccountTokenEnabled bool `json:"serviceAccountTokenEnabled"`
+	// TokenEnabled is "paste a Kubernetes token" (mode 5).
+	TokenEnabled bool `json:"tokenEnabled"`
 }
 
 type FrontendFeatureSettings struct {

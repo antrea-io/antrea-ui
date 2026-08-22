@@ -15,6 +15,7 @@
  */
 
 import { configureStore, createSlice, PayloadAction } from '@reduxjs/toolkit';
+import type { SessionInfo } from '@antrea/ui-components';
 
 // The app never holds a credential: authentication is an HttpOnly session cookie that the
 // browser attaches on its own. All the app needs to track is whether there is a session.
@@ -25,32 +26,50 @@ export type SessionState = 'unknown' | 'authenticated' | 'anonymous';
 
 interface state {
     session: SessionState
+    // Populated by setAuthenticated, straight from the login page's own GET /auth/session probe
+    // or login call — so nothing else needs a second round-trip just to display who is logged
+    // in. null whenever session isn't 'authenticated', and also when setAuthenticated itself
+    // couldn't get it (display-only; never blocks authentication).
+    sessionInfo: SessionInfo | null
 }
 
-const initialState = {
+const initialState: state = {
     session: 'unknown',
-} as state;
+    sessionInfo: null,
+};
 
 const authSlice = createSlice({
     name: 'auth',
     initialState: initialState,
     reducers: {
-        setSession(state, action: PayloadAction<SessionState>) {
+        // 'authenticated' is excluded: setAuthenticated is the only path into that state, so it
+        // is always paired with the SessionInfo (or explicit null) that goes with it, rather than
+        // leaving sessionInfo stale from whatever setSession('authenticated') last happened to
+        // see.
+        setSession(state, action: PayloadAction<Exclude<SessionState, 'authenticated'>>) {
             state.session = action.payload;
-        }
+            state.sessionInfo = null;
+        },
+        setAuthenticated(state, action: PayloadAction<SessionInfo | null>) {
+            state.session = 'authenticated';
+            state.sessionInfo = action.payload;
+        },
     }
 });
 
-export const setupStore = (preloadedState?: RootState) => {
+// Partial, not RootState: callers (mainly tests) usually only care about overriding one field,
+// and merging over initialState here means adding a field never forces every existing caller to
+// spell it out.
+export const setupStore = (preloadedState?: Partial<RootState>) => {
     return configureStore({
         reducer: authSlice.reducer,
-        preloadedState,
+        preloadedState: preloadedState && { ...initialState, ...preloadedState },
     });
 };
 
 export const store = setupStore();
 
-export const { setSession } = authSlice.actions;
+export const { setSession, setAuthenticated } = authSlice.actions;
 
 export type RootState = ReturnType<typeof authSlice.reducer>
 export type AppStore = ReturnType<typeof setupStore>

@@ -14,8 +14,11 @@
 
 import { APIError, getApiBase } from './api.js';
 
-/** How the user authenticated. Mirrors the backend's session modes. */
-export type SessionMode = 'oidc' | 'kubeconfig' | 'admin' | 'serviceAccountToken';
+/** How the user authenticated: the mechanism the credential reached us through — not what kind
+ * of account it belongs to. A kubeconfig can carry a ServiceAccount token, and a pasted bearer
+ * token need not be one; see sessionIdentity(), which derives the account kind from `username`
+ * instead. Mirrors the backend's session modes. */
+export type SessionMode = 'oidc' | 'kubeconfig' | 'admin' | 'token';
 
 /** Describes the caller's session. Never contains any credential material: the Kubernetes
  * credential lives only in the backend's memory, and the browser only holds an opaque cookie. */
@@ -30,6 +33,34 @@ export interface SessionInfo {
     expiresAt?: string
 }
 
+/** How to present a session in the UI: the identity Kubernetes knows, plus what kind of account
+ * it is. */
+export interface SessionIdentity {
+    name: string
+    kind: 'User' | 'Service Account' | 'System User' | 'Local Admin Account'
+}
+
+// A ServiceAccount's Kubernetes username: "system:serviceaccount:<namespace>:<name>". Only the
+// namespace/name pair is useful for display.
+const SERVICE_ACCOUNT_USERNAME = /^system:serviceaccount:([^:]+:[^:]+)$/;
+
+/** Derived from `username`, which is what the API server actually authenticated as — not from
+ * `mode`, which only says how the credential reached us. Display only; authorization is always
+ * the API server's decision. */
+export function sessionIdentity({ mode, username }: { mode?: SessionMode, username: string }): SessionIdentity {
+    // The static admin password is not a Kubernetes identity: the session impersonates the
+    // antrea-ui-admin ServiceAccount, and `username` is the local login name, not that
+    // ServiceAccount's.
+    if (mode === 'admin') return { name: username, kind: 'Local Admin Account' };
+    const serviceAccount = username.match(SERVICE_ACCOUNT_USERNAME)?.[1];
+    if (serviceAccount) return { name: serviceAccount, kind: 'Service Account' };
+    // Kubernetes reserves the "system:" prefix for the control plane's own identities, so a
+    // login as one (a kubelet's kubeconfig, say) is an infrastructure identity, not a person.
+    // Must come after the ServiceAccount case, which is itself a "system:" name.
+    if (username.startsWith('system:')) return { name: username, kind: 'System User' };
+    return { name: username, kind: 'User' };
+}
+
 export interface AppSettings {
     version: string
     auth: {
@@ -40,7 +71,7 @@ export interface AppSettings {
         /** Upload your own kubeconfig. */
         kubeconfigEnabled: boolean
         /** Paste a Kubernetes token. */
-        serviceAccountTokenEnabled: boolean
+        tokenEnabled: boolean
     }
     features?: {
         flowVisibilityEnabled?: boolean

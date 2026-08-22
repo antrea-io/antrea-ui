@@ -104,7 +104,7 @@ func TestK8sProxyHandlerInvalidatesSessionOn401(t *testing.T) {
 
 			store := session.NewStore(testr.New(t), session.Options{})
 			sess, err := store.Create(&session.Spec{
-				Mode:       session.ModeSAToken,
+				Mode:       session.ModeToken,
 				Credential: session.Credential{Kind: session.KindBearer, Token: []byte("tok")},
 			})
 			require.NoError(t, err)

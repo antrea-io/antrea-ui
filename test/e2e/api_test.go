@@ -211,7 +211,7 @@ func TestSessionEndpoint(t *testing.T) {
 		require.NoError(t, getResponseBody(resp, &info))
 		require.Equal(t, http.StatusOK, resp.StatusCode)
 		assert.True(t, info.Authenticated)
-		assert.Equal(t, "serviceAccountToken", info.Mode)
+		assert.Equal(t, "token", info.Mode)
 	})
 }
 

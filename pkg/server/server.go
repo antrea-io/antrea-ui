@@ -40,7 +40,7 @@ type serverConfig struct {
 	OIDCAuthEnabled       bool
 	OIDCNeedsLogout       bool
 	KubeconfigAuthEnabled bool
-	SATokenAuthEnabled    bool
+	TokenAuthEnabled      bool
 	CookieSecure          bool
 	MaxLoginsPerSecond    int
 	// AdminUserName is the Kubernetes identity impersonated for sessions created with the
@@ -88,7 +88,7 @@ func NewServer(o Options) (*Server, error) {
 		OIDCAuthEnabled:       o.Config.Auth.OIDC.Enabled,
 		OIDCNeedsLogout:       (o.Config.Auth.OIDC.LogoutURL != ""),
 		KubeconfigAuthEnabled: o.Config.Auth.Kubeconfig.Enabled,
-		SATokenAuthEnabled:    o.Config.Auth.ServiceAccountToken.Enabled,
+		TokenAuthEnabled:      o.Config.Auth.Token.Enabled,
 		CookieSecure:          o.Config.Auth.CookieSecure,
 		MaxLoginsPerSecond:    o.Config.Limits.MaxLoginsPerSecond,
 		AdminUserName:         o.AdminUserName,

@@ -74,7 +74,7 @@ func TestStreamKeepsSessionAlive(t *testing.T) {
 		MaxSessions: 10,
 	})
 	sess, err := store.Create(&session.Spec{
-		Mode:       session.ModeSAToken,
+		Mode:       session.ModeToken,
 		Credential: session.Credential{Kind: session.KindBearer, Token: []byte("tok")},
 	})
 	require.NoError(t, err)
@@ -118,7 +118,7 @@ func TestStreamStopsWhenSessionEnds(t *testing.T) {
 		MaxSessions: 10,
 	})
 	sess, err := store.Create(&session.Spec{
-		Mode:       session.ModeSAToken,
+		Mode:       session.ModeToken,
 		Credential: session.Credential{Kind: session.KindBearer, Token: []byte("tok")},
 	})
 	require.NoError(t, err)
