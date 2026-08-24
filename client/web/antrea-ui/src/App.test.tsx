@@ -14,7 +14,6 @@
  * limitations under the License.
  */
 
-import type { Mock } from 'vitest';
 import { act, fireEvent, render, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router';
 import App from './App';
@@ -38,14 +37,27 @@ const defaultSettings = {
     },
 };
 
-function stubFetchWithSession(authenticated: boolean, session: { mode: string, username: string } = { mode: 'admin', username: 'admin' }) {
+type SessionResponse = { mode: string, username: string } | null; // null = 401
+
+// session is either a fixed authenticated/not decision, or a callback re-evaluated on every
+// GET /auth/session call — for tests where that answer changes over the test's lifetime (a
+// logout, a keepalive 401, a re-login). routes adds extra URL handlers (e.g. /auth/login) so
+// those tests don't have to restate the /api/v1/settings and /auth/session branches themselves.
+function stubFetchWithSession(
+    session: boolean | { mode: string, username: string } | (() => SessionResponse),
+    routes: Record<string, () => Response> = {},
+) {
+    const resolve: () => SessionResponse = typeof session === 'function'
+        ? session
+        : () => (session === false ? null : (session === true ? { mode: 'admin', username: 'admin' } : session));
     const fetchMock = vi.fn(async (url: string) => {
         if (url === '/api/v1/settings') return jsonResponse(defaultSettings);
         if (url === '/auth/session') {
-            return authenticated
-                ? jsonResponse({ authenticated: true, ...session })
-                : new Response('not logged in', { status: 401 });
+            const s = resolve();
+            return s ? jsonResponse({ authenticated: true, ...s }) : new Response('not logged in', { status: 401 });
         }
+        const extra = routes[url];
+        if (extra) return extra();
         throw new Error(`unexpected fetch to ${url}`);
     });
     vi.stubGlobal('fetch', fetchMock);
@@ -79,7 +91,7 @@ describe('App', () => {
     });
 
     test('a Service Account session shows namespace:name, not the full system:serviceaccount: username', async () => {
-        stubFetchWithSession(true, { mode: 'token', username: 'system:serviceaccount:antrea-ui:antrea-ui-admin' });
+        stubFetchWithSession({ mode: 'token', username: 'system:serviceaccount:antrea-ui:antrea-ui-admin' });
 
         render(<App />, { wrapper: MemoryRouter });
 
@@ -105,17 +117,7 @@ describe('App', () => {
         // page, so AuthShell mounts a fresh <antrea-login-page>, which re-probes the session —
         // and a real backend would already have cleared the cookie via GET /auth/logout by then.
         const hrefSetter = vi.fn();
-        stubFetchWithSession(true);
-        const fetchMock = fetch as Mock;
-        fetchMock.mockImplementation(async (url: string) => {
-            if (url === '/api/v1/settings') return jsonResponse(defaultSettings);
-            if (url === '/auth/session') {
-                return hrefSetter.mock.calls.length === 0
-                    ? jsonResponse({ authenticated: true, mode: 'admin', username: 'admin' })
-                    : new Response('not logged in', { status: 401 });
-            }
-            throw new Error(`unexpected fetch to ${url}`);
-        });
+        stubFetchWithSession(() => (hrefSetter.mock.calls.length === 0 ? { mode: 'admin', username: 'admin' } : null));
         const originalLocation = Object.getOwnPropertyDescriptor(window, 'location');
         Object.defineProperty(window, 'location', {
             value: new Proxy(window.location, {
@@ -237,20 +239,10 @@ describe('App', () => {
         vi.useFakeTimers({ shouldAdvanceTime: true });
         try {
             let authenticated = true;
-            const fetchMock = vi.fn(async (url: string) => {
-                if (url === '/api/v1/settings') return jsonResponse(defaultSettings);
-                if (url === '/auth/session') {
-                    return authenticated
-                        ? jsonResponse({ authenticated: true, mode: 'admin', username: 'admin' })
-                        : new Response('not logged in', { status: 401 });
-                }
-                if (url === '/auth/login') {
-                    authenticated = true;
-                    return new Response('', { status: 200 });
-                }
-                throw new Error(`unexpected fetch to ${url}`);
-            });
-            vi.stubGlobal('fetch', fetchMock);
+            stubFetchWithSession(
+                () => (authenticated ? { mode: 'admin', username: 'admin' } : null),
+                { '/auth/login': () => { authenticated = true; return new Response('', { status: 200 }); } },
+            );
 
             render(<App />, { wrapper: MemoryRouter });
             await waitFor(() => expect(document.querySelector('antrea-login-page')).toBeNull());
