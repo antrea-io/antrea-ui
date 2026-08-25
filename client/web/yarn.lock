@@ -5698,9 +5698,9 @@ __metadata:
   linkType: hard
 
 "web-vitals@npm:^6.0.0":
-  version: 6.1.0
-  resolution: "web-vitals@npm:6.1.0"
-  checksum: 10c0/ab1bf6a91cd618ca64c4aaf4644066221dea1fad0733ad2ec20461ca37e3d7e8e02cda014710c728ea938271d9a5eec65c23675eae5926e5df4ea16fb1edda92
+  version: 6.2.0
+  resolution: "web-vitals@npm:6.2.0"
+  checksum: 10c0/b628d25494c18e4500d6ee01c9dff3dec0156f240fca2771c17789f29092fe1b5a81b2364a08f35e77532148894bc8eec53933012c747b29bdb33daa9b5d0423
   languageName: node
   linkType: hard
 
