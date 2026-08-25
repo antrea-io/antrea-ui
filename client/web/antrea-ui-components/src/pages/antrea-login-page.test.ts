@@ -24,22 +24,34 @@ function errorResponse(status: number, statusText: string, body = ''): Response 
     return new Response(body, { status, statusText });
 }
 
+// Either a fixed answer for a route, or a callback re-evaluated on every call to it — for
+// routes whose answer changes over a test's lifetime, such as GET /auth/session going from 401
+// to a session once the login succeeds.
+type MockResponse = Response | (() => Response);
+
 interface MockFetchOptions {
-    settings?: Response;
-    session?: Response;
-    login?: Response;
-    loginToken?: Response;
-    loginKubeconfig?: Response;
+    settings?: MockResponse;
+    session?: MockResponse;
+    login?: MockResponse;
+    loginToken?: MockResponse;
+    loginKubeconfig?: MockResponse;
 }
 
 function mockFetch(opts: MockFetchOptions) {
+    const routes: Record<string, MockResponse> = {
+        '/api/v1/settings': opts.settings ?? (() => jsonResponse({})),
+        '/auth/session': opts.session ?? (() => errorResponse(401, 'Unauthorized')),
+        '/auth/login': opts.login ?? (() => errorResponse(401, 'Unauthorized')),
+        '/auth/login/token': opts.loginToken ?? (() => errorResponse(401, 'Unauthorized')),
+        '/auth/login/kubeconfig': opts.loginKubeconfig ?? (() => errorResponse(400, 'Bad Request')),
+    };
+    // A Response body can only be read once, but a route can be hit more than once within a
+    // test — a successful login re-probes GET /auth/session — so a fixed Response is cloned
+    // rather than handed out twice. Cloning is only safe because nothing ever reads the original.
     return vi.fn(async (url: string) => {
-        if (url === '/api/v1/settings') return opts.settings ?? jsonResponse({});
-        if (url === '/auth/session') return opts.session ?? errorResponse(401, 'Unauthorized');
-        if (url === '/auth/login') return opts.login ?? errorResponse(401, 'Unauthorized');
-        if (url === '/auth/login/token') return opts.loginToken ?? errorResponse(401, 'Unauthorized');
-        if (url === '/auth/login/kubeconfig') return opts.loginKubeconfig ?? errorResponse(400, 'Bad Request');
-        throw new Error(`unexpected fetch to ${url}`);
+        const route = routes[url];
+        if (!route) throw new Error(`unexpected fetch to ${url}`);
+        return typeof route === 'function' ? route() : route.clone();
     });
 }
 
@@ -205,30 +217,20 @@ describe('AntreaLoginPage — basic login form', () => {
     // GET /auth/session before telling the host — that's the same info the host would otherwise
     // have to fetch itself just to display who is logged in.
     test('successful login fetches the session info and dispatches it as the event payload', async () => {
-        // The initial connect-time probe must still see "no session" (401) so the login form
-        // renders at all; only the post-submit probe should find the newly-created session.
         let sessionCalls = 0;
-        const fetchMock = vi.fn(async (url: string) => {
-            if (url === '/api/v1/settings') return jsonResponse(settingsBasicOnly);
-            if (url === '/auth/session') {
-                sessionCalls++;
-                return sessionCalls === 1
-                    ? errorResponse(401, 'Unauthorized')
-                    : jsonResponse({ authenticated: true, mode: 'admin', username: 'admin' });
-            }
-            if (url === '/auth/login') return new Response('', { status: 200 });
-            throw new Error(`unexpected fetch to ${url}`);
+        const page = await mount({
+            settings: jsonResponse(settingsBasicOnly),
+            // The initial connect-time probe must still see "no session" (401) so the login form
+            // renders at all; only the post-submit probe should find the newly-created session.
+            session: () => (++sessionCalls === 1
+                ? errorResponse(401, 'Unauthorized')
+                : jsonResponse({ authenticated: true, mode: 'admin', username: 'admin' })),
+            login: new Response('', { status: 200 }),
         });
-        vi.stubGlobal('fetch', fetchMock);
-        el = document.createElement('antrea-login-page') as AntreaLoginPage;
-        document.body.appendChild(el);
-        await el.updateComplete;
-        await new Promise(r => setTimeout(r, 0));
-        await el.updateComplete;
 
         const onAuth = vi.fn();
-        el.addEventListener('antrea-authenticated', onAuth);
-        await submitLogin(el, 'admin', 'xyz');
+        page.addEventListener('antrea-authenticated', onAuth);
+        await submitLogin(page, 'admin', 'xyz');
 
         expect(onAuth).toHaveBeenCalledTimes(1);
         expect((onAuth.mock.calls[0][0] as CustomEvent).detail).toEqual({ authenticated: true, mode: 'admin', username: 'admin' });
