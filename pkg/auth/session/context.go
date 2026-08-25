@@ -63,13 +63,13 @@ func NewSessionAuth(store Store, s *Session) *RequestAuth {
 // created, nothing downstream re-checks an ephemeral one, and two routes never present it to
 // Kubernetes at all.
 //
-// Mode is always ModeSAToken, whatever the token actually is - it says how the caller
+// Mode is always ModeToken, whatever the token actually is - it says how the caller
 // authenticated to antrea-ui, not what kind of token they hold. Do not use it to grant anything:
 // the one Mode check today (UpdatePassword requiring ModeAdmin) is a denial, which is the safe
 // direction.
 func NewEphemeralAuth(cred Credential, username string) *RequestAuth {
 	return &RequestAuth{
-		Mode:                ModeSAToken,
+		Mode:                ModeToken,
 		Username:            username,
 		ephemeralCredential: cred,
 	}

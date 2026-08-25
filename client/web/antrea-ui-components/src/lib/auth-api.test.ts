@@ -19,6 +19,7 @@ import {
     apiLoginWithKubeconfig,
     apiSession,
     apiFetchAppSettings,
+    sessionIdentity,
 } from './auth-api';
 import { APIError, setApiBase } from './api';
 
@@ -153,7 +154,7 @@ describe('apiFetchAppSettings', () => {
                 basicEnabled: true,
                 oidcEnabled: false,
                 kubeconfigEnabled: true,
-                serviceAccountTokenEnabled: true,
+                tokenEnabled: true,
             },
         };
         vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(settings)));
@@ -204,5 +205,53 @@ describe('apiBase prefixing', () => {
 
         await apiFetchAppSettings();
         expect(fetchMock.mock.calls[4][0]).toBe('http://localhost:8080/api/v1/settings');
+    });
+});
+
+describe('sessionIdentity', () => {
+    test('admin mode: the username is the local login name, regardless of what it looks like', () => {
+        expect(sessionIdentity({ mode: 'admin', username: 'admin' }))
+            .toEqual({ name: 'admin', kind: 'Local Admin Account' });
+    });
+
+    // The admin-password session impersonates the antrea-ui-admin ServiceAccount, but that is
+    // not what this session's username is — admin mode must win even though the username here
+    // matches the ServiceAccount pattern.
+    test('admin mode wins over a ServiceAccount-shaped username', () => {
+        expect(sessionIdentity({ mode: 'admin', username: 'system:serviceaccount:antrea-ui:antrea-ui-admin' }))
+            .toEqual({ name: 'system:serviceaccount:antrea-ui:antrea-ui-admin', kind: 'Local Admin Account' });
+    });
+
+    test('a ServiceAccount username is trimmed to namespace:name, independent of login mode', () => {
+        expect(sessionIdentity({ mode: 'token', username: 'system:serviceaccount:antrea-ui:antrea-ui-admin' }))
+            .toEqual({ name: 'antrea-ui:antrea-ui-admin', kind: 'Service Account' });
+    });
+
+    // A kubeconfig can carry a ServiceAccount token just as easily as a pasted one — the
+    // username, not the mode, is what says so.
+    test('a ServiceAccount username reached via kubeconfig is still labeled Service Account', () => {
+        expect(sessionIdentity({ mode: 'kubeconfig', username: 'system:serviceaccount:antrea-ui:reader' }))
+            .toEqual({ name: 'antrea-ui:reader', kind: 'Service Account' });
+    });
+
+    test('a system: username that is not a ServiceAccount is a System User', () => {
+        expect(sessionIdentity({ mode: 'kubeconfig', username: 'system:node:worker-1' }))
+            .toEqual({ name: 'system:node:worker-1', kind: 'System User' });
+    });
+
+    test('an ordinary username is a User, whatever its login mode', () => {
+        expect(sessionIdentity({ mode: 'oidc', username: 'alice@example.com' }))
+            .toEqual({ name: 'alice@example.com', kind: 'User' });
+        expect(sessionIdentity({ mode: 'kubeconfig', username: 'kubernetes-admin' }))
+            .toEqual({ name: 'kubernetes-admin', kind: 'User' });
+    });
+
+    test('a malformed ServiceAccount-looking username (extra colons) falls through to System User, not split wrong', () => {
+        expect(sessionIdentity({ mode: 'token', username: 'system:serviceaccount:a:b:c' }))
+            .toEqual({ name: 'system:serviceaccount:a:b:c', kind: 'System User' });
+    });
+
+    test('mode is optional — a username alone is enough to derive an identity', () => {
+        expect(sessionIdentity({ username: 'alice' })).toEqual({ name: 'alice', kind: 'User' });
     });
 });

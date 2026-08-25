@@ -124,7 +124,7 @@ func newTestServer(t *testing.T, options ...testServerOptions) *testServer {
 	// disable rate limiting by default
 	config.Limits.MaxTraceflowsPerHour = -1
 	config.Auth.Basic.Enabled = true
-	config.Auth.ServiceAccountToken.Enabled = true
+	config.Auth.Token.Enabled = true
 	config.Auth.BearerToken.Enabled = true
 	config.Session.IdleTimeout = 30 * time.Minute
 	config.Session.MaxLifetime = 12 * time.Hour
@@ -353,7 +353,7 @@ func TestBearerFallbackCanBeDisabledIndependentlyOfTokenLogin(t *testing.T) {
 	ts := newTestServer(t, func(c *serverconfig.Config) {
 		c.Auth.BearerToken.Enabled = false
 		// The login mode stays on.
-		c.Auth.ServiceAccountToken.Enabled = true
+		c.Auth.Token.Enabled = true
 	})
 	req := httptest.NewRequest("GET", "/api/v1/k8s/api/v1/pods", nil)
 	req.Header.Set("Authorization", "Bearer some-k8s-token")

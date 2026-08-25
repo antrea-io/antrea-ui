@@ -24,22 +24,34 @@ function errorResponse(status: number, statusText: string, body = ''): Response 
     return new Response(body, { status, statusText });
 }
 
+// Either a fixed answer for a route, or a callback re-evaluated on every call to it — for
+// routes whose answer changes over a test's lifetime, such as GET /auth/session going from 401
+// to a session once the login succeeds.
+type MockResponse = Response | (() => Response);
+
 interface MockFetchOptions {
-    settings?: Response;
-    session?: Response;
-    login?: Response;
-    loginToken?: Response;
-    loginKubeconfig?: Response;
+    settings?: MockResponse;
+    session?: MockResponse;
+    login?: MockResponse;
+    loginToken?: MockResponse;
+    loginKubeconfig?: MockResponse;
 }
 
 function mockFetch(opts: MockFetchOptions) {
+    const routes: Record<string, MockResponse> = {
+        '/api/v1/settings': opts.settings ?? (() => jsonResponse({})),
+        '/auth/session': opts.session ?? (() => errorResponse(401, 'Unauthorized')),
+        '/auth/login': opts.login ?? (() => errorResponse(401, 'Unauthorized')),
+        '/auth/login/token': opts.loginToken ?? (() => errorResponse(401, 'Unauthorized')),
+        '/auth/login/kubeconfig': opts.loginKubeconfig ?? (() => errorResponse(400, 'Bad Request')),
+    };
+    // A Response body can only be read once, but a route can be hit more than once within a
+    // test — a successful login re-probes GET /auth/session — so a fixed Response is cloned
+    // rather than handed out twice. Cloning is only safe because nothing ever reads the original.
     return vi.fn(async (url: string) => {
-        if (url === '/api/v1/settings') return opts.settings ?? jsonResponse({});
-        if (url === '/auth/session') return opts.session ?? errorResponse(401, 'Unauthorized');
-        if (url === '/auth/login') return opts.login ?? errorResponse(401, 'Unauthorized');
-        if (url === '/auth/login/token') return opts.loginToken ?? errorResponse(401, 'Unauthorized');
-        if (url === '/auth/login/kubeconfig') return opts.loginKubeconfig ?? errorResponse(400, 'Bad Request');
-        throw new Error(`unexpected fetch to ${url}`);
+        const route = routes[url];
+        if (!route) throw new Error(`unexpected fetch to ${url}`);
+        return typeof route === 'function' ? route() : route.clone();
     });
 }
 
@@ -50,7 +62,7 @@ function authSettings(overrides: Record<string, unknown>) {
             basicEnabled: false,
             oidcEnabled: false,
             kubeconfigEnabled: false,
-            serviceAccountTokenEnabled: false,
+            tokenEnabled: false,
             ...overrides,
         },
     };
@@ -61,7 +73,7 @@ const settingsOidcOnly = authSettings({ oidcEnabled: true });
 const settingsBoth = authSettings({ basicEnabled: true, oidcEnabled: true });
 const settingsNone = authSettings({});
 const settingsOidcNamed = authSettings({ oidcEnabled: true, oidcProviderName: 'Dex' });
-const settingsTokenOnly = authSettings({ serviceAccountTokenEnabled: true });
+const settingsTokenOnly = authSettings({ tokenEnabled: true });
 const settingsKubeconfigOnly = authSettings({ kubeconfigEnabled: true });
 
 let el: AntreaLoginPage | undefined;
@@ -136,6 +148,26 @@ describe('AntreaLoginPage — session probe on connect', () => {
         expect(page.shadowRoot!.textContent).toContain('Authenticating');
     });
 
+    test('existing session: the event detail carries the session info from the same probe, not a second fetch', async () => {
+        vi.stubGlobal('fetch', mockFetch({
+            settings: jsonResponse(settingsBasicOnly),
+            session: jsonResponse({ authenticated: true, mode: 'admin', username: 'admin' }),
+        }));
+        el = document.createElement('antrea-login-page') as AntreaLoginPage;
+        const onAuth = vi.fn();
+        // Attached before the element joins the DOM: connectedCallback's _init() dispatches
+        // synchronously with respect to its own microtasks, so a listener added after
+        // appendChild (as the shared mount() helper does) would miss it.
+        el.addEventListener('antrea-authenticated', onAuth);
+        document.body.appendChild(el);
+        await el.updateComplete;
+        await new Promise(r => setTimeout(r, 0));
+
+        expect(onAuth).toHaveBeenCalledTimes(1);
+        expect((onAuth.mock.calls[0][0] as CustomEvent).detail).toEqual({ authenticated: true, mode: 'admin', username: 'admin' });
+        expect((fetch as Mock).mock.calls.filter(([url]) => url === '/auth/session')).toHaveLength(1);
+    });
+
     test('401 (no session): shows the login form without an error banner', async () => {
         const page = await mount({
             settings: jsonResponse(settingsBasicOnly),
@@ -180,12 +212,37 @@ describe('AntreaLoginPage — basic login form', () => {
         await page.updateComplete;
     }
 
-    // No token crosses this boundary any more: the backend set an HttpOnly cookie, and the host
-    // only needs to know that a session now exists.
-    test('successful login dispatches antrea-authenticated with no payload', async () => {
+    // No token crosses this boundary any more: the backend set an HttpOnly cookie. The login
+    // response itself carries no session info, so a successful login fetches it with one more
+    // GET /auth/session before telling the host — that's the same info the host would otherwise
+    // have to fetch itself just to display who is logged in.
+    test('successful login fetches the session info and dispatches it as the event payload', async () => {
+        let sessionCalls = 0;
+        const page = await mount({
+            settings: jsonResponse(settingsBasicOnly),
+            // The initial connect-time probe must still see "no session" (401) so the login form
+            // renders at all; only the post-submit probe should find the newly-created session.
+            session: () => (++sessionCalls === 1
+                ? errorResponse(401, 'Unauthorized')
+                : jsonResponse({ authenticated: true, mode: 'admin', username: 'admin' })),
+            login: new Response('', { status: 200 }),
+        });
+
+        const onAuth = vi.fn();
+        page.addEventListener('antrea-authenticated', onAuth);
+        await submitLogin(page, 'admin', 'xyz');
+
+        expect(onAuth).toHaveBeenCalledTimes(1);
+        expect((onAuth.mock.calls[0][0] as CustomEvent).detail).toEqual({ authenticated: true, mode: 'admin', username: 'admin' });
+    });
+
+    // The login itself already succeeded (the cookie is set) — losing this best-effort follow-up
+    // fetch must not turn into losing the login. The host just gets no identity to display.
+    test('a successful login still dispatches antrea-authenticated even if the follow-up session fetch fails', async () => {
         const page = await mount({
             settings: jsonResponse(settingsBasicOnly),
             login: new Response('', { status: 200 }),
+            session: errorResponse(401, 'Unauthorized'),
         });
         const onAuth = vi.fn();
         page.addEventListener('antrea-authenticated', onAuth);

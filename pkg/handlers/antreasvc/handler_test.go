@@ -101,7 +101,7 @@ func TestRequestsHandler(t *testing.T) {
 	// delegates authn/authz to Kubernetes) authorizes them against that user's own RBAC.
 	t.Run("end-user bearer token", func(t *testing.T) {
 		sess, err := store.Create(&session.Spec{
-			Mode:       session.ModeSAToken,
+			Mode:       session.ModeToken,
 			Credential: session.Credential{Kind: session.KindBearer, Token: []byte("user-token")},
 		})
 		require.NoError(t, err)

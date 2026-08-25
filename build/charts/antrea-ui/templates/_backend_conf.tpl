@@ -15,8 +15,8 @@ auth:
       {{- toYaml .Values.auth.oidc.scopes | nindent 6 }}
   kubeconfig:
     enabled: {{ .Values.auth.kubeconfig.enable }}
-  serviceAccountToken:
-    enabled: {{ .Values.auth.serviceAccountToken.enable }}
+  token:
+    enabled: {{ .Values.auth.token.enable }}
   bearerToken:
     enabled: {{ .Values.auth.bearerToken.enable }}
   cookieSecure: {{ include "cookieSecure" . }}

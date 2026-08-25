@@ -170,7 +170,7 @@ func TestLoginWithToken(t *testing.T) {
 		require.NotNil(t, cookie)
 		sess, err := ts.sessionStore.Get(t.Context(), cookie.Value)
 		require.NoError(t, err)
-		assert.Equal(t, session.ModeSAToken, sess.Mode())
+		assert.Equal(t, session.ModeToken, sess.Mode())
 		assert.Equal(t, session.KindBearer, sess.Credential().Kind)
 		assert.Equal(t, []byte(token), sess.Credential().Token)
 		// The identity comes from the API server's SelfSubjectReview answer.
@@ -207,7 +207,7 @@ func TestLoginWithToken(t *testing.T) {
 	})
 
 	t.Run("disabled", func(t *testing.T) {
-		ts := newTestServer(t, disableSATokenAuth())
+		ts := newTestServer(t, disableTokenAuth())
 		rr := postJSON(ts, "/auth/login/token", apisv1.LoginTokenRequest{Token: "tok"})
 		assert.Equal(t, http.StatusNotFound, rr.Code)
 	})
@@ -373,7 +373,7 @@ func TestSession(t *testing.T) {
 		var info apisv1.SessionInfo
 		require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &info))
 		assert.True(t, info.Authenticated)
-		assert.Equal(t, "serviceAccountToken", info.Mode)
+		assert.Equal(t, "token", info.Mode)
 		assert.Equal(t, "alice", info.Username)
 		require.NotNil(t, info.ExpiresAt)
 	})
@@ -413,7 +413,7 @@ func TestLogout(t *testing.T) {
 		ts := newTestServer(t)
 		token := []byte("tok-to-be-zeroed")
 		sess, err := ts.sessionStore.Create(&session.Spec{
-			Mode:       session.ModeSAToken,
+			Mode:       session.ModeToken,
 			Credential: session.Credential{Kind: session.KindBearer, Token: token},
 		})
 		require.NoError(t, err)

@@ -18,7 +18,7 @@ holds the credential server-side and presents it upstream on your behalf — the
 | Admin password | `auth.basic.enable` (default `true`) | The `antrea-ui-admin` ServiceAccount, via impersonation |
 | OIDC | `auth.oidc.enable` (default `false`) | Your own, from the id_token |
 | Kubeconfig upload | `auth.kubeconfig.enable` (default `false`) | Your own, from the kubeconfig's current context |
-| Kubernetes token | `auth.serviceAccountToken.enable` (default `true`) | Your own, from the pasted token |
+| Kubernetes token | `auth.token.enable` (default `true`) | Your own, from the pasted token |
 
 The modes are independent — enable any combination. The login page renders only
 the controls for the modes that are enabled. At least one of them must be on.

@@ -19,7 +19,7 @@ import { MemoryRouter, Routes, Route } from 'react-router';
 import { Provider } from 'react-redux';
 import { resetAccessSummary } from '@antrea/ui-components';
 import type { AccessSummary } from '@antrea/ui-components';
-import { setupStore, setSession } from './store';
+import { setupStore, setSession, setAuthenticated } from './store';
 import { AccessProvider, useAccess } from './access';
 import { HomeRedirect } from './pages';
 
@@ -112,7 +112,7 @@ describe('AccessProvider', () => {
         // both call resetAccessSummary() before flipping the session state.
         resetAccessSummary();
         act(() => { store.dispatch(setSession('anonymous')); });
-        act(() => { store.dispatch(setSession('authenticated')); });
+        act(() => { store.dispatch(setAuthenticated(null)); });
 
         await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
     });

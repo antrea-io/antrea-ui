@@ -51,7 +51,7 @@ type Config struct {
 	CookieSecure bool
 	// BearerFallbackEnabled mirrors auth.bearerToken.enabled: it allows a client to
 	// authenticate with "Authorization: Bearer <k8s-token>" instead of a session cookie. It is
-	// independent of the paste-a-token login mode (auth.serviceAccountToken.enabled), which
+	// independent of the paste-a-token login mode (auth.token.enabled), which
 	// accepts the same credential but creates a session from it.
 	BearerFallbackEnabled bool
 	// BearerValidator checks a bearer token with the Kubernetes API server. It is required
