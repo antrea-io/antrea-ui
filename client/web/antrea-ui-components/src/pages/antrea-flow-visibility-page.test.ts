@@ -160,6 +160,23 @@ describe('AntreaFlowVisibilityPage — smoke and stream lifecycle', () => {
     });
 });
 
+describe('AntreaFlowVisibilityPage — viewMode', () => {
+    // There is no in-page control for this any more (see nav.tsx's antrea-nav-group): the host
+    // drives it entirely from the URL, one-way.
+    test('defaults to list view, renders the map and updates the page title when viewMode is set to "map"', async () => {
+        const page = await mount(async () => sseResponse([]));
+        await vi.advanceTimersByTimeAsync(0);
+        expect(page.shadowRoot!.querySelector('#graph-svg')).toBeNull();
+        expect(page.shadowRoot!.querySelector('.page-title')!.textContent).toBe('Flow List');
+
+        page.viewMode = 'map';
+        await page.updateComplete;
+
+        expect(page.shadowRoot!.querySelector('#graph-svg')).not.toBeNull();
+        expect(page.shadowRoot!.querySelector('.page-title')!.textContent).toBe('Service Map');
+    });
+});
+
 describe('AntreaFlowVisibilityPage — antrea-edge-selected extension point', () => {
     async function mountWithOneEdge(): Promise<AntreaFlowVisibilityPage> {
         const page = await mount(async () => sseResponse([flowEventChunk([makeFlow({ ingressPolicy: 'allow-client' })])]));
@@ -169,7 +186,7 @@ describe('AntreaFlowVisibilityPage — antrea-edge-selected extension point', ()
         // Switch to map view — this is what triggers _buildServiceMap(), synchronously
         // populating _graphRef.edgeMap and wiring up click handlers on the rendered paths
         // (independent of the D3 force simulation, which only animates positions afterward).
-        (page as unknown as { _viewMode: string })._viewMode = 'map';
+        page.viewMode = 'map';
         await page.updateComplete;
         return page;
     }

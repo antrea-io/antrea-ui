@@ -15,7 +15,7 @@
 export { AntreaButton } from './antrea-button.js';
 export { AntreaAlert } from './antrea-alert.js';
 export { AntreaCard } from './antrea-card.js';
-export { AntreaNav, AntreaNavItem } from './antrea-nav.js';
+export { AntreaNav, AntreaNavItem, AntreaNavGroup } from './antrea-nav.js';
 export { AntreaInput } from './antrea-input.js';
 export { AntreaSummaryPage } from './pages/antrea-summary-page.js';
 export { AntreaSettingsPage } from './pages/antrea-settings-page.js';

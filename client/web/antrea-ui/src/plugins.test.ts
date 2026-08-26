@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { loadPlugins, dedupeByPath, getPluginRoutes, type PluginManifest, type PluginRoute } from './plugins';
+import { loadPlugins, dedupeByPath, getPluginRoutes, resolveParentPaths, type PluginManifest, type PluginRoute, type PluginSidebarEntry } from './plugins';
 
 function jsonResponse(body: unknown, status = 200): Response {
     return new Response(JSON.stringify(body), { status });
@@ -76,6 +76,48 @@ describe('dedupeByPath', () => {
         const items = [{ path: '/plugin/pod-counter' }, { path: '/plugin/other' }];
 
         expect(dedupeByPath(items, 'route')).toEqual(items);
+    });
+});
+
+describe('resolveParentPaths', () => {
+    function entry(overrides: Partial<PluginSidebarEntry> = {}): PluginSidebarEntry {
+        return { label: 'Sub Page', path: '/plugin/sub-page', ...overrides };
+    }
+
+    test('an entry with no parentPath passes through unchanged', () => {
+        expect(resolveParentPaths([entry()])).toEqual([entry()]);
+    });
+
+    test('a parentPath matching a built-in page is kept and normalized', () => {
+        const result = resolveParentPaths([entry({ parentPath: '/flows' })]);
+        expect(result).toEqual([entry({ parentPath: 'flows' })]);
+    });
+
+    test('a parentPath matching another top-level plugin entry is kept', () => {
+        const parent = entry({ label: 'Parent', path: '/plugin/parent' });
+        const child = entry({ parentPath: 'plugin/parent' });
+
+        expect(resolveParentPaths([parent, child])).toEqual([parent, child]);
+    });
+
+    test('a parentPath with no matching top-level entry is dropped, with a logged reason', () => {
+        const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+        const child = entry({ parentPath: '/no-such-entry' });
+
+        expect(resolveParentPaths([child])).toEqual([entry()]);
+        expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('is not a top-level entry'));
+    });
+
+    test('nesting two levels deep is rejected: a parentPath pointing at an already-nested entry is dropped', () => {
+        const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+        const parent = entry({ label: 'Parent', path: '/plugin/parent' });
+        const child = entry({ label: 'Child', path: '/plugin/child', parentPath: 'plugin/parent' });
+        const grandchild = entry({ label: 'Grandchild', path: '/plugin/grandchild', parentPath: 'plugin/child' });
+
+        const result = resolveParentPaths([parent, child, grandchild]);
+
+        expect(result).toEqual([parent, child, entry({ label: 'Grandchild', path: '/plugin/grandchild' })]);
+        expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('is not a top-level entry (or is itself nested)'));
     });
 });
 

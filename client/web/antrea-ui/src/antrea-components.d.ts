@@ -16,7 +16,7 @@
 // Allows using <antrea-button>, <antrea-input>, etc. in TSX files without
 // TypeScript errors, and provides prop type checking.
 
-import type { AntreaButton, AntreaAlert, AntreaCard, AntreaNav, AntreaNavItem, AntreaInput, EdgeExtraRenderer, FlowTableColumnsProcessor } from '@antrea/ui-components';
+import type { AntreaButton, AntreaAlert, AntreaCard, AntreaNav, AntreaNavItem, AntreaNavGroup, AntreaInput, EdgeExtraRenderer, FlowTableColumnsProcessor } from '@antrea/ui-components';
 import React from 'react';
 
 type ButtonAction = 'solid' | 'outline' | 'flat';
@@ -41,8 +41,15 @@ declare global {
             'antrea-nav': React.HTMLAttributes<AntreaNav> & {
                 expanded?: boolean | string;
             };
-            'antrea-nav-item': React.HTMLAttributes<AntreaNavItem> & {
+            // & React.Attributes (rather than plain React.HTMLAttributes, as most entries above
+            // use) so `key` type-checks when these are rendered from an array — antrea-nav-item
+            // and antrea-nav-group are the only elements here ever rendered from a
+            // pluginSidebarEntries.map() (see nav.tsx).
+            'antrea-nav-item': React.HTMLAttributes<AntreaNavItem> & React.Attributes & {
                 active?: boolean;
+            };
+            'antrea-nav-group': React.HTMLAttributes<AntreaNavGroup> & React.Attributes & {
+                hasActiveChild?: boolean;
             };
             'antrea-input': React.HTMLAttributes<AntreaInput> & {
                 ref?: React.Ref<HTMLElement & { value: string }>;
@@ -63,6 +70,7 @@ declare global {
             'antrea-flow-visibility-page': React.HTMLAttributes<HTMLElement> & React.ClassAttributes<HTMLElement> & {
                 edgeExtraRenderers?: EdgeExtraRenderer[];
                 flowTableColumnsProcessors?: FlowTableColumnsProcessor[];
+                viewMode?: 'list' | 'map';
             };
             'antrea-login-page': React.HTMLAttributes<HTMLElement> & React.ClassAttributes<HTMLElement>;
         }

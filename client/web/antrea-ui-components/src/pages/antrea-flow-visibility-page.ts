@@ -430,8 +430,10 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         .warn { color: var(--antrea-color-warning, #f5a623); }
     `];
 
-    // View
-    @state() private _viewMode: 'list' | 'map' = 'list';
+    // View. A property, not @state: Flow List and Service Map are second-level pages under Flow
+    // Visibility in the sidebar (see antrea-nav-group in @antrea/ui-components and nav.tsx), so
+    // the host drives this from the URL — there is no in-page control for it any more.
+    @property() viewMode: 'list' | 'map' = 'list';
     @state() private _paused = false;
 
     // Namespace filter menu is intersected with this once loaded, so users only see namespaces
@@ -530,7 +532,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
     override updated(changed: Map<string, unknown>) {
         super.updated(changed);
         // Setup ResizeObserver once the DOM is ready
-        if (changed.has('_viewMode') && this._viewMode === 'map') {
+        if (changed.has('viewMode') && this.viewMode === 'map') {
             // The <svg> is always freshly created when switching into map view (render()
             // ternaries between list/map templates, so Lit tears down and recreates the whole
             // subtree). Reset the memoized topology key so _buildServiceMap() does a full
@@ -543,13 +545,13 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         // The <svg>/simulation only exist while in map view — leaving it tears down the DOM
         // Lit-side, but the simulation would otherwise keep ticking against detached nodes and
         // the ResizeObserver would keep observing until disconnectedCallback.
-        if (changed.has('_viewMode') && this._viewMode !== 'map') {
+        if (changed.has('viewMode') && this.viewMode !== 'map') {
             this._simulation?.stop();
             this._ro?.disconnect();
             this._ro = null;
         }
         // Rebuild map when entries or SVG width change
-        if ((changed.has('_entries') || changed.has('_svgWidth')) && this._viewMode === 'map') {
+        if ((changed.has('_entries') || changed.has('_svgWidth')) && this.viewMode === 'map') {
             this._buildServiceMap();
         }
         if (changed.has('_selectedEdgeKey')) {
@@ -1201,18 +1203,14 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
             <main>
                 <div class="page-layout" style="max-width:100%">
                     <div class="row">
-                        <p class="page-title">Flow Visibility</p>
-                        <div class="btn-group">
-                            <antrea-button type="button" action=${this._viewMode === 'list' ? 'solid' : 'outline'} @click=${() => { this._viewMode = 'list'; }}>Flow List</antrea-button>
-                            <antrea-button type="button" action=${this._viewMode === 'map' ? 'solid' : 'outline'} @click=${() => { this._viewMode = 'map'; }}>Service Map</antrea-button>
-                        </div>
+                        <p class="page-title">${this.viewMode === 'list' ? 'Flow List' : 'Service Map'}</p>
                     </div>
 
                     ${this._renderFilters()}
 
                     ${this._error ? html`<antrea-alert status="danger">${this._error}</antrea-alert>` : nothing}
 
-                    ${this._viewMode === 'list' ? this._renderFlowList() : this._renderServiceMap()}
+                    ${this.viewMode === 'list' ? this._renderFlowList() : this._renderServiceMap()}
                 </div>
             </main>
         `;

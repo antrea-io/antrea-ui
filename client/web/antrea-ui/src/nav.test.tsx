@@ -83,6 +83,96 @@ describe('NavTab', () => {
     });
 });
 
+describe('NavTab — Flow Visibility built-in nesting', () => {
+    beforeEach(() => {
+        mockUseAccess.mockReturnValue({ summary: null, loaded: true });
+    });
+
+    test('Flow List and Service Map render nested under Flow Visibility, unconditionally', () => {
+        render(<NavTab pluginSidebarEntries={[]} />, { wrapper: MemoryRouter });
+
+        // Both the Flow Visibility header itself and the nested Flow List item link to
+        // /flows/list — the header IS the default sub-page's link, not a separate destination.
+        const listLinks = document.querySelectorAll('a[href="/flows/list"]');
+        const mapLink = document.querySelector('a[href="/flows/map"]');
+        expect(listLinks).toHaveLength(2);
+        expect(mapLink).not.toBeNull();
+
+        const group = mapLink!.closest('antrea-nav-group');
+        expect(group).not.toBeNull();
+        expect(listLinks[0].closest('antrea-nav-group')).toBe(group);
+        expect(listLinks[1].closest('antrea-nav-group')).toBe(group);
+    });
+
+    test('Flow Visibility group auto-expands when on the Service Map sub-page', () => {
+        render(
+            <MemoryRouter initialEntries={['/flows/map']}>
+                <NavTab pluginSidebarEntries={[]} />
+            </MemoryRouter>
+        );
+
+        const mapLink = document.querySelector('a[href="/flows/map"]');
+        const group = mapLink!.closest('antrea-nav-group') as unknown as { hasActiveChild?: boolean };
+        expect(group.hasActiveChild).toBe(true);
+
+        const mapNavItem = mapLink!.closest('antrea-nav-item') as unknown as { active?: boolean };
+        expect(mapNavItem.active).toBe(true);
+    });
+});
+
+describe('NavTab — nested plugin entries', () => {
+    beforeEach(() => {
+        mockUseAccess.mockReturnValue({ summary: null, loaded: true });
+    });
+
+    test('a plugin entry nested under another plugin entry renders inside an antrea-nav-group', () => {
+        const parentEntry: PluginSidebarEntry = { label: 'Parent', path: '/plugin/parent' };
+        const childEntry: PluginSidebarEntry = { label: 'Child', path: '/plugin/child', parentPath: 'plugin/parent' };
+        render(<NavTab pluginSidebarEntries={[parentEntry, childEntry]} />, { wrapper: MemoryRouter });
+
+        const parentLink = document.querySelector('a[href="/plugin/parent"]');
+        const childLink = document.querySelector('a[href="/plugin/child"]');
+        expect(parentLink).not.toBeNull();
+        expect(childLink).not.toBeNull();
+
+        const group = childLink!.closest('antrea-nav-group');
+        expect(group).not.toBeNull();
+        expect(parentLink!.closest('antrea-nav-group')).toBe(group);
+    });
+
+    test('a plugin entry nested under a built-in page renders inside an antrea-nav-group', () => {
+        const childEntry: PluginSidebarEntry = { label: 'Extra Flows Page', path: '/plugin/extra-flows', parentPath: 'flows' };
+        render(<NavTab pluginSidebarEntries={[childEntry]} />, { wrapper: MemoryRouter });
+
+        const flowsLink = document.querySelector('a[href="/flows/list"]');
+        const childLink = document.querySelector('a[href="/plugin/extra-flows"]');
+        expect(childLink!.closest('antrea-nav-group')).toBe(flowsLink!.closest('antrea-nav-group'));
+    });
+
+    test('the group auto-expands (hasActiveChild) when the current path matches a nested entry', () => {
+        const childEntry: PluginSidebarEntry = { label: 'Extra Flows Page', path: '/plugin/extra-flows', parentPath: 'flows' };
+        render(
+            <MemoryRouter initialEntries={['/plugin/extra-flows']}>
+                <NavTab pluginSidebarEntries={[childEntry]} />
+            </MemoryRouter>
+        );
+
+        const childLink = document.querySelector('a[href="/plugin/extra-flows"]');
+        const group = childLink!.closest('antrea-nav-group') as unknown as { hasActiveChild?: boolean };
+        expect(group.hasActiveChild).toBe(true);
+    });
+
+    test('an entry with an unresolvable parentPath is dropped from the sidebar entirely, matching getPluginSidebarEntries', () => {
+        // NavTab trusts its pluginSidebarEntries prop as already resolved (see plugins.ts's
+        // resolveParentPaths) — an entry a caller hands it directly with a dangling parentPath
+        // has no group to nest under, so it renders nothing rather than falling back to top-level.
+        const orphanEntry: PluginSidebarEntry = { label: 'Orphan', path: '/plugin/orphan', parentPath: 'no-such-parent' };
+        render(<NavTab pluginSidebarEntries={[orphanEntry]} />, { wrapper: MemoryRouter });
+
+        expect(document.querySelector('a[href="/plugin/orphan"]')).toBeNull();
+    });
+});
+
 describe('NavTab — permission gating', () => {
     test('while unloaded, renders no core items', () => {
         mockUseAccess.mockReturnValue({ summary: null, loaded: false });
@@ -91,7 +181,7 @@ describe('NavTab — permission gating', () => {
         expect(document.querySelector('a[href="/summary"]')).toBeNull();
         expect(document.querySelector('a[href="/traceflow"]')).toBeNull();
         // Flow Visibility and Settings have no per-user RBAC, so they are not gated on load.
-        expect(document.querySelector('a[href="/flows"]')).not.toBeNull();
+        expect(document.querySelector('a[href="/flows/list"]')).not.toBeNull();
         expect(document.querySelector('a[href="/settings"]')).not.toBeNull();
     });
 

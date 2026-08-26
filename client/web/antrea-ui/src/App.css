@@ -107,6 +107,15 @@ antrea-nav:not([expanded]) .nav-label {
     display: none;
 }
 
+/*
+ * Same reasoning as .nav-label above, but for antrea-nav-group's own expand/collapse toggle: an
+ * icon-only sidebar has no room for a group's nested items anyway (their labels are already
+ * hidden by the rule above), so the toggle has nothing left to expand/collapse.
+ */
+antrea-nav:not([expanded]) antrea-nav-group::part(toggle) {
+    display: none;
+}
+
 .app-body {
     display: flex;
     flex: 1;

@@ -32,8 +32,9 @@ export function HomeRedirect() {
     if (canViewSummary(summary)) return <Navigate to="/summary" replace />;
     if (can(summary, GATE_TRACEFLOW_CREATE)) return <Navigate to="/traceflow" replace />;
     // Flow Visibility has no per-user RBAC today (see docs/authentication.md), so it is always
-    // eligible and is the practical floor here.
-    return <Navigate to="/flows" replace />;
+    // eligible and is the practical floor here. Goes straight to its default sub-page (Flow
+    // List) rather than "/flows", which only exists to redirect there itself.
+    return <Navigate to="/flows/list" replace />;
 }
 
 // Wraps a page element so it only renders when predicate(summary) is true, matching the
@@ -101,11 +102,16 @@ export function TraceflowPage() {
     );
 }
 
-export function FlowVisibilityPage() {
+// view is the route's own sub-page (see index.tsx's "flows/list" / "flows/map" routes) — the sole
+// source of truth for which one is showing, flowing one-way into the Lit element's viewMode
+// property. There is no in-page control that could disagree with it: switching is entirely a
+// sidebar (nav.tsx) concern.
+export function FlowVisibilityPage({ view }: { view: 'list' | 'map' }) {
     const { ref } = useLitPage();
     return (
         <antrea-flow-visibility-page
             ref={ref}
+            viewMode={view}
             edgeExtraRenderers={getEdgeExtraRenderers()}
             flowTableColumnsProcessors={getFlowTableColumnsProcessors()}
         />

@@ -193,12 +193,124 @@ export class AntreaNavItem extends LitElement {
     }
 }
 
+/**
+ * Collapsible wrapper for a nested group of antrea-nav-item elements — e.g. Flow Visibility's
+ * Flow List / Service Map sub-pages, or a plugin's own nested entries (see
+ * `@antrea/ui-plugin-sdk`'s `PluginSidebarEntry.parentPath`). Active-item highlighting is not
+ * this component's job: put an `active` antrea-nav-item in the "header" slot for the group's own
+ * page, and give nested antrea-nav-items their own `active` as usual — this component only owns
+ * the expand/collapse chrome, so any host or plugin gets the same nested-nav rendering without
+ * reimplementing it.
+ *
+ * Clicking anywhere in the header row toggles expand/collapse (not just the chevron) — the click
+ * handler lives on the row, and the header slot's own click (e.g. its Link) still navigates as
+ * normal since toggling doesn't preventDefault. Clicking again while expanded collapses it.
+ *
+ * @slot header - The group's own antrea-nav-item (its link, icon, active state)
+ * @slot - Nested antrea-nav-item elements, shown when expanded
+ * @attr expanded - Reflects whether the group is currently expanded
+ * @prop hasActiveChild - Set by the host when one of the nested items is the current page, so the
+ *   group starts expanded instead of hiding the active page behind a collapsed toggle. Only
+ *   consulted on first render — afterwards, the user's own toggle sticks.
+ *
+ * CSS tokens consumed:
+ *   --antrea-nav-item-text, --antrea-nav-item-text-active, --antrea-space-md
+ */
+export class AntreaNavGroup extends LitElement {
+    static styles = css`
+        :host {
+            display: block;
+        }
+
+        .group-header {
+            display: flex;
+            align-items: stretch;
+            cursor: pointer;
+        }
+
+        .group-header ::slotted(*) {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .group-toggle {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+            width: 32px;
+            background: none;
+            border: none;
+            cursor: pointer;
+            color: var(--antrea-nav-item-text, #adbbc4);
+        }
+
+        .group-header:hover .group-toggle {
+            color: var(--antrea-nav-item-text-active, #e9ecef);
+        }
+
+        .toggle-icon {
+            display: inline-block;
+            width: 7px;
+            height: 7px;
+            border-right: 2px solid currentColor;
+            border-bottom: 2px solid currentColor;
+            transform: rotate(45deg);
+            transition: transform 0.15s;
+        }
+
+        :host([expanded]) .toggle-icon {
+            transform: rotate(225deg);
+        }
+
+        .group-children {
+            padding-left: var(--antrea-space-md, 1rem);
+        }
+
+        .group-children.collapsed {
+            display: none;
+        }
+    `;
+
+    @property({ type: Boolean, reflect: true }) expanded = false;
+    @property({ type: Boolean }) hasActiveChild = false;
+
+    protected firstUpdated() {
+        if (this.hasActiveChild) this.expanded = true;
+    }
+
+    private _handleToggle() {
+        this.expanded = !this.expanded;
+    }
+
+    render() {
+        return html`
+            <div class="group-header" @click=${this._handleToggle}>
+                <slot name="header"></slot>
+                <button
+                    class="group-toggle"
+                    part="toggle"
+                    aria-label=${this.expanded ? 'Collapse group' : 'Expand group'}
+                    aria-expanded=${this.expanded}
+                >
+                    <span class="toggle-icon"></span>
+                </button>
+            </div>
+            <div class="group-children ${this.expanded ? '' : 'collapsed'}">
+                <slot></slot>
+            </div>
+        `;
+    }
+}
+
 customElements.define('antrea-nav', AntreaNav);
 customElements.define('antrea-nav-item', AntreaNavItem);
+customElements.define('antrea-nav-group', AntreaNavGroup);
 
 declare global {
     interface HTMLElementTagNameMap {
         'antrea-nav': AntreaNav;
         'antrea-nav-item': AntreaNavItem;
+        'antrea-nav-group': AntreaNavGroup;
     }
 }

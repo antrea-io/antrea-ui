@@ -132,6 +132,16 @@ an external link) or vice versa; pass the same `path` to both to link them,
 as above. `registerSidebarEntry`'s optional `icon` is SVG path `d` data,
 16x16 (`viewBox="0 0 16 16"`), matching the built-in nav icons' style.
 
+An entry can also nest under another top-level entry by setting `parentPath`
+to that entry's `path` — a built-in page's (`flows`, `summary`, `traceflow`,
+`settings`) or another plugin's own top-level entry's, with or without a
+leading slash. The host renders it as a collapsible group (an
+`antrea-nav-group`, from `@antrea/ui-components` — the same primitive the
+host would use to nest, say, Flow List and Service Map under Flow Visibility)
+instead of a flat item. Nesting is one level deep: pointing `parentPath` at
+an entry that is itself nested is invalid, and the host drops the nesting
+(falling back to a top-level entry) and logs why.
+
 `@antrea/ui-plugin-sdk` is a devDependency resolved from this repo's
 workspace (`file:../../../client/web/antrea-ui-plugin-sdk` in
 `package.json`) — build it once before building any example plugin:
@@ -208,7 +218,7 @@ a plugin" above:
 | Function | Extends | Notes |
 | --- | --- | --- |
 | `registerRoute` | Router | Adds a whole new page at `route.path`, rendering `route.tag`'s custom element. |
-| `registerSidebarEntry` | Sidebar | Adds a nav entry linking to `entry.path`. |
+| `registerSidebarEntry` | Sidebar | Adds a nav entry linking to `entry.path`; nests under `entry.parentPath` if set. |
 | `registerEdgeExtraRenderer` | Service map edge details card | Called with an `EdgeSelection` on each selection change; return `null` to render nothing. |
 | `registerFlowTableColumnsProcessor` | Flow list table | Plugin-added columns aren't sortable — only built-in columns carry the sort key. |
 
