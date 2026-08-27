@@ -38,6 +38,24 @@ HTMLFormElement.prototype.requestSubmit = function (submitter?: HTMLElement) {
     this.dispatchEvent(event);
 };
 
+// Node 22+ ships an experimental global `localStorage` (https://nodejs.org/api/globals.html
+// #localstorage) that silently returns undefined for every access unless the process is started
+// with --localstorage-file. Vitest's jsdom environment sees that global already exists and skips
+// installing jsdom's own (working) Storage over it, so without this, every localStorage access in
+// a test run just returns undefined — not an error, which makes it look like a real code bug.
+// Replace it with a minimal in-memory Storage: nothing here needs the storage `event`.
+class MemoryStorage implements Storage {
+    [name: string]: any;
+    private store = new Map<string, string>();
+    get length() { return this.store.size; }
+    clear() { this.store.clear(); }
+    getItem(key: string) { return this.store.has(key) ? this.store.get(key)! : null; }
+    key(index: number) { return Array.from(this.store.keys())[index] ?? null; }
+    removeItem(key: string) { this.store.delete(key); }
+    setItem(key: string, value: string) { this.store.set(key, String(value)); }
+}
+Object.defineProperty(globalThis, 'localStorage', { value: new MemoryStorage(), configurable: true });
+
 // jsdom's attachInternals() returns an ElementInternals whose `.form` getter always returns
 // undefined — antrea-button/antrea-input rely on `.form` to find their owning form from
 // inside a shadow root. Patch it to fall back to a light-DOM ancestor lookup, which covers

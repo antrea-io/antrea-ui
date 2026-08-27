@@ -150,6 +150,7 @@ describe('HomeRedirect', () => {
                     <MemoryRouter initialEntries={['/']}>
                         <Routes>
                             <Route path="/" element={<HomeRedirect />} />
+                            <Route path="/overview" element={<div data-testid="landed">overview</div>} />
                             <Route path="/summary" element={<div data-testid="landed">summary</div>} />
                             <Route path="/traceflow" element={<div data-testid="landed">traceflow</div>} />
                             <Route path="/flows/list" element={<div data-testid="landed">flows</div>} />
@@ -160,6 +161,13 @@ describe('HomeRedirect', () => {
             </Provider>,
         );
     }
+
+    test('lands on /overview when canViewOverview is granted', async () => {
+        renderAt(summaryWith({
+            rules: { resourceRules: [{ apiGroups: [''], resources: ['pods'], verbs: ['list'] }], nonResourceRules: [], incomplete: false },
+        }));
+        await waitFor(() => expect(document.querySelector('[data-testid="landed"]')?.textContent).toBe('overview'));
+    });
 
     test('lands on /summary when canViewSummary is granted', async () => {
         renderAt(summaryWith({
@@ -206,8 +214,8 @@ describe('HomeRedirect', () => {
         await waitFor(() => expect(document.querySelector('[data-testid="landed"]')?.textContent).toBe('settings'));
     });
 
-    test('fails open to /summary when the fetch fails', async () => {
+    test('fails open to /overview when the fetch fails', async () => {
         renderAt(null);
-        await waitFor(() => expect(document.querySelector('[data-testid="landed"]')?.textContent).toBe('summary'));
+        await waitFor(() => expect(document.querySelector('[data-testid="landed"]')?.textContent).toBe('overview'));
     });
 });
