@@ -190,6 +190,38 @@ antrea-nav:not([expanded]) antrea-nav-group::part(toggle) {
     gap: 1.5rem;
 }
 
+/* An underline tab strip (Overview's built-in tab plus any plugin-registered ones, see
+   pages.tsx's OverviewPage) — a horizontal baseline shared by every tab, with the active one's
+   segment picked out in the accent colour, rather than antrea-button's filled/outline pills. */
+.tab-bar {
+    display: flex;
+    gap: 1.5rem;
+    border-bottom: 1px solid var(--antrea-color-border, #314351);
+}
+
+.tab-bar-item {
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    /* Overlaps .tab-bar's own border so the underline sits flush on the baseline instead of
+       floating a couple of pixels below it. */
+    margin-bottom: -1px;
+    padding: 0 0 0.5rem;
+    font: inherit;
+    font-size: var(--antrea-font-size-base, 0.875rem);
+    color: var(--antrea-color-text-muted, #adbbc4);
+    cursor: pointer;
+}
+
+.tab-bar-item:hover {
+    color: var(--antrea-color-text, #e9ecef);
+}
+
+.tab-bar-item.active {
+    color: var(--antrea-color-text, #e9ecef);
+    border-bottom-color: var(--antrea-color-primary, #0079b8);
+}
+
 .row {
     display: flex;
     align-items: center;

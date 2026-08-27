@@ -560,8 +560,8 @@ as above. `registerSidebarEntry`'s optional `icon` is SVG path `d` data,
 16x16 (`viewBox="0 0 16 16"`), matching the built-in nav icons' style.
 
 An entry can also nest under another top-level entry by setting `parentPath`
-to that entry's `path` — a built-in page's (`flows`, `summary`, `traceflow`,
-`settings`) or another plugin's own top-level entry's, with or without a
+to that entry's `path` — a built-in page's (`overview`, `flows`, `summary`,
+`traceflow`, `settings`) or another plugin's own top-level entry's, with or without a
 leading slash. The host renders it as a collapsible group (an
 `antrea-nav-group`, from `@antrea/ui-components` — the same primitive the
 host would use to nest, say, Flow List and Service Map under Flow Visibility)
@@ -569,13 +569,13 @@ instead of a flat item. Nesting is one level deep: pointing `parentPath` at
 an entry that is itself nested is invalid, and the host drops the nesting
 (falling back to a top-level entry) and logs why.
 
-`summary`, `traceflow` and `flows` are themselves gated by per-user RBAC
-(see [authentication.md](authentication.md)) and simply don't render for a
-user who fails that gate; `flows` requires a cluster-wide `watch` grant on
-`flows.observability.antrea.io`. Nesting under any of them still falls back
-to a top-level entry for such a user, same as the invalid-nesting case above
-— but silently, per user, and without dropping anything: the entry itself is
-always valid, it just isn't always nested.
+`overview`, `summary`, `traceflow` and `flows` are themselves gated by
+per-user RBAC (see [authentication.md](authentication.md)) and simply don't
+render for a user who fails that gate; `flows` requires a cluster-wide
+`watch` grant on `flows.observability.antrea.io`. Nesting under any of them
+still falls back to a top-level entry for such a user, same as the
+invalid-nesting case above — but silently, per user, and without dropping
+anything: the entry itself is always valid, it just isn't always nested.
 
 `@antrea/ui-plugin-sdk` is a devDependency resolved from this repo's
 workspace (`file:../../../client/web/antrea-ui-plugin-sdk` in
@@ -621,7 +621,8 @@ in your plugin's install instructions. See
 
 Everything above adds a whole new page. A plugin can instead extend a page
 Antrea UI already ships — e.g. render extra content in the service map's
-edge details card, or add a column to the flow list table — via
+edge details card, add a column to the flow list table, or add a tab to the
+Overview landing page — via
 `@antrea/ui-plugin-sdk`, modeled on
 [Headlamp's plugin registry](https://headlamp.dev/docs/latest/development/plugins/functionality/)
 (`registerDetailsViewSection`, `registerResourceTableColumnsProcessor`).
@@ -631,7 +632,7 @@ your plugin's entry module — the same place a whole-page plugin calls
 `customElements.define(...)`. A plugin can do both in the same module.
 
 ```ts
-import { registerEdgeExtraRenderer, registerFlowTableColumnsProcessor } from '@antrea/ui-plugin-sdk';
+import { registerEdgeExtraRenderer, registerFlowTableColumnsProcessor, registerLandingPageTab } from '@antrea/ui-plugin-sdk';
 
 // Renders into the service map's edge details card for the currently
 // selected edge. Return null to render nothing for a given selection.
@@ -649,7 +650,19 @@ registerFlowTableColumnsProcessor((columns) => [
     ...columns,
     { key: 'my-column', label: 'My Column', render: (entry) => entry.flow.k8s.flowType },
 ]);
+
+// Adds a tab to the Overview landing page, next to the built-in "Network
+// Traffic & Inventory" one. `tag`'s custom element is mounted the way the
+// built-in tab is, with the same session-expiry wiring, when the tab is
+// selected.
+registerLandingPageTab({ id: 'my-plugin', label: 'My Plugin', tag: 'antrea-plugin-my-tab' });
 ```
+
+`registerLandingPageTab`'s `id` must be neither `traffic-inventory` (the
+built-in tab) nor an id another plugin already claimed; the host drops (and
+logs) whichever registration loses the race, as it does for a colliding
+route. The tab is part of the `/overview` route, so it is only reachable by a
+user the Overview page itself is visible to.
 
 All registration functions, including the whole-new-page ones from "Writing
 a plugin" above:
@@ -660,6 +673,7 @@ a plugin" above:
 | `registerSidebarEntry` | Sidebar | Adds a nav entry linking to `entry.path`; nests under `entry.parentPath` if set. |
 | `registerEdgeExtraRenderer` | Service map edge details card | Called with an `EdgeSelection` on each selection change; return `null` to render nothing. |
 | `registerFlowTableColumnsProcessor` | Flow list table | Plugin-added columns aren't sortable — only built-in columns carry the sort key. |
+| `registerLandingPageTab` | Overview landing page | Adds a tab rendering `tab.tag`'s custom element. `tab.id` must not be `traffic-inventory` or another plugin's id. |
 
 These functions call into a small registry the host sets up on `window`
 before loading any plugin — see
@@ -760,8 +774,9 @@ actual Kind cluster rather than a standalone container.
 
 * **More extension points.** `@antrea/ui-plugin-sdk` (see "Extending an
   existing page" above) currently only covers the service map's edge
-  details card and the flow list table. Other built-in pages (Summary,
-  Traceflow) don't expose any extension points yet — adding one means the
+  details card, the flow list table, and the Overview landing page's tabs
+  (`registerLandingPageTab`). Other built-in pages (Summary, Traceflow)
+  don't expose any extension points yet — adding one means the
   same shape: a new registration function in the SDK, a registry entry in
   `plugins.ts`, and the target Lit component consuming the registered
   functions when it renders.

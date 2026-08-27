@@ -150,6 +150,7 @@ describe('HomeRedirect', () => {
                     <MemoryRouter initialEntries={['/']}>
                         <Routes>
                             <Route path="/" element={<HomeRedirect />} />
+                            <Route path="/overview" element={<div data-testid="landed">overview</div>} />
                             <Route path="/summary" element={<div data-testid="landed">summary</div>} />
                             <Route path="/traceflow" element={<div data-testid="landed">traceflow</div>} />
                             <Route path="/flows/list" element={<div data-testid="landed">flows</div>} />
@@ -160,6 +161,13 @@ describe('HomeRedirect', () => {
             </Provider>,
         );
     }
+
+    test('lands on /overview when canViewOverview is granted', async () => {
+        renderAt(summaryWith({
+            rules: { resourceRules: [{ apiGroups: [''], resources: ['pods'], verbs: ['list'] }], nonResourceRules: [], incomplete: false },
+        }));
+        await waitFor(() => expect(document.querySelector('[data-testid="landed"]')?.textContent).toBe('overview'));
+    });
 
     test('lands on /summary when canViewSummary is granted', async () => {
         renderAt(summaryWith({
@@ -206,8 +214,40 @@ describe('HomeRedirect', () => {
         await waitFor(() => expect(document.querySelector('[data-testid="landed"]')?.textContent).toBe('settings'));
     });
 
-    test('fails open to /summary when the fetch fails', async () => {
+    // summary.namespaces is the RoleBinding-subject heuristic: a superset of what the user can
+    // see, which ignores what each binding grants. A user named in any RoleBinding must not be
+    // sent to an Overview that may show only an access notice when they have a grant that works.
+    describe('a user who is only named in a RoleBinding (summary.namespaces)', () => {
+        const named = (rule: { apiGroups: string[], resources: string[], verbs: string[] }) => summaryWith({
+            namespaces: ['team-a'],
+            rules: { resourceRules: [rule], nonResourceRules: [], incomplete: false },
+        });
+
+        test('lands on /summary when Summary is granted', async () => {
+            renderAt(named({ apiGroups: ['crd.antrea.io'], resources: ['antreaagentinfos'], verbs: ['list'] }));
+            await waitFor(() => expect(document.querySelector('[data-testid="landed"]')?.textContent).toBe('summary'));
+        });
+
+        test('lands on /traceflow when Traceflow is granted', async () => {
+            renderAt(named({ apiGroups: ['crd.antrea.io'], resources: ['traceflows'], verbs: ['create'] }));
+            await waitFor(() => expect(document.querySelector('[data-testid="landed"]')?.textContent).toBe('traceflow'));
+        });
+
+        test('lands on /flows/list when Flows is granted', async () => {
+            renderAt(named({ apiGroups: ['observability.antrea.io'], resources: ['flows'], verbs: ['watch'] }));
+            await waitFor(() => expect(document.querySelector('[data-testid="landed"]')?.textContent).toBe('flows'));
+        });
+
+        // Ranked after the others, not dropped: the page may have something for them, and Settings
+        // is only the floor.
+        test('lands on /overview before falling back to /settings', async () => {
+            renderAt(summaryWith({ namespaces: ['team-a'] }));
+            await waitFor(() => expect(document.querySelector('[data-testid="landed"]')?.textContent).toBe('overview'));
+        });
+    });
+
+    test('fails open to /overview when the fetch fails', async () => {
         renderAt(null);
-        await waitFor(() => expect(document.querySelector('[data-testid="landed"]')?.textContent).toBe('summary'));
+        await waitFor(() => expect(document.querySelector('[data-testid="landed"]')?.textContent).toBe('overview'));
     });
 });

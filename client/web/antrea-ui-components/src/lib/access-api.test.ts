@@ -24,6 +24,7 @@ import {
     accessibleNamespaces,
     canViewSummary,
     canViewFlows,
+    canViewOverview,
     GATE_CONTROLLER_INFO_GET,
     type AccessSummary,
     type NamespaceAccessSummaryList,
@@ -512,5 +513,46 @@ describe('canViewFlows', () => {
 
     test('fails open on a null summary, like the can() gates', () => {
         expect(canViewFlows(null)).toBe(true);
+    });
+});
+
+describe('canViewOverview', () => {
+    const listOn = (resource: string, apiGroup = '') =>
+        rules({ resourceRules: [{ apiGroups: [apiGroup], resources: [resource], verbs: ['list'] }] });
+
+    test('true on a list grant for any inventory resource', () => {
+        expect(canViewOverview(summary({ rules: listOn('pods') }))).toBe(true);
+        expect(canViewOverview(summary({ rules: listOn('events') }))).toBe(true);
+    });
+
+    test('false on a Namespaces-only grant, so a Summary-only role keeps landing on Summary', () => {
+        expect(canViewOverview(summary({ rules: listOn('namespaces'), namespaces: ['*'] }))).toBe(false);
+    });
+
+    test('true for a user with namespaced grants only, who has no cluster-wide rules', () => {
+        expect(canViewOverview(summary({ namespaces: ['team-a'] }))).toBe(true);
+    });
+
+    test('false for a user with no grants at all', () => {
+        expect(canViewOverview(summary())).toBe(false);
+    });
+
+    test('fails open on a null summary', () => {
+        expect(canViewOverview(null)).toBe(true);
+    });
+});
+
+describe('accessSummary with a namespace', () => {
+    test('requests ?namespace= and memoizes per namespace', async () => {
+        const fetchMock = vi.fn().mockImplementation(async () => jsonResponse(summary()));
+        vi.stubGlobal('fetch', fetchMock);
+
+        await accessSummary();
+        await accessSummary('team-a');
+        await accessSummary('team-a');
+        await accessSummary();
+
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+        expect(fetchMock.mock.calls[1][0]).toBe('/api/v1/access-summary?namespace=team-a');
     });
 });
