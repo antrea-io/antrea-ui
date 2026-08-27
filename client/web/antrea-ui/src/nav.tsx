@@ -18,14 +18,23 @@ import React from 'react';
 import { useLocation } from 'react-router';
 import { Link } from 'react-router';
 import '@antrea/ui-components';
-import { can, canViewSummary, GATE_TRACEFLOW_CREATE } from '@antrea/ui-components';
+import { can, canViewSummary, canViewOverview, GATE_TRACEFLOW_CREATE } from '@antrea/ui-components';
 import type { PluginSidebarEntry } from './plugins';
 import { useAccess } from './access';
 
-function DashboardIcon() {
+function OverviewIcon() {
     return (
         <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" style={{ flexShrink: 0 }}>
             <path d="M1 2a1 1 0 0 1 1-1h5a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V2zm8-1h5a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1H9a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1zM1 9a1 1 0 0 1 1-1h5a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V9zm8-1h5a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1H9a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z"/>
+        </svg>
+    );
+}
+
+function InfoIcon() {
+    return (
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" style={{ flexShrink: 0 }}>
+            <path d="M8 15A7 7 0 1 1 8 1a7 7 0 0 1 0 14zm0 1A8 8 0 1 0 8 0a8 8 0 0 0 0 16z"/>
+            <path d="M8.93 6.588l-2.29.287-.082.38.45.083c.294.07.352.176.288.469l-.738 3.468c-.194.897.105 1.319.808 1.319.545 0 1.178-.252 1.465-.598l.088-.416c-.2.176-.492.246-.686.246-.275 0-.375-.193-.304-.533L8.93 6.588zM9 4.5a1 1 0 1 1-2 0 1 1 0 0 1 2 0z"/>
         </svg>
     );
 }
@@ -65,15 +74,24 @@ export default function NavTab({ pluginSidebarEntries }: { pluginSidebarEntries:
 
     // While the access summary hasn't loaded yet, render no core items: entries popping in once
     // loaded reads better than entries vanishing if the answer turns out to restrict something.
+    const showOverview = loaded && canViewOverview(summary);
     const showSummary = loaded && canViewSummary(summary);
     const showTraceflow = loaded && can(summary, GATE_TRACEFLOW_CREATE);
 
     return (
         <antrea-nav>
+            {showOverview && (
+                <antrea-nav-item {...(pathname === '/overview' || pathname === '/' ? { active: true } : {})}>
+                    <Link to="/overview">
+                        <OverviewIcon />
+                        <span className="nav-label">Overview</span>
+                    </Link>
+                </antrea-nav-item>
+            )}
             {showSummary && (
-                <antrea-nav-item {...(pathname === '/summary' || pathname === '/' ? { active: true } : {})}>
+                <antrea-nav-item {...(pathname === '/summary' ? { active: true } : {})}>
                     <Link to="/summary">
-                        <DashboardIcon />
+                        <InfoIcon />
                         <span className="nav-label">Summary</span>
                     </Link>
                 </antrea-nav-item>

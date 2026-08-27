@@ -172,7 +172,8 @@ in your plugin's install instructions. See
 
 Everything above adds a whole new page. A plugin can instead extend a page
 Antrea UI already ships — e.g. render extra content in the service map's
-edge details card, or add a column to the flow list table — via
+edge details card, add a column to the flow list table, or add a tab to the
+Overview landing page — via
 `@antrea/ui-plugin-sdk`, modeled on
 [Headlamp's plugin registry](https://headlamp.dev/docs/latest/development/plugins/functionality/)
 (`registerDetailsViewSection`, `registerResourceTableColumnsProcessor`).
@@ -182,7 +183,7 @@ your plugin's entry module — the same place a whole-page plugin calls
 `customElements.define(...)`. A plugin can do both in the same module.
 
 ```ts
-import { registerEdgeExtraRenderer, registerFlowTableColumnsProcessor } from '@antrea/ui-plugin-sdk';
+import { registerEdgeExtraRenderer, registerFlowTableColumnsProcessor, registerLandingPageTab } from '@antrea/ui-plugin-sdk';
 
 // Renders into the service map's edge details card for the currently
 // selected edge. Return null to render nothing for a given selection.
@@ -200,7 +201,18 @@ registerFlowTableColumnsProcessor((columns) => [
     ...columns,
     { key: 'my-column', label: 'My Column', render: (entry) => entry.flow.k8s.flowType },
 ]);
+
+// Adds a tab to the Overview landing page, next to the built-in "Overview"
+// one. `tag`'s custom element is mounted the way the built-in tab is, with the
+// same session-expiry wiring, when the tab is selected.
+registerLandingPageTab({ id: 'my-plugin', label: 'My Plugin', tag: 'antrea-plugin-my-tab' });
 ```
+
+`registerLandingPageTab`'s `id` must be neither `overview` (the built-in tab)
+nor an id another plugin already claimed; the host drops (and logs) whichever
+registration loses the race, as it does for a colliding route. The tab is part
+of the `/overview` route, so it is only reachable by a user the Overview page
+itself is visible to.
 
 All registration functions, including the whole-new-page ones from "Writing
 a plugin" above:
@@ -211,6 +223,7 @@ a plugin" above:
 | `registerSidebarEntry` | Sidebar | Adds a nav entry linking to `entry.path`. |
 | `registerEdgeExtraRenderer` | Service map edge details card | Called with an `EdgeSelection` on each selection change; return `null` to render nothing. |
 | `registerFlowTableColumnsProcessor` | Flow list table | Plugin-added columns aren't sortable — only built-in columns carry the sort key. |
+| `registerLandingPageTab` | Overview landing page | Adds a tab rendering `tab.tag`'s custom element. `tab.id` must not be `overview` or another plugin's id. |
 
 These functions call into a small registry the host sets up on `window`
 before loading any plugin — see

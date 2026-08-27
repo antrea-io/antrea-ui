@@ -41,14 +41,15 @@ import type { EdgeExtraRenderer, FlowTableColumnsProcessor } from '@antrea/ui-co
 // registerX() call goes through), but only as types — importing them with `import type` here
 // costs nothing at runtime, so there's no reason to hand-duplicate the interface as the actual
 // host-side implementation used to.
-import type { AntreaPluginHost, PluginRoute, PluginSidebarEntry } from '@antrea/ui-plugin-sdk';
+import type { AntreaPluginHost, PluginRoute, PluginSidebarEntry, LandingPageTab } from '@antrea/ui-plugin-sdk';
 
-export type { PluginRoute, PluginSidebarEntry };
+export type { PluginRoute, PluginSidebarEntry, LandingPageTab };
 
 const pluginRoutes: PluginRoute[] = [];
 const pluginSidebarEntries: PluginSidebarEntry[] = [];
 const edgeExtraRenderers: EdgeExtraRenderer[] = [];
 const flowTableColumnsProcessors: FlowTableColumnsProcessor[] = [];
+const pluginLandingPageTabs: LandingPageTab[] = [];
 
 declare global {
     interface Window { __antreaPluginHost?: AntreaPluginHost; }
@@ -59,12 +60,17 @@ window.__antreaPluginHost = {
     registerSidebarEntry: entry => pluginSidebarEntries.push(entry),
     registerEdgeExtraRenderer: fn => edgeExtraRenderers.push(fn),
     registerFlowTableColumnsProcessor: fn => flowTableColumnsProcessors.push(fn),
+    registerLandingPageTab: tab => pluginLandingPageTabs.push(tab),
 };
 
 // Top-level routes owned by Antrea UI itself. A plugin's route/sidebar entry path must not
 // collide with these — react-router's behavior with two children registered under the same
 // path is undefined, and a colliding plugin could silently shadow a built-in page.
-const RESERVED_PATHS = new Set(['', 'summary', 'traceflow', 'flows', 'settings']);
+const RESERVED_PATHS = new Set(['', 'overview', 'summary', 'traceflow', 'flows', 'settings']);
+
+// The Overview landing page's built-in tab id. A plugin's landing page tab must not collide with
+// this, for the same reason a route/sidebar entry must not collide with RESERVED_PATHS above.
+const RESERVED_LANDING_PAGE_TAB_IDS = new Set(['overview']);
 
 // A plugin's route/sidebar entry path must also not fall under this prefix: nginx proxies it
 // straight to the backend (see /api/v1/plugins/ above), so a hard refresh or direct link to
@@ -105,6 +111,31 @@ export function getPluginRoutes(): PluginRoute[] {
 
 export function getPluginSidebarEntries(): PluginSidebarEntry[] {
     return dedupeByPath(pluginSidebarEntries, 'sidebar entry');
+}
+
+// A sibling to dedupeByPath, keyed by `id` instead of `path`: landing page tabs have no path of
+// their own (they're a sub-tab within the /overview route, not a route), so they need their own
+// reserved-id set rather than RESERVED_PATHS/RESERVED_PREFIX.
+function dedupeLandingPageTabs(items: LandingPageTab[]): LandingPageTab[] {
+    const seenIds = new Set<string>();
+    const kept: LandingPageTab[] = [];
+    for (const item of items) {
+        if (RESERVED_LANDING_PAGE_TAB_IDS.has(item.id)) {
+            console.error(`plugin landing page tab id "${item.id}" collides with the built-in Overview tab, dropping it`);
+            continue;
+        }
+        if (seenIds.has(item.id)) {
+            console.error(`plugin landing page tab id "${item.id}" is already claimed by another plugin, dropping it`);
+            continue;
+        }
+        seenIds.add(item.id);
+        kept.push(item);
+    }
+    return kept;
+}
+
+export function getLandingPageTabs(): LandingPageTab[] {
+    return dedupeLandingPageTabs(pluginLandingPageTabs);
 }
 
 export function getEdgeExtraRenderers(): EdgeExtraRenderer[] {

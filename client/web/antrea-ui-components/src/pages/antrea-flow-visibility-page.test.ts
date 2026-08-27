@@ -443,6 +443,49 @@ describe('AntreaFlowVisibilityPage — namespace menu intersects accessible name
     });
 });
 
+describe('AntreaFlowVisibilityPage — initialFilter deep link', () => {
+    // Mirrors how the real host sets this: antrea-ui/src/pages.tsx assigns the property from a
+    // ref callback, which fires only after the element has already connected and run its normal
+    // onSessionReady() startup — never before append. See antrea-overview-page.ts's
+    // _navigateToServiceMap for what dispatches the navigation this property is seeded from.
+    test('seeds the pending filter and view mode once, applied after mount', async () => {
+        const fetchMock = vi.fn(async () => sseResponse([]));
+        const page = await mount(fetchMock);
+        await vi.advanceTimersByTimeAsync(0);
+        const callsBeforeFilter = streamCalls(fetchMock).length;
+
+        page.initialFilter = { namespaces: ['default'], podNames: ['web-1'], viewMode: 'map' };
+        await page.updateComplete;
+        await vi.advanceTimersByTimeAsync(0);
+
+        const calls = streamCalls(fetchMock);
+        expect(calls).toHaveLength(callsBeforeFilter + 1);
+        const url = calls[calls.length - 1][0] as string;
+        expect(url).toContain('namespaces=default');
+        expect(url).toContain('pods=web-1');
+        expect(page.shadowRoot!.querySelector('#graph-svg')).not.toBeNull();
+    });
+
+    test('a later property assignment does not re-apply the filter', async () => {
+        const fetchMock = vi.fn(async () => sseResponse([]));
+        const page = await mount(fetchMock);
+        await vi.advanceTimersByTimeAsync(0);
+
+        page.initialFilter = { namespaces: ['default'] };
+        await page.updateComplete;
+        await vi.advanceTimersByTimeAsync(0);
+        const callsAfterFirst = streamCalls(fetchMock).length;
+
+        // A React re-render could set this property again with a different value; it must be
+        // ignored, since the user may have already changed the filter manually by this point.
+        page.initialFilter = { namespaces: ['other'] };
+        await page.updateComplete;
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(streamCalls(fetchMock)).toHaveLength(callsAfterFirst);
+    });
+});
+
 describe('AntreaFlowVisibilityPage — teardown', () => {
     test('disconnectedCallback stops the stream client and removes the pointerdown listener', async () => {
         const fetchMock = vi.fn(async () => sseResponse([]));

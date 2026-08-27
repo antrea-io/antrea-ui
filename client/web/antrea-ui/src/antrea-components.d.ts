@@ -16,7 +16,7 @@
 // Allows using <antrea-button>, <antrea-input>, etc. in TSX files without
 // TypeScript errors, and provides prop type checking.
 
-import type { AntreaButton, AntreaAlert, AntreaCard, AntreaNav, AntreaNavItem, AntreaInput, EdgeExtraRenderer, FlowTableColumnsProcessor } from '@antrea/ui-components';
+import type { AntreaButton, AntreaAlert, AntreaCard, AntreaNav, AntreaNavItem, AntreaInput, EdgeExtraRenderer, FlowTableColumnsProcessor, FlowVisibilityInitialFilter } from '@antrea/ui-components';
 import React from 'react';
 
 type ButtonAction = 'solid' | 'outline' | 'flat';
@@ -58,11 +58,13 @@ declare global {
             // Page components take no auth prop: they authenticate with the session cookie,
             // which the browser attaches by itself.
             'antrea-summary-page': React.HTMLAttributes<HTMLElement> & React.ClassAttributes<HTMLElement>;
+            'antrea-overview-page': React.HTMLAttributes<HTMLElement> & React.ClassAttributes<HTMLElement>;
             'antrea-settings-page': React.HTMLAttributes<HTMLElement> & React.ClassAttributes<HTMLElement>;
             'antrea-traceflow-page': React.HTMLAttributes<HTMLElement> & React.ClassAttributes<HTMLElement>;
             'antrea-flow-visibility-page': React.HTMLAttributes<HTMLElement> & React.ClassAttributes<HTMLElement> & {
                 edgeExtraRenderers?: EdgeExtraRenderer[];
                 flowTableColumnsProcessors?: FlowTableColumnsProcessor[];
+                initialFilter?: FlowVisibilityInitialFilter;
             };
             'antrea-login-page': React.HTMLAttributes<HTMLElement> & React.ClassAttributes<HTMLElement>;
         }

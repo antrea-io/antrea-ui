@@ -63,6 +63,17 @@ export interface EdgeSelection {
  * this selection. */
 export type EdgeExtraRenderer = (selection: EdgeSelection) => Node | null;
 
+/** A filter to seed this page with on mount, e.g. when arriving here from the Overview landing
+ * page's "click a Pod/Service to see its flows" links. See the `initialFilter` property below. */
+export interface FlowVisibilityInitialFilter {
+    namespaces?: string[];
+    podNames?: string[];
+    /** "namespace/name" form — run through destinationK8sServiceFilterKey by _onApplyFilters, which
+     * returns '' (dropping the entry) for a bare name. */
+    serviceNames?: string[];
+    viewMode?: 'list' | 'map';
+}
+
 /** A single column of the flow list table. */
 export interface FlowTableColumn {
     key: string;
@@ -478,6 +489,11 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
     // `@antrea/ui-plugin-sdk`). Never set by manifest/attribute, so `attribute: false`.
     @property({ attribute: false }) edgeExtraRenderers: EdgeExtraRenderer[] = [];
     @property({ attribute: false }) flowTableColumnsProcessors: FlowTableColumnsProcessor[] = [];
+    // Lets another page (e.g. the Overview landing page) deep-link here with a filter already
+    // applied — set once by the host from a query string, so `attribute: false` like the two
+    // properties above. Applied exactly once, in updated(): see the initialFilter handling there.
+    @property({ attribute: false }) initialFilter?: FlowVisibilityInitialFilter;
+    private _initialFilterApplied = false;
 
     // Non-reactive refs
     private _store = new FlowStore();
@@ -529,6 +545,17 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
 
     override updated(changed: Map<string, unknown>) {
         super.updated(changed);
+        // Applied at most once: the host (see antrea-ui/src/pages.tsx) sets this from the URL
+        // right after mount, and re-applying it on every subsequent property churn would stomp
+        // on filter changes the user makes afterward on this page.
+        if (changed.has('initialFilter') && this.initialFilter && !this._initialFilterApplied) {
+            this._initialFilterApplied = true;
+            this._pendingNs = this.initialFilter.namespaces ?? [];
+            this._pendingPods = this.initialFilter.podNames ?? [];
+            this._pendingServices = this.initialFilter.serviceNames ?? [];
+            if (this.initialFilter.viewMode) this._viewMode = this.initialFilter.viewMode;
+            this._onApplyFilters();
+        }
         // Setup ResizeObserver once the DOM is ready
         if (changed.has('_viewMode') && this._viewMode === 'map') {
             // The <svg> is always freshly created when switching into map view (render()
