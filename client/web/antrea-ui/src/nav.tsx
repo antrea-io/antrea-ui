@@ -54,6 +54,16 @@ function stripLeadingSlash(path: string): string {
     return path.replace(/^\//, '');
 }
 
+// Both operands are normalized before comparing: a plugin's registered path or parentPath may or
+// may not have a leading slash (dedupeByPath / plugins.ts's resolveParentPaths accept either),
+// while `pathname` from useLocation() always does.
+function pathStartsWith(pathname: string, path: string): boolean {
+    return stripLeadingSlash(pathname).startsWith(stripLeadingSlash(path));
+}
+function pathEquals(pathname: string, path: string): boolean {
+    return stripLeadingSlash(pathname) === stripLeadingSlash(path);
+}
+
 function GearIcon() {
     return (
         <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" style={{ flexShrink: 0 }}>
@@ -81,7 +91,7 @@ function renderPluginNavItem(entry: PluginSidebarEntry, pathname: string) {
     return (
         <antrea-nav-item
             key={entry.path}
-            {...(!external && pathname.startsWith(entry.path) ? { active: true } : {})}
+            {...(!external && pathStartsWith(pathname, entry.path) ? { active: true } : {})}
         >
             {external ? (
                 <a href={entry.path} target="_blank" rel="noopener noreferrer">
@@ -120,45 +130,55 @@ export default function NavTab({ pluginSidebarEntries }: { pluginSidebarEntries:
     // checked the same way as a plugin's, so both sources share one group) plus any plugin
     // entries registered under `path`, so both built-in pages and plugin top-level entries get
     // the same nested-nav treatment for free. Returns `item` unchanged when nothing nests under it.
+    //
+    // `show` is false when `path`'s own page isn't rendered at all — gated off by RBAC (Summary,
+    // Traceflow), or the access summary hasn't loaded yet. plugins.ts's resolveParentPaths accepts
+    // a gated built-in page as a valid parent unconditionally (it has no way to know it's gated
+    // for a given user), so a nested child would otherwise have no render site and silently
+    // disappear; promote its children to top level instead.
     function withNestedChildren(
         path: string,
+        show: boolean,
         item: React.ReactElement<{ slot?: string }>,
         builtinChildren: { path: string; node: React.ReactNode }[] = []
     ): React.ReactNode {
         const pluginChildren = childrenByParent.get(path) ?? [];
+        const renderedPluginChildren = pluginChildren.map((child) => renderPluginNavItem(child, pathname));
+
+        if (!show) return [...builtinChildren.map((child) => child.node), ...renderedPluginChildren];
         if (builtinChildren.length === 0 && pluginChildren.length === 0) return item;
         const hasActiveChild =
-            builtinChildren.some((child) => pathname.startsWith(child.path)) ||
-            pluginChildren.some((child) => pathname.startsWith(child.path));
+            builtinChildren.some((child) => pathStartsWith(pathname, child.path)) ||
+            pluginChildren.some((child) => pathStartsWith(pathname, child.path));
         return (
             <antrea-nav-group key={`group-${path}`} hasActiveChild={hasActiveChild}>
                 {React.cloneElement(item, { slot: 'header' })}
                 {builtinChildren.map((child) => child.node)}
-                {pluginChildren.map((child) => renderPluginNavItem(child, pathname))}
+                {renderedPluginChildren}
             </antrea-nav-group>
         );
     }
 
     return (
         <antrea-nav>
-            {showSummary && withNestedChildren('summary', (
-                <antrea-nav-item {...(pathname === '/summary' || pathname === '/' ? { active: true } : {})}>
+            {withNestedChildren('summary', showSummary, (
+                <antrea-nav-item {...(pathEquals(pathname, '/summary') || pathname === '/' ? { active: true } : {})}>
                     <Link to="/summary">
                         <DashboardIcon />
                         <span className="nav-label">Summary</span>
                     </Link>
                 </antrea-nav-item>
             ))}
-            {showTraceflow && withNestedChildren('traceflow', (
-                <antrea-nav-item {...(pathname.startsWith('/traceflow') ? { active: true } : {})}>
+            {withNestedChildren('traceflow', showTraceflow, (
+                <antrea-nav-item {...(pathStartsWith(pathname, '/traceflow') ? { active: true } : {})}>
                     <Link to="/traceflow">
                         <TraceflowIcon />
                         <span className="nav-label">Traceflow</span>
                     </Link>
                 </antrea-nav-item>
             ))}
-            {withNestedChildren('flows', (
-                <antrea-nav-item {...(pathname.startsWith('/flows') ? { active: true } : {})}>
+            {withNestedChildren('flows', true, (
+                <antrea-nav-item {...(pathStartsWith(pathname, '/flows') ? { active: true } : {})}>
                     <Link to="/flows/list">
                         <EyeIcon />
                         <span className="nav-label">Flow Visibility</span>
@@ -168,7 +188,7 @@ export default function NavTab({ pluginSidebarEntries }: { pluginSidebarEntries:
                 {
                     path: '/flows/list',
                     node: (
-                        <antrea-nav-item key="/flows/list" {...(pathname === '/flows/list' ? { active: true } : {})}>
+                        <antrea-nav-item key="/flows/list" {...(pathEquals(pathname, '/flows/list') ? { active: true } : {})}>
                             <Link to="/flows/list">
                                 <span className="nav-label">Flow List</span>
                             </Link>
@@ -178,7 +198,7 @@ export default function NavTab({ pluginSidebarEntries }: { pluginSidebarEntries:
                 {
                     path: '/flows/map',
                     node: (
-                        <antrea-nav-item key="/flows/map" {...(pathname === '/flows/map' ? { active: true } : {})}>
+                        <antrea-nav-item key="/flows/map" {...(pathEquals(pathname, '/flows/map') ? { active: true } : {})}>
                             <Link to="/flows/map">
                                 <span className="nav-label">Service Map</span>
                             </Link>
@@ -186,8 +206,8 @@ export default function NavTab({ pluginSidebarEntries }: { pluginSidebarEntries:
                     ),
                 },
             ])}
-            {withNestedChildren('settings', (
-                <antrea-nav-item {...(pathname === '/settings' ? { active: true } : {})}>
+            {withNestedChildren('settings', true, (
+                <antrea-nav-item {...(pathEquals(pathname, '/settings') ? { active: true } : {})}>
                     <Link to="/settings">
                         <GearIcon />
                         <span className="nav-label">Settings</span>
@@ -196,6 +216,7 @@ export default function NavTab({ pluginSidebarEntries }: { pluginSidebarEntries:
             ))}
             {topLevelPluginEntries.map((entry) => withNestedChildren(
                 stripLeadingSlash(entry.path),
+                true,
                 renderPluginNavItem(entry, pathname)
             ))}
         </antrea-nav>

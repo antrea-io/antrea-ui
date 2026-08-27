@@ -202,9 +202,9 @@ export class AntreaNavItem extends LitElement {
  * the expand/collapse chrome, so any host or plugin gets the same nested-nav rendering without
  * reimplementing it.
  *
- * Clicking anywhere in the header row toggles expand/collapse (not just the chevron) — the click
- * handler lives on the row, and the header slot's own click (e.g. its Link) still navigates as
- * normal since toggling doesn't preventDefault. Clicking again while expanded collapses it.
+ * Clicking the header slot (e.g. its Link) always expands — never collapses — since it also
+ * navigates to the group's own page, and hiding the destination just navigated to would be
+ * confusing. Only the chevron button actually toggles, including collapsing when expanded.
  *
  * @slot header - The group's own antrea-nav-item (its link, icon, active state)
  * @slot - Nested antrea-nav-item elements, shown when expanded
@@ -279,17 +279,25 @@ export class AntreaNavGroup extends LitElement {
         if (this.hasActiveChild) this.expanded = true;
     }
 
-    private _handleToggle() {
+    private _handleToggleClick(e: Event) {
+        // Stops the click from also reaching _handleHeaderClick below — this is the one control
+        // allowed to collapse an expanded group.
+        e.stopPropagation();
         this.expanded = !this.expanded;
+    }
+
+    private _handleHeaderClick() {
+        this.expanded = true;
     }
 
     render() {
         return html`
-            <div class="group-header" @click=${this._handleToggle}>
+            <div class="group-header" @click=${this._handleHeaderClick}>
                 <slot name="header"></slot>
                 <button
                     class="group-toggle"
                     part="toggle"
+                    @click=${this._handleToggleClick}
                     aria-label=${this.expanded ? 'Collapse group' : 'Expand group'}
                     aria-expanded=${this.expanded}
                 >

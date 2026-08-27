@@ -53,8 +53,24 @@ describe('antrea-nav-group', () => {
         expect(group.expanded).toBe(true);
     });
 
-    test('clicking anywhere in the header slot (not just the toggle button) also toggles the group', async () => {
+    test('clicking the header slot expands a collapsed group', async () => {
         const group = mount();
+        const headerLink = document.createElement('a');
+        headerLink.slot = 'header';
+        headerLink.textContent = 'Flow Visibility';
+        group.append(headerLink);
+        await group.updateComplete;
+
+        headerLink.click();
+        await group.updateComplete;
+
+        expect(group.expanded).toBe(true);
+    });
+
+    test('clicking the header slot never collapses an already-expanded group', async () => {
+        // Distinct from the toggle button: the header slot also navigates (it's the group's own
+        // link), so collapsing on click would hide the page just navigated to.
+        const group = mount(true);
         const headerLink = document.createElement('a');
         headerLink.slot = 'header';
         headerLink.textContent = 'Flow Visibility';
@@ -69,6 +85,23 @@ describe('antrea-nav-group', () => {
 
     test('clicking the toggle button again collapses it back', async () => {
         const group = mount(true);
+        await group.updateComplete;
+
+        const toggle = group.shadowRoot!.querySelector('.group-toggle') as HTMLButtonElement;
+        toggle.click();
+        await group.updateComplete;
+
+        expect(group.expanded).toBe(false);
+    });
+
+    test('clicking the toggle button collapses even with a header link present (stopPropagation)', async () => {
+        // Without stopPropagation, the click would bubble from the button to the header row and
+        // re-expand it there, masking the collapse.
+        const group = mount(true);
+        const headerLink = document.createElement('a');
+        headerLink.slot = 'header';
+        headerLink.textContent = 'Flow Visibility';
+        group.append(headerLink);
         await group.updateComplete;
 
         const toggle = group.shadowRoot!.querySelector('.group-toggle') as HTMLButtonElement;
