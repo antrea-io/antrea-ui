@@ -183,7 +183,7 @@ export class AntreaSummaryPage extends SessionAwarePage {
         return html`
             <main>
                 <div class="page-layout">
-                    <p class="page-title">Summary</p>
+                    <p class="page-title">Antrea Summary</p>
                     ${this._someCardsForbidden ? html`
                         <antrea-alert status="info">
                             Some information is not shown because your account does not have permission to view it.
