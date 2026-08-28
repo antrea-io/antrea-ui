@@ -171,6 +171,40 @@ describe('NavTab — nested plugin entries', () => {
 
         expect(document.querySelector('a[href="/plugin/orphan"]')).toBeNull();
     });
+
+    // Unlike the dangling-parentPath case above, "traceflow" IS a real, valid parent — resolved-
+    // ParentPaths (plugins.ts) accepts it unconditionally, since it has no way to know the current
+    // user lacks the RBAC gate for it. Rendered here, not dropped: NavTab promotes it to top
+    // level instead of nesting it under a Traceflow item that itself isn't showing.
+    test('an entry nested under a built-in page gated off for this user renders at top level, not dropped', () => {
+        mockUseAccess.mockReturnValue({ summary: summaryAllowing(), loaded: true }); // no gates granted
+        const childEntry: PluginSidebarEntry = { label: 'Extra Traceflow Page', path: '/plugin/extra-traceflow', parentPath: 'traceflow' };
+        render(<NavTab pluginSidebarEntries={[childEntry]} />, { wrapper: MemoryRouter });
+
+        expect(document.querySelector('a[href="/traceflow"]')).toBeNull();
+        const childLink = document.querySelector('a[href="/plugin/extra-traceflow"]');
+        expect(childLink).not.toBeNull();
+        expect(childLink!.closest('antrea-nav-group')).toBeNull();
+    });
+
+    test('a parentPath and child path registered without a leading slash still highlight active and auto-expand', () => {
+        const parentEntry: PluginSidebarEntry = { label: 'Parent', path: 'plugin/parent' };
+        const childEntry: PluginSidebarEntry = { label: 'Child', path: 'plugin/child', parentPath: 'plugin/parent' };
+        render(
+            <MemoryRouter initialEntries={['/plugin/child']}>
+                <NavTab pluginSidebarEntries={[parentEntry, childEntry]} />
+            </MemoryRouter>
+        );
+
+        const childLink = document.querySelector('a[href="/plugin/child"]');
+        expect(childLink).not.toBeNull();
+        const childNavItem = childLink!.closest('antrea-nav-item') as unknown as { active?: boolean };
+        expect(childNavItem.active).toBe(true);
+
+        const group = childLink!.closest('antrea-nav-group') as unknown as { hasActiveChild?: boolean };
+        expect(group).not.toBeNull();
+        expect(group.hasActiveChild).toBe(true);
+    });
 });
 
 describe('NavTab — permission gating', () => {
