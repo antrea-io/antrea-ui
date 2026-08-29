@@ -172,12 +172,25 @@ describe('NavTab — nested plugin entries', () => {
         expect(document.querySelector('a[href="/plugin/orphan"]')).toBeNull();
     });
 
-    // Unlike the dangling-parentPath case above, "traceflow" IS a real, valid parent — resolved-
-    // ParentPaths (plugins.ts) accepts it unconditionally, since it has no way to know the current
-    // user lacks the RBAC gate for it. Rendered here, not dropped: NavTab promotes it to top
-    // level instead of nesting it under a Traceflow item that itself isn't showing.
+    // Unlike the dangling-parentPath case above, "traceflow" IS a real, valid parent:
+    // resolveParentPaths (plugins.ts) accepts it unconditionally, since it has no way to know
+    // the current user lacks the RBAC gate for it. Rendered here, not dropped: NavTab promotes
+    // it to top level instead of nesting it under a Traceflow item that itself isn't showing.
     test('an entry nested under a built-in page gated off for this user renders at top level, not dropped', () => {
         mockUseAccess.mockReturnValue({ summary: summaryAllowing(), loaded: true }); // no gates granted
+        const childEntry: PluginSidebarEntry = { label: 'Extra Traceflow Page', path: '/plugin/extra-traceflow', parentPath: 'traceflow' };
+        render(<NavTab pluginSidebarEntries={[childEntry]} />, { wrapper: MemoryRouter });
+
+        expect(document.querySelector('a[href="/traceflow"]')).toBeNull();
+        const childLink = document.querySelector('a[href="/plugin/extra-traceflow"]');
+        expect(childLink).not.toBeNull();
+        expect(childLink!.closest('antrea-nav-group')).toBeNull();
+    });
+
+    // The same !show branch, reached the other way: until the access summary resolves, Traceflow
+    // doesn't render, so a child nested under it has no group to land in.
+    test('an entry nested under a built-in page renders at top level while access is still loading', () => {
+        mockUseAccess.mockReturnValue({ summary: null, loaded: false });
         const childEntry: PluginSidebarEntry = { label: 'Extra Traceflow Page', path: '/plugin/extra-traceflow', parentPath: 'traceflow' };
         render(<NavTab pluginSidebarEntries={[childEntry]} />, { wrapper: MemoryRouter });
 
