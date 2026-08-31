@@ -146,6 +146,25 @@ func TestRegistrySkipsInvalidConfigMaps(t *testing.T) {
 				"remoteEntry.json": "x",
 			},
 		},
+		"duplicate route path differing only by leading slash": {
+			ObjectMeta: metav1.ObjectMeta{Name: "cm"},
+			Data: map[string]string{
+				"manifest.json": `{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[
+					{"path":"/plugin","sidebarLabel":"Plugin","exposedModule":"./Page"},
+					{"path":"plugin","sidebarLabel":"Plugin Again","exposedModule":"./OtherPage"}
+				]}}`,
+				"index.js":         "x",
+				"remoteEntry.json": "x",
+			},
+		},
+		"federation with no routes": {
+			ObjectMeta: metav1.ObjectMeta{Name: "cm"},
+			Data: map[string]string{
+				"manifest.json":    `{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[]}}`,
+				"index.js":         "x",
+				"remoteEntry.json": "x",
+			},
+		},
 		"federation missing remoteEntry": {
 			ObjectMeta: metav1.ObjectMeta{Name: "cm"},
 			Data: map[string]string{
@@ -156,7 +175,7 @@ func TestRegistrySkipsInvalidConfigMaps(t *testing.T) {
 		"federation remoteEntry file not present": {
 			ObjectMeta: metav1.ObjectMeta{Name: "cm"},
 			Data: map[string]string{
-				"manifest.json": `{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json"}}`,
+				"manifest.json": `{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"path":"/plugin","sidebarLabel":"Plugin","exposedModule":"./Page"}]}}`,
 				"index.js":      "x",
 			},
 		},

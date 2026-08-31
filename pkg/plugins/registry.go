@@ -159,7 +159,10 @@ func parsePluginConfigMap(cm *corev1.ConfigMap) (*pluginEntry, error) {
 		if _, ok := files[manifest.Federation.RemoteEntry]; !ok {
 			return nil, fmt.Errorf("remote entry file %q referenced by manifest's federation not found in ConfigMap", manifest.Federation.RemoteEntry)
 		}
-		seenPaths := make(map[string]bool, len(manifest.Federation.Routes))
+		if len(manifest.Federation.Routes) == 0 {
+			return nil, fmt.Errorf("manifest's 'federation.routes' must not be empty")
+		}
+		seenPaths := make(map[string]string, len(manifest.Federation.Routes))
 		for i, route := range manifest.Federation.Routes {
 			if route.Path == "" {
 				return nil, fmt.Errorf("manifest's 'federation.routes[%d]' is missing 'path'", i)
@@ -174,15 +177,18 @@ func parsePluginConfigMap(cm *corev1.ConfigMap) (*pluginEntry, error) {
 			// its own reserved prefix (see GetPluginFile), not something specific to any one
 			// frontend. A route colliding with a given host's own built-in pages (e.g.
 			// "/settings") is instead the host's job to reject, the same way it already does for
-			// code-registered routes (see plugins.ts's RESERVED_PATHS/dedupeByPath in either
-			// frontend) - the backend has no way to know a given host's built-in path list.
-			if trimmed := strings.TrimPrefix(route.Path, "/"); strings.HasPrefix(trimmed, "api/") {
+			// code-registered routes (see plugins.ts's RESERVED_PATHS/dedupeByPath in the
+			// out-of-tree, module-federation-aware host - Antrea UI's own frontend ignores
+			// 'federation' altogether) - the backend has no way to know a given host's built-in
+			// path list.
+			trimmed := strings.TrimPrefix(route.Path, "/")
+			if strings.HasPrefix(trimmed, "api/") {
 				return nil, fmt.Errorf("manifest's 'federation.routes[%d].path' %q falls under the reserved 'api/' prefix", i, route.Path)
 			}
-			if seenPaths[route.Path] {
-				return nil, fmt.Errorf("manifest's 'federation.routes[%d].path' %q duplicates an earlier route in the same manifest", i, route.Path)
+			if other, ok := seenPaths[trimmed]; ok {
+				return nil, fmt.Errorf("manifest's 'federation.routes[%d].path' %q duplicates earlier route %q in the same manifest", i, route.Path, other)
 			}
-			seenPaths[route.Path] = true
+			seenPaths[trimmed] = route.Path
 		}
 	}
 	return &pluginEntry{manifest: manifest, files: files}, nil
