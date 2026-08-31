@@ -38,6 +38,11 @@ export class AntreaCard extends LitElement {
             border: 1px solid var(--antrea-color-border, #314351);
             border-radius: var(--antrea-radius-md, 4px);
             overflow: hidden;
+            /* Lets a host given an explicit height (e.g. a stretched grid item) pass it through,
+               so cards laid out side by side can be made equal height. Resolves to auto — no
+               change in the usual case where the host height is content-driven. */
+            height: 100%;
+            box-sizing: border-box;
         }
 
         .card-header {

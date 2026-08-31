@@ -88,6 +88,7 @@ describe('NavTab — permission gating', () => {
         mockUseAccess.mockReturnValue({ summary: null, loaded: false });
         render(<NavTab pluginSidebarEntries={[]} />, { wrapper: MemoryRouter });
 
+        expect(document.querySelector('a[href="/overview"]')).toBeNull();
         expect(document.querySelector('a[href="/summary"]')).toBeNull();
         expect(document.querySelector('a[href="/traceflow"]')).toBeNull();
         // Flow Visibility and Settings have no per-user RBAC, so they are not gated on load.
@@ -95,10 +96,11 @@ describe('NavTab — permission gating', () => {
         expect(document.querySelector('a[href="/settings"]')).not.toBeNull();
     });
 
-    test('a null summary (fetch failed) fails open: both core tabs show', () => {
+    test('a null summary (fetch failed) fails open: all core tabs show', () => {
         mockUseAccess.mockReturnValue({ summary: null, loaded: true });
         render(<NavTab pluginSidebarEntries={[]} />, { wrapper: MemoryRouter });
 
+        expect(document.querySelector('a[href="/overview"]')).not.toBeNull();
         expect(document.querySelector('a[href="/summary"]')).not.toBeNull();
         expect(document.querySelector('a[href="/traceflow"]')).not.toBeNull();
     });
@@ -121,5 +123,25 @@ describe('NavTab — permission gating', () => {
         render(<NavTab pluginSidebarEntries={[]} />, { wrapper: MemoryRouter });
 
         expect(document.querySelector('a[href="/summary"]')).toBeNull();
+    });
+
+    test('Overview shows when the user can list Pods, even without Summary permissions', () => {
+        mockUseAccess.mockReturnValue({
+            summary: summaryAllowing({
+                resourceRules: [{ apiGroups: [''], resources: ['pods'], verbs: ['list'] }],
+            }),
+            loaded: true,
+        });
+        render(<NavTab pluginSidebarEntries={[]} />, { wrapper: MemoryRouter });
+
+        expect(document.querySelector('a[href="/overview"]')).not.toBeNull();
+        expect(document.querySelector('a[href="/summary"]')).toBeNull();
+    });
+
+    test('Overview is hidden when none of its inventory gates is granted', () => {
+        mockUseAccess.mockReturnValue({ summary: summaryAllowing(), loaded: true });
+        render(<NavTab pluginSidebarEntries={[]} />, { wrapper: MemoryRouter });
+
+        expect(document.querySelector('a[href="/overview"]')).toBeNull();
     });
 });

@@ -60,6 +60,18 @@ export interface PluginSidebarEntry {
     icon?: string;
 }
 
+/** A tab a plugin wants added to the Overview landing page, alongside the built-in "Overview"
+ * tab — e.g. the ANS plugin's "Security" tab. `tag` is the custom element the plugin's entry
+ * module registers via customElements.define(...); the host mounts it the same way it mounts
+ * the built-in Overview tab, with the same session-expiry wiring. `id` must not be "overview"
+ * (reserved for the built-in tab) or collide with another plugin's tab id — the host drops (and
+ * logs) whichever registration loses the race. */
+export interface LandingPageTab {
+    id: string;
+    label: string;
+    tag: string;
+}
+
 // Kept in sync by hand with the identically-named interface in antrea-ui/src/plugins.ts, which
 // is what actually populates window.__antreaPluginHost — this side only needs to describe its
 // shape well enough to type-check the wrapper functions below.
@@ -68,6 +80,7 @@ export interface AntreaPluginHost {
     registerSidebarEntry(entry: PluginSidebarEntry): void;
     registerEdgeExtraRenderer(fn: EdgeExtraRenderer): void;
     registerFlowTableColumnsProcessor(fn: FlowTableColumnsProcessor): void;
+    registerLandingPageTab(tab: LandingPageTab): void;
 }
 
 declare global {
@@ -106,4 +119,9 @@ export function registerEdgeExtraRenderer(fn: EdgeExtraRenderer): void {
  * column list (built-ins plus any earlier plugin's additions) and returns the new list. */
 export function registerFlowTableColumnsProcessor(fn: FlowTableColumnsProcessor): void {
     host().registerFlowTableColumnsProcessor(fn);
+}
+
+/** Adds a tab to the Overview landing page, rendering `tab.tag`'s custom element when selected. */
+export function registerLandingPageTab(tab: LandingPageTab): void {
+    host().registerLandingPageTab(tab);
 }

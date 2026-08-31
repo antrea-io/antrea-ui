@@ -107,3 +107,33 @@ rules:
       - namespaces
     verbs:
       - list
+  # Overview landing page inventory tiles (client/web/antrea-ui-components/src/pages/antrea-overview-page.ts):
+  # counts of Pods/Services/Deployments/StatefulSets/DaemonSets/NetworkPolicies, read-only.
+  - apiGroups:
+      - ""
+    resources:
+      - pods
+      - services
+    verbs:
+      - list
+  - apiGroups:
+      - apps
+    resources:
+      - deployments
+      - statefulsets
+      - daemonsets
+    verbs:
+      - list
+  - apiGroups:
+      - networking.k8s.io
+    resources:
+      - networkpolicies
+    verbs:
+      - list
+  - apiGroups:
+      - crd.antrea.io
+    resources:
+      - clusternetworkpolicies
+      - networkpolicies
+    verbs:
+      - list

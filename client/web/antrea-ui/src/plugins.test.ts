@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { loadPlugins, dedupeByPath, getPluginRoutes, type PluginManifest, type PluginRoute } from './plugins';
+import { loadPlugins, dedupeByPath, getPluginRoutes, getLandingPageTabs, type PluginManifest, type PluginRoute, type LandingPageTab } from './plugins';
 
 function jsonResponse(body: unknown, status = 200): Response {
     return new Response(JSON.stringify(body), { status });
@@ -84,5 +84,31 @@ describe('getPluginRoutes / window.__antreaPluginHost', () => {
         window.__antreaPluginHost!.registerRoute({ path: '/plugin/test-registration', tag: 'antrea-plugin-test-registration' } satisfies PluginRoute);
 
         expect(getPluginRoutes()).toContainEqual({ path: '/plugin/test-registration', tag: 'antrea-plugin-test-registration' });
+    });
+});
+
+describe('getLandingPageTabs / window.__antreaPluginHost', () => {
+    test('registerLandingPageTab makes the tab show up in getLandingPageTabs', () => {
+        const tab: LandingPageTab = { id: 'security-test-registration', label: 'Security', tag: 'antrea-security-test-registration' };
+        window.__antreaPluginHost!.registerLandingPageTab(tab);
+
+        expect(getLandingPageTabs()).toContainEqual(tab);
+    });
+
+    test('a tab id colliding with the built-in Overview tab is dropped', () => {
+        const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+        window.__antreaPluginHost!.registerLandingPageTab({ id: 'overview', label: 'Fake Overview', tag: 'antrea-fake-overview' });
+
+        expect(getLandingPageTabs().find(t => t.id === 'overview')).toBeUndefined();
+        expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('collides with the built-in Overview tab'));
+    });
+
+    test('a tab id already claimed by an earlier plugin is dropped', () => {
+        const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+        window.__antreaPluginHost!.registerLandingPageTab({ id: 'dup-tab', label: 'First', tag: 'antrea-first' });
+        window.__antreaPluginHost!.registerLandingPageTab({ id: 'dup-tab', label: 'Second', tag: 'antrea-second' });
+
+        expect(getLandingPageTabs().filter(t => t.id === 'dup-tab')).toEqual([{ id: 'dup-tab', label: 'First', tag: 'antrea-first' }]);
+        expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('already claimed by another plugin'));
     });
 });

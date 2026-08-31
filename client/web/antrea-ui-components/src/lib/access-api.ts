@@ -163,3 +163,22 @@ export const GATE_FEATUREGATES = { verb: 'get', url: '/featuregates' };
 export function canViewSummary(s: AccessSummary | null): boolean {
     return can(s, GATE_AGENT_INFO_LIST) || can(s, GATE_CONTROLLER_INFO_GET) || canNonResource(s, GATE_FEATUREGATES);
 }
+
+// Gates for the Overview landing page's inventory tiles — one per Kubernetes resource type it
+// reads, following the same "one predicate per page" convention as the gates above.
+export const GATE_NAMESPACES_LIST = { group: '', resource: 'namespaces', verb: 'list' };
+export const GATE_PODS_LIST = { group: '', resource: 'pods', verb: 'list' };
+export const GATE_SERVICES_LIST = { group: '', resource: 'services', verb: 'list' };
+export const GATE_DEPLOYMENTS_LIST = { group: 'apps', resource: 'deployments', verb: 'list' };
+export const GATE_STATEFULSETS_LIST = { group: 'apps', resource: 'statefulsets', verb: 'list' };
+export const GATE_DAEMONSETS_LIST = { group: 'apps', resource: 'daemonsets', verb: 'list' };
+export const GATE_K8S_NETWORKPOLICIES_LIST = { group: 'networking.k8s.io', resource: 'networkpolicies', verb: 'list' };
+export const GATE_ANTREA_CLUSTERNETWORKPOLICIES_LIST = { group: 'crd.antrea.io', resource: 'clusternetworkpolicies', verb: 'list' };
+export const GATE_ANTREA_NETWORKPOLICIES_LIST = { group: 'crd.antrea.io', resource: 'networkpolicies', verb: 'list' };
+
+export function canViewOverview(s: AccessSummary | null): boolean {
+    return can(s, GATE_NAMESPACES_LIST) || can(s, GATE_PODS_LIST) || can(s, GATE_SERVICES_LIST) ||
+        can(s, GATE_DEPLOYMENTS_LIST) || can(s, GATE_STATEFULSETS_LIST) || can(s, GATE_DAEMONSETS_LIST) ||
+        can(s, GATE_K8S_NETWORKPOLICIES_LIST) || can(s, GATE_ANTREA_CLUSTERNETWORKPOLICIES_LIST) ||
+        can(s, GATE_ANTREA_NETWORKPOLICIES_LIST);
+}

@@ -151,6 +151,18 @@ else:
 - `get`/`list`/`watch`/`create`/`delete` on `traceflows` and
   `traceflows/status`
 - `get` on the `/featuregates` non-resource URL
+- `list` on `namespaces`
+- `list` on `pods` and `services`
+- `list` on `deployments`, `statefulsets` and `daemonsets`
+- `list` on `networkpolicies` (both `networking.k8s.io` and `crd.antrea.io`)
+  and on `clusternetworkpolicies`
+
+The reads from `list` onwards are what the Overview page counts. They are
+read-only and deliberately enumerated rather than granted as a wildcard:
+Kubernetes RBAC has no deny rules, so "everything except Secrets" cannot be
+expressed, and the K8s proxy applies no path allowlist of its own (RBAC is its
+only guard). A wildcard here would therefore let anyone holding the admin
+password read every Secret in the cluster.
 
 Its rule list is static: it only ever changes when you upgrade the chart, and
 you can read exactly what it grants in
