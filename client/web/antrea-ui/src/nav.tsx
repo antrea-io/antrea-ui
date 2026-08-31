@@ -134,18 +134,31 @@ export default function NavTab({ pluginSidebarEntries }: { pluginSidebarEntries:
     // `show` is false when `path`'s own page isn't rendered at all — gated off by RBAC (Summary,
     // Traceflow), or the access summary hasn't loaded yet. plugins.ts's resolveParentPaths accepts
     // a gated built-in page as a valid parent unconditionally (it has no way to know it's gated
-    // for a given user), so a nested child would otherwise have no render site and silently
-    // disappear; promote its children to top level instead.
+    // for a given user), so a nested child would otherwise have no render site.
+    //
+    // Those two `!show` causes are deliberately not treated alike: `promoteChildrenIfHidden`
+    // (true once the access summary has loaded, for Summary/Traceflow) distinguishes "the parent
+    // is definitely gated off for this user" — promote its children to top level, so they don't
+    // silently disappear — from "we don't know yet" — hide them too, consistent with the
+    // `showSummary`/`showTraceflow` comment above ("entries popping in once loaded reads better
+    // than entries vanishing"): a promoted child would otherwise pop in immediately and then jump
+    // into the group once loaded resolves, a reflow that comment argues against for the parent
+    // item itself. `flows`/`settings`/plugin top-level entries always pass `show: true`, so their
+    // `promoteChildrenIfHidden` is never consulted.
     function withNestedChildren(
         path: string,
         show: boolean,
+        promoteChildrenIfHidden: boolean,
         item: React.ReactElement<{ slot?: string }>,
         builtinChildren: { path: string; node: React.ReactNode }[] = []
     ): React.ReactNode {
         const pluginChildren = childrenByParent.get(path) ?? [];
         const renderedPluginChildren = pluginChildren.map((child) => renderPluginNavItem(child, pathname));
 
-        if (!show) return [...builtinChildren.map((child) => child.node), ...renderedPluginChildren];
+        if (!show) {
+            if (!promoteChildrenIfHidden) return null;
+            return [...builtinChildren.map((child) => child.node), ...renderedPluginChildren];
+        }
         if (builtinChildren.length === 0 && pluginChildren.length === 0) return item;
         const hasActiveChild =
             builtinChildren.some((child) => pathStartsWith(pathname, child.path)) ||
@@ -161,7 +174,7 @@ export default function NavTab({ pluginSidebarEntries }: { pluginSidebarEntries:
 
     return (
         <antrea-nav>
-            {withNestedChildren('summary', showSummary, (
+            {withNestedChildren('summary', showSummary, loaded, (
                 <antrea-nav-item {...(pathEquals(pathname, '/summary') || pathname === '/' ? { active: true } : {})}>
                     <Link to="/summary">
                         <DashboardIcon />
@@ -169,7 +182,7 @@ export default function NavTab({ pluginSidebarEntries }: { pluginSidebarEntries:
                     </Link>
                 </antrea-nav-item>
             ))}
-            {withNestedChildren('traceflow', showTraceflow, (
+            {withNestedChildren('traceflow', showTraceflow, loaded, (
                 <antrea-nav-item {...(pathStartsWith(pathname, '/traceflow') ? { active: true } : {})}>
                     <Link to="/traceflow">
                         <TraceflowIcon />
@@ -177,7 +190,7 @@ export default function NavTab({ pluginSidebarEntries }: { pluginSidebarEntries:
                     </Link>
                 </antrea-nav-item>
             ))}
-            {withNestedChildren('flows', true, (
+            {withNestedChildren('flows', true, true, (
                 <antrea-nav-item {...(pathStartsWith(pathname, '/flows') ? { active: true } : {})}>
                     <Link to="/flows/list">
                         <EyeIcon />
@@ -206,7 +219,7 @@ export default function NavTab({ pluginSidebarEntries }: { pluginSidebarEntries:
                     ),
                 },
             ])}
-            {withNestedChildren('settings', true, (
+            {withNestedChildren('settings', true, true, (
                 <antrea-nav-item {...(pathEquals(pathname, '/settings') ? { active: true } : {})}>
                     <Link to="/settings">
                         <GearIcon />
@@ -216,6 +229,7 @@ export default function NavTab({ pluginSidebarEntries }: { pluginSidebarEntries:
             ))}
             {topLevelPluginEntries.map((entry) => withNestedChildren(
                 stripLeadingSlash(entry.path),
+                true,
                 true,
                 renderPluginNavItem(entry, pathname)
             ))}

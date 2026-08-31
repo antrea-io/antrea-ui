@@ -189,15 +189,18 @@ describe('NavTab — nested plugin entries', () => {
 
     // The same !show branch, reached the other way: until the access summary resolves, Traceflow
     // doesn't render, so a child nested under it has no group to land in.
-    test('an entry nested under a built-in page renders at top level while access is still loading', () => {
+    // Deliberately not promoted like the gated-off case above: promoting here would pop the entry
+    // in immediately and then jump it into the group once `loaded` resolves — a reflow the
+    // pre-existing showSummary/showTraceflow comment in NavTab argues against for the parent item
+    // itself ("entries popping in once loaded reads better than entries vanishing"). Hiding it too
+    // while unloaded keeps that reasoning consistent for its nested children.
+    test('an entry nested under a built-in page renders nothing while access is still loading', () => {
         mockUseAccess.mockReturnValue({ summary: null, loaded: false });
         const childEntry: PluginSidebarEntry = { label: 'Extra Traceflow Page', path: '/plugin/extra-traceflow', parentPath: 'traceflow' };
         render(<NavTab pluginSidebarEntries={[childEntry]} />, { wrapper: MemoryRouter });
 
         expect(document.querySelector('a[href="/traceflow"]')).toBeNull();
-        const childLink = document.querySelector('a[href="/plugin/extra-traceflow"]');
-        expect(childLink).not.toBeNull();
-        expect(childLink!.closest('antrea-nav-group')).toBeNull();
+        expect(document.querySelector('a[href="/plugin/extra-traceflow"]')).toBeNull();
     });
 
     test('a parentPath and child path registered without a leading slash still highlight active and auto-expand', () => {
