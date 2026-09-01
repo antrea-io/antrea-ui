@@ -235,6 +235,47 @@ func TestRegistrySkipsInvalidConfigMaps(t *testing.T) {
 			},
 			wantErr: "'federation.routes[1].path' \"//plugin/\" duplicates earlier route \"/plugin\"",
 		},
+		"route with an unknown kind": {
+			cm: &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{Name: "cm"},
+				Data: map[string]string{
+					"manifest.json":    `{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"path":"/plugin","sidebarLabel":"Plugin","exposedModule":"./Page","kind":"route"}]}}`,
+					"index.js":         "x",
+					"remoteEntry.json": "x",
+				},
+			},
+			wantErr: "'federation.routes[0].kind' \"route\" is not one of \"component\", \"routes\"",
+		},
+		"route nested under a routes-kind route": {
+			cm: &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{Name: "cm"},
+				Data: map[string]string{
+					"manifest.json": `{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[
+						{"path":"/policies","sidebarLabel":"Policies","exposedModule":"./PolicyRoutes","kind":"routes"},
+						{"path":"/policies/audit","sidebarLabel":"Audit","exposedModule":"./PolicyAuditPage"}
+					]}}`,
+					"index.js":         "x",
+					"remoteEntry.json": "x",
+				},
+			},
+			wantErr: "'federation.routes[1].path' \"/policies/audit\" falls under 'federation.routes[0].path' \"/policies\"",
+		},
+		// Same collision as above with the two routes declared the other way round (and spelled
+		// with different slashes), since declaration order says nothing about which owns the path.
+		"routes-kind route declared after the route it owns": {
+			cm: &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{Name: "cm"},
+				Data: map[string]string{
+					"manifest.json": `{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[
+						{"path":"policies/audit","sidebarLabel":"Audit","exposedModule":"./PolicyAuditPage"},
+						{"path":"/policies/","sidebarLabel":"Policies","exposedModule":"./PolicyRoutes","kind":"routes"}
+					]}}`,
+					"index.js":         "x",
+					"remoteEntry.json": "x",
+				},
+			},
+			wantErr: "'federation.routes[0].path' \"policies/audit\" falls under 'federation.routes[1].path' \"/policies/\"",
+		},
 		"federation with no routes": {
 			cm: &corev1.ConfigMap{
 				ObjectMeta: metav1.ObjectMeta{Name: "cm"},
@@ -311,8 +352,8 @@ func TestRegistryIndexIncludesFederation(t *testing.T) {
 				"federation": {
 					"remoteEntry": "remoteEntry.json",
 					"routes": [
-						{"path": "/policies", "sidebarLabel": "Policy Management", "icon": "M0 0h16v16H0z", "exposedModule": "./PolicyManagementPage"},
-						{"path": "/policies/audit", "sidebarLabel": "Policy Audit Log", "exposedModule": "./PolicyAuditPage"}
+						{"path": "/policies", "sidebarLabel": "Policy Management", "icon": "M0 0h16v16H0z", "exposedModule": "./PolicyRoutes", "kind": "routes"},
+						{"path": "/policy-audit", "sidebarLabel": "Policy Audit Log", "exposedModule": "./PolicyAuditPage"}
 					]
 				}
 			}`,
@@ -328,8 +369,8 @@ func TestRegistryIndexIncludesFederation(t *testing.T) {
 		Federation: &apisv1.PluginFederation{
 			RemoteEntry: "remoteEntry.json",
 			Routes: []apisv1.PluginRoute{
-				{Path: "/policies", SidebarLabel: "Policy Management", Icon: "M0 0h16v16H0z", ExposedModule: "./PolicyManagementPage"},
-				{Path: "/policies/audit", SidebarLabel: "Policy Audit Log", ExposedModule: "./PolicyAuditPage"},
+				{Path: "/policies", SidebarLabel: "Policy Management", Icon: "M0 0h16v16H0z", ExposedModule: "./PolicyRoutes", Kind: "routes"},
+				{Path: "/policy-audit", SidebarLabel: "Policy Audit Log", ExposedModule: "./PolicyAuditPage"},
 			},
 		},
 	}}, r.Index())

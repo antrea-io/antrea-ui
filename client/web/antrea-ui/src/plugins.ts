@@ -160,7 +160,9 @@ export interface PluginManifest {
     entry: string;
     federation?: {
         remoteEntry: string;
-        routes: { path: string; sidebarLabel: string; icon?: string; exposedModule: string }[];
+        // kind mirrors apis/v1's PluginRouteKindComponent/PluginRouteKindRoutes; the backend
+        // rejects a manifest with any other value, so the union can't be widened by input.
+        routes: { path: string; sidebarLabel: string; icon?: string; exposedModule: string; kind?: 'component' | 'routes' }[];
     };
 }
 

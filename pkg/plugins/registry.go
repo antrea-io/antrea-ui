@@ -211,6 +211,13 @@ func parsePluginConfigMap(cm *corev1.ConfigMap) (*pluginEntry, error) {
 			if route.ExposedModule == "" {
 				return nil, fmt.Errorf("manifest's 'federation.routes[%d]' is missing 'exposedModule'", i)
 			}
+			// Reject anything other than the two known Kind values outright rather than letting
+			// an unrecognized one (e.g. a typo'd "route") pass through and silently fall back to
+			// PluginRouteKindComponent on the host - that failure mode surfaces much later, as an
+			// opaque loadComponent() error with no hint the manifest itself was ever at fault.
+			if route.Kind != "" && route.Kind != apisv1.PluginRouteKindComponent && route.Kind != apisv1.PluginRouteKindRoutes {
+				return nil, fmt.Errorf("manifest's 'federation.routes[%d].kind' %q is not one of %q, %q", i, route.Kind, apisv1.PluginRouteKindComponent, apisv1.PluginRouteKindRoutes)
+			}
 			// The reservations the backend can enforce on a route's Path itself are the root
 			// path and the nginx-served prefixes (see isReservedRoutePath), neither specific to
 			// any one frontend. A route colliding with a given host's own built-in pages (e.g.
@@ -227,6 +234,27 @@ func parsePluginConfigMap(cm *corev1.ConfigMap) (*pluginEntry, error) {
 				return nil, fmt.Errorf("manifest's 'federation.routes[%d].path' %q duplicates earlier route %q in the same manifest", i, route.Path, other)
 			}
 			seenPaths[normalized] = route.Path
+		}
+		// A PluginRouteKindRoutes route owns every sub-path under its own Path - that's the whole
+		// point of it (see apis/v1.PluginRoute.Kind) - so a sibling route nested under one is the
+		// same collision an exact duplicate Path is, just spelled differently: the plugin's own
+		// route tree and the sibling both claim that path, and which one a host's router mounts
+		// there is whichever it happens to match first. Checked in its own pass over the routes
+		// so it doesn't depend on the order the two are declared in.
+		for i, route := range manifest.Federation.Routes {
+			if route.Kind != apisv1.PluginRouteKindRoutes {
+				continue
+			}
+			owner := normalizeRoutePath(route.Path)
+			for j, other := range manifest.Federation.Routes {
+				if i == j {
+					continue
+				}
+				if !strings.HasPrefix(normalizeRoutePath(other.Path), owner+"/") {
+					continue
+				}
+				return nil, fmt.Errorf("manifest's 'federation.routes[%d].path' %q falls under 'federation.routes[%d].path' %q, whose kind %q makes the plugin own that whole route tree", j, other.Path, i, route.Path, apisv1.PluginRouteKindRoutes)
+			}
 		}
 	}
 	return &pluginEntry{manifest: manifest, files: files}, nil
