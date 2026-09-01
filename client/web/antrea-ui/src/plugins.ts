@@ -61,10 +61,16 @@ window.__antreaPluginHost = {
     registerFlowTableColumnsProcessor: fn => flowTableColumnsProcessors.push(fn),
 };
 
-// Top-level routes owned by Antrea UI itself. A plugin's route/sidebar entry path must not
-// collide with these — react-router's behavior with two children registered under the same
-// path is undefined, and a colliding plugin could silently shadow a built-in page.
-const RESERVED_PATHS = new Set(['', 'summary', 'traceflow', 'flows', 'settings']);
+// Top-level pages owned by Antrea UI itself, and the only paths a plugin sidebar entry's
+// parentPath may nest under (see resolveParentPaths) — nesting stays one level deep, so Flow
+// Visibility's own second-level pages (flows/list, flows/map, below) are deliberately excluded
+// here even though they're also built-in.
+const BUILTIN_TOP_LEVEL_PATHS = new Set(['summary', 'traceflow', 'flows', 'settings']);
+
+// Every path owned by Antrea UI itself, top-level or not. A plugin's route/sidebar entry path
+// must not collide with any of these — react-router's behavior with two children registered
+// under the same path is undefined, and a colliding plugin could silently shadow a built-in page.
+const RESERVED_PATHS = new Set(['', ...BUILTIN_TOP_LEVEL_PATHS, 'flows/list', 'flows/map']);
 
 // A plugin's route/sidebar entry path must also not fall under this prefix: nginx proxies it
 // straight to the backend (see /api/v1/plugins/ above), so a hard refresh or direct link to
@@ -103,8 +109,37 @@ export function getPluginRoutes(): PluginRoute[] {
     return dedupeByPath(pluginRoutes, 'route');
 }
 
+// Clears parentPath on any entry whose parent doesn't resolve to a real top-level entry — a
+// built-in top-level page, or another entry that itself has no parentPath — logging why. Nesting
+// is one level deep, matching antrea-nav-group's group/item rendering, so a parentPath pointing
+// at an already-nested entry (including a built-in second-level page like flows/list) is invalid
+// rather than silently flattened into a deeper tree. Runs after dedupeByPath so parentPath is
+// resolved against the final, deduped set of paths, and normalizes a surviving parentPath to the
+// same leading-slash-stripped form as every entry's own (deduped) path, so callers building a
+// tree can compare them directly.
+export function resolveParentPaths(entries: PluginSidebarEntry[]): PluginSidebarEntry[] {
+    const topLevelPaths = new Set(BUILTIN_TOP_LEVEL_PATHS);
+    for (const entry of entries) {
+        if (!entry.parentPath) topLevelPaths.add(stripLeadingSlash(entry.path));
+    }
+    return entries.map((entry) => {
+        if (!entry.parentPath) return entry;
+        const normalizedParent = stripLeadingSlash(entry.parentPath);
+        if (!topLevelPaths.has(normalizedParent)) {
+            console.error(
+                `plugin sidebar entry for path "${entry.path}" has parentPath "${entry.parentPath}", ` +
+                'which is not a top-level entry (or is itself nested); ignoring the nesting'
+            );
+            // eslint-disable-next-line @typescript-eslint/no-unused-vars -- drop parentPath, keep the rest
+            const { parentPath: _parentPath, ...rest } = entry;
+            return rest;
+        }
+        return { ...entry, parentPath: normalizedParent };
+    });
+}
+
 export function getPluginSidebarEntries(): PluginSidebarEntry[] {
-    return dedupeByPath(pluginSidebarEntries, 'sidebar entry');
+    return resolveParentPaths(dedupeByPath(pluginSidebarEntries, 'sidebar entry'));
 }
 
 export function getEdgeExtraRenderers(): EdgeExtraRenderer[] {

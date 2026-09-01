@@ -152,7 +152,7 @@ describe('HomeRedirect', () => {
                             <Route path="/" element={<HomeRedirect />} />
                             <Route path="/summary" element={<div data-testid="landed">summary</div>} />
                             <Route path="/traceflow" element={<div data-testid="landed">traceflow</div>} />
-                            <Route path="/flows" element={<div data-testid="landed">flows</div>} />
+                            <Route path="/flows/list" element={<div data-testid="landed">flows</div>} />
                         </Routes>
                     </MemoryRouter>
                 </AccessProvider>
@@ -174,7 +174,7 @@ describe('HomeRedirect', () => {
         await waitFor(() => expect(document.querySelector('[data-testid="landed"]')?.textContent).toBe('traceflow'));
     });
 
-    test('falls back to /flows when neither is granted', async () => {
+    test('falls back to /flows/list when neither is granted', async () => {
         renderAt(summaryWith());
         await waitFor(() => expect(document.querySelector('[data-testid="landed"]')?.textContent).toBe('flows'));
     });

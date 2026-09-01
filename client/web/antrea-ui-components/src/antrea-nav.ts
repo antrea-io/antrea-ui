@@ -13,6 +13,7 @@
 // limitations under the License.
 
 import { LitElement, html, css } from 'lit';
+import type { PropertyValues } from 'lit';
 import { property } from 'lit/decorators.js';
 
 /**
@@ -193,12 +194,145 @@ export class AntreaNavItem extends LitElement {
     }
 }
 
+/**
+ * Collapsible wrapper for a nested group of antrea-nav-item elements — e.g. Flow Visibility's
+ * Flow List / Service Map sub-pages, or a plugin's own nested entries (see
+ * `@antrea/ui-plugin-sdk`'s `PluginSidebarEntry.parentPath`). Active-item highlighting is not
+ * this component's job: put an `active` antrea-nav-item in the "header" slot for the group's own
+ * page, and give nested antrea-nav-items their own `active` as usual — this component only owns
+ * the expand/collapse chrome, so any host or plugin gets the same nested-nav rendering without
+ * reimplementing it.
+ *
+ * Clicking the header slot (e.g. its Link) always expands — never collapses — since it also
+ * navigates to the group's own page, and hiding the destination just navigated to would be
+ * confusing. Only the chevron button actually toggles, including collapsing when expanded.
+ *
+ * @slot header - The group's own antrea-nav-item (its link, icon, active state)
+ * @slot - Nested antrea-nav-item elements, shown when expanded
+ * @attr expanded - Reflects whether the group is currently expanded
+ * @prop hasActiveChild - Set by the host when one of the nested items is the current page, so the
+ *   group expands instead of hiding the active page behind a collapsed toggle. Consulted on
+ *   every false-to-true transition, not just the first — a host route guard (e.g. a redirect
+ *   still in flight, or the access summary not having loaded yet, see nav.tsx) can render this
+ *   group before it knows the current page belongs inside it — but a true-to-false transition
+ *   never auto-collapses, so the user's own toggle still sticks.
+ *
+ * @csspart toggle - The expand/collapse chevron button. Exposed so a host can hide it in contexts
+ *   where there's no room for a group's nested items regardless of expand state (see App.css's
+ *   icon-only-sidebar rule, which hides both) — treat this as a stable, external contract, not an
+ *   implementation detail.
+ *
+ * CSS tokens consumed:
+ *   --antrea-nav-item-text, --antrea-nav-item-text-active, --antrea-space-md
+ */
+export class AntreaNavGroup extends LitElement {
+    static styles = css`
+        :host {
+            display: block;
+        }
+
+        .group-header {
+            display: flex;
+            align-items: stretch;
+            cursor: pointer;
+        }
+
+        .group-header ::slotted(*) {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .group-toggle {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+            width: 32px;
+            background: none;
+            border: none;
+            cursor: pointer;
+            color: var(--antrea-nav-item-text, #adbbc4);
+        }
+
+        .group-header:hover .group-toggle {
+            color: var(--antrea-nav-item-text-active, #e9ecef);
+        }
+
+        .toggle-icon {
+            display: inline-block;
+            width: 7px;
+            height: 7px;
+            border-right: 2px solid currentColor;
+            border-bottom: 2px solid currentColor;
+            transform: rotate(45deg);
+            transition: transform 0.15s;
+        }
+
+        :host([expanded]) .toggle-icon {
+            transform: rotate(225deg);
+        }
+
+        .group-children {
+            padding-left: var(--antrea-space-md, 1rem);
+        }
+
+        .group-children.collapsed {
+            display: none;
+        }
+    `;
+
+    @property({ type: Boolean, reflect: true }) expanded = false;
+    @property({ type: Boolean }) hasActiveChild = false;
+
+    protected updated(changed: PropertyValues) {
+        // Fires on the initial render too (Lit's first `changed` includes every reactive
+        // property), so this also covers the plain mount-with-an-active-child case `firstUpdated`
+        // used to handle — plus any later false-to-true transition. Only ever expands: reading
+        // `this.hasActiveChild` (not the old value) rather than diffing means a true-to-false
+        // transition is silently ignored, so the user's own toggle is never overridden.
+        if (changed.has('hasActiveChild') && this.hasActiveChild) this.expanded = true;
+    }
+
+    private _handleToggleClick(e: Event) {
+        // Stops the click from also reaching _handleHeaderClick below — this is the one control
+        // allowed to collapse an expanded group.
+        e.stopPropagation();
+        this.expanded = !this.expanded;
+    }
+
+    private _handleHeaderClick() {
+        this.expanded = true;
+    }
+
+    render() {
+        return html`
+            <div class="group-header" @click=${this._handleHeaderClick}>
+                <slot name="header"></slot>
+                <button
+                    class="group-toggle"
+                    part="toggle"
+                    @click=${this._handleToggleClick}
+                    aria-label=${this.expanded ? 'Collapse group' : 'Expand group'}
+                    aria-expanded=${this.expanded}
+                >
+                    <span class="toggle-icon"></span>
+                </button>
+            </div>
+            <div class="group-children ${this.expanded ? '' : 'collapsed'}">
+                <slot></slot>
+            </div>
+        `;
+    }
+}
+
 customElements.define('antrea-nav', AntreaNav);
 customElements.define('antrea-nav-item', AntreaNavItem);
+customElements.define('antrea-nav-group', AntreaNavGroup);
 
 declare global {
     interface HTMLElementTagNameMap {
         'antrea-nav': AntreaNav;
         'antrea-nav-item': AntreaNavItem;
+        'antrea-nav-group': AntreaNavGroup;
     }
 }

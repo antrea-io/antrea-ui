@@ -107,6 +107,20 @@ antrea-nav:not([expanded]) .nav-label {
     display: none;
 }
 
+/*
+ * An icon-only sidebar has no room for a group's nested items: their labels are already hidden by
+ * the rule above, but the nested antrea-nav-item rows themselves aren't — they'd render as blank,
+ * full-width clickable rows under the group's icon. Hide the nested items outright (matched by
+ * the absence of slot="header", which only the group's own item carries) rather than just their
+ * labels, and hide the now-pointless toggle button along with them.
+ */
+antrea-nav:not([expanded]) antrea-nav-group > antrea-nav-item:not([slot]) {
+    display: none;
+}
+antrea-nav:not([expanded]) antrea-nav-group::part(toggle) {
+    display: none;
+}
+
 .app-body {
     display: flex;
     flex: 1;
