@@ -111,6 +111,20 @@ describe('antrea-nav-group', () => {
         expect(group.expanded).toBe(false);
     });
 
+    test('hasActiveChild turning true after mount (not just at mount) expands the group', async () => {
+        // Covers a host whose route guard resolves after this element's first render — e.g. a
+        // redirect still in flight, or an access summary that hasn't loaded yet — so hasActiveChild
+        // starts false and only later becomes true, rather than being true from the start.
+        const group = mount(false);
+        await group.updateComplete;
+        expect(group.expanded).toBe(false);
+
+        group.hasActiveChild = true;
+        await group.updateComplete;
+
+        expect(group.expanded).toBe(true);
+    });
+
     test('hasActiveChild flipping after first render does not re-collapse or re-expand the group', async () => {
         const group = mount(true);
         await group.updateComplete;

@@ -13,6 +13,7 @@
 // limitations under the License.
 
 import { LitElement, html, css } from 'lit';
+import type { PropertyValues } from 'lit';
 import { property } from 'lit/decorators.js';
 
 /**
@@ -210,8 +211,16 @@ export class AntreaNavItem extends LitElement {
  * @slot - Nested antrea-nav-item elements, shown when expanded
  * @attr expanded - Reflects whether the group is currently expanded
  * @prop hasActiveChild - Set by the host when one of the nested items is the current page, so the
- *   group starts expanded instead of hiding the active page behind a collapsed toggle. Only
- *   consulted on first render — afterwards, the user's own toggle sticks.
+ *   group expands instead of hiding the active page behind a collapsed toggle. Consulted on
+ *   every false-to-true transition, not just the first — a host route guard (e.g. a redirect
+ *   still in flight, or the access summary not having loaded yet, see nav.tsx) can render this
+ *   group before it knows the current page belongs inside it — but a true-to-false transition
+ *   never auto-collapses, so the user's own toggle still sticks.
+ *
+ * @csspart toggle - The expand/collapse chevron button. Exposed so a host can hide it in contexts
+ *   where there's no room for a group's nested items regardless of expand state (see App.css's
+ *   icon-only-sidebar rule, which hides both) — treat this as a stable, external contract, not an
+ *   implementation detail.
  *
  * CSS tokens consumed:
  *   --antrea-nav-item-text, --antrea-nav-item-text-active, --antrea-space-md
@@ -275,8 +284,13 @@ export class AntreaNavGroup extends LitElement {
     @property({ type: Boolean, reflect: true }) expanded = false;
     @property({ type: Boolean }) hasActiveChild = false;
 
-    protected firstUpdated() {
-        if (this.hasActiveChild) this.expanded = true;
+    protected updated(changed: PropertyValues) {
+        // Fires on the initial render too (Lit's first `changed` includes every reactive
+        // property), so this also covers the plain mount-with-an-active-child case `firstUpdated`
+        // used to handle — plus any later false-to-true transition. Only ever expands: reading
+        // `this.hasActiveChild` (not the old value) rather than diffing means a true-to-false
+        // transition is silently ignored, so the user's own toggle is never overridden.
+        if (changed.has('hasActiveChild') && this.hasActiveChild) this.expanded = true;
     }
 
     private _handleToggleClick(e: Event) {
