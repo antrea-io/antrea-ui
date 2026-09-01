@@ -56,7 +56,15 @@ func normalizeRoutePath(p string) string {
 	return strings.Trim(path.Clean("/"+p), "/")
 }
 
+// isReservedRoutePath reports whether normalized (already run through
+// normalizeRoutePath) is off-limits for a manifest-declared route: it falls
+// under one of reservedRoutePrefixes, or it's the empty string - the root
+// path, which normalizeRoutePath also collapses "/", "." and ".." to, and
+// which plugins.ts's own RESERVED_PATHS reserves unconditionally (its "").
 func isReservedRoutePath(normalized string) bool {
+	if normalized == "" {
+		return true
+	}
 	for _, prefix := range reservedRoutePrefixes {
 		if strings.HasPrefix(normalized, prefix) {
 			return true
@@ -203,9 +211,9 @@ func parsePluginConfigMap(cm *corev1.ConfigMap) (*pluginEntry, error) {
 			if route.ExposedModule == "" {
 				return nil, fmt.Errorf("manifest's 'federation.routes[%d]' is missing 'exposedModule'", i)
 			}
-			// The one reservation the backend can enforce on a route's Path itself is the
-			// nginx-served prefixes (see reservedRoutePrefixes), not something specific to any
-			// one frontend. A route colliding with a given host's own built-in pages (e.g.
+			// The reservations the backend can enforce on a route's Path itself are the root
+			// path and the nginx-served prefixes (see isReservedRoutePath), neither specific to
+			// any one frontend. A route colliding with a given host's own built-in pages (e.g.
 			// "/settings") is instead the host's job to reject, the same way this repo's
 			// plugins.ts (RESERVED_PATHS/dedupeByPath) already does for its own code-registered
 			// routes - the backend has no way to know a given host's built-in path list, and the
@@ -213,7 +221,7 @@ func parsePluginConfigMap(cm *corev1.ConfigMap) (*pluginEntry, error) {
 			// its own equivalent for manifest-declared routes.
 			normalized := normalizeRoutePath(route.Path)
 			if isReservedRoutePath(normalized) {
-				return nil, fmt.Errorf("manifest's 'federation.routes[%d].path' %q falls under a reserved prefix (%s)", i, route.Path, strings.Join(reservedRoutePrefixes, ", "))
+				return nil, fmt.Errorf("manifest's 'federation.routes[%d].path' %q is the root path or falls under a reserved prefix (%s)", i, route.Path, strings.Join(reservedRoutePrefixes, ", "))
 			}
 			if other, ok := seenPaths[normalized]; ok {
 				return nil, fmt.Errorf("manifest's 'federation.routes[%d].path' %q duplicates earlier route %q in the same manifest", i, route.Path, other)
@@ -237,11 +245,34 @@ func (r *Registry) sortedConfigMapNames() []string {
 }
 
 // Index returns the current set of plugin manifests, deduplicated by
-// manifest name and by federation route path. If two ConfigMaps declare the
-// same plugin name, or two different plugins declare a colliding federation
-// route path, the one whose backing ConfigMap name sorts first wins and the
-// other is dropped (and logged) - mirrors the frontend's dedupeByPath in
-// plugins.ts, which does the same for code-registered routes.
+// manifest name and by federation route path.
+//
+// If two ConfigMaps declare the same plugin name, the one whose backing
+// ConfigMap name sorts first wins outright; the other is dropped (and
+// logged) in full, including its 'entry' - File would otherwise still serve
+// files for the loser, which Index no longer lists.
+//
+// If two different plugins' federation routes collide on path, only the
+// colliding routes are dropped from the later plugin (by ConfigMap name
+// sort), not the whole manifest - unlike the plugin-name case, 'entry' is
+// still eagerly import()ed by every listed manifest regardless of
+// 'federation' (see PluginManifest.Entry), so dropping the manifest would
+// cost that plugin's page-extension registrations over a route only an
+// out-of-tree, federation-aware host ever mounts. This differs from the
+// frontend's dedupeByPath in plugins.ts in the same way: dedupeByPath also
+// drops individual routes rather than a whole plugin, but its winner is
+// registration order (whichever plugin's entry module ran first), not
+// ConfigMap name sort. If every one of a plugin's routes collides, its
+// federation is left with no routes to serve, which is as meaningless as
+// the empty-routes case parsePluginConfigMap already rejects, so the whole
+// manifest is dropped instead - same as the plugin-name case.
+//
+// Either way, a plugin name is claimed by the first ConfigMap that reaches
+// it in sort order, whether or not that ConfigMap's manifest ends up listed
+// - a name left unclaimed just because its manifest was dropped for an
+// all-routes collision would let a later ConfigMap reusing that name win
+// the name outright in this loop, while File() (which walks the same order
+// independently) kept resolving it to the first, dropped, ConfigMap.
 func (r *Registry) Index() []apisv1.PluginManifest {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -255,32 +286,49 @@ func (r *Registry) Index() []apisv1.PluginManifest {
 			r.logger.Info("Duplicate plugin name, dropping", "plugin", entry.manifest.Name, "configMap", cmName, "keptConfigMap", owner)
 			continue
 		}
-		if entry.manifest.Federation != nil {
-			conflict := ""
-			for _, route := range entry.manifest.Federation.Routes {
-				if owner, ok := seenRoutePaths[normalizeRoutePath(route.Path)]; ok {
-					conflict = owner
-					break
+
+		manifest := entry.manifest
+		if manifest.Federation != nil {
+			kept := make([]apisv1.PluginRoute, 0, len(manifest.Federation.Routes))
+			for _, route := range manifest.Federation.Routes {
+				normalized := normalizeRoutePath(route.Path)
+				if owner, ok := seenRoutePaths[normalized]; ok {
+					r.logger.Info("Plugin's federation route path collides with an earlier plugin, dropping the route", "plugin", manifest.Name, "configMap", cmName, "path", route.Path, "collidesWithPlugin", owner)
+					continue
 				}
+				seenRoutePaths[normalized] = manifest.Name
+				kept = append(kept, route)
 			}
-			if conflict != "" {
-				r.logger.Info("Plugin's federation route path collides with an earlier plugin, dropping", "plugin", entry.manifest.Name, "configMap", cmName, "collidesWithPlugin", conflict)
+			if len(kept) == 0 {
+				r.logger.Info("All of plugin's federation routes collided with an earlier plugin, dropping the plugin", "plugin", manifest.Name, "configMap", cmName)
+				// Still claim the name: this ConfigMap is the one File() would
+				// otherwise serve for it (sortedConfigMapNames order matches this
+				// loop's), and leaving it unclaimed would let a later ConfigMap
+				// reusing the same name win Index() while File() kept resolving
+				// to this one.
+				seenNames[manifest.Name] = cmName
 				continue
 			}
-			for _, route := range entry.manifest.Federation.Routes {
-				seenRoutePaths[normalizeRoutePath(route.Path)] = entry.manifest.Name
+			if len(kept) != len(manifest.Federation.Routes) {
+				federation := *manifest.Federation
+				federation.Routes = kept
+				manifest.Federation = &federation
 			}
 		}
-		seenNames[entry.manifest.Name] = cmName
-		manifests = append(manifests, entry.manifest)
+
+		seenNames[manifest.Name] = cmName
+		manifests = append(manifests, manifest)
 	}
 	return manifests
 }
 
 // File returns the contents of filename belonging to the plugin named
 // pluginName, as currently known to the registry. When the plugin name is
-// claimed by more than one ConfigMap, it resolves to the same one Index()
-// would keep.
+// claimed by more than one ConfigMap, it resolves to the ConfigMap that
+// claimed the name in Index() - usually the one whose manifest Index()
+// lists, except when every one of that manifest's federation routes
+// collided and Index() dropped it entirely while still leaving it holding
+// the name (see Index).
 func (r *Registry) File(pluginName, filename string) ([]byte, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()

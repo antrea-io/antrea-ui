@@ -100,10 +100,12 @@ A manifest declaring `federation`:
 }
 ```
 
-The backend rejects a plugin's ConfigMap outright (logging why, and serving
-neither the manifest nor its files) if any of the following don't hold —
-each is a case that would otherwise surface only as a broken route or a
-silent skip once the plugin is already installed:
+The backend refuses to load a plugin's ConfigMap (logging why) if any of the
+following don't hold — each is a case that would otherwise surface only as
+a broken route or a silent skip once the plugin is already installed. A
+ConfigMap that fails these checks on an update, rather than on first load,
+leaves the previously loaded version in place until the ConfigMap is fixed
+or deleted:
 
 - `federation.remoteEntry` must be a key in the same ConfigMap's data, and
   must not be the same key as `entry` — the host always `import()`s `entry`
@@ -111,17 +113,22 @@ silent skip once the plugin is already installed:
 - `federation.routes` must be non-empty — a remote with nothing to mount is
   meaningless on its own.
 - Each route needs `path`, `sidebarLabel`, and `exposedModule`.
-- `path` may not fall under a path nginx proxies straight to the backend
-  (currently `api`, `auth`, e.g. `/api/v1/foo` or `/authors`) — that would
-  install and navigate fine client-side, then 404 on a hard refresh or a
-  direct link.
+- `path` may not be the root path (`/`) or fall under a path nginx proxies
+  straight to the backend (currently `api`, `auth`, e.g. `/api/v1/foo` or
+  `/authors`) — the former collides with the host's own home page, the
+  latter would install and navigate fine client-side, then 404 on a hard
+  refresh or a direct link.
 - `path` may not duplicate another route's `path` in the same manifest
-  (leading/trailing/doubled slashes ignored when comparing).
+  (leading/trailing/doubled slashes, and `.`/`..` segments, ignored when
+  comparing).
 
 A route `path` colliding with another, already-installed plugin's route
-`path` is a separate, softer case: both ConfigMaps still parse and load, but
-`GET /api/v1/plugins/index.json` keeps only the earlier one (by ConfigMap
-name) and drops the later plugin entirely, logging why — the same
+`path` is a separate, softer case, resolved once ConfigMaps are already
+loaded rather than at parse time: whichever plugin's ConfigMap name sorts
+first keeps the route, and the later plugin just loses that one route (and
+its sidebar entry) from `GET /api/v1/plugins/index.json` — the rest of its
+manifest, including `entry`, is unaffected. Only if every one of a plugin's
+routes collides is the whole plugin dropped from the index, the same
 resolution as two plugins declaring the same `name`.
 
 ## Writing a plugin

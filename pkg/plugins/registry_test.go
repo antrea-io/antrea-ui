@@ -158,7 +158,7 @@ func TestRegistrySkipsInvalidConfigMaps(t *testing.T) {
 					"remoteEntry.json": "x",
 				},
 			},
-			wantErr: "'federation.routes[0].path' \"/apiobjects\" falls under a reserved prefix",
+			wantErr: "'federation.routes[0].path' \"/apiobjects\" is the root path or falls under a reserved prefix",
 		},
 		"route path under reserved auth prefix": {
 			cm: &corev1.ConfigMap{
@@ -169,7 +169,29 @@ func TestRegistrySkipsInvalidConfigMaps(t *testing.T) {
 					"remoteEntry.json": "x",
 				},
 			},
-			wantErr: "'federation.routes[0].path' \"/authors\" falls under a reserved prefix",
+			wantErr: "'federation.routes[0].path' \"/authors\" is the root path or falls under a reserved prefix",
+		},
+		"route path is the root path": {
+			cm: &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{Name: "cm"},
+				Data: map[string]string{
+					"manifest.json":    `{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"path":"/","sidebarLabel":"Plugin","exposedModule":"./Page"}]}}`,
+					"index.js":         "x",
+					"remoteEntry.json": "x",
+				},
+			},
+			wantErr: "'federation.routes[0].path' \"/\" is the root path or falls under a reserved prefix",
+		},
+		"route path collapses to the root path via dot segments": {
+			cm: &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{Name: "cm"},
+				Data: map[string]string{
+					"manifest.json":    `{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"path":"/plugin/..","sidebarLabel":"Plugin","exposedModule":"./Page"}]}}`,
+					"index.js":         "x",
+					"remoteEntry.json": "x",
+				},
+			},
+			wantErr: "'federation.routes[0].path' \"/plugin/..\" is the root path or falls under a reserved prefix",
 		},
 		"duplicate route path in the same manifest": {
 			cm: &corev1.ConfigMap{
@@ -264,6 +286,18 @@ func TestRegistrySkipsInvalidConfigMaps(t *testing.T) {
 	}
 }
 
+// TestRegistryHandleUpsertSkipsInvalidConfigMap exercises handleUpsert's own
+// error handling (parsePluginConfigMap's error cases are covered directly,
+// by message, in TestRegistrySkipsInvalidConfigMaps).
+func TestRegistryHandleUpsertSkipsInvalidConfigMap(t *testing.T) {
+	r := newTestRegistry(t)
+	r.handleUpsert(&corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "cm"},
+		Data:       map[string]string{"manifest.json": "not json"},
+	})
+	assert.Empty(t, r.Index())
+}
+
 func TestRegistryIndexIncludesFederation(t *testing.T) {
 	r := newTestRegistry(t)
 
@@ -301,34 +335,91 @@ func TestRegistryIndexIncludesFederation(t *testing.T) {
 	}}, r.Index())
 }
 
-func TestRegistryIndexDropsFederationRoutePathCollidingWithAnotherPlugin(t *testing.T) {
+func federationConfigMap(cmName, pluginName, entry string, routes string) *corev1.ConfigMap {
+	return &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: cmName, Namespace: "antrea-ui"},
+		Data: map[string]string{
+			"manifest.json": `{
+				"name": "` + pluginName + `",
+				"version": "0.1.0",
+				"entry": "` + entry + `",
+				"federation": {"remoteEntry": "remoteEntry.json", "routes": ` + routes + `}
+			}`,
+			entry:              "x",
+			"remoteEntry.json": "x",
+		},
+	}
+}
+
+// TestRegistryIndexDropsPluginWhenAllFederationRoutesCollide pins the
+// cross-plugin path normalization: the two manifests spell the same route
+// path differently ("/policies" vs "//policies/"), so the test would still
+// pass if seenRoutePaths compared raw, un-normalized paths.
+func TestRegistryIndexDropsPluginWhenAllFederationRoutesCollide(t *testing.T) {
 	r := newTestRegistry(t)
 
-	manifest := func(cmName string) *corev1.ConfigMap {
-		return &corev1.ConfigMap{
-			ObjectMeta: metav1.ObjectMeta{Name: cmName, Namespace: "antrea-ui"},
-			Data: map[string]string{
-				"manifest.json": `{
-					"name": "` + cmName + `-plugin",
-					"version": "0.1.0",
-					"entry": "index.js",
-					"federation": {
-						"remoteEntry": "remoteEntry.json",
-						"routes": [{"path": "/policies", "sidebarLabel": "Policies", "exposedModule": "./Page"}]
-					}
-				}`,
-				"index.js":         "x",
-				"remoteEntry.json": "x",
-			},
-		}
-	}
-
-	r.handleUpsert(manifest("b-configmap"))
-	r.handleUpsert(manifest("a-configmap"))
+	r.handleUpsert(federationConfigMap("b-configmap", "b-plugin", "index.js",
+		`[{"path": "//policies/", "sidebarLabel": "Policies", "exposedModule": "./Page"}]`))
+	r.handleUpsert(federationConfigMap("a-configmap", "a-plugin", "index.js",
+		`[{"path": "/policies", "sidebarLabel": "Policies", "exposedModule": "./Page"}]`))
 
 	manifests := r.Index()
 	require.Len(t, manifests, 1)
-	assert.Equal(t, "a-configmap-plugin", manifests[0].Name)
+	assert.Equal(t, "a-plugin", manifests[0].Name)
+}
+
+// TestRegistryIndexFiltersCollidingFederationRouteKeepsRestOfPlugin checks
+// that a route collision drops only the colliding route, not the whole
+// manifest: b-plugin's "entry" and its non-colliding "/other" route stay
+// listed.
+func TestRegistryIndexFiltersCollidingFederationRouteKeepsRestOfPlugin(t *testing.T) {
+	r := newTestRegistry(t)
+
+	r.handleUpsert(federationConfigMap("a-configmap", "a-plugin", "a.js",
+		`[{"path": "/policies", "sidebarLabel": "Policies", "exposedModule": "./Page"}]`))
+	r.handleUpsert(federationConfigMap("b-configmap", "b-plugin", "b.js",
+		`[
+			{"path": "/policies", "sidebarLabel": "Policies Again", "exposedModule": "./OtherPage"},
+			{"path": "/other", "sidebarLabel": "Other", "exposedModule": "./OtherPage"}
+		]`))
+
+	manifests := r.Index()
+	require.Len(t, manifests, 2)
+	assert.Equal(t, "a-plugin", manifests[0].Name)
+	assert.Equal(t, "b-plugin", manifests[1].Name)
+	require.NotNil(t, manifests[1].Federation)
+	assert.Equal(t, []apisv1.PluginRoute{
+		{Path: "/other", SidebarLabel: "Other", ExposedModule: "./OtherPage"},
+	}, manifests[1].Federation.Routes)
+}
+
+// TestRegistryIndexAndFileStayConsistentWhenAllRoutesCollide reproduces the
+// scenario where dropping a whole plugin for an all-routes collision, without
+// claiming its name, let a later ConfigMap reusing that name get listed in
+// Index() with an entry file File() would never actually resolve to (File()
+// always resolves a name to its first-sorted ConfigMap, independently of
+// Index()'s own bookkeeping).
+func TestRegistryIndexAndFileStayConsistentWhenAllRoutesCollide(t *testing.T) {
+	r := newTestRegistry(t)
+
+	r.handleUpsert(federationConfigMap("a-configmap", "aaa", "a.js",
+		`[{"path": "/policies", "sidebarLabel": "Policies", "exposedModule": "./Page"}]`))
+	// b-configmap sorts before c-configmap, and claims the "dup" name first;
+	// its one route collides with aaa's, so the whole manifest is dropped.
+	r.handleUpsert(federationConfigMap("b-configmap", "dup", "b.js",
+		`[{"path": "/policies", "sidebarLabel": "Policies", "exposedModule": "./Page"}]`))
+	r.handleUpsert(federationConfigMap("c-configmap", "dup", "c.js",
+		`[{"path": "/other", "sidebarLabel": "Other", "exposedModule": "./Page"}]`))
+
+	manifests := r.Index()
+	names := make([]string, len(manifests))
+	for i, m := range manifests {
+		names[i] = m.Name
+	}
+	assert.Equal(t, []string{"aaa"}, names, "dup must not be listed at all, from either ConfigMap")
+
+	_, ok := r.File("dup", "c.js")
+	assert.False(t, ok, "c-configmap's entry must never be served for a name Index() doesn't list")
 }
 
 func TestRegistryDuplicatePluginNameKeepsLowerConfigMapName(t *testing.T) {
