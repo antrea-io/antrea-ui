@@ -22,6 +22,7 @@ package plugins
 import (
 	"encoding/json"
 	"fmt"
+	"path"
 	"sort"
 	"strings"
 	"sync"
@@ -37,6 +38,32 @@ import (
 )
 
 const manifestFileName = "manifest.json"
+
+// reservedRoutePrefixes mirrors the nginx config's location blocks
+// (_nginx_conf.tpl: "location /api", "location /auth"), which are plain
+// string prefixes, not path-segment matches: nginx proxies any URI
+// beginning with "/api" or "/auth" - "/apidocs", "/api", "/authors" all
+// included - straight to the backend, bypassing the SPA. A manifest route
+// under one of these would install and navigate fine client-side, then
+// 404 on a hard refresh or a direct link.
+var reservedRoutePrefixes = []string{"api", "auth"}
+
+// normalizeRoutePath collapses a route path to the form used for reservation
+// and duplicate checks, so "/policies", "policies", "//policies" and
+// "/policies/" are all recognized as the same path (and ".." segments can't
+// be used to escape the comparison).
+func normalizeRoutePath(p string) string {
+	return strings.Trim(path.Clean("/"+p), "/")
+}
+
+func isReservedRoutePath(normalized string) bool {
+	for _, prefix := range reservedRoutePrefixes {
+		if strings.HasPrefix(normalized, prefix) {
+			return true
+		}
+	}
+	return false
+}
 
 type pluginEntry struct {
 	manifest apisv1.PluginManifest
@@ -156,6 +183,9 @@ func parsePluginConfigMap(cm *corev1.ConfigMap) (*pluginEntry, error) {
 		if manifest.Federation.RemoteEntry == "" {
 			return nil, fmt.Errorf("manifest's federation is missing 'remoteEntry'")
 		}
+		if manifest.Federation.RemoteEntry == manifest.Entry {
+			return nil, fmt.Errorf("manifest's 'federation.remoteEntry' must not be the same file as 'entry' - the host always import()s 'entry' as a plain ES module, which a federation remote entry is not")
+		}
 		if _, ok := files[manifest.Federation.RemoteEntry]; !ok {
 			return nil, fmt.Errorf("remote entry file %q referenced by manifest's federation not found in ConfigMap", manifest.Federation.RemoteEntry)
 		}
@@ -173,22 +203,22 @@ func parsePluginConfigMap(cm *corev1.ConfigMap) (*pluginEntry, error) {
 			if route.ExposedModule == "" {
 				return nil, fmt.Errorf("manifest's 'federation.routes[%d]' is missing 'exposedModule'", i)
 			}
-			// The one reservation the backend can enforce on a route's Path itself - "api/" is
-			// its own reserved prefix (see GetPluginFile), not something specific to any one
-			// frontend. A route colliding with a given host's own built-in pages (e.g.
-			// "/settings") is instead the host's job to reject, the same way it already does for
-			// code-registered routes (see plugins.ts's RESERVED_PATHS/dedupeByPath in the
-			// out-of-tree, module-federation-aware host - Antrea UI's own frontend ignores
-			// 'federation' altogether) - the backend has no way to know a given host's built-in
-			// path list.
-			trimmed := strings.TrimPrefix(route.Path, "/")
-			if strings.HasPrefix(trimmed, "api/") {
-				return nil, fmt.Errorf("manifest's 'federation.routes[%d].path' %q falls under the reserved 'api/' prefix", i, route.Path)
+			// The one reservation the backend can enforce on a route's Path itself is the
+			// nginx-served prefixes (see reservedRoutePrefixes), not something specific to any
+			// one frontend. A route colliding with a given host's own built-in pages (e.g.
+			// "/settings") is instead the host's job to reject, the same way this repo's
+			// plugins.ts (RESERVED_PATHS/dedupeByPath) already does for its own code-registered
+			// routes - the backend has no way to know a given host's built-in path list, and the
+			// out-of-tree, module-federation-aware host that actually consumes 'federation' needs
+			// its own equivalent for manifest-declared routes.
+			normalized := normalizeRoutePath(route.Path)
+			if isReservedRoutePath(normalized) {
+				return nil, fmt.Errorf("manifest's 'federation.routes[%d].path' %q falls under a reserved prefix (%s)", i, route.Path, strings.Join(reservedRoutePrefixes, ", "))
 			}
-			if other, ok := seenPaths[trimmed]; ok {
+			if other, ok := seenPaths[normalized]; ok {
 				return nil, fmt.Errorf("manifest's 'federation.routes[%d].path' %q duplicates earlier route %q in the same manifest", i, route.Path, other)
 			}
-			seenPaths[trimmed] = route.Path
+			seenPaths[normalized] = route.Path
 		}
 	}
 	return &pluginEntry{manifest: manifest, files: files}, nil
@@ -207,22 +237,41 @@ func (r *Registry) sortedConfigMapNames() []string {
 }
 
 // Index returns the current set of plugin manifests, deduplicated by
-// manifest name. If two ConfigMaps declare the same plugin name, the one
-// whose backing ConfigMap name sorts first wins and the other is dropped
-// (and logged) - mirrors the frontend's dedupeByPath in plugins.ts.
+// manifest name and by federation route path. If two ConfigMaps declare the
+// same plugin name, or two different plugins declare a colliding federation
+// route path, the one whose backing ConfigMap name sorts first wins and the
+// other is dropped (and logged) - mirrors the frontend's dedupeByPath in
+// plugins.ts, which does the same for code-registered routes.
 func (r *Registry) Index() []apisv1.PluginManifest {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	seen := make(map[string]string) // plugin name -> ConfigMap name that claimed it
+	seenNames := make(map[string]string)      // plugin name -> ConfigMap name that claimed it
+	seenRoutePaths := make(map[string]string) // normalized route path -> plugin name that claimed it
 	manifests := make([]apisv1.PluginManifest, 0, len(r.plugins))
 	for _, cmName := range r.sortedConfigMapNames() {
 		entry := r.plugins[cmName]
-		if owner, ok := seen[entry.manifest.Name]; ok {
+		if owner, ok := seenNames[entry.manifest.Name]; ok {
 			r.logger.Info("Duplicate plugin name, dropping", "plugin", entry.manifest.Name, "configMap", cmName, "keptConfigMap", owner)
 			continue
 		}
-		seen[entry.manifest.Name] = cmName
+		if entry.manifest.Federation != nil {
+			conflict := ""
+			for _, route := range entry.manifest.Federation.Routes {
+				if owner, ok := seenRoutePaths[normalizeRoutePath(route.Path)]; ok {
+					conflict = owner
+					break
+				}
+			}
+			if conflict != "" {
+				r.logger.Info("Plugin's federation route path collides with an earlier plugin, dropping", "plugin", entry.manifest.Name, "configMap", cmName, "collidesWithPlugin", conflict)
+				continue
+			}
+			for _, route := range entry.manifest.Federation.Routes {
+				seenRoutePaths[normalizeRoutePath(route.Path)] = entry.manifest.Name
+			}
+		}
+		seenNames[entry.manifest.Name] = cmName
 		manifests = append(manifests, entry.manifest)
 	}
 	return manifests
