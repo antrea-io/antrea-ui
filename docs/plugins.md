@@ -66,13 +66,70 @@ complete, minimal example.
 | --- | --- | --- |
 | `name` | yes | Unique name; also the path segment used to serve the plugin, e.g. `/api/v1/plugins/<name>/`. |
 | `version` | yes | Informational only. |
-| `entry` | yes | Plugin's JS module filename; must be a key in the same ConfigMap's data. |
+| `entry` | yes | Plugin's JS module filename; must be a key in the same ConfigMap's data. Always eagerly `import()`-ed by the host at startup, for whatever page-extension registration the plugin's code performs (see below) — independent of `federation`. Required even for a plugin whose only page(s) are a `federation` remote with no other page-extension registration; such a plugin still needs a real ES module here, distinct from `federation.remoteEntry` — see below. |
+| `federation` | no | `{remoteEntry, routes: [{path, sidebarLabel, icon?, exposedModule}]}` — a [Native Federation](https://www.npmjs.com/package/@angular-architects/native-federation) remote (its own file, separate from `entry`) plus the whole-page routes/sidebar entries it serves, as data instead of registering them in code (see below). Antrea UI's own frontend has no module federation loader and ignores this field entirely (see `plugins.ts`); it's consumed by a separate, out-of-tree Angular-based host, which lazily loads a route's `exposedModule` out of `remoteEntry`, only once that route is actually visited. |
 
-That's the whole schema — the manifest only carries enough for the host to
-fetch and `import()` the right file. Everything that affects the UI (routes,
-sidebar entries, page extensions) is registered in code, via
-`@antrea/ui-plugin-sdk`, so a plugin's actual shape is never split between
-JSON and JS.
+For most plugins, that's the whole schema: the manifest only carries enough
+for the host to fetch and `import()` the right file, and everything that
+affects the UI (routes, sidebar entries, page extensions) is registered in
+code, via `@antrea/ui-plugin-sdk`, so a plugin's actual shape is never split
+between JSON and JS. `federation` is the one exception, for a plugin whose
+page(s) are a module federation remote — deferring code execution until a
+route is visited requires the host to know the route beforehand, which
+requires it to be data rather than something only running the plugin's code
+would reveal.
+
+A manifest declaring `federation`:
+
+```json
+{
+  "name": "policy-management",
+  "version": "0.2.0",
+  "entry": "index.js",
+  "federation": {
+    "remoteEntry": "remoteEntry.json",
+    "routes": [
+      {
+        "path": "/policies",
+        "sidebarLabel": "Policy Management",
+        "icon": "M0 0h16v16H0z",
+        "exposedModule": "./PolicyManagementPage"
+      }
+    ]
+  }
+}
+```
+
+The backend refuses to load a plugin's ConfigMap (logging why) if any of the
+following don't hold — each is a case that would otherwise surface only as
+a broken route or a silent skip once the plugin is already installed. A
+ConfigMap that fails these checks on an update, rather than on first load,
+leaves the previously loaded version in place until the ConfigMap is fixed
+or deleted:
+
+- `federation.remoteEntry` must be a key in the same ConfigMap's data, and
+  must not be the same key as `entry` — the host always `import()`s `entry`
+  as a plain ES module, which a federation remote entry is not.
+- `federation.routes` must be non-empty — a remote with nothing to mount is
+  meaningless on its own.
+- Each route needs `path`, `sidebarLabel`, and `exposedModule`.
+- `path` may not be the root path (`/`) or fall under a path nginx proxies
+  straight to the backend (currently `api`, `auth`, e.g. `/api/v1/foo` or
+  `/authors`) — the former collides with the host's own home page, the
+  latter would install and navigate fine client-side, then 404 on a hard
+  refresh or a direct link.
+- `path` may not duplicate another route's `path` in the same manifest
+  (leading/trailing/doubled slashes, and `.`/`..` segments, ignored when
+  comparing).
+
+A route `path` colliding with another, already-installed plugin's route
+`path` is a separate, softer case, resolved once ConfigMaps are already
+loaded rather than at parse time: whichever plugin's ConfigMap name sorts
+first keeps the route, and the later plugin just loses that one route (and
+its sidebar entry) from `GET /api/v1/plugins/index.json` — the rest of its
+manifest, including `entry`, is unaffected. Only if every one of a plugin's
+routes collides is the whole plugin dropped from the index, the same
+resolution as two plugins declaring the same `name`.
 
 ## Writing a plugin
 
