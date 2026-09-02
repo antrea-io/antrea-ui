@@ -56,6 +56,37 @@ func normalizeRoutePath(p string) string {
 	return strings.Trim(path.Clean("/"+p), "/")
 }
 
+// findRouteOwner reports whether normalized (already run through
+// normalizeRoutePath) falls under one of owners, a set of normalized paths
+// of PluginRouteKindRoutes routes already claimed in Index's dedupe loop.
+// Those routes own their whole subtree (see parsePluginConfigMap's own
+// subtree check for a single manifest), so a later plugin's route nested
+// under one is the same cross-plugin collision seenRoutePaths catches for an
+// exact path match, just spelled differently.
+func findRouteOwner(owners map[string]string, normalized string) (string, string, bool) {
+	for ownerPath, plugin := range owners {
+		if strings.HasPrefix(normalized, ownerPath+"/") {
+			return ownerPath, plugin, true
+		}
+	}
+	return "", "", false
+}
+
+// findRouteUnder reports whether one of paths already falls under normalized
+// (a route about to be claimed as a PluginRouteKindRoutes owner). findRouteOwner
+// only catches a nested route processed after its owner; an already-claimed
+// path processed first - from a ConfigMap that sorts earlier - would
+// otherwise never be checked against an owner route declared later, since
+// nothing revisits paths already accepted into seenRoutePaths.
+func findRouteUnder(paths map[string]string, normalized string) (string, string, bool) {
+	for path, plugin := range paths {
+		if strings.HasPrefix(path, normalized+"/") {
+			return path, plugin, true
+		}
+	}
+	return "", "", false
+}
+
 // isReservedRoutePath reports whether normalized (already run through
 // normalizeRoutePath) is off-limits for a manifest-declared route: it falls
 // under one of reservedRoutePrefixes, or it's the empty string - the root
@@ -305,8 +336,9 @@ func (r *Registry) Index() []apisv1.PluginManifest {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	seenNames := make(map[string]string)      // plugin name -> ConfigMap name that claimed it
-	seenRoutePaths := make(map[string]string) // normalized route path -> plugin name that claimed it
+	seenNames := make(map[string]string)       // plugin name -> ConfigMap name that claimed it
+	seenRoutePaths := make(map[string]string)  // normalized route path -> plugin name that claimed it
+	seenRouteOwners := make(map[string]string) // normalized path of a claimed PluginRouteKindRoutes route -> plugin name that claimed it
 	manifests := make([]apisv1.PluginManifest, 0, len(r.plugins))
 	for _, cmName := range r.sortedConfigMapNames() {
 		entry := r.plugins[cmName]
@@ -324,7 +356,20 @@ func (r *Registry) Index() []apisv1.PluginManifest {
 					r.logger.Info("Plugin's federation route path collides with an earlier plugin, dropping the route", "plugin", manifest.Name, "configMap", cmName, "path", route.Path, "collidesWithPlugin", owner)
 					continue
 				}
+				if ownerPath, owner, ok := findRouteOwner(seenRouteOwners, normalized); ok {
+					r.logger.Info("Plugin's federation route path falls under an earlier plugin's route-tree-owning route, dropping the route", "plugin", manifest.Name, "configMap", cmName, "path", route.Path, "collidesWithPlugin", owner, "ownerPath", ownerPath)
+					continue
+				}
+				if route.Kind == apisv1.PluginRouteKindRoutes {
+					if nestedPath, owner, ok := findRouteUnder(seenRoutePaths, normalized); ok {
+						r.logger.Info("Plugin's route-tree-owning federation route already contains an earlier plugin's route, dropping the route", "plugin", manifest.Name, "configMap", cmName, "path", route.Path, "collidesWithPlugin", owner, "nestedPath", nestedPath)
+						continue
+					}
+				}
 				seenRoutePaths[normalized] = manifest.Name
+				if route.Kind == apisv1.PluginRouteKindRoutes {
+					seenRouteOwners[normalized] = manifest.Name
+				}
 				kept = append(kept, route)
 			}
 			if len(kept) == 0 {

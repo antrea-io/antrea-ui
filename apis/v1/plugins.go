@@ -51,8 +51,8 @@ type PluginFederation struct {
 // PluginRouteKindComponent and PluginRouteKindRoutes are the only values PluginRoute.Kind may
 // hold: "component" and "routes". Kept as plain strings, not a distinct type, so the field
 // round-trips through JSON with no custom (un)marshaling and stays directly comparable in
-// validateManifest, which rejects a manifest carrying anything else. A frontend host mirrors the
-// same two values as a string-literal union (see PluginManifest in
+// parsePluginConfigMap, which rejects a manifest carrying anything else. A frontend host mirrors
+// the same two values as a string-literal union (see PluginManifest in
 // client/web/antrea-ui/src/plugins.ts).
 const (
 	PluginRouteKindComponent = "component"
