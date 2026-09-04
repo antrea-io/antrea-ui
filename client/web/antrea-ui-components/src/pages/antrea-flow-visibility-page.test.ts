@@ -408,6 +408,55 @@ describe('AntreaFlowVisibilityPage — flow visibility disabled server-side', ()
     });
 });
 
+// The 403 twin of the 501 case above, and load-bearing beyond the usual: "a 403 renders a terminal
+// panel naming the actual restriction" is the stated reason useCanViewFlows may fail open on a
+// missing access summary. If a 403 instead left the page retrying, or showed nothing, the frontend
+// gate's fail-open would be stranding users rather than deferring to a better error.
+describe('AntreaFlowVisibilityPage — forbidden by the interim admin-only gate', () => {
+    test('a stream 403 shows the restriction message and does not retry the stream', async () => {
+        const fetchMock = vi.fn(async () => sseResponse([], 403));
+        const page = await mount(fetchMock);
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(page.shadowRoot!.querySelector('antrea-alert[status="danger"]')?.textContent)
+            .toContain('Flow visibility is restricted to administrators');
+
+        expect(streamCalls(fetchMock)).toHaveLength(1);
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(streamCalls(fetchMock)).toHaveLength(1);
+    });
+
+    // The 403 is terminal for the page, not just for the one open stream: every user action that
+    // restarts the client goes through _startStream, whose only defence is the
+    // _flowVisibilityDisabled guard. A handler that cleared _client but left that flag unset
+    // would silently reopen the stream on the next interaction and 403 again.
+    //
+    // Driven through the real Pause/Resume buttons rather than a synthetic event: filters and the
+    // pause toggle are plain @click handlers on the toolbar, so there is no event to dispatch, and
+    // a test that invented one would assert nothing. Resume is the cheapest of them — _applyFilter
+    // additionally early-returns on an unchanged filter key, so an "Apply Filters" click with no
+    // pending change would not restart the stream even without the guard.
+    test('the restriction survives a stream restart', async () => {
+        const fetchMock = vi.fn(async () => sseResponse([], 403));
+        const page = await mount(fetchMock);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(streamCalls(fetchMock)).toHaveLength(1);
+
+        const toggle = () => Array.from(page.shadowRoot!.querySelectorAll('antrea-button'))
+            .find(b => b.textContent?.trim() === 'Pause' || b.textContent?.trim() === 'Resume')!;
+        expect(toggle()).toBeDefined();
+        toggle().dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true }));
+        await page.updateComplete;
+        toggle().dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true }));
+        await page.updateComplete;
+        await vi.advanceTimersByTimeAsync(60_000);
+
+        expect(streamCalls(fetchMock)).toHaveLength(1);
+        expect(page.shadowRoot!.querySelector('antrea-alert[status="danger"]')?.textContent)
+            .toContain('Flow visibility is restricted to administrators');
+    });
+});
+
 describe('AntreaFlowVisibilityPage — namespace menu intersects accessible namespaces', () => {
     function jsonResponse(body: unknown, status = 200): Response {
         return new Response(JSON.stringify(body), { status });

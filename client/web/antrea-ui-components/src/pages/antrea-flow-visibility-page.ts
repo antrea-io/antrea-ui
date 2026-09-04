@@ -75,6 +75,11 @@ export interface FlowTableColumn {
  * columns — modeled on Headlamp's `registerResourceTableColumnsProcessor`. */
 export type FlowTableColumnsProcessor = (columns: FlowTableColumn[]) => FlowTableColumn[];
 
+const FLOW_VISIBILITY_FORBIDDEN_MESSAGE =
+    'Flow visibility is restricted to administrators. Flow data has no per-user authorization ' +
+    'yet, so it is limited to the built-in admin and to Kubernetes cluster admins (see ' +
+    'antrea-ui/docs/authentication.md).';
+
 const FLOW_VISIBILITY_DISABLED_MESSAGE =
     'Flow visibility is disabled on this Antrea UI server. Install or upgrade the chart with ' +
     '--set flowAggregator.enabled=true and a reachable flowAggregator.address (see antrea-ui/hack/deploy-kind.sh).';
@@ -445,6 +450,9 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
     @state() private _entries: FlowEntry[] = [];
     @state() private _connected = false;
     @state() private _error: string | null = null;
+    // Set on 501 (integration off) or 403 (this user may not view flow data). Both are terminal
+    // for the session, and both must keep _startStream from re-opening the stream on the next
+    // filter change; the error message says which one it was.
     private _flowVisibilityDisabled = false;
     @state() private _droppedCount = 0;
     @state() private _evictionWarning = false;
@@ -592,6 +600,15 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
                 this._client = null;
                 this._connected = false;
                 this._error = FLOW_VISIBILITY_DISABLED_MESSAGE;
+            },
+            onForbidden: () => {
+                // A 403 means this user may not view flow data. Terminal for the session, and
+                // handled the same way as 501: the client has already stopped itself.
+                // Defence in depth — the route guard should keep them off this page entirely.
+                this._flowVisibilityDisabled = true;
+                this._client = null;
+                this._connected = false;
+                this._error = FLOW_VISIBILITY_FORBIDDEN_MESSAGE;
             },
         });
         this._client.start();

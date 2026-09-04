@@ -60,8 +60,8 @@ func NewSessionAuth(store Store, s *Session) *RequestAuth {
 //
 // username is the identity the API server resolved the token to. Callers must have validated the
 // token before calling this: unlike a session, whose credential was checked when the session was
-// created, nothing downstream re-checks an ephemeral one, and two routes never present it to
-// Kubernetes at all.
+// created, nothing downstream re-checks an ephemeral one, and two route handlers never present it
+// to Kubernetes at all.
 //
 // Mode is always ModeToken, whatever the token actually is - it says how the caller
 // authenticated to antrea-ui, not what kind of token they hold. Do not use it to grant anything:
