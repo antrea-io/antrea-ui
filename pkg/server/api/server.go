@@ -137,7 +137,7 @@ func (s *Server) AddFlowStreamRoutes(r *gin.RouterGroup) {
 		flows.GET("/stream", s.flowStreamDisabled)
 		return
 	}
-	flows.GET("/stream", s.flowStreamSSEHandler.StreamFlows)
+	flows.GET("/stream", s.requireFlowVisibility(), s.flowStreamSSEHandler.StreamFlows)
 }
 
 // flowStreamDisabled handles GET /api/v1/flows/stream when Flow Aggregator integration is off.

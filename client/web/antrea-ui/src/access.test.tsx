@@ -20,7 +20,8 @@ import { Provider } from 'react-redux';
 import { resetAccessSummary } from '@antrea/ui-components';
 import type { AccessSummary } from '@antrea/ui-components';
 import { setupStore, setSession, setAuthenticated } from './store';
-import { AccessProvider, useAccess } from './access';
+import type { RootState } from './store';
+import { AccessProvider, useAccess, useCanViewFlows } from './access';
 import { HomeRedirect } from './pages';
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -140,10 +141,59 @@ describe('AccessProvider', () => {
     });
 });
 
-describe('HomeRedirect', () => {
-    function renderAt(summary: AccessSummary | null) {
+// useCanViewFlows is the interim admin-only rule for flow data: the built-in admin, or a
+// Kubernetes cluster admin. It mirrors requireFlowVisibility() in pkg/server/api/flowstream.go and,
+// unlike the can() gates, fails closed.
+describe('useCanViewFlows', () => {
+    function FlowProbe() {
+        const { allowed, loaded } = useCanViewFlows();
+        return <div data-testid="probe">{JSON.stringify({ allowed, loaded })}</div>;
+    }
+
+    async function renderProbe(summary: AccessSummary | null, sessionInfo: RootState['sessionInfo']) {
         vi.stubGlobal('fetch', vi.fn().mockResolvedValue(summary ? jsonResponse(summary) : new Response('', { status: 500 })));
-        const store = setupStore({ session: 'authenticated' });
+        const store = setupStore({ session: 'authenticated', sessionInfo });
+        render(
+            <Provider store={store}>
+                <AccessProvider><FlowProbe /></AccessProvider>
+            </Provider>,
+        );
+        await waitFor(() => expect(document.querySelector('[data-testid="probe"]')?.textContent)
+            .toContain('"loaded":true'));
+        return document.querySelector('[data-testid="probe"]')!.textContent!;
+    }
+
+    const adminSession = { authenticated: true, mode: 'admin' as const, username: 'admin' };
+    const tokenSession = { authenticated: true, mode: 'token' as const, username: 'alice' };
+
+    test('the built-in admin is allowed even though clusterAdmin is false', async () => {
+        // Not redundant with the clusterAdmin term: the static-admin session impersonates the
+        // antrea-ui-admin ServiceAccount, whose aggregated ClusterRole holds no */*/* rule, so
+        // the wildcard review genuinely answers false for it.
+        expect(await renderProbe(summaryWith({ clusterAdmin: false }), adminSession)).toContain('"allowed":true');
+    });
+
+    test('a cluster admin is allowed', async () => {
+        expect(await renderProbe(summaryWith({ clusterAdmin: true }), tokenSession)).toContain('"allowed":true');
+    });
+
+    test('an ordinary user is denied', async () => {
+        expect(await renderProbe(summaryWith({ clusterAdmin: false }), tokenSession)).toContain('"allowed":false');
+    });
+
+    test('a null summary (fetch failed) fails closed', async () => {
+        expect(await renderProbe(null, tokenSession)).toContain('"allowed":false');
+    });
+
+    test('a null sessionInfo fails closed', async () => {
+        expect(await renderProbe(summaryWith({ clusterAdmin: false }), null)).toContain('"allowed":false');
+    });
+});
+
+describe('HomeRedirect', () => {
+    function renderAt(summary: AccessSummary | null, sessionInfo: RootState['sessionInfo'] = null) {
+        vi.stubGlobal('fetch', vi.fn().mockResolvedValue(summary ? jsonResponse(summary) : new Response('', { status: 500 })));
+        const store = setupStore({ session: 'authenticated', sessionInfo });
         return render(
             <Provider store={store}>
                 <AccessProvider>
@@ -153,6 +203,7 @@ describe('HomeRedirect', () => {
                             <Route path="/summary" element={<div data-testid="landed">summary</div>} />
                             <Route path="/traceflow" element={<div data-testid="landed">traceflow</div>} />
                             <Route path="/flows/list" element={<div data-testid="landed">flows</div>} />
+                            <Route path="/settings" element={<div data-testid="landed">settings</div>} />
                         </Routes>
                     </MemoryRouter>
                 </AccessProvider>
@@ -174,9 +225,16 @@ describe('HomeRedirect', () => {
         await waitFor(() => expect(document.querySelector('[data-testid="landed"]')?.textContent).toBe('traceflow'));
     });
 
-    test('falls back to /flows/list when neither is granted', async () => {
-        renderAt(summaryWith());
+    test('lands on /flows/list when only flow visibility is permitted', async () => {
+        renderAt(summaryWith({ clusterAdmin: true }), { authenticated: true, mode: 'token', username: 'alice' });
         await waitFor(() => expect(document.querySelector('[data-testid="landed"]')?.textContent).toBe('flows'));
+    });
+
+    test('falls back to /settings when nothing else is permitted', async () => {
+        // Flow Visibility is no longer the floor: it is gated too, so a user permitted none of
+        // the three lands on Settings, which needs no permission.
+        renderAt(summaryWith());
+        await waitFor(() => expect(document.querySelector('[data-testid="landed"]')?.textContent).toBe('settings'));
     });
 
     test('fails open to /summary when the fetch fails', async () => {
