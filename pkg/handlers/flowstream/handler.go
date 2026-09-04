@@ -62,9 +62,12 @@ var errUnauthenticatedStream = errors.New("flow stream request carries no resolv
 //
 // Known gap, deliberate for now: this endpoint is authenticated but not authorized per user. The
 // subscriber reaches the Flow Aggregator over antrea-ui's own mTLS gRPC connection, so unlike
-// every other API route, the caller's Kubernetes RBAC has no say in what they see — any user who
-// can log in sees every exported flow. Authorization is being implemented upstream in
-// antrea-io/antrea#8221; see the "Flow data is not yet per-user" section of docs/authentication.md.
+// every other API route, the caller's Kubernetes RBAC has no say in what they see. As an interim
+// measure the route is restricted to the built-in admin and to Kubernetes cluster admins
+// (requireFlowVisibility in pkg/server/api/flowstream.go), which narrows who is exposed but does
+// not close the gap: within that set, every caller still sees every exported flow. Authorization
+// is being implemented upstream in antrea-io/antrea#8221; see the "Flow data is not yet per-user"
+// section of docs/authentication.md.
 type SSEHandler struct {
 	logger  logr.Logger
 	handler FlowStreamSubscriber

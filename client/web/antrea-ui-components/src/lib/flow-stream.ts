@@ -50,6 +50,9 @@ export interface FlowStreamCallbacks {
     /** Called on HTTP 501, i.e. Flow Aggregator integration is disabled for this deployment. This
      * is a static configuration choice, not a transient failure: there is nothing to retry. */
     onDisabled?: () => void;
+    /** Called on HTTP 403, i.e. this user is not permitted to view flow data. Like 501, this is a
+     * permanent answer for the session, not a transient failure: there is nothing to retry. */
+    onForbidden?: () => void;
 }
 
 interface SSEEvent { type: string; data: string; }
@@ -170,6 +173,16 @@ export class FlowStreamClient {
                 this.running = false;
                 this.stopBatchTimer();
                 this.callbacks.onDisabled?.();
+                this.callbacks.onDisconnected?.();
+                return;
+            }
+
+            // Handled here rather than falling through to !response.ok, which would drive the
+            // exponential-backoff reconnect loop against a permanent answer.
+            if (response.status === 403) {
+                this.running = false;
+                this.stopBatchTimer();
+                this.callbacks.onForbidden?.();
                 this.callbacks.onDisconnected?.();
                 return;
             }

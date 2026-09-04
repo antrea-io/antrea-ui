@@ -176,15 +176,33 @@ installed next month adds".
 The flow visibility stream (`GET /api/v1/flows/stream`) is the one part of the
 UI that per-user RBAC does **not** cover. The backend subscribes to the Flow
 Aggregator over its own mTLS gRPC connection, and nothing consults the caller's
-Kubernetes permissions, so any user who can log in can see every flow the Flow
-Aggregator exports — including a user whose RBAC grants them nothing else, who
-will get 403s on every other page.
+Kubernetes permissions, so every caller who reaches the endpoint sees every flow
+the Flow Aggregator exports.
 
-Authorization for this endpoint is being implemented upstream in
-[antrea-io/antrea#8221](https://github.com/antrea-io/antrea/pull/8221). Until
-that lands, treat "can log in at all" as the access-control boundary for flow
-data: if that is too broad for your deployment, disable the integration with
-`flowAggregator.enabled=false`, or restrict which modes can be used to log in.
+**Interim restriction.** Because there is no per-user answer to fall back on,
+the endpoint is currently limited to two kinds of caller:
+
+- whoever logged in with the built-in admin password, and
+- a Kubernetes cluster admin, meaning an identity holding a cluster-wide
+  wildcard grant (`verb: *`, `apiGroup: *`, `resource: *`).
+
+Everyone else gets a 403, and the Flow Visibility entry does not appear in the
+UI's navigation for them. This narrows who is exposed; it does not make flow
+data per-user. Within that set, every caller still sees every flow.
+
+This is temporary. Authorization for `FlowStreamService` is being implemented
+upstream in
+[antrea-io/antrea#8221](https://github.com/antrea-io/antrea/pull/8221); once it
+lands and Antrea UI can present the caller's identity to the Flow Aggregator,
+the restriction goes away and flow data becomes per-user like everything else.
+
+To turn the integration off entirely rather than restrict it, deploy with
+`flowAggregator.enabled=false` (the chart default). The endpoint then returns
+501 for every user, including admins.
+
+Note that this restriction is Antrea UI's alone. Enabling `FlowStreamService`
+in the Flow Aggregator means anyone with network access to it can read flow
+data directly, regardless of what Antrea UI allows.
 
 ### The plugin trade-off
 

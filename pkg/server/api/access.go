@@ -15,6 +15,7 @@
 package api
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strings"
@@ -24,6 +25,7 @@ import (
 	authorizationv1 "k8s.io/api/authorization/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/validation"
+	"k8s.io/client-go/kubernetes"
 
 	apisv1 "antrea.io/antrea-ui/apis/v1"
 	"antrea.io/antrea-ui/pkg/auth/session"
@@ -31,6 +33,25 @@ import (
 	"antrea.io/antrea-ui/pkg/server/authn"
 	"antrea.io/antrea-ui/pkg/server/errors"
 )
+
+// selfSubjectClusterAdmin reports whether the caller holds a cluster-wide wildcard grant. A
+// literal "*" in the request matches only rules that themselves hold "*", which is exactly the
+// wildcard-ClusterRole case.
+func selfSubjectClusterAdmin(ctx context.Context, clientset kubernetes.Interface) (bool, error) {
+	review, err := clientset.AuthorizationV1().SelfSubjectAccessReviews().Create(ctx, &authorizationv1.SelfSubjectAccessReview{
+		Spec: authorizationv1.SelfSubjectAccessReviewSpec{
+			ResourceAttributes: &authorizationv1.ResourceAttributes{
+				Verb:     "*",
+				Group:    "*",
+				Resource: "*",
+			},
+		},
+	}, metav1.CreateOptions{})
+	if err != nil {
+		return false, err
+	}
+	return review.Status.Allowed, nil
+}
 
 // GetAccessSummary handles GET /api/v1/access-summary. AccessSummary is a rendering hint, never an
 // authorization decision, so the contract is simply: 200 means every field is a real answer,
@@ -93,21 +114,12 @@ func (s *Server) GetAccessSummary(c *gin.Context) {
 			result.Rules.Incomplete = true
 		}
 
-		// Step 3: cluster-admin. A literal "*" in the request matches only rules that
-		// themselves hold "*", which is exactly the wildcard-ClusterRole case.
-		review, err := clientset.AuthorizationV1().SelfSubjectAccessReviews().Create(ctx, &authorizationv1.SelfSubjectAccessReview{
-			Spec: authorizationv1.SelfSubjectAccessReviewSpec{
-				ResourceAttributes: &authorizationv1.ResourceAttributes{
-					Verb:     "*",
-					Group:    "*",
-					Resource: "*",
-				},
-			},
-		}, metav1.CreateOptions{})
+		// Step 3: cluster-admin.
+		clusterAdmin, err := selfSubjectClusterAdmin(ctx, clientset)
 		if err != nil {
 			return s.k8sError(c, err, "error when evaluating access summary")
 		}
-		result.ClusterAdmin = review.Status.Allowed
+		result.ClusterAdmin = clusterAdmin
 
 		// Step 4: namespaces. Static admin is answered without consulting the resolver at all,
 		// so that a resolver failure cannot fail the one session an operator uses to fix a

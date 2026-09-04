@@ -67,3 +67,20 @@ export function AccessProvider(props: React.PropsWithChildren) {
 export function useAccess(): AccessContextType {
     return useContext(AccessContext);
 }
+
+// Whether the caller may view flow data: the built-in admin, or a Kubernetes cluster admin.
+//
+// TEMPORARY, mirrors requireFlowVisibility() in pkg/server/api/flowstream.go — the backend is
+// authoritative and 403s regardless. Fails *closed*, unlike the can() gates in access-api.ts:
+// those mirror RBAC the API server enforces anyway, so allowing on a missing answer just lets the
+// API server say no; here allowing would render a page guaranteed to error.
+//
+// sessionInfo is null when the login page's own GET /auth/session failed, which also fails closed;
+// a reload recovers it.
+//
+// eslint-disable-next-line react-refresh/only-export-components
+export function useCanViewFlows(): { allowed: boolean, loaded: boolean } {
+    const { summary, loaded } = useAccess();
+    const info = useSelector((state: RootState) => state.sessionInfo);
+    return { allowed: info?.mode === 'admin' || summary?.clusterAdmin === true, loaded };
+}
