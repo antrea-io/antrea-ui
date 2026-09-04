@@ -17,8 +17,11 @@
 import { act, render, waitFor } from '@testing-library/react';
 import { Provider } from 'react-redux';
 import { setupStore } from './store';
-import { SummaryPage } from './pages';
+import { FlowVisibilityPage, SummaryPage } from './pages';
 import { AccessProvider } from './access';
+import { resetAccessSummary } from '@antrea/ui-components';
+import type { AccessSummary } from '@antrea/ui-components';
+import type { RootState } from './store';
 
 // AntreaSummaryPage is a Lit web component with its own shadow DOM; we only need
 // its host element here to dispatch the antrea-session-expired event.
@@ -43,6 +46,9 @@ function stubLocationHref() {
 
 afterEach(() => {
     vi.unstubAllGlobals();
+    // Successful summaries are cached for the session, so one test's would otherwise answer the
+    // next one's fetch.
+    resetAccessSummary();
 });
 
 describe('useLitPage — antrea-session-expired', () => {
@@ -79,5 +85,52 @@ describe('useLitPage — antrea-session-expired', () => {
         } finally {
             location.restore();
         }
+    });
+});
+
+// The route guard, as opposed to the nav entry. nav.test.tsx covers the entry, but it mocks
+// useCanViewFlows wholesale, so nothing there connects the two — and the entry is not the
+// enforcement point anyway: a user who bookmarked /flows/list or typed it never goes near the nav.
+// These use the real hook through AccessProvider, so they also pin that the page and the nav read
+// the same rule rather than two that happen to agree today.
+describe('FlowVisibilityPage — route guard', () => {
+    function summaryWith(overrides: Partial<AccessSummary> = {}): AccessSummary {
+        return {
+            username: 'alice',
+            groups: [],
+            clusterAdmin: false,
+            rules: { resourceRules: [], nonResourceRules: [], incomplete: false },
+            namespaces: [],
+            ...overrides,
+        };
+    }
+
+    function renderPage(summary: AccessSummary, sessionInfo: RootState['sessionInfo']) {
+        vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
+            new Response(JSON.stringify(summary), { status: 200 })));
+        const store = setupStore({ session: 'authenticated', sessionInfo });
+        return render(
+            <Provider store={store}>
+                <AccessProvider><FlowVisibilityPage view="list" /></AccessProvider>
+            </Provider>,
+        );
+    }
+
+    const tokenSession = { authenticated: true, mode: 'token' as const, username: 'alice' };
+
+    test('renders the permission panel, and never the page, for a denied user', async () => {
+        renderPage(summaryWith({ clusterAdmin: false }), tokenSession);
+        await waitFor(() => expect(document.querySelector('antrea-alert')).not.toBeNull());
+        expect(document.querySelector('antrea-alert')!.textContent)
+            .toContain('You do not have permission to view this page');
+        // The point of the guard: the Lit element is never constructed, so it never opens the
+        // stream. Asserting the panel alone would pass with both rendered.
+        expect(document.querySelector('antrea-flow-visibility-page')).toBeNull();
+    });
+
+    test('renders the page for a cluster admin', async () => {
+        renderPage(summaryWith({ clusterAdmin: true }), tokenSession);
+        await waitFor(() => expect(document.querySelector('antrea-flow-visibility-page')).not.toBeNull());
+        expect(document.querySelector('antrea-alert')).toBeNull();
     });
 });

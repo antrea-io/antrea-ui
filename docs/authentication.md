@@ -175,16 +175,57 @@ installed next month adds".
 
 The flow visibility stream (`GET /api/v1/flows/stream`) is the one part of the
 UI that per-user RBAC does **not** cover. The backend subscribes to the Flow
-Aggregator over its own mTLS gRPC connection, and nothing consults the caller's
-Kubernetes permissions, so any user who can log in can see every flow the Flow
-Aggregator exports — including a user whose RBAC grants them nothing else, who
-will get 403s on every other page.
+Aggregator over its own mTLS gRPC connection, and no per-user answer exists to
+filter what comes back, so every caller who reaches the endpoint sees every flow
+the Flow Aggregator exports. The interim restriction below narrows *who reaches
+it*, using a coarse cluster-admin check; it does not make the data per-user.
 
-Authorization for this endpoint is being implemented upstream in
-[antrea-io/antrea#8221](https://github.com/antrea-io/antrea/pull/8221). Until
-that lands, treat "can log in at all" as the access-control boundary for flow
-data: if that is too broad for your deployment, disable the integration with
-`flowAggregator.enabled=false`, or restrict which modes can be used to log in.
+**Interim restriction.** Because there is no per-user answer to fall back on,
+the endpoint is currently limited to two kinds of caller:
+
+- whoever logged in with the built-in admin password, and
+- a Kubernetes cluster admin, meaning an identity holding a cluster-wide
+  wildcard grant (`verb: *`, `apiGroup: *`, `resource: *`).
+
+Everyone else gets a 403. A review the API server could not answer is not an
+allow either: a rejected credential becomes a 401 that also ends the session,
+and anything else becomes a 5xx, or the API server's own status if it refused
+the review itself. Of those, only a 403 and the 401 are terminal on the page;
+the rest are retried a bounded number of times before it gives up. Note that a
+review the API server *forbade* therefore arrives as a 403 and is
+indistinguishable on the page from an ordinary denial — it renders the same
+"restricted to administrators" panel, which in that case names the wrong
+reason. That needs a cluster where the caller cannot create
+SelfSubjectAccessReviews at all, which the default `system:basic-user` binding
+grants everyone.
+
+The Flow Visibility entry does not appear in the UI's navigation for a denied
+caller, with one deliberate exception described under [What the frontend knows
+about your permissions](#what-the-frontend-knows-about-your-permissions): when
+the frontend has no permission answer at all, it shows the entry and lets the
+403 explain, rather than hiding the page on a failure the backend never saw.
+
+This narrows who is exposed; it does not make flow data per-user. Within that
+set, every caller still sees every flow.
+
+The check runs when the stream is opened, not continuously. A caller whose
+cluster-admin binding is removed keeps the stream they already have until it
+reconnects — on a filter change, an unpause, a network blip, or the session's
+absolute lifetime cap (12h by default), whichever comes first.
+
+This is temporary. Authorization for `FlowStreamService` is being implemented
+upstream in
+[antrea-io/antrea#8221](https://github.com/antrea-io/antrea/pull/8221); once it
+lands and Antrea UI can present the caller's identity to the Flow Aggregator,
+the restriction goes away and flow data becomes per-user like everything else.
+
+To turn the integration off entirely rather than restrict it, deploy with
+`flowAggregator.enabled=false` (the chart default). The endpoint then returns
+501 for every user, including admins.
+
+Note that this restriction is Antrea UI's alone. Enabling `FlowStreamService`
+in the Flow Aggregator means anyone with network access to it can read flow
+data directly, regardless of what Antrea UI allows.
 
 ### The plugin trade-off
 
@@ -239,6 +280,16 @@ The response looks like:
 request the UI makes is still authorized by the API server exactly as before;
 a wrong answer here costs a spurious 403 (or a spuriously hidden button) and
 nothing more.
+
+`clusterAdmin` currently drives one such hint that hides a whole page rather
+than a button: Flow Visibility does not render for a caller who is neither the
+built-in admin (per the session, not this endpoint) nor a cluster admin (per
+this field), mirroring the interim restriction described in [Flow data is not
+yet per-user](#flow-data-is-not-yet-per-user). The authorization decision is
+still the backend's — it rejects the stream itself — and the hint follows the
+rule above, showing the page whenever the frontend lacks a definite answer:
+no summary arrived, or the session probe that says whether this is the built-in
+admin did not. That mirroring goes away with the restriction.
 
 There is no partial answer. A `200` means every field is authoritative;
 anything else means the frontend shows everything, exactly as it did before

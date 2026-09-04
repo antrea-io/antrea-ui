@@ -211,12 +211,14 @@ instead of a flat item. Nesting is one level deep: pointing `parentPath` at
 an entry that is itself nested is invalid, and the host drops the nesting
 (falling back to a top-level entry) and logs why.
 
-`summary` and `traceflow` are themselves gated by per-user RBAC (see
-[authentication.md](authentication.md)) and simply don't render for a user
-who fails that gate. Nesting under either still falls back to a top-level
-entry for such a user, same as the invalid-nesting case above — but silently,
-per user, and without dropping anything: the entry itself is always valid,
-it just isn't always nested.
+`flows`, `summary` and `traceflow` are themselves gated and simply don't
+render for a user who fails the gate — `summary` and `traceflow` by per-user
+RBAC, and `flows` by an interim restriction to administrators that goes away
+once flow data is authorized per user (see
+[authentication.md](authentication.md) for both). Nesting under any of them
+still falls back to a top-level entry for such a user, same as the
+invalid-nesting case above — but silently, per user, and without dropping
+anything: the entry itself is always valid, it just isn't always nested.
 
 `@antrea/ui-plugin-sdk` is a devDependency resolved from this repo's
 workspace (`file:../../../client/web/antrea-ui-plugin-sdk` in

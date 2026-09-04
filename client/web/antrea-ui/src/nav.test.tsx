@@ -19,10 +19,18 @@ import { MemoryRouter } from 'react-router';
 import NavTab from './nav';
 import type { PluginSidebarEntry } from './plugins';
 import type { AccessSummary } from '@antrea/ui-components';
-import { useAccess } from './access';
+import { useAccess, useCanViewFlows } from './access';
 
-vi.mock('./access', () => ({ useAccess: vi.fn() }));
+// Exhaustive factory, so every hook nav.tsx imports from './access' has to be listed here.
+vi.mock('./access', () => ({ useAccess: vi.fn(), useCanViewFlows: vi.fn() }));
 const mockUseAccess = vi.mocked(useAccess);
+const mockUseCanViewFlows = vi.mocked(useCanViewFlows);
+
+// Flow Visibility is gated on its own rule now (see useCanViewFlows), so every test that expects
+// the group to render has to grant it.
+function allowFlows(allowed: boolean, loaded = true) {
+    mockUseCanViewFlows.mockReturnValue({ allowed, loaded });
+}
 
 const podCounterEntry: PluginSidebarEntry = { label: 'Pod Counter', path: '/plugin/pod-counter' };
 
@@ -39,6 +47,7 @@ function summaryAllowing(rules: Partial<AccessSummary['rules']> = {}): AccessSum
 describe('NavTab', () => {
     beforeEach(() => {
         mockUseAccess.mockReturnValue({ summary: null, loaded: true });
+        allowFlows(true);
     });
 
     test('no plugin sidebar entries renders no extra items', () => {
@@ -86,9 +95,10 @@ describe('NavTab', () => {
 describe('NavTab — Flow Visibility built-in nesting', () => {
     beforeEach(() => {
         mockUseAccess.mockReturnValue({ summary: null, loaded: true });
+        allowFlows(true);
     });
 
-    test('Flow List and Service Map render nested under Flow Visibility, unconditionally', () => {
+    test('Flow List and Service Map render nested under Flow Visibility when the gate allows it', () => {
         render(<NavTab pluginSidebarEntries={[]} />, { wrapper: MemoryRouter });
 
         // Both the Flow Visibility header itself and the nested Flow List item link to
@@ -123,6 +133,7 @@ describe('NavTab — Flow Visibility built-in nesting', () => {
 describe('NavTab — nested plugin entries', () => {
     beforeEach(() => {
         mockUseAccess.mockReturnValue({ summary: null, loaded: true });
+        allowFlows(true);
     });
 
     test('a plugin entry nested under another plugin entry renders inside an antrea-nav-group', () => {
@@ -196,6 +207,7 @@ describe('NavTab — nested plugin entries', () => {
     // while unloaded keeps that reasoning consistent for its nested children.
     test('an entry nested under a built-in page renders nothing while access is still loading', () => {
         mockUseAccess.mockReturnValue({ summary: null, loaded: false });
+        allowFlows(false, false);
         const childEntry: PluginSidebarEntry = { label: 'Extra Traceflow Page', path: '/plugin/extra-traceflow', parentPath: 'traceflow' };
         render(<NavTab pluginSidebarEntries={[childEntry]} />, { wrapper: MemoryRouter });
 
@@ -224,19 +236,25 @@ describe('NavTab — nested plugin entries', () => {
 });
 
 describe('NavTab — permission gating', () => {
+    beforeEach(() => {
+        allowFlows(true);
+    });
+
     test('while unloaded, renders no core items', () => {
         mockUseAccess.mockReturnValue({ summary: null, loaded: false });
+        allowFlows(false, false);
         render(<NavTab pluginSidebarEntries={[]} />, { wrapper: MemoryRouter });
 
         expect(document.querySelector('a[href="/summary"]')).toBeNull();
         expect(document.querySelector('a[href="/traceflow"]')).toBeNull();
-        // Flow Visibility and Settings have no per-user RBAC, so they are not gated on load.
-        expect(document.querySelector('a[href="/flows/list"]')).not.toBeNull();
+        expect(document.querySelector('a[href="/flows/list"]')).toBeNull();
+        // Settings needs no permission, so it is not gated on load.
         expect(document.querySelector('a[href="/settings"]')).not.toBeNull();
     });
 
     test('a null summary (fetch failed) fails open: both core tabs show', () => {
         mockUseAccess.mockReturnValue({ summary: null, loaded: true });
+        allowFlows(true);
         render(<NavTab pluginSidebarEntries={[]} />, { wrapper: MemoryRouter });
 
         expect(document.querySelector('a[href="/summary"]')).not.toBeNull();
@@ -261,5 +279,30 @@ describe('NavTab — permission gating', () => {
         render(<NavTab pluginSidebarEntries={[]} />, { wrapper: MemoryRouter });
 
         expect(document.querySelector('a[href="/summary"]')).toBeNull();
+    });
+
+    // The interim admin-only restriction on flow data (see useCanViewFlows). Unlike the gates
+    // above, this one is not a per-user RBAC answer, but it hides the entry the same way.
+    test('Flow Visibility is hidden, with its sub-pages, when the gate denies it', () => {
+        mockUseAccess.mockReturnValue({ summary: summaryAllowing(), loaded: true });
+        allowFlows(false);
+        render(<NavTab pluginSidebarEntries={[]} />, { wrapper: MemoryRouter });
+
+        expect(document.querySelector('a[href="/flows/list"]')).toBeNull();
+        expect(document.querySelector('a[href="/flows/map"]')).toBeNull();
+    });
+
+    // Same promotion as the gated-off Traceflow case above: plugins.ts accepts 'flows' as a parent
+    // unconditionally, so a child registered under it must not disappear with the parent.
+    test('a plugin entry nested under a denied Flow Visibility renders at top level', () => {
+        mockUseAccess.mockReturnValue({ summary: summaryAllowing(), loaded: true });
+        allowFlows(false);
+        const childEntry: PluginSidebarEntry = { label: 'Extra Flows Page', path: '/plugin/extra-flows', parentPath: 'flows' };
+        render(<NavTab pluginSidebarEntries={[childEntry]} />, { wrapper: MemoryRouter });
+
+        expect(document.querySelector('a[href="/flows/list"]')).toBeNull();
+        const childLink = document.querySelector('a[href="/plugin/extra-flows"]');
+        expect(childLink).not.toBeNull();
+        expect(childLink!.closest('antrea-nav-group')).toBeNull();
     });
 });
