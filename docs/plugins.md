@@ -67,7 +67,7 @@ complete, minimal example.
 | `name` | yes | Unique name; also the path segment used to serve the plugin, e.g. `/api/v1/plugins/<name>/`. |
 | `version` | yes | Informational only. |
 | `entry` | yes | Plugin's JS module filename; must be a key in the same ConfigMap's data. Always eagerly `import()`-ed by the host at startup, for whatever page-extension registration the plugin's code performs (see below) — independent of `federation`. Required even for a plugin whose only page(s) are a `federation` remote with no other page-extension registration; such a plugin still needs a real ES module here, distinct from `federation.remoteEntry` — see below. |
-| `federation` | no | `{remoteEntry, routes: [{path, sidebarLabel, icon?, exposedModule}]}` — a [Native Federation](https://www.npmjs.com/package/@angular-architects/native-federation) remote (its own file, separate from `entry`) plus the whole-page routes/sidebar entries it serves, as data instead of registering them in code (see below). Antrea UI's own frontend has no module federation loader and ignores this field entirely (see `plugins.ts`); it's consumed by a separate, out-of-tree Angular-based host, which lazily loads a route's `exposedModule` out of `remoteEntry`, only once that route is actually visited. |
+| `federation` | no | `{remoteEntry, routes: [{path, sidebarLabel, icon?, exposedModule, kind?}]}` — a [Native Federation](https://www.npmjs.com/package/@angular-architects/native-federation) remote (its own file, separate from `entry`) plus the whole-page routes/sidebar entries it serves, as data instead of registering them in code (see below). Antrea UI's own frontend has no module federation loader and ignores this field entirely (see `plugins.ts`); it's consumed by a separate, out-of-tree Angular-based host, which lazily loads a route's `exposedModule` out of `remoteEntry`, only once that route is actually visited. `kind` is `"component"` (the default) or `"routes"` — any other value is rejected, dropping the whole plugin (see below): `"component"` expects `exposedModule` to export a single page component; `"routes"` expects it to export a whole route tree the plugin owns end to end, letting it nest its own sub-paths and register its own route-level providers without the host knowing anything about them. Since a `"routes"` route owns every sub-path under its own `path`, no other route in the same manifest may fall under it (rejected the same way two routes with an identical `path` are); a route nested under it in a *different*, already-installed plugin's manifest is resolved the same way an identical `path` across plugins is (see below). |
 
 For most plugins, that's the whole schema: the manifest only carries enough
 for the host to fetch and `import()` the right file, and everything that
@@ -121,15 +121,27 @@ or deleted:
 - `path` may not duplicate another route's `path` in the same manifest
   (leading/trailing/doubled slashes, and `.`/`..` segments, ignored when
   comparing).
+- `kind`, if set, must be `"component"` or `"routes"` — anything else drops
+  the whole plugin, not just the one route: every route plus `entry` is
+  unloaded (or, on an update, the previously loaded version is silently kept
+  in place), the same as any other manifest-level rejection in this list.
 
 A route `path` colliding with another, already-installed plugin's route
-`path` is a separate, softer case, resolved once ConfigMaps are already
-loaded rather than at parse time: whichever plugin's ConfigMap name sorts
-first keeps the route, and the later plugin just loses that one route (and
-its sidebar entry) from `GET /api/v1/plugins/index.json` — the rest of its
-manifest, including `entry`, is unaffected. Only if every one of a plugin's
-routes collides is the whole plugin dropped from the index, the same
-resolution as two plugins declaring the same `name`.
+`path` — or falling under another plugin's `"routes"`-kind route, which owns
+its whole sub-tree just as it does within a single manifest — is a separate,
+softer case, resolved once ConfigMaps are already loaded rather than at
+parse time: whichever plugin's ConfigMap name sorts first keeps whatever it
+validly claimed. Which route is dropped depends on which side sorts first:
+if the plugin declaring the `"routes"`-kind route sorts first, the later
+plugin just loses the one route nested under it (and its sidebar entry);
+if a plugin already claiming a path under that sub-tree sorts first
+instead, the later plugin loses its whole `"routes"`-kind route rather than
+just the nested one, since keeping it would let it claim a path another
+plugin already owns. Either way, the losing plugin only loses that one
+route (and its sidebar entry) from `GET /api/v1/plugins/index.json` — the
+rest of its manifest, including `entry`, is unaffected. Only if every one
+of a plugin's routes collides is the whole plugin dropped from the index,
+the same resolution as two plugins declaring the same `name`.
 
 ## Writing a plugin
 

@@ -48,6 +48,17 @@ type PluginFederation struct {
 	Routes      []PluginRoute `json:"routes"`
 }
 
+// PluginRouteKindComponent and PluginRouteKindRoutes are the only values PluginRoute.Kind may
+// hold: "component" and "routes". Kept as plain strings, not a distinct type, so the field
+// round-trips through JSON with no custom (un)marshaling and stays directly comparable in
+// parsePluginConfigMap, which rejects a manifest carrying anything else. A frontend host mirrors
+// the same two values as a string-literal union (see PluginManifest in
+// client/web/antrea-ui/src/plugins.ts).
+const (
+	PluginRouteKindComponent = "component"
+	PluginRouteKindRoutes    = "routes"
+)
+
 // PluginRoute mirrors registerRoute()/registerSidebarEntry()'s
 // antrea-ui-plugin-sdk info, as data, plus which component to mount.
 type PluginRoute struct {
@@ -59,4 +70,11 @@ type PluginRoute struct {
 	// ExposedModule names which component the enclosing PluginFederation's
 	// RemoteEntry exposes for this route.
 	ExposedModule string `json:"exposedModule"`
+	// Kind selects how a host mounts ExposedModule's export for this route: one of
+	// PluginRouteKindComponent (the default, and the only behavior before this field existed) or
+	// PluginRouteKindRoutes. Component expects a `default` export that is a single page
+	// component; Routes expects a `routes` export instead - a whole route tree the plugin fully
+	// owns, letting it nest its own sub-paths and register its own route-level providers without
+	// the host knowing anything about them.
+	Kind string `json:"kind,omitempty"`
 }
