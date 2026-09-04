@@ -17,7 +17,6 @@
 import React, { useRef, useCallback } from 'react';
 import '@antrea/ui-components';
 import { can, canViewSummary, GATE_TRACEFLOW_CREATE } from '@antrea/ui-components';
-import type { AccessSummary } from '@antrea/ui-components';
 import { Navigate } from 'react-router';
 import { useLogout } from './logout';
 import { getEdgeExtraRenderers, getFlowTableColumnsProcessors } from './plugins';
@@ -37,14 +36,15 @@ export function HomeRedirect() {
     return <Navigate to="/flows/list" replace />;
 }
 
-// Wraps a page element so it only renders when predicate(summary) is true, matching the
-// predicate the nav uses to decide whether to show the tab in the first place — one predicate per
-// page, so the nav entry and the route guard cannot drift apart. While the access summary hasn't
-// loaded yet, renders nothing rather than either the page or the permission panel.
-function RequirePermission({ predicate, children }: { predicate: (s: AccessSummary | null) => boolean, children: React.ReactNode }) {
-    const { summary, loaded } = useAccess();
+// Wraps a page element so it only renders when `allowed` is true, matching the rule the nav uses
+// to decide whether to show the tab in the first place — one rule per page, so the nav entry and
+// the route guard cannot drift apart. The rule is evaluated by the caller rather than passed in as
+// a predicate over the access summary, so that a gate needing more than the summary to answer can
+// reuse the same wrapper. While the answer hasn't loaded yet, renders nothing rather than either
+// the page or the permission panel.
+function RequirePermission({ allowed, loaded, children }: { allowed: boolean, loaded: boolean, children: React.ReactNode }) {
     if (!loaded) return null;
-    if (!predicate(summary)) {
+    if (!allowed) {
         return (
             <antrea-alert status="warning">
                 You do not have permission to view this page.
@@ -86,8 +86,9 @@ function useLitPage() {
 
 export function SummaryPage() {
     const { ref } = useLitPage();
+    const { summary, loaded } = useAccess();
     return (
-        <RequirePermission predicate={canViewSummary}>
+        <RequirePermission allowed={canViewSummary(summary)} loaded={loaded}>
             <antrea-summary-page ref={ref} />
         </RequirePermission>
     );
@@ -95,8 +96,9 @@ export function SummaryPage() {
 
 export function TraceflowPage() {
     const { ref } = useLitPage();
+    const { summary, loaded } = useAccess();
     return (
-        <RequirePermission predicate={(s) => can(s, GATE_TRACEFLOW_CREATE)}>
+        <RequirePermission allowed={can(summary, GATE_TRACEFLOW_CREATE)} loaded={loaded}>
             <antrea-traceflow-page ref={ref} />
         </RequirePermission>
     );

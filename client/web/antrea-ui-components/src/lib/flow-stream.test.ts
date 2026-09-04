@@ -67,6 +67,7 @@ describe('FlowStreamClient', () => {
             disconnected: 0,
             authErrors: 0,
             disabled: 0,
+            forbidden: 0,
             onFlows: (flows: unknown[]) => { cb.flows.push(...flows); },
             onError: (err: Error) => { cb.errors.push(err); },
             onDropped: (count: number) => { cb.dropped.push(count); },
@@ -74,6 +75,7 @@ describe('FlowStreamClient', () => {
             onDisconnected: () => { cb.disconnected++; },
             onAuthError: () => { cb.authErrors++; },
             onDisabled: () => { cb.disabled++; },
+            onForbidden: () => { cb.forbidden++; },
         };
         return cb;
     }
@@ -258,6 +260,22 @@ describe('FlowStreamClient', () => {
         await vi.advanceTimersByTimeAsync(0);
 
         expect(cb.disabled).toBe(1);
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    // A 403 means this user may not view flow data (the interim admin-only restriction). Like a
+    // 501 it is a permanent answer for the session, so it must not fall through to !response.ok
+    // and drive the backoff loop against it.
+    test('dispatches onForbidden on HTTP 403 and does not reconnect', async () => {
+        stubFetch(async () => sseResponse([], 403));
+        const cb = makeCallbacks();
+        const client = new FlowStreamClient({}, cb, 10);
+        client.start();
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(cb.forbidden).toBe(1);
+        expect(cb.errors).toHaveLength(0);
         await vi.advanceTimersByTimeAsync(60_000);
         expect(fetchMock).toHaveBeenCalledTimes(1);
     });
