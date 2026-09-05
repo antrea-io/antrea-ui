@@ -541,3 +541,25 @@ func TestDirectoryPluginLosesNameCollisionToConfigMap(t *testing.T) {
 		return len(manifests) == 1 && manifests[0].Version == "from-configmap"
 	})
 }
+
+// TestLoadDiskPluginReportsFailedWatch pins what happens when the plugin subdirectory's own
+// watch can't be established - in practice the inotify watch/instance limit being exhausted,
+// stood in for here by a closed watcher, since there is no portable way to reach the real limit
+// from a test and fsnotify's Add fails the same way either way. The plugin still has to load and
+// be served, but loadDiskPlugin must report failure: the root's watch reports the subdirectory
+// entry itself, never the files inside it, so without a retry this one extraction is what gets
+// served for the life of the process.
+func TestLoadDiskPluginReportsFailedWatch(t *testing.T) {
+	dir := t.TempDir()
+	writePluginDir(t, dir, "pod-counter", podCounterManifest("pod-counter", "0.1.0"), podCounterBundle())
+
+	watcher, err := fsnotify.NewWatcher()
+	require.NoError(t, err)
+	require.NoError(t, watcher.Close())
+
+	r := newTestRegistry(t)
+	assert.False(t, r.loadDiskPlugin(dir, "pod-counter", watcher), "a failed watcher.Add must be reported, so the caller retries it")
+	index := r.Index()
+	require.Len(t, index, 1, "the plugin must still be loaded and served despite the failed watch")
+	assert.Equal(t, "pod-counter", index[0].Name)
+}

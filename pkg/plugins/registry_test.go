@@ -17,14 +17,20 @@ package plugins
 import (
 	"fmt"
 	"io"
+	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"testing/synctest"
+	"time"
 
 	"github.com/go-logr/logr/testr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/tools/cache"
+	"k8s.io/client-go/util/workqueue"
 
 	apisv1 "antrea.io/antrea-ui/apis/v1"
 )
@@ -573,4 +579,152 @@ func TestRegistryRejectsConfigMapBundlePastTheDecompressedSizeLimit(t *testing.T
 		"index.js": strings.Repeat("x", 50),
 	}))
 	assert.Equal(t, []apisv1.PluginManifest{{Name: "plugin", Version: "0.1.0", Entry: "index.js"}}, r.Index())
+}
+
+// countingIndexer counts GetByKey calls so a test can assert exactly how many attempts a
+// ConfigMap got out of processConfigMapQueueItem's retry budget - every attempt starts with
+// that lookup (the queue carries keys, not objects), so the count is the attempt count.
+type countingIndexer struct {
+	cache.Indexer
+	gets atomic.Int64
+}
+
+func (i *countingIndexer) GetByKey(key string) (interface{}, bool, error) {
+	i.gets.Add(1)
+	return i.Indexer.GetByKey(key)
+}
+
+// newTestIndexer builds an indexer keyed the way the informer's own is (namespace/name), so the
+// keys enqueueConfigMap produces resolve back through it.
+func newTestIndexer(t *testing.T, cms ...*corev1.ConfigMap) *countingIndexer {
+	t.Helper()
+	indexer := cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{})
+	for _, cm := range cms {
+		require.NoError(t, indexer.Add(cm))
+	}
+	return &countingIndexer{Indexer: indexer}
+}
+
+func configMapKey(t *testing.T, cm *corev1.ConfigMap) string {
+	t.Helper()
+	key, err := cache.MetaNamespaceKeyFunc(cm)
+	require.NoError(t, err)
+	return key
+}
+
+// invalidConfigMap is a labeled ConfigMap that never parses as a plugin - handleUpsert returns
+// false for it, which is what puts it on processConfigMapQueueItem's retry path.
+func invalidConfigMap(name string) *corev1.ConfigMap {
+	return &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "antrea-ui", ResourceVersion: "1"},
+		Data:       map[string]string{"manifest.json": "not json"},
+	}
+}
+
+// TestConfigMapQueueRetriesFailureUntilItSucceeds exercises processConfigMapQueueItem's
+// AddRateLimited path end to end, through runConfigMapWorker and the workqueue's own
+// exponential backoff, under synctest's fake clock - the backoff is real time the worker waits
+// on, so a real-clock version would either sleep or reach into the rate limiter.
+//
+// It also covers why processConfigMapQueueItem re-reads the key from the indexer instead of
+// trusting the object the event carried: nothing re-enqueues the ConfigMap after it's fixed
+// here, so the plugin can only load if the already-scheduled retry picks up the newer object.
+func TestConfigMapQueueRetriesFailureUntilItSucceeds(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		r := NewRegistry(testr.New(t), nil, "antrea-ui", "ui.antrea.io/plugin=true", 0, 0, 0)
+		t.Cleanup(r.Close)
+
+		broken := invalidConfigMap("pod-counter-cm")
+		indexer := newTestIndexer(t, broken)
+		queue := workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[string]())
+		defer func() {
+			queue.ShutDown()
+			synctest.Wait()
+		}()
+		go r.runConfigMapWorker(indexer, queue)
+
+		key := configMapKey(t, broken)
+		queue.Add(key)
+		synctest.Wait()
+		require.Empty(t, r.Index(), "an unparseable ConfigMap must not register a plugin")
+		require.Equal(t, 1, queue.NumRequeues(key), "a failed load must be requeued, not dropped")
+		require.EqualValues(t, 1, indexer.gets.Load())
+
+		// Whoever owns the ConfigMap fixes it. The retry already scheduled above is the only
+		// thing that will look at it again.
+		fixed := configMap(t, "pod-counter-cm", "pod-counter", "0.1.0", "index.js", map[string]string{"index.js": "x"})
+		require.NoError(t, indexer.Update(fixed))
+
+		// Past the first backoff (5ms with the default rate limiter, well under a second).
+		time.Sleep(time.Second)
+		synctest.Wait()
+		require.Len(t, r.Index(), 1)
+		assert.Equal(t, "pod-counter", r.Index()[0].Name)
+		assert.Equal(t, 0, queue.NumRequeues(key), "a successful load must Forget the key")
+	})
+}
+
+// TestConfigMapQueueGivesUpAfterMaxRetries pins maxPluginLoadRetries: a ConfigMap that fails the
+// same way every time is retried a bounded number of times and then abandoned until it changes
+// again, rather than being requeued for the life of the process.
+func TestConfigMapQueueGivesUpAfterMaxRetries(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		r := NewRegistry(testr.New(t), nil, "antrea-ui", "ui.antrea.io/plugin=true", 0, 0, 0)
+		t.Cleanup(r.Close)
+
+		broken := invalidConfigMap("pod-counter-cm")
+		indexer := newTestIndexer(t, broken)
+		queue := workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[string]())
+		defer func() {
+			queue.ShutDown()
+			synctest.Wait()
+		}()
+		go r.runConfigMapWorker(indexer, queue)
+
+		key := configMapKey(t, broken)
+		queue.Add(key)
+
+		// Long enough for every backoff in the budget to elapse under the fake clock, and then
+		// for a further stretch during which nothing more may happen.
+		time.Sleep(time.Hour)
+		synctest.Wait()
+
+		// The initial attempt plus maxPluginLoadRetries retries: the give-up branch triggers on
+		// the attempt that finds NumRequeues already at maxPluginLoadRetries.
+		assert.EqualValues(t, maxPluginLoadRetries+1, indexer.gets.Load(), "retry budget must be bounded by maxPluginLoadRetries")
+		assert.Equal(t, 0, queue.NumRequeues(key), "giving up must Forget the key, so a later event starts from a clean budget")
+		assert.Empty(t, r.Index())
+	})
+}
+
+// TestConfigMapQueueCapRejectionSkipsRetryBudget covers the two things that make a cap rejection
+// different from a load failure: it costs no extraction (the check runs before
+// extractedPluginDir/parsePluginConfigMap), and it doesn't spend the retry budget on something
+// no retry can fix - handleUpsert returns true, so processConfigMapQueueItem Forgets the key
+// instead of requeuing it (the contrasting case, a load failure that does spend the budget, is
+// TestConfigMapQueueRetriesFailureUntilItSucceeds). No timing involved, so this drives
+// processConfigMapQueueItem directly.
+func TestConfigMapQueueCapRejectionSkipsRetryBudget(t *testing.T) {
+	r := NewRegistry(testr.New(t), nil, "antrea-ui", "ui.antrea.io/plugin=true", 1, 0, 0)
+	t.Cleanup(r.Close)
+
+	first := configMap(t, "first-cm", "first", "0.1.0", "index.js", map[string]string{"index.js": "x"})
+	pastCap := configMap(t, "second-cm", "second", "0.1.0", "index.js", map[string]string{"index.js": "x"})
+	indexer := newTestIndexer(t, first, pastCap)
+	queue := workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[string]())
+	t.Cleanup(queue.ShutDown)
+
+	r.processConfigMapQueueItem(indexer, configMapKey(t, first), queue)
+	require.Len(t, r.Index(), 1)
+
+	capKey := configMapKey(t, pastCap)
+	r.processConfigMapQueueItem(indexer, capKey, queue)
+	assert.Len(t, r.Index(), 1, "a plugin past the cap must not be served")
+	assert.Equal(t, 0, queue.NumRequeues(capKey), "a cap rejection must not spend the retry budget")
+
+	// The cap check runs before any extraction, so the rejected plugin never gets a directory
+	// under the scratch cache - not even one created and then cleaned up, which is all the
+	// index assertion above would catch on its own.
+	require.NotEmpty(t, r.cacheRoot, "the first plugin's extraction must have created the cache directory")
+	assert.NoDirExists(t, filepath.Join(r.cacheRoot, configMapSourceName, "second-cm"))
 }

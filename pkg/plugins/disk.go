@@ -237,8 +237,11 @@ func (r *Registry) processDiskPluginQueueItem(dir, pluginName string, watcher *f
 	} else if queue.NumRequeues(pluginName) >= maxPluginLoadRetries {
 		// Every attempt has failed the same way loadDiskPlugin already logged - keep re-queuing a
 		// permanently-invalid directory forever instead of only a transient one. Give up until
-		// the next fsnotify event on this plugin (see maxPluginLoadRetries).
-		r.logger.Error(fmt.Errorf("plugin directory failed to load after %d retries, giving up until it changes again", maxPluginLoadRetries), "giving up on plugin directory", "directory", pluginDir)
+		// the next fsnotify event on this plugin (see maxPluginLoadRetries) - which, for a
+		// plugin whose own watch is what failed, means an event the root's watch still
+		// delivers: the subdirectory being replaced, or the root itself disappearing and
+		// coming back.
+		r.logger.Error(fmt.Errorf("plugin directory failed to load or watch after %d retries, giving up until the next event for it", maxPluginLoadRetries), "giving up on plugin directory", "directory", pluginDir)
 		queue.Forget(pluginName)
 	} else {
 		// A transient failure (e.g. this fired mid-write, before every referenced file exists
@@ -261,19 +264,32 @@ func pluginNameFromEventPath(dir, path string) (string, bool) {
 
 // loadDiskPlugin (re)loads the plugin bundle in rootDir/pluginName and watches that subdirectory
 // for future file changes - fsnotify does not watch recursively, so a freshly-seen subdirectory
-// needs its own explicit watch. Reports whether the load succeeded, so the caller can decide
-// whether to retry.
+// needs its own explicit watch. Reports whether both succeeded, so the caller can decide whether
+// to retry.
 func (r *Registry) loadDiskPlugin(rootDir, pluginName string, watcher *fsnotify.Watcher) bool {
 	pluginDir := filepath.Join(rootDir, pluginName)
+	// Watched before the bundle is loaded below rather than after, so a file changing between
+	// the two still produces an event instead of being missed until the next unrelated one.
+	watched := true
 	if err := watcher.Add(pluginDir); err != nil {
-		r.logger.Error(err, "failed to watch plugin directory", "directory", pluginDir)
+		// The watch on the root only reports pluginDir's own entry appearing or disappearing,
+		// never a change to the files inside it, so a plugin whose own watch never gets
+		// established serves whatever this load extracts for the life of the process. Load it
+		// anyway - a plugin that can't be watched is still worth serving - but report failure,
+		// so the caller retries the watch instead of settling for that (see
+		// processDiskPluginQueueItem). Once that retry budget runs out the plugin is served but
+		// stale, which is the best outcome left when what's failing here is the inotify
+		// watch/instance limit rather than anything about the plugin.
+		r.logger.Error(err, "failed to watch plugin directory, will retry", "directory", pluginDir)
+		watched = false
 	}
 	if !r.hasDiskCapacity(pluginName) {
 		// Checked before parsing/extracting, not just before addDiskPlugin below: a cap
 		// rejection is permanent for the current state of the world (nothing about the bundle
 		// itself is wrong), so it shouldn't cost an extraction, and returning true here (instead
 		// of false) skips processDiskPluginQueueItem's retry budget entirely rather than spending
-		// it on a rejection that a retry can't fix.
+		// it on a rejection that a retry can't fix. True regardless of watched above: nothing is
+		// loaded on this path, so there's no extraction a missing watch could leave stale.
 		r.logger.Error(fmt.Errorf("plugins.maxDirectoryPlugins (%d) reached", r.maxDirectoryPlugins), "too many plugin directories, dropping", "directory", pluginDir)
 		return true
 	}
@@ -301,7 +317,7 @@ func (r *Registry) loadDiskPlugin(rootDir, pluginName string, watcher *fsnotify.
 		return false
 	}
 	r.logger.Info("Loaded plugin from directory", "directory", pluginDir, "plugin", entry.manifest.Name, "version", entry.manifest.Version)
-	return true
+	return watched
 }
 
 // hasDiskCapacity reports whether name can be loaded without exceeding maxDirectoryPlugins - true
