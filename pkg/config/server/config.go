@@ -98,7 +98,7 @@ type PluginsConfig struct {
 	// MaxBundleBytes bounds how much a single plugin's bundle.zip may decompress to in total,
 	// once extracted to disk - shared by both sources rather than a separate limit each, since a
 	// plugin directory carries about as much trust as a plugin ConfigMap - see
-	// pkg/plugins/registry.go's extractZip. A ConfigMap's own ~1MiB etcd size limit only bounds
+	// pkg/plugins/zip.go's extractZip. A ConfigMap's own ~1MiB etcd size limit only bounds
 	// the compressed bytes, not what they decompress to, and a plugin directory has no equivalent
 	// limit at all, so without this a small, maliciously high-ratio archive ("zip bomb") could
 	// still exhaust the backend's disk. Zero means unbounded.

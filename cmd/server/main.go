@@ -288,7 +288,7 @@ func run() error {
 	go traceflowHandler.Run(stopCh)
 	go antreaSvcHandler.Run(stopCh)
 	go sessionStore.Run(stopCh)
-	go pluginRegistry.Run(stopCh)
+	go pluginRegistry.RunConfigMapWatch(stopCh)
 	if config.Plugins.Directory != "" {
 		go pluginRegistry.RunDirectoryWatch(config.Plugins.Directory, stopCh)
 	}

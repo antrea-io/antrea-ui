@@ -304,7 +304,7 @@ func (r *Registry) loadDiskPlugin(rootDir, pluginName string, watcher *fsnotify.
 		// any) outright rather than keeping the last known-good version being served - a
 		// pre-existing behavior difference between the two sources, not something introduced
 		// here, and it's unconditional regardless of whether extractZip failed before or after
-		// removing dest (see errDestGone in registry.go): either way, this plugin stops being
+		// removing dest (see errDestGone in zip.go): either way, this plugin stops being
 		// served until it loads successfully again.
 		r.logger.Error(err, "skipping invalid plugin directory", "directory", pluginDir)
 		r.deleteDiskPlugin(pluginName)

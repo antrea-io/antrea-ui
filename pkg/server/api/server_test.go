@@ -141,7 +141,7 @@ func newTestServer(t *testing.T, options ...testServerOptions) *testServer {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		pluginRegistry.Run(stopCh)
+		pluginRegistry.RunConfigMapWatch(stopCh)
 	}()
 	t.Cleanup(func() {
 		close(stopCh)

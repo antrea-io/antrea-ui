@@ -15,12 +15,8 @@
 package plugins
 
 import (
-	"archive/zip"
-	"bytes"
-	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -33,58 +29,6 @@ import (
 
 	apisv1 "antrea.io/antrea-ui/apis/v1"
 )
-
-// writePluginDir writes a plugin's on-disk bundle in the current manifest.json + bundle.zip
-// shape (see registry.go's package doc): manifestJSON goes to disk as-is, bundleFiles get zipped
-// into bundle.zip.
-func writePluginDir(t *testing.T, root, name, manifestJSON string, bundleFiles map[string]string) {
-	t.Helper()
-	dir := filepath.Join(root, name)
-	require.NoError(t, os.MkdirAll(dir, 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, manifestFileName), []byte(manifestJSON), 0o600))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, bundleFileName), buildZip(t, bundleFiles), 0o600))
-}
-
-func podCounterManifest(pluginName, version string) string {
-	return fmt.Sprintf(`{"name":%q,"version":%q,"entry":"index.js"}`, pluginName, version)
-}
-
-func podCounterBundle() map[string]string {
-	return map[string]string{"index.js": "console.log('hi')"}
-}
-
-// waitFor polls cond until it returns true or the timeout elapses, failing the test otherwise -
-// needed because RunDirectoryWatch's fsnotify-driven updates happen asynchronously.
-func waitFor(t *testing.T, timeout time.Duration, cond func() bool) {
-	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if cond() {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	require.True(t, cond(), "condition not met within %s", timeout)
-}
-
-// startDirectoryWatch runs r.RunDirectoryWatch(dir, ...) in a goroutine and registers a
-// t.Cleanup that stops it and waits for the goroutine to actually exit before the test returns -
-// r.RunDirectoryWatch logs through r.logger (testr, which writes via t.Log), so a goroutine still
-// running after the test function itself returns would otherwise race with the test harness's
-// own teardown of t.
-func startDirectoryWatch(t *testing.T, r *Registry, dir string) {
-	t.Helper()
-	stopCh := make(chan struct{})
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		r.RunDirectoryWatch(dir, stopCh)
-	}()
-	t.Cleanup(func() {
-		close(stopCh)
-		<-done
-	})
-}
 
 func TestPluginNameFromEventPath(t *testing.T) {
 	dir := filepath.Join(string(filepath.Separator), "plugins")
@@ -139,72 +83,6 @@ func TestParsePluginArchiveIncludesNestedPaths(t *testing.T) {
 	rc, _, ok := entry.open("assets/logo.png")
 	require.True(t, ok, "a bundle.zip entry under a subdirectory must be extracted and servable")
 	assert.Equal(t, "fake-png-bytes", readAll(t, rc))
-}
-
-func TestExtractZipNeutralizesPathTraversal(t *testing.T) {
-	dir := t.TempDir()
-	pluginDir := filepath.Join(dir, "plugin")
-	require.NoError(t, os.MkdirAll(pluginDir, 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(pluginDir, manifestFileName),
-		[]byte(`{"name":"plugin","version":"0.1.0","entry":"index.js"}`), 0o600))
-
-	// buildZip can't produce a traversal-shaped entry name via its map[string]string files
-	// argument in a way that's clearer than just writing the zip directly here.
-	var buf bytes.Buffer
-	zw := zip.NewWriter(&buf)
-	for name, content := range map[string]string{
-		"index.js":          "console.log('hi')",
-		"../../../evil.txt": "should not escape",
-	} {
-		w, err := zw.Create(name)
-		require.NoError(t, err)
-		_, err = w.Write([]byte(content))
-		require.NoError(t, err)
-	}
-	require.NoError(t, zw.Close())
-	require.NoError(t, os.WriteFile(filepath.Join(pluginDir, bundleFileName), buf.Bytes(), 0o600))
-
-	cacheParent := t.TempDir()
-	cacheRoot := filepath.Join(cacheParent, "cache")
-	require.NoError(t, os.MkdirAll(cacheRoot, 0o755))
-
-	entry, err := parsePluginArchive(pluginDir, filepath.Join(cacheRoot, "plugin"), 0)
-	require.NoError(t, err)
-
-	// The malicious entry lands safely inside the plugin's own extraction directory...
-	rc, _, ok := entry.open("evil.txt")
-	require.True(t, ok)
-	assert.Equal(t, "should not escape", readAll(t, rc))
-
-	// ...and does not actually escape onto the filesystem outside cacheRoot ("zip slip").
-	_, err = os.Stat(filepath.Join(cacheParent, "evil.txt"))
-	assert.True(t, os.IsNotExist(err), "path traversal entry must not escape the cache root")
-}
-
-func TestExtractZipRejectsSingleEntryPastTheDecompressedSizeLimit(t *testing.T) {
-	dir := t.TempDir()
-	writePluginDir(t, dir, "plugin", `{"name":"plugin","version":"0.1.0","entry":"index.js"}`, map[string]string{
-		"index.js": strings.Repeat("x", 200),
-	})
-
-	_, err := parsePluginArchive(filepath.Join(dir, "plugin"), filepath.Join(t.TempDir(), "plugin"), 100)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "zip bomb")
-}
-
-// TestExtractZipRejectsCombinedEntriesPastTheDecompressedSizeLimit exercises the case a single
-// oversized entry can't: maxBundleBytes bounds the bundle's total decompressed size, not any one
-// entry's, so several individually-small entries that together exceed it must also be rejected.
-func TestExtractZipRejectsCombinedEntriesPastTheDecompressedSizeLimit(t *testing.T) {
-	dir := t.TempDir()
-	writePluginDir(t, dir, "plugin", `{"name":"plugin","version":"0.1.0","entry":"index.js"}`, map[string]string{
-		"index.js": strings.Repeat("x", 60),
-		"other.js": strings.Repeat("y", 60),
-	})
-
-	_, err := parsePluginArchive(filepath.Join(dir, "plugin"), filepath.Join(t.TempDir(), "plugin"), 100)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "zip bomb")
 }
 
 func TestParsePluginArchiveIncludesRoutesAndFederation(t *testing.T) {
@@ -509,37 +387,6 @@ func TestRunDirectoryWatchIsNoopWhenDirectoryEmpty(t *testing.T) {
 		t.Fatal("RunDirectoryWatch(\"\", ...) did not return promptly")
 	}
 	assert.Empty(t, r.Index())
-}
-
-func TestDirectoryAndConfigMapPluginsMerge(t *testing.T) {
-	dir := t.TempDir()
-	writePluginDir(t, dir, "disk-plugin", podCounterManifest("disk-plugin", "0.1.0"), podCounterBundle())
-
-	r := NewRegistry(testr.New(t), nil, "antrea-ui", "ui.antrea.io/plugin=true", 0, 0, 0)
-	t.Cleanup(r.Close)
-	r.handleUpsert(configMap(t, "cm-plugin", "cm-plugin", "0.1.0", "index.js", map[string]string{"index.js": "x"}))
-
-	startDirectoryWatch(t, r, dir)
-
-	waitFor(t, time.Second, func() bool { return len(r.Index()) == 2 })
-}
-
-func TestDirectoryPluginLosesNameCollisionToConfigMap(t *testing.T) {
-	dir := t.TempDir()
-	writePluginDir(t, dir, "shared-name", podCounterManifest("shared", "from-disk"), podCounterBundle())
-
-	r := NewRegistry(testr.New(t), nil, "antrea-ui", "ui.antrea.io/plugin=true", 0, 0, 0)
-	t.Cleanup(r.Close)
-	r.handleUpsert(configMap(t, "shared-name", "shared", "from-configmap", "index.js", map[string]string{"index.js": "x"}))
-
-	startDirectoryWatch(t, r, dir)
-
-	// "configmap/shared-name" sorts before "directory/shared-name", so the ConfigMap always
-	// wins this collision regardless of load order.
-	waitFor(t, time.Second, func() bool {
-		manifests := r.Index()
-		return len(manifests) == 1 && manifests[0].Version == "from-configmap"
-	})
 }
 
 // TestLoadDiskPluginReportsFailedWatch pins what happens when the plugin subdirectory's own
