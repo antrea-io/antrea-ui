@@ -178,6 +178,9 @@ func newTestServerWithLogger(t *testing.T, logger logr.Logger, options ...testSe
 		MaxSessions: config.Session.MaxSessions,
 	})
 
+	pluginRegistry := plugins.NewRegistry(logger, nil, "", "", 0, 0, 0)
+	t.Cleanup(pluginRegistry.Close)
+
 	// we use nil for parameters which are only used by the API server
 	s, err := NewServer(Options{
 		Logger:         logger,
@@ -186,7 +189,7 @@ func newTestServerWithLogger(t *testing.T, logger logr.Logger, options ...testSe
 		SessionStore:   sessionStore,
 		ClientFactory:  clientFactory,
 		OIDCProvider:   oidcProvider,
-		PluginRegistry: plugins.NewRegistry(logger, nil, "", ""),
+		PluginRegistry: pluginRegistry,
 		AdminUserName:  testAdminUserName,
 	})
 	require.NoError(t, err)

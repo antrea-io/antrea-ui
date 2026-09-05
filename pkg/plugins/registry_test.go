@@ -15,6 +15,9 @@
 package plugins
 
 import (
+	"fmt"
+	"io"
+	"strings"
 	"testing"
 
 	"github.com/go-logr/logr/testr"
@@ -27,26 +30,44 @@ import (
 )
 
 func newTestRegistry(t *testing.T) *Registry {
-	return NewRegistry(testr.New(t), nil, "antrea-ui", "ui.antrea.io/plugin=true")
+	r := NewRegistry(testr.New(t), nil, "antrea-ui", "ui.antrea.io/plugin=true", 0, 0, 0)
+	t.Cleanup(r.Close)
+	return r
 }
 
-func configMap(name, pluginName, version, entry string, extraFiles map[string]string) *corev1.ConfigMap {
-	data := map[string]string{
-		"manifest.json": `{"name":"` + pluginName + `","version":"` + version + `","entry":"` + entry + `"}`,
+func readAll(t *testing.T, rc io.ReadCloser) string {
+	t.Helper()
+	defer rc.Close()
+	data, err := io.ReadAll(rc)
+	require.NoError(t, err)
+	return string(data)
+}
+
+// configMap builds a plugin ConfigMap in the current data["manifest.json"] +
+// binaryData["bundle.zip"] shape: manifest.json separate (small, human-readable), everything
+// else (bundleFiles) zipped into one binaryData key - see registry.go's package doc for why. A
+// nil bundleFiles omits binaryData entirely (for cases exercising a missing bundle.zip). Reuses
+// version as the ConfigMap's ResourceVersion, standing in for the apiserver bumping it on every
+// real write - every test upserting the same name with a new version this way still exercises
+// handleUpsert's ResourceVersion-unchanged skip correctly.
+func configMap(t *testing.T, name, pluginName, version, entry string, bundleFiles map[string]string) *corev1.ConfigMap {
+	t.Helper()
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "antrea-ui", ResourceVersion: version},
+		Data: map[string]string{
+			"manifest.json": fmt.Sprintf(`{"name":%q,"version":%q,"entry":%q}`, pluginName, version, entry),
+		},
 	}
-	for k, v := range extraFiles {
-		data[k] = v
+	if bundleFiles != nil {
+		cm.BinaryData = map[string][]byte{"bundle.zip": buildZip(t, bundleFiles)}
 	}
-	return &corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "antrea-ui"},
-		Data:       data,
-	}
+	return cm
 }
 
 func TestRegistryUpsertAndIndex(t *testing.T) {
 	r := newTestRegistry(t)
 
-	r.handleUpsert(configMap("pod-counter-plugin", "pod-counter", "0.1.0", "index.js", map[string]string{
+	r.handleUpsert(configMap(t, "pod-counter-plugin", "pod-counter", "0.1.0", "index.js", map[string]string{
 		"index.js": "console.log('hi')",
 	}))
 
@@ -54,20 +75,44 @@ func TestRegistryUpsertAndIndex(t *testing.T) {
 		{Name: "pod-counter", Version: "0.1.0", Entry: "index.js"},
 	}, r.Index())
 
-	data, ok := r.File("pod-counter", "index.js")
-	assert.True(t, ok)
-	assert.Equal(t, "console.log('hi')", string(data))
+	rc, size, ok := r.File("pod-counter", "index.js")
+	require.True(t, ok)
+	assert.Equal(t, int64(len("console.log('hi')")), size)
+	assert.Equal(t, "console.log('hi')", readAll(t, rc))
 
-	_, ok = r.File("pod-counter", "does-not-exist.js")
+	_, _, ok = r.File("pod-counter", "does-not-exist.js")
 	assert.False(t, ok)
 
-	_, ok = r.File("does-not-exist", "index.js")
+	_, _, ok = r.File("does-not-exist", "index.js")
 	assert.False(t, ok)
+}
+
+// TestRegistryUpsertReadsManifestFromBinaryData covers a ConfigMap where manifest.json landed in
+// BinaryData rather than Data - what `kubectl create configmap --from-file` does for a file the
+// apiserver can't store as valid UTF-8 (a BOM, a stray non-UTF-8 byte). configMap (used by most
+// other tests here) always writes it into Data, so this needs its own hand-built ConfigMap.
+func TestRegistryUpsertReadsManifestFromBinaryData(t *testing.T) {
+	r := newTestRegistry(t)
+
+	manifestJSON := `{"name":"pod-counter","version":"0.1.0","entry":"index.js"}`
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "pod-counter-plugin", Namespace: "antrea-ui", ResourceVersion: "0.1.0"},
+		BinaryData: map[string][]byte{
+			"manifest.json": []byte(manifestJSON),
+			"bundle.zip":    buildZip(t, map[string]string{"index.js": "console.log('hi')"}),
+		},
+	}
+
+	r.handleUpsert(cm)
+
+	assert.Equal(t, []apisv1.PluginManifest{
+		{Name: "pod-counter", Version: "0.1.0", Entry: "index.js"},
+	}, r.Index())
 }
 
 func TestRegistryDelete(t *testing.T) {
 	r := newTestRegistry(t)
-	cm := configMap("pod-counter-plugin", "pod-counter", "0.1.0", "index.js", map[string]string{"index.js": "x"})
+	cm := configMap(t, "pod-counter-plugin", "pod-counter", "0.1.0", "index.js", map[string]string{"index.js": "x"})
 
 	r.handleUpsert(cm)
 	assert.Len(t, r.Index(), 1)
@@ -80,249 +125,194 @@ func TestRegistryUpdateReplacesPreviousContents(t *testing.T) {
 	r := newTestRegistry(t)
 	name := "pod-counter-plugin"
 
-	r.handleUpsert(configMap(name, "pod-counter", "0.1.0", "index.js", map[string]string{"index.js": "v1"}))
-	r.handleUpsert(configMap(name, "pod-counter", "0.2.0", "index.js", map[string]string{"index.js": "v2"}))
+	r.handleUpsert(configMap(t, name, "pod-counter", "0.1.0", "index.js", map[string]string{"index.js": "v1"}))
+	r.handleUpsert(configMap(t, name, "pod-counter", "0.2.0", "index.js", map[string]string{"index.js": "v2"}))
 
 	assert.Equal(t, []apisv1.PluginManifest{
 		{Name: "pod-counter", Version: "0.2.0", Entry: "index.js"},
 	}, r.Index())
-	data, ok := r.File("pod-counter", "index.js")
-	assert.True(t, ok)
-	assert.Equal(t, "v2", string(data))
+	rc, _, ok := r.File("pod-counter", "index.js")
+	require.True(t, ok)
+	assert.Equal(t, "v2", readAll(t, rc))
+}
+
+func TestRegistrySkipsRedundantUpsertWithUnchangedResourceVersion(t *testing.T) {
+	r := newTestRegistry(t)
+	name := "pod-counter-plugin"
+
+	r.handleUpsert(configMap(t, name, "pod-counter", "0.1.0", "index.js", map[string]string{"index.js": "v1"}))
+
+	// Same ResourceVersion ("0.1.0", reused by the configMap helper - see its doc comment) as
+	// an Update event replaying the informer's cache after a watch reconnect would carry, even
+	// though nothing about the ConfigMap actually changed. A changed manifest/bundle here would
+	// only show up if handleUpsert incorrectly re-parsed and re-extracted it.
+	cm := configMap(t, name, "pod-counter", "0.1.0", "index.js", map[string]string{"index.js": "should not be applied"})
+	r.handleUpsert(cm)
+
+	rc, _, ok := r.File("pod-counter", "index.js")
+	require.True(t, ok)
+	assert.Equal(t, "v1", readAll(t, rc))
+
+	// A genuine change (new ResourceVersion) is still picked up normally.
+	r.handleUpsert(configMap(t, name, "pod-counter", "0.2.0", "index.js", map[string]string{"index.js": "v2"}))
+	rc, _, ok = r.File("pod-counter", "index.js")
+	require.True(t, ok)
+	assert.Equal(t, "v2", readAll(t, rc))
 }
 
 func TestRegistrySkipsInvalidConfigMaps(t *testing.T) {
-	cases := map[string]struct {
-		cm      *corev1.ConfigMap
-		wantErr string
-	}{
-		"missing manifest.json": {
-			cm:      &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "cm"}, Data: map[string]string{"index.js": "x"}},
-			wantErr: "missing manifest.json",
-		},
-		"malformed manifest.json": {
-			cm:      &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "cm"}, Data: map[string]string{"manifest.json": "not json"}},
-			wantErr: "invalid manifest.json",
-		},
-		"missing name": {
-			cm:      configMap("cm", "", "0.1.0", "index.js", map[string]string{"index.js": "x"}),
-			wantErr: "manifest is missing 'name'",
-		},
-		"missing entry": {
-			cm:      configMap("cm", "plugin", "0.1.0", "", map[string]string{"index.js": "x"}),
-			wantErr: "manifest is missing 'entry'",
-		},
-		"entry file not present": {
-			cm:      configMap("cm", "plugin", "0.1.0", "index.js", nil),
-			wantErr: "entry file \"index.js\" referenced by manifest not found",
-		},
-		"route missing path": {
-			cm: &corev1.ConfigMap{
+	withBundle := func(t *testing.T, manifestJSON string, bundleFiles map[string]string) *corev1.ConfigMap {
+		t.Helper()
+		return &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{Name: "cm"},
+			Data:       map[string]string{"manifest.json": manifestJSON},
+			BinaryData: map[string][]byte{"bundle.zip": buildZip(t, bundleFiles)},
+		}
+	}
+
+	cases := map[string]func(t *testing.T) *corev1.ConfigMap{
+		"missing manifest.json": func(t *testing.T) *corev1.ConfigMap {
+			return &corev1.ConfigMap{
 				ObjectMeta: metav1.ObjectMeta{Name: "cm"},
-				Data: map[string]string{
-					"manifest.json":    `{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"sidebarLabel":"Plugin","exposedModule":"./Page"}]}}`,
-					"index.js":         "x",
-					"remoteEntry.json": "x",
-				},
-			},
-			wantErr: "'federation.routes[0]' is missing 'path'",
+				BinaryData: map[string][]byte{"bundle.zip": buildZip(t, map[string]string{"index.js": "x"})},
+			}
 		},
-		"route missing sidebarLabel": {
-			cm: &corev1.ConfigMap{
+		"missing bundle.zip": func(t *testing.T) *corev1.ConfigMap {
+			return &corev1.ConfigMap{
 				ObjectMeta: metav1.ObjectMeta{Name: "cm"},
-				Data: map[string]string{
-					"manifest.json":    `{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"path":"/plugin","exposedModule":"./Page"}]}}`,
-					"index.js":         "x",
-					"remoteEntry.json": "x",
-				},
-			},
-			wantErr: "'federation.routes[0]' is missing 'sidebarLabel'",
+				Data:       map[string]string{"manifest.json": `{"name":"plugin","version":"0.1.0","entry":"index.js"}`},
+			}
 		},
-		"route missing exposedModule": {
-			cm: &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{Name: "cm"},
-				Data: map[string]string{
-					"manifest.json":    `{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"path":"/plugin","sidebarLabel":"Plugin"}]}}`,
-					"index.js":         "x",
-					"remoteEntry.json": "x",
-				},
-			},
-			wantErr: "'federation.routes[0]' is missing 'exposedModule'",
+		"malformed manifest.json": func(t *testing.T) *corev1.ConfigMap {
+			return withBundle(t, "not json", map[string]string{"index.js": "x"})
 		},
-		"route path under reserved api prefix": {
-			cm: &corev1.ConfigMap{
+		"malformed bundle.zip": func(t *testing.T) *corev1.ConfigMap {
+			return &corev1.ConfigMap{
 				ObjectMeta: metav1.ObjectMeta{Name: "cm"},
-				Data: map[string]string{
-					"manifest.json":    `{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"path":"/apiobjects","sidebarLabel":"Plugin","exposedModule":"./Page"}]}}`,
-					"index.js":         "x",
-					"remoteEntry.json": "x",
-				},
-			},
-			wantErr: "'federation.routes[0].path' \"/apiobjects\" is the root path or falls under a reserved prefix",
+				Data:       map[string]string{"manifest.json": `{"name":"plugin","version":"0.1.0","entry":"index.js"}`},
+				BinaryData: map[string][]byte{"bundle.zip": []byte("not a zip")},
+			}
 		},
-		"route path under reserved auth prefix": {
-			cm: &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{Name: "cm"},
-				Data: map[string]string{
-					"manifest.json":    `{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"path":"/authors","sidebarLabel":"Plugin","exposedModule":"./Page"}]}}`,
-					"index.js":         "x",
-					"remoteEntry.json": "x",
-				},
-			},
-			wantErr: "'federation.routes[0].path' \"/authors\" is the root path or falls under a reserved prefix",
+		"missing name": func(t *testing.T) *corev1.ConfigMap {
+			return withBundle(t, `{"version":"0.1.0","entry":"index.js"}`, map[string]string{"index.js": "x"})
 		},
-		"route path is the root path": {
-			cm: &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{Name: "cm"},
-				Data: map[string]string{
-					"manifest.json":    `{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"path":"/","sidebarLabel":"Plugin","exposedModule":"./Page"}]}}`,
-					"index.js":         "x",
-					"remoteEntry.json": "x",
-				},
-			},
-			wantErr: "'federation.routes[0].path' \"/\" is the root path or falls under a reserved prefix",
+		"missing entry": func(t *testing.T) *corev1.ConfigMap {
+			return withBundle(t, `{"name":"plugin","version":"0.1.0"}`, map[string]string{"index.js": "x"})
 		},
-		"route path collapses to the root path via dot segments": {
-			cm: &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{Name: "cm"},
-				Data: map[string]string{
-					"manifest.json":    `{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"path":"/plugin/..","sidebarLabel":"Plugin","exposedModule":"./Page"}]}}`,
-					"index.js":         "x",
-					"remoteEntry.json": "x",
-				},
-			},
-			wantErr: "'federation.routes[0].path' \"/plugin/..\" is the root path or falls under a reserved prefix",
+		"entry file not present": func(t *testing.T) *corev1.ConfigMap {
+			return withBundle(t, `{"name":"plugin","version":"0.1.0","entry":"index.js"}`, map[string]string{"other.js": "x"})
 		},
-		"duplicate route path in the same manifest": {
-			cm: &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{Name: "cm"},
-				Data: map[string]string{
-					"manifest.json": `{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[
-						{"path":"/plugin","sidebarLabel":"Plugin","exposedModule":"./Page"},
-						{"path":"/plugin","sidebarLabel":"Plugin Again","exposedModule":"./OtherPage"}
-					]}}`,
-					"index.js":         "x",
-					"remoteEntry.json": "x",
-				},
-			},
-			wantErr: "'federation.routes[1].path' \"/plugin\" duplicates earlier route \"/plugin\"",
+		"route missing path": func(t *testing.T) *corev1.ConfigMap {
+			return withBundle(t,
+				`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"sidebarLabel":"Plugin","exposedModule":"./Page"}]}}`,
+				map[string]string{"index.js": "x", "remoteEntry.json": "x"})
 		},
-		"duplicate route path differing only by leading slash": {
-			cm: &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{Name: "cm"},
-				Data: map[string]string{
-					"manifest.json": `{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[
-						{"path":"/plugin","sidebarLabel":"Plugin","exposedModule":"./Page"},
-						{"path":"plugin","sidebarLabel":"Plugin Again","exposedModule":"./OtherPage"}
-					]}}`,
-					"index.js":         "x",
-					"remoteEntry.json": "x",
-				},
-			},
-			wantErr: "'federation.routes[1].path' \"plugin\" duplicates earlier route \"/plugin\"",
+		"route missing sidebarLabel": func(t *testing.T) *corev1.ConfigMap {
+			return withBundle(t,
+				`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"path":"/plugin","exposedModule":"./Page"}]}}`,
+				map[string]string{"index.js": "x", "remoteEntry.json": "x"})
 		},
-		"duplicate route path differing only by doubled and trailing slashes": {
-			cm: &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{Name: "cm"},
-				Data: map[string]string{
-					"manifest.json": `{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[
-						{"path":"/plugin","sidebarLabel":"Plugin","exposedModule":"./Page"},
-						{"path":"//plugin/","sidebarLabel":"Plugin Again","exposedModule":"./OtherPage"}
-					]}}`,
-					"index.js":         "x",
-					"remoteEntry.json": "x",
-				},
-			},
-			wantErr: "'federation.routes[1].path' \"//plugin/\" duplicates earlier route \"/plugin\"",
+		"route missing exposedModule": func(t *testing.T) *corev1.ConfigMap {
+			return withBundle(t,
+				`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"path":"/plugin","sidebarLabel":"Plugin"}]}}`,
+				map[string]string{"index.js": "x", "remoteEntry.json": "x"})
 		},
-		"route with an unknown kind": {
-			cm: &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{Name: "cm"},
-				Data: map[string]string{
-					"manifest.json":    `{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"path":"/plugin","sidebarLabel":"Plugin","exposedModule":"./Page","kind":"route"}]}}`,
-					"index.js":         "x",
-					"remoteEntry.json": "x",
-				},
-			},
-			wantErr: "'federation.routes[0].kind' \"route\" is not one of \"component\", \"routes\"",
+		"route with an unknown kind": func(t *testing.T) *corev1.ConfigMap {
+			return withBundle(t,
+				`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"path":"/plugin","sidebarLabel":"Plugin","exposedModule":"./Page","kind":"route"}]}}`,
+				map[string]string{"index.js": "x", "remoteEntry.json": "x"})
 		},
-		"route nested under a routes-kind route": {
-			cm: &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{Name: "cm"},
-				Data: map[string]string{
-					"manifest.json": `{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[
-						{"path":"/policies","sidebarLabel":"Policies","exposedModule":"./PolicyRoutes","kind":"routes"},
-						{"path":"/policies/audit","sidebarLabel":"Audit","exposedModule":"./PolicyAuditPage"}
-					]}}`,
-					"index.js":         "x",
-					"remoteEntry.json": "x",
-				},
-			},
-			wantErr: "'federation.routes[1].path' \"/policies/audit\" falls under 'federation.routes[0].path' \"/policies\"",
+		"route nested under a routes-kind route": func(t *testing.T) *corev1.ConfigMap {
+			return withBundle(t,
+				`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[
+					{"path":"/policies","sidebarLabel":"Policies","exposedModule":"./PolicyRoutes","kind":"routes"},
+					{"path":"/policies/audit","sidebarLabel":"Audit","exposedModule":"./PolicyAuditPage"}
+				]}}`,
+				map[string]string{"index.js": "x", "remoteEntry.json": "x"})
 		},
 		// Same collision as above with the two routes declared the other way round (and spelled
 		// with different slashes), since declaration order says nothing about which owns the path.
-		"routes-kind route declared after the route it owns": {
-			cm: &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{Name: "cm"},
-				Data: map[string]string{
-					"manifest.json": `{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[
-						{"path":"policies/audit","sidebarLabel":"Audit","exposedModule":"./PolicyAuditPage"},
-						{"path":"/policies/","sidebarLabel":"Policies","exposedModule":"./PolicyRoutes","kind":"routes"}
-					]}}`,
-					"index.js":         "x",
-					"remoteEntry.json": "x",
-				},
-			},
-			wantErr: "'federation.routes[0].path' \"policies/audit\" falls under 'federation.routes[1].path' \"/policies/\"",
+		"routes-kind route declared after the route it owns": func(t *testing.T) *corev1.ConfigMap {
+			return withBundle(t,
+				`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[
+					{"path":"policies/audit","sidebarLabel":"Audit","exposedModule":"./PolicyAuditPage"},
+					{"path":"/policies/","sidebarLabel":"Policies","exposedModule":"./PolicyRoutes","kind":"routes"}
+				]}}`,
+				map[string]string{"index.js": "x", "remoteEntry.json": "x"})
 		},
-		"federation with no routes": {
-			cm: &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{Name: "cm"},
-				Data: map[string]string{
-					"manifest.json":    `{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[]}}`,
-					"index.js":         "x",
-					"remoteEntry.json": "x",
-				},
-			},
-			wantErr: "'federation.routes' must not be empty",
+		"route path under reserved api prefix": func(t *testing.T) *corev1.ConfigMap {
+			return withBundle(t,
+				`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"path":"/apiobjects","sidebarLabel":"Plugin","exposedModule":"./Page"}]}}`,
+				map[string]string{"index.js": "x", "remoteEntry.json": "x"})
 		},
-		"federation missing remoteEntry": {
-			cm: &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{Name: "cm"},
-				Data: map[string]string{
-					"manifest.json": `{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{}}`,
-					"index.js":      "x",
-				},
-			},
-			wantErr: "federation is missing 'remoteEntry'",
+		"route path under reserved auth prefix": func(t *testing.T) *corev1.ConfigMap {
+			return withBundle(t,
+				`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"path":"/authors","sidebarLabel":"Plugin","exposedModule":"./Page"}]}}`,
+				map[string]string{"index.js": "x", "remoteEntry.json": "x"})
 		},
-		"federation remoteEntry same file as entry": {
-			cm: &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{Name: "cm"},
-				Data: map[string]string{
-					"manifest.json": `{"name":"plugin","version":"0.1.0","entry":"shared.js","federation":{"remoteEntry":"shared.js","routes":[{"path":"/plugin","sidebarLabel":"Plugin","exposedModule":"./Page"}]}}`,
-					"shared.js":     "x",
-				},
-			},
-			wantErr: "'federation.remoteEntry' must not be the same file as 'entry'",
+		"route path is the root path": func(t *testing.T) *corev1.ConfigMap {
+			return withBundle(t,
+				`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"path":"/","sidebarLabel":"Plugin","exposedModule":"./Page"}]}}`,
+				map[string]string{"index.js": "x", "remoteEntry.json": "x"})
 		},
-		"federation remoteEntry file not present": {
-			cm: &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{Name: "cm"},
-				Data: map[string]string{
-					"manifest.json": `{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"path":"/plugin","sidebarLabel":"Plugin","exposedModule":"./Page"}]}}`,
-					"index.js":      "x",
-				},
-			},
-			wantErr: "remote entry file \"remoteEntry.json\" referenced by manifest's federation not found",
+		"route path collapses to the root path via dot segments": func(t *testing.T) *corev1.ConfigMap {
+			return withBundle(t,
+				`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"path":"/plugin/..","sidebarLabel":"Plugin","exposedModule":"./Page"}]}}`,
+				map[string]string{"index.js": "x", "remoteEntry.json": "x"})
+		},
+		"duplicate route path in the same manifest": func(t *testing.T) *corev1.ConfigMap {
+			return withBundle(t,
+				`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[
+					{"path":"/plugin","sidebarLabel":"Plugin","exposedModule":"./Page"},
+					{"path":"/plugin","sidebarLabel":"Plugin Again","exposedModule":"./OtherPage"}
+				]}}`,
+				map[string]string{"index.js": "x", "remoteEntry.json": "x"})
+		},
+		"duplicate route path differing only by leading slash": func(t *testing.T) *corev1.ConfigMap {
+			return withBundle(t,
+				`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[
+					{"path":"/plugin","sidebarLabel":"Plugin","exposedModule":"./Page"},
+					{"path":"plugin","sidebarLabel":"Plugin Again","exposedModule":"./OtherPage"}
+				]}}`,
+				map[string]string{"index.js": "x", "remoteEntry.json": "x"})
+		},
+		"duplicate route path differing only by doubled and trailing slashes": func(t *testing.T) *corev1.ConfigMap {
+			return withBundle(t,
+				`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[
+					{"path":"/plugin","sidebarLabel":"Plugin","exposedModule":"./Page"},
+					{"path":"//plugin/","sidebarLabel":"Plugin Again","exposedModule":"./OtherPage"}
+				]}}`,
+				map[string]string{"index.js": "x", "remoteEntry.json": "x"})
+		},
+		"federation with no routes": func(t *testing.T) *corev1.ConfigMap {
+			return withBundle(t,
+				`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[]}}`,
+				map[string]string{"index.js": "x", "remoteEntry.json": "x"})
+		},
+		"federation missing remoteEntry": func(t *testing.T) *corev1.ConfigMap {
+			return withBundle(t, `{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{}}`, map[string]string{"index.js": "x"})
+		},
+		"federation remoteEntry same file as entry": func(t *testing.T) *corev1.ConfigMap {
+			return withBundle(t,
+				`{"name":"plugin","version":"0.1.0","entry":"shared.js","federation":{"remoteEntry":"shared.js","routes":[{"path":"/plugin","sidebarLabel":"Plugin","exposedModule":"./Page"}]}}`,
+				map[string]string{"shared.js": "x"})
+		},
+		"federation remoteEntry same file as entry, differing only by a non-clean prefix": func(t *testing.T) *corev1.ConfigMap {
+			return withBundle(t,
+				`{"name":"plugin","version":"0.1.0","entry":"shared.js","federation":{"remoteEntry":"./shared.js","routes":[{"path":"/plugin","sidebarLabel":"Plugin","exposedModule":"./Page"}]}}`,
+				map[string]string{"shared.js": "x"})
+		},
+		"federation remoteEntry file not present": func(t *testing.T) *corev1.ConfigMap {
+			return withBundle(t,
+				`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json"}}`,
+				map[string]string{"index.js": "x"})
 		},
 	}
-	for name, tc := range cases {
+	for name, buildCM := range cases {
 		t.Run(name, func(t *testing.T) {
-			_, err := parsePluginConfigMap(tc.cm)
-			require.Error(t, err)
-			assert.Contains(t, err.Error(), tc.wantErr)
+			r := newTestRegistry(t)
+			r.handleUpsert(buildCM(t))
+			assert.Empty(t, r.Index())
 		})
 	}
 }
@@ -358,8 +348,9 @@ func TestRegistryIndexIncludesFederation(t *testing.T) {
 					]
 				}
 			}`,
-			"index.js":         "x",
-			"remoteEntry.json": "{}",
+		},
+		BinaryData: map[string][]byte{
+			"bundle.zip": buildZip(t, map[string]string{"index.js": "x", "remoteEntry.json": "{}"}),
 		},
 	})
 
@@ -378,7 +369,8 @@ func TestRegistryIndexIncludesFederation(t *testing.T) {
 	}}, r.Index())
 }
 
-func federationConfigMap(cmName, pluginName, entry string, routes string) *corev1.ConfigMap {
+func federationConfigMap(t *testing.T, cmName, pluginName, entry string, routes string) *corev1.ConfigMap {
+	t.Helper()
 	return &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{Name: cmName, Namespace: "antrea-ui"},
 		Data: map[string]string{
@@ -388,8 +380,12 @@ func federationConfigMap(cmName, pluginName, entry string, routes string) *corev
 				"entry": "` + entry + `",
 				"federation": {"remoteEntry": "remoteEntry.json", "routes": ` + routes + `}
 			}`,
-			entry:              "x",
-			"remoteEntry.json": "x",
+		},
+		BinaryData: map[string][]byte{
+			"bundle.zip": buildZip(t, map[string]string{
+				entry:              "x",
+				"remoteEntry.json": "x",
+			}),
 		},
 	}
 }
@@ -401,9 +397,9 @@ func federationConfigMap(cmName, pluginName, entry string, routes string) *corev
 func TestRegistryIndexDropsPluginWhenAllFederationRoutesCollide(t *testing.T) {
 	r := newTestRegistry(t)
 
-	r.handleUpsert(federationConfigMap("b-configmap", "b-plugin", "index.js",
+	r.handleUpsert(federationConfigMap(t, "b-configmap", "b-plugin", "index.js",
 		`[{"path": "//policies/", "sidebarLabel": "Policies", "exposedModule": "./Page"}]`))
-	r.handleUpsert(federationConfigMap("a-configmap", "a-plugin", "index.js",
+	r.handleUpsert(federationConfigMap(t, "a-configmap", "a-plugin", "index.js",
 		`[{"path": "/policies", "sidebarLabel": "Policies", "exposedModule": "./Page"}]`))
 
 	manifests := r.Index()
@@ -418,9 +414,9 @@ func TestRegistryIndexDropsPluginWhenAllFederationRoutesCollide(t *testing.T) {
 func TestRegistryIndexFiltersCollidingFederationRouteKeepsRestOfPlugin(t *testing.T) {
 	r := newTestRegistry(t)
 
-	r.handleUpsert(federationConfigMap("a-configmap", "a-plugin", "a.js",
+	r.handleUpsert(federationConfigMap(t, "a-configmap", "a-plugin", "a.js",
 		`[{"path": "/policies", "sidebarLabel": "Policies", "exposedModule": "./Page"}]`))
-	r.handleUpsert(federationConfigMap("b-configmap", "b-plugin", "b.js",
+	r.handleUpsert(federationConfigMap(t, "b-configmap", "b-plugin", "b.js",
 		`[
 			{"path": "/policies", "sidebarLabel": "Policies Again", "exposedModule": "./OtherPage"},
 			{"path": "/other", "sidebarLabel": "Other", "exposedModule": "./OtherPage"}
@@ -446,9 +442,9 @@ func TestRegistryIndexFiltersCollidingFederationRouteKeepsRestOfPlugin(t *testin
 func TestRegistryIndexFiltersFederationRouteUnderEarlierPluginsRouteTree(t *testing.T) {
 	r := newTestRegistry(t)
 
-	r.handleUpsert(federationConfigMap("a-configmap", "a-plugin", "a.js",
+	r.handleUpsert(federationConfigMap(t, "a-configmap", "a-plugin", "a.js",
 		`[{"path": "/policies", "sidebarLabel": "Policies", "exposedModule": "./Page", "kind": "routes"}]`))
-	r.handleUpsert(federationConfigMap("b-configmap", "b-plugin", "b.js",
+	r.handleUpsert(federationConfigMap(t, "b-configmap", "b-plugin", "b.js",
 		`[
 			{"path": "/policies/audit", "sidebarLabel": "Policy Audit", "exposedModule": "./AuditPage"},
 			{"path": "/other", "sidebarLabel": "Other", "exposedModule": "./OtherPage"}
@@ -475,9 +471,9 @@ func TestRegistryIndexFiltersFederationRouteUnderEarlierPluginsRouteTree(t *test
 func TestRegistryIndexFiltersRouteTreeRouteThatWouldClaimAnAlreadyClaimedPath(t *testing.T) {
 	r := newTestRegistry(t)
 
-	r.handleUpsert(federationConfigMap("a-configmap", "a-plugin", "a.js",
+	r.handleUpsert(federationConfigMap(t, "a-configmap", "a-plugin", "a.js",
 		`[{"path": "/policies/audit", "sidebarLabel": "Policy Audit", "exposedModule": "./AuditPage"}]`))
-	r.handleUpsert(federationConfigMap("b-configmap", "b-plugin", "b.js",
+	r.handleUpsert(federationConfigMap(t, "b-configmap", "b-plugin", "b.js",
 		`[
 			{"path": "/policies", "sidebarLabel": "Policies", "exposedModule": "./Page", "kind": "routes"},
 			{"path": "/other", "sidebarLabel": "Other", "exposedModule": "./OtherPage"}
@@ -507,13 +503,13 @@ func TestRegistryIndexFiltersRouteTreeRouteThatWouldClaimAnAlreadyClaimedPath(t 
 func TestRegistryIndexAndFileStayConsistentWhenAllRoutesCollide(t *testing.T) {
 	r := newTestRegistry(t)
 
-	r.handleUpsert(federationConfigMap("a-configmap", "aaa", "a.js",
+	r.handleUpsert(federationConfigMap(t, "a-configmap", "aaa", "a.js",
 		`[{"path": "/policies", "sidebarLabel": "Policies", "exposedModule": "./Page"}]`))
 	// b-configmap sorts before c-configmap, and claims the "dup" name first;
 	// its one route collides with aaa's, so the whole manifest is dropped.
-	r.handleUpsert(federationConfigMap("b-configmap", "dup", "b.js",
+	r.handleUpsert(federationConfigMap(t, "b-configmap", "dup", "b.js",
 		`[{"path": "/policies", "sidebarLabel": "Policies", "exposedModule": "./Page"}]`))
-	r.handleUpsert(federationConfigMap("c-configmap", "dup", "c.js",
+	r.handleUpsert(federationConfigMap(t, "c-configmap", "dup", "c.js",
 		`[{"path": "/other", "sidebarLabel": "Other", "exposedModule": "./Page"}]`))
 
 	manifests := r.Index()
@@ -523,20 +519,58 @@ func TestRegistryIndexAndFileStayConsistentWhenAllRoutesCollide(t *testing.T) {
 	}
 	assert.Equal(t, []string{"aaa"}, names, "dup must not be listed at all, from either ConfigMap")
 
-	_, ok := r.File("dup", "c.js")
+	_, _, ok := r.File("dup", "c.js")
 	assert.False(t, ok, "c-configmap's entry must never be served for a name Index() doesn't list")
 }
 
 func TestRegistryDuplicatePluginNameKeepsLowerConfigMapName(t *testing.T) {
 	r := newTestRegistry(t)
 
-	r.handleUpsert(configMap("b-configmap", "pod-counter", "2.0.0", "index.js", map[string]string{"index.js": "b"}))
-	r.handleUpsert(configMap("a-configmap", "pod-counter", "1.0.0", "index.js", map[string]string{"index.js": "a"}))
+	r.handleUpsert(configMap(t, "b-configmap", "pod-counter", "2.0.0", "index.js", map[string]string{"index.js": "b"}))
+	r.handleUpsert(configMap(t, "a-configmap", "pod-counter", "1.0.0", "index.js", map[string]string{"index.js": "a"}))
 
 	assert.Equal(t, []apisv1.PluginManifest{
 		{Name: "pod-counter", Version: "1.0.0", Entry: "index.js"},
 	}, r.Index())
-	data, ok := r.File("pod-counter", "index.js")
-	assert.True(t, ok)
-	assert.Equal(t, "a", string(data))
+	rc, _, ok := r.File("pod-counter", "index.js")
+	require.True(t, ok)
+	assert.Equal(t, "a", readAll(t, rc))
+}
+
+func TestRegistryRejectsNewConfigMapPluginPastLimit(t *testing.T) {
+	r := NewRegistry(testr.New(t), nil, "antrea-ui", "ui.antrea.io/plugin=true", 1, 0, 0)
+	t.Cleanup(r.Close)
+
+	r.handleUpsert(configMap(t, "first-cm", "first", "0.1.0", "index.js", map[string]string{"index.js": "x"}))
+	r.handleUpsert(configMap(t, "second-cm", "second", "0.1.0", "index.js", map[string]string{"index.js": "x"}))
+	assert.Equal(t, []apisv1.PluginManifest{{Name: "first", Version: "0.1.0", Entry: "index.js"}}, r.Index())
+
+	// An update to the already-tracked plugin is never blocked by the limit.
+	r.handleUpsert(configMap(t, "first-cm", "first", "0.2.0", "index.js", map[string]string{"index.js": "x"}))
+	assert.Equal(t, []apisv1.PluginManifest{{Name: "first", Version: "0.2.0", Entry: "index.js"}}, r.Index())
+}
+
+func TestRegistryRejectsConfigMapBundlePastTheDecompressedSizeLimit(t *testing.T) {
+	r := NewRegistry(testr.New(t), nil, "antrea-ui", "ui.antrea.io/plugin=true", 0, 0, 100)
+	t.Cleanup(r.Close)
+
+	// A single entry over the limit...
+	r.handleUpsert(configMap(t, "plugin-cm", "plugin", "0.1.0", "index.js", map[string]string{
+		"index.js": strings.Repeat("x", 200),
+	}))
+	assert.Empty(t, r.Index(), "a bundle decompressing past the limit must be rejected")
+
+	// ...and several entries that only exceed it combined, must both be rejected: the limit
+	// applies to the bundle's total decompressed size, not any one entry's.
+	r.handleUpsert(configMap(t, "plugin-cm", "plugin", "0.1.0", "index.js", map[string]string{
+		"index.js": strings.Repeat("x", 60),
+		"other.js": strings.Repeat("y", 60),
+	}))
+	assert.Empty(t, r.Index())
+
+	// A bundle within the limit is accepted.
+	r.handleUpsert(configMap(t, "plugin-cm", "plugin", "0.1.0", "index.js", map[string]string{
+		"index.js": strings.Repeat("x", 50),
+	}))
+	assert.Equal(t, []apisv1.PluginManifest{{Name: "plugin", Version: "0.1.0", Entry: "index.js"}}, r.Index())
 }

@@ -35,6 +35,7 @@ require (
 )
 
 require (
+	github.com/fsnotify/fsnotify v1.10.1
 	github.com/gruntwork-io/terratest/modules/core/v2 v2.0.0-beta.2
 	github.com/gruntwork-io/terratest/modules/helm/v2 v2.0.0-beta.2
 	github.com/gruntwork-io/terratest/modules/httphelper/v2 v2.0.0-beta.2
@@ -50,7 +51,6 @@ require (
 	github.com/cpuguy83/go-md2man/v2 v2.0.5 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/emicklei/go-restful/v3 v3.13.0 // indirect
-	github.com/fsnotify/fsnotify v1.10.1 // indirect
 	github.com/fxamacker/cbor/v2 v2.9.0 // indirect
 	github.com/gabriel-vasile/mimetype v1.4.12 // indirect
 	github.com/gin-contrib/sse v1.1.0 // indirect

@@ -100,7 +100,7 @@ jobs:
     - name: Create example plugin ConfigMap
       run: |
         kubectl create configmap pod-counter-plugin --namespace kube-system \
-          --from-file=plugins/examples/pod-counter/dist/index.js \
+          --from-file=plugins/examples/pod-counter/dist/bundle.zip \
           --from-file=plugins/examples/pod-counter/dist/manifest.json
         kubectl label configmap pod-counter-plugin --namespace kube-system \
           ui.antrea.io/plugin=true
