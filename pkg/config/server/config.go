@@ -31,6 +31,11 @@ const (
 	DefaultSessionMaxLifetime = 12 * time.Hour
 	DefaultMaxSessions        = 1000
 	DefaultMaxSessionsPerUser = 10
+
+	DefaultMaxConfigMapPlugins = 10
+	DefaultMaxDirectoryPlugins = 10
+
+	DefaultMaxBundleBytes = 10 * 1024 * 1024 // 10MiB
 )
 
 type FlowAggregatorConfig struct {
@@ -74,6 +79,30 @@ type PluginsConfig struct {
 	// Namespace is the Kubernetes namespace the backend watches for plugin ConfigMaps.
 	// Empty means antrea-ui's own namespace (see env.GetNamespace()).
 	Namespace string
+	// Directory, if set, is a filesystem path the backend also watches for plugin bundles - one
+	// subdirectory per plugin, each holding a manifest.json plus a bundle.zip with the files it
+	// references, the on-disk mirror of a plugin ConfigMap's Data/BinaryData (see
+	// pkg/plugins/disk.go). Meant for local development, and as a fallback if a deployment's
+	// plugins outgrow a ConfigMap's 1MiB cap and it mounts a shared volume here instead. Unset
+	// (the default) disables directory-based loading entirely; ConfigMap-based loading is
+	// unaffected either way.
+	Directory string
+	// MaxConfigMapPlugins/MaxDirectoryPlugins cap how many plugins each source may register at
+	// once. A new (not already-tracked) plugin past the cap is rejected and logged; updates to
+	// an already-tracked plugin are never blocked by it. Neither source otherwise bounds a
+	// plugin's on-disk footprint (see docs/plugins.md), so this is what actually bounds a
+	// deployment's total exposure to a misbehaving or numerous set of plugins. Zero means
+	// unbounded.
+	MaxConfigMapPlugins int
+	MaxDirectoryPlugins int
+	// MaxBundleBytes bounds how much a single plugin's bundle.zip may decompress to in total,
+	// once extracted to disk - shared by both sources rather than a separate limit each, since a
+	// plugin directory carries about as much trust as a plugin ConfigMap - see
+	// pkg/plugins/registry.go's extractZip. A ConfigMap's own ~1MiB etcd size limit only bounds
+	// the compressed bytes, not what they decompress to, and a plugin directory has no equivalent
+	// limit at all, so without this a small, maliciously high-ratio archive ("zip bomb") could
+	// still exhaust the backend's disk. Zero means unbounded.
+	MaxBundleBytes int64
 }
 
 // SessionConfig configures the server-side session store, which holds the Kubernetes credential
@@ -181,6 +210,16 @@ func validateConfig(config *Config) error {
 		return fmt.Errorf("session.maxSessionsPerUser must be <= session.maxSessions")
 	}
 
+	if config.Plugins.MaxConfigMapPlugins < 0 {
+		return fmt.Errorf("plugins.maxConfigMapPlugins must be >= 0 (0 means unbounded)")
+	}
+	if config.Plugins.MaxDirectoryPlugins < 0 {
+		return fmt.Errorf("plugins.maxDirectoryPlugins must be >= 0 (0 means unbounded)")
+	}
+	if config.Plugins.MaxBundleBytes < 0 {
+		return fmt.Errorf("plugins.maxBundleBytes must be >= 0 (0 means unbounded)")
+	}
+
 	return nil
 }
 
@@ -213,6 +252,9 @@ func LoadConfig() (*Config, error) {
 	// Configuration variables that can be set through environment
 	v.MustBindEnv("auth.oidc.clientId", "ANTREA_UI_AUTH_OIDC_CLIENT_ID")
 	v.MustBindEnv("auth.oidc.clientSecret", "ANTREA_UI_AUTH_OIDC_CLIENT_SECRET")
+	// A path, not a secret, but still machine-specific rather than something to check into a
+	// shared config file - env var is the convenient way to point a local dev server at it.
+	v.MustBindEnv("plugins.directory", "ANTREA_UI_PLUGINS_DIRECTORY")
 
 	// You can set defaults for configuration parameters here
 	v.SetDefault("limits.maxLoginsPerSecond", DefaultMaxLoginsPerSecond)
@@ -233,6 +275,9 @@ func LoadConfig() (*Config, error) {
 	v.SetDefault("session.maxSessionsPerUser", DefaultMaxSessionsPerUser)
 	v.SetDefault("antreaNamespace", "kube-system")
 	v.SetDefault("plugins.labelSelector", "ui.antrea.io/plugin=true")
+	v.SetDefault("plugins.maxConfigMapPlugins", DefaultMaxConfigMapPlugins)
+	v.SetDefault("plugins.maxDirectoryPlugins", DefaultMaxDirectoryPlugins)
+	v.SetDefault("plugins.maxBundleBytes", DefaultMaxBundleBytes)
 	v.SetDefault("flowAggregator.enabled", false)
 	v.SetDefault("flowAggregator.address", "flow-aggregator.flow-aggregator.svc:14740")
 	v.SetDefault("flowAggregator.caConfigMap", "flow-aggregator-ca")
