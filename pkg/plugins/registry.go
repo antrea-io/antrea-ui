@@ -12,101 +12,93 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package plugins watches labeled ConfigMaps for frontend plugin bundles
-// (a manifest.json plus the plugin's JS entry file, as ConfigMap data) and
-// keeps an in-memory index that the backend's /api/v1/plugins routes serve.
-// A ConfigMap can be created or deleted at any time; the registry reflects
-// the change on the next request, with no antrea-ui restart required.
+// Package plugins discovers frontend plugin bundles (a manifest.json plus a bundle.zip holding
+// the plugin's JS entry file and everything else it references) from two sources - labeled
+// ConfigMaps, and optionally a filesystem directory - and keeps an in-memory index that the
+// backend's /api/v1/plugins routes serve. Either source can change at any time; the registry
+// reflects the change on the next request, with no antrea-ui restart required. See
+// configmaps.go for the ConfigMap source and disk.go for the directory source.
+//
+// Both sources ship a single bundle.zip rather than one file per key/directory entry: a plugin
+// with subdirectory-nested assets (e.g. Angular's assets/ convention - images, i18n locale
+// files, anything referenced by a relative runtime URL rather than pulled into the JS module
+// graph) can't be represented as flat ConfigMap keys (the apiserver rejects "/" in a key name)
+// or flat directory entries (this package used to skip subdirectories outright, mirroring that
+// same flat-namespace convention) - a zip's own internal paths sidestep both restrictions
+// without this package needing to special-case either "/" character.
+//
+// Both sources also serve their bundle from local disk rather than memory: a bundle.zip is
+// extracted once, into a per-plugin, per-source subdirectory of a shared scratch cache (see
+// diskCacheDir), and every subsequent file request reads straight from there. This requires a
+// writable scratch directory (a real /tmp, or a mounted emptyDir if the container's root
+// filesystem is read-only) - see docs/plugins.md.
 package plugins
 
 import (
-	"encoding/json"
 	"fmt"
-	"path"
+	"io"
+	"os"
+	"path/filepath"
 	"sort"
-	"strings"
 	"sync"
 
-	"github.com/go-logr/logr"
-	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/informers"
-	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/tools/cache"
-
 	apisv1 "antrea.io/antrea-ui/apis/v1"
+
+	"github.com/go-logr/logr"
+	"k8s.io/client-go/kubernetes"
 )
 
-const manifestFileName = "manifest.json"
+const (
+	manifestFileName = "manifest.json"
+	bundleFileName   = "bundle.zip"
 
-// reservedRoutePrefixes mirrors the nginx config's location blocks
-// (_nginx_conf.tpl: "location /api", "location /auth"), which are plain
-// string prefixes, not path-segment matches: nginx proxies any URI
-// beginning with "/api" or "/auth" - "/apidocs", "/api", "/authors" all
-// included - straight to the backend, bypassing the SPA. A manifest route
-// under one of these would install and navigate fine client-side, then
-// 404 on a hard refresh or a direct link.
-var reservedRoutePrefixes = []string{"api", "auth"}
+	// configMapSourceName/directorySourceName namespace sortedEntries' sort keys and
+	// diskCacheDir's on-disk layout - the same two strings serve both jobs, so a ConfigMap and a
+	// directory plugin sharing a literal name never collide either as an index entry or as an
+	// extraction directory.
+	configMapSourceName = "configmap"
+	directorySourceName = "directory"
 
-// normalizeRoutePath collapses a route path to the form used for reservation
-// and duplicate checks, so "/policies", "policies", "//policies" and
-// "/policies/" are all recognized as the same path (and ".." segments can't
-// be used to escape the comparison).
-func normalizeRoutePath(p string) string {
-	return strings.Trim(path.Clean("/"+p), "/")
-}
+	// maxPluginLoadRetries bounds the rate-limited retries either source's queue worker gives a
+	// plugin that fails to load. Past this many attempts, one that fires transiently (e.g. a
+	// ConfigMap update racing an in-flight edit, or a directory read mid-write) has long since
+	// succeeded - what's left re-queuing forever is a permanently-invalid one (a malformed
+	// manifest.json, a missing bundle.zip, ...), which would otherwise settle into an indefinite
+	// background error log (DefaultTypedControllerRateLimiter caps the backoff at 1000s) for the
+	// rest of the process's life. A later event for the same plugin re-enqueues it from scratch,
+	// so giving up here costs nothing once it's actually fixed.
+	maxPluginLoadRetries = 5
+)
 
-// findRouteOwner reports whether normalized (already run through
-// normalizeRoutePath) falls under one of owners, a set of normalized paths
-// of PluginRouteKindRoutes routes already claimed in Index's dedupe loop.
-// Those routes own their whole subtree (see parsePluginConfigMap's own
-// subtree check for a single manifest), so a later plugin's route nested
-// under one is the same cross-plugin collision seenRoutePaths catches for an
-// exact path match, just spelled differently.
-func findRouteOwner(owners map[string]string, normalized string) (string, string, bool) {
-	for ownerPath, plugin := range owners {
-		if strings.HasPrefix(normalized, ownerPath+"/") {
-			return ownerPath, plugin, true
-		}
-	}
-	return "", "", false
-}
-
-// findRouteUnder reports whether one of paths already falls under normalized
-// (a route about to be claimed as a PluginRouteKindRoutes owner). findRouteOwner
-// only catches a nested route processed after its owner; an already-claimed
-// path processed first - from a ConfigMap that sorts earlier - would
-// otherwise never be checked against an owner route declared later, since
-// nothing revisits paths already accepted into seenRoutePaths.
-func findRouteUnder(paths map[string]string, normalized string) (string, string, bool) {
-	for path, plugin := range paths {
-		if strings.HasPrefix(path, normalized+"/") {
-			return path, plugin, true
-		}
-	}
-	return "", "", false
-}
-
-// isReservedRoutePath reports whether normalized (already run through
-// normalizeRoutePath) is off-limits for a manifest-declared route: it falls
-// under one of reservedRoutePrefixes, or it's the empty string - the root
-// path, which normalizeRoutePath also collapses "/", "." and ".." to, and
-// which plugins.ts's own RESERVED_PATHS reserves unconditionally (its "").
-func isReservedRoutePath(normalized string) bool {
-	if normalized == "" {
-		return true
-	}
-	for _, prefix := range reservedRoutePrefixes {
-		if strings.HasPrefix(normalized, prefix) {
-			return true
-		}
-	}
-	return false
-}
-
+// pluginEntry is one loaded plugin bundle, always served from its own extracted-bundle.zip
+// directory on local disk (see diskCacheDir) - never held decoded in memory, regardless of
+// source.
 type pluginEntry struct {
 	manifest apisv1.PluginManifest
-	files    map[string][]byte
+	diskRoot string
+	// resourceVersion is the ConfigMap this entry was parsed from's own ResourceVersion; empty
+	// for directory-sourced entries, which have no equivalent concept. Lets handleUpsert skip a
+	// redundant re-extraction when an Update event fires for a ConfigMap whose content hasn't
+	// actually changed - most commonly the informer replaying its cache after a watch reconnect,
+	// which redelivers every object as an Update (through this same handler) even though nothing
+	// about it changed at all.
+	resourceVersion string
+}
+
+// open returns a reader (and its size, for Content-Length) for filename within this plugin's
+// bundle. Callers must Close the returned ReadCloser. ok is false if filename isn't part of the
+// bundle.
+func (e *pluginEntry) open(filename string) (io.ReadCloser, int64, bool) {
+	f, err := os.Open(safeJoin(e.diskRoot, filename))
+	if err != nil {
+		return nil, 0, false
+	}
+	info, err := f.Stat()
+	if err != nil || info.IsDir() {
+		f.Close()
+		return nil, 0, false
+	}
+	return f, info.Size(), true
 }
 
 type Registry struct {
@@ -114,255 +106,202 @@ type Registry struct {
 	clientset     kubernetes.Interface
 	namespace     string
 	labelSelector string
+	// maxConfigMapPlugins/maxDirectoryPlugins cap how many plugins each source may register at
+	// once. A new (not already-tracked) plugin past the cap is rejected and logged; updates to
+	// an already-tracked plugin are never blocked by it. Zero means unbounded.
+	maxConfigMapPlugins int
+	maxDirectoryPlugins int
+	// maxBundleBytes bounds how much a single plugin's bundle.zip may decompress to in total,
+	// shared by both sources rather than a separate limit each - a plugin directory carries
+	// about as much trust as a plugin ConfigMap, so there's no reason for the two to differ.
+	// Checked while extracting (extractZip) rather than after the fact - a backstop against a
+	// "zip bomb". Zero means unbounded.
+	maxBundleBytes int64
 
-	mu      sync.RWMutex
-	plugins map[string]pluginEntry // keyed by the backing ConfigMap's name
+	mu          sync.RWMutex
+	plugins     map[string]pluginEntry // keyed by the backing ConfigMap's name
+	diskPlugins map[string]pluginEntry // keyed by the backing directory's name
+	// resolved and claimed are both derived from plugins/diskPlugins (see
+	// refreshResolvedEntriesLocked), recomputed on every mutation of either map rather than on
+	// every Index()/File() call - File() in particular backs an unauthenticated HTTP route, so
+	// redoing the sort/dedup/route-collision work (and its log-per-duplicate lines) on every
+	// request would be an easy way for a misconfigured pair of plugins to turn routine traffic
+	// into log spam.
+	//
+	// resolved is what Index() lists: one pluginEntry per manifest name, already deduplicated
+	// and with any colliding federation routes filtered out. claimed is a superset of resolved's
+	// keys: every name currently claimed by some source, including one whose sole entry lost
+	// every one of its federation routes to an earlier collision and so holds the name without
+	// being listed in resolved (see Index's doc comment) - File() resolves through claimed, not
+	// resolved, so it still serves that entry's files even though Index() doesn't list it.
+	resolved map[string]pluginEntry
+	claimed  map[string]sourcedEntry
+
+	// cacheRoot is the local scratch directory extracted plugin bundles (both sources) are
+	// written to and served from, created lazily on first use (see diskCacheDir) - a deployment
+	// using only the ConfigMap source never calls RunDirectoryWatch, which used to be what
+	// created and owned this directory. Guarded by its own mutex rather than a sync.Once: a
+	// transient MkdirTemp failure (e.g. /tmp not yet mounted, momentary ENOSPC) must not
+	// permanently latch both plugin sources into a failed state for the life of the process, the
+	// way a sync.Once caching its own error would. A long-lived server process never removes it -
+	// the OS/container runtime reclaims it along with the rest of the container's writable
+	// filesystem on exit - but Close lets a short-lived Registry (tests) do so explicitly.
+	cacheRootMu sync.Mutex
+	cacheRoot   string
 }
 
-func NewRegistry(logger logr.Logger, clientset kubernetes.Interface, namespace, labelSelector string) *Registry {
+func NewRegistry(logger logr.Logger, clientset kubernetes.Interface, namespace, labelSelector string, maxConfigMapPlugins, maxDirectoryPlugins int, maxBundleBytes int64) *Registry {
 	return &Registry{
-		logger:        logger,
-		clientset:     clientset,
-		namespace:     namespace,
-		labelSelector: labelSelector,
-		plugins:       make(map[string]pluginEntry),
+		logger:              logger,
+		clientset:           clientset,
+		namespace:           namespace,
+		labelSelector:       labelSelector,
+		maxConfigMapPlugins: maxConfigMapPlugins,
+		maxDirectoryPlugins: maxDirectoryPlugins,
+		maxBundleBytes:      maxBundleBytes,
+		plugins:             make(map[string]pluginEntry),
+		diskPlugins:         make(map[string]pluginEntry),
 	}
 }
 
-// Run watches ConfigMaps matching the registry's namespace and label
-// selector until stopCh is closed. It blocks and should be called from a
-// goroutine.
-func (r *Registry) Run(stopCh <-chan struct{}) {
-	factory := informers.NewSharedInformerFactoryWithOptions(
-		r.clientset,
-		0,
-		informers.WithNamespace(r.namespace),
-		informers.WithTweakListOptions(func(opts *metav1.ListOptions) {
-			opts.LabelSelector = r.labelSelector
-		}),
-	)
-	informer := factory.Core().V1().ConfigMaps().Informer()
-	if _, err := informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc:    r.handleUpsert,
-		UpdateFunc: func(_, newObj interface{}) { r.handleUpsert(newObj) },
-		DeleteFunc: r.handleDelete,
-	}); err != nil {
-		r.logger.Error(err, "failed to register plugin ConfigMap event handler")
-		return
+// diskCacheDir returns the shared local scratch directory extracted plugin bundles live under,
+// creating it on the first successful call from either source. A failed attempt isn't cached -
+// the next call (the next ConfigMap/directory event) tries again, so a transient failure doesn't
+// take both plugin sources down for good.
+func (r *Registry) diskCacheDir() (string, error) {
+	r.cacheRootMu.Lock()
+	defer r.cacheRootMu.Unlock()
+	if r.cacheRoot != "" {
+		return r.cacheRoot, nil
 	}
-	r.logger.Info("Starting plugin ConfigMap watch", "namespace", r.namespace, "labelSelector", r.labelSelector)
-	informer.Run(stopCh)
-}
-
-func asConfigMap(obj interface{}) *corev1.ConfigMap {
-	if cm, ok := obj.(*corev1.ConfigMap); ok {
-		return cm
-	}
-	if tombstone, ok := obj.(cache.DeletedFinalStateUnknown); ok {
-		if cm, ok := tombstone.Obj.(*corev1.ConfigMap); ok {
-			return cm
-		}
-	}
-	return nil
-}
-
-func (r *Registry) handleUpsert(obj interface{}) {
-	cm := asConfigMap(obj)
-	if cm == nil {
-		return
-	}
-	entry, err := parsePluginConfigMap(cm)
+	cacheRoot, err := os.MkdirTemp("", "antrea-ui-plugins-*")
 	if err != nil {
-		r.logger.Error(err, "skipping invalid plugin ConfigMap", "configMap", cm.Name)
+		return "", err
+	}
+	r.cacheRoot = cacheRoot
+	return r.cacheRoot, nil
+}
+
+// Close removes the registry's extracted-plugin scratch directory, if diskCacheDir ever created
+// one. A long-lived server process has no need to call this - the container/OS reclaims the
+// whole writable filesystem on exit - but tests build many short-lived Registrys
+// (newTestRegistry, testServer) that would otherwise each leak a MkdirTemp under the real /tmp.
+func (r *Registry) Close() {
+	r.cacheRootMu.Lock()
+	defer r.cacheRootMu.Unlock()
+	if r.cacheRoot == "" {
 		return
 	}
-	r.mu.Lock()
-	r.plugins[cm.Name] = *entry
-	r.mu.Unlock()
-	r.logger.Info("Loaded plugin from ConfigMap", "configMap", cm.Name, "plugin", entry.manifest.Name, "version", entry.manifest.Version)
+	if err := os.RemoveAll(r.cacheRoot); err != nil {
+		r.logger.Error(err, "failed to remove plugin extraction cache directory", "directory", r.cacheRoot)
+	}
+	r.cacheRoot = ""
 }
 
-func (r *Registry) handleDelete(obj interface{}) {
-	cm := asConfigMap(obj)
-	if cm == nil {
-		return
+// extractedPluginDir returns the local scratch directory name's bundle.zip is (or would be)
+// extracted into, namespaced by source (configMapSourceName/directorySourceName) so a ConfigMap
+// and a directory plugin sharing a literal name never collide on disk, the same way
+// sortedEntries already keeps them from colliding as index entries.
+func (r *Registry) extractedPluginDir(source, name string) (string, error) {
+	cacheRoot, err := r.diskCacheDir()
+	if err != nil {
+		return "", fmt.Errorf("failed to create plugin extraction cache directory: %w", err)
 	}
-	r.mu.Lock()
-	delete(r.plugins, cm.Name)
-	r.mu.Unlock()
-	r.logger.Info("Removed plugin ConfigMap", "configMap", cm.Name)
+	return filepath.Join(cacheRoot, source, name), nil
 }
 
-func parsePluginConfigMap(cm *corev1.ConfigMap) (*pluginEntry, error) {
-	files := make(map[string][]byte, len(cm.Data)+len(cm.BinaryData))
-	for k, v := range cm.Data {
-		files[k] = []byte(v)
+// removeExtractedPluginDir best-effort removes name's extracted bundle under source, if any -
+// called whenever a plugin stops being tracked (deleted, or failed to register after a
+// successful extraction) so the cache directory doesn't accumulate content for plugins the
+// registry isn't serving. Errors are logged, not returned: this is cleanup, not something
+// callers should fail over.
+func (r *Registry) removeExtractedPluginDir(source, name string) {
+	cacheRoot, err := r.diskCacheDir()
+	if err != nil {
+		return // nothing was ever extracted if the cache dir itself couldn't be created
 	}
-	for k, v := range cm.BinaryData {
-		files[k] = v
+	if err := os.RemoveAll(filepath.Join(cacheRoot, source, name)); err != nil {
+		r.logger.Error(err, "failed to remove extracted plugin directory", "source", source, "plugin", name)
 	}
-	manifestData, ok := files[manifestFileName]
-	if !ok {
-		return nil, fmt.Errorf("missing %s", manifestFileName)
-	}
-	var manifest apisv1.PluginManifest
-	if err := json.Unmarshal(manifestData, &manifest); err != nil {
-		return nil, fmt.Errorf("invalid %s: %w", manifestFileName, err)
-	}
-	if manifest.Name == "" {
-		return nil, fmt.Errorf("manifest is missing 'name'")
-	}
-	if manifest.Entry == "" {
-		return nil, fmt.Errorf("manifest is missing 'entry'")
-	}
-	if _, ok := files[manifest.Entry]; !ok {
-		return nil, fmt.Errorf("entry file %q referenced by manifest not found in ConfigMap", manifest.Entry)
-	}
-	if manifest.Federation != nil {
-		if manifest.Federation.RemoteEntry == "" {
-			return nil, fmt.Errorf("manifest's federation is missing 'remoteEntry'")
-		}
-		if manifest.Federation.RemoteEntry == manifest.Entry {
-			return nil, fmt.Errorf("manifest's 'federation.remoteEntry' must not be the same file as 'entry' - the host always import()s 'entry' as a plain ES module, which a federation remote entry is not")
-		}
-		if _, ok := files[manifest.Federation.RemoteEntry]; !ok {
-			return nil, fmt.Errorf("remote entry file %q referenced by manifest's federation not found in ConfigMap", manifest.Federation.RemoteEntry)
-		}
-		if len(manifest.Federation.Routes) == 0 {
-			return nil, fmt.Errorf("manifest's 'federation.routes' must not be empty")
-		}
-		seenPaths := make(map[string]string, len(manifest.Federation.Routes))
-		for i, route := range manifest.Federation.Routes {
-			if route.Path == "" {
-				return nil, fmt.Errorf("manifest's 'federation.routes[%d]' is missing 'path'", i)
-			}
-			if route.SidebarLabel == "" {
-				return nil, fmt.Errorf("manifest's 'federation.routes[%d]' is missing 'sidebarLabel'", i)
-			}
-			if route.ExposedModule == "" {
-				return nil, fmt.Errorf("manifest's 'federation.routes[%d]' is missing 'exposedModule'", i)
-			}
-			// Reject anything other than the two known Kind values outright rather than letting
-			// an unrecognized one (e.g. a typo'd "route") pass through and silently fall back to
-			// PluginRouteKindComponent on the host - that failure mode surfaces much later, as an
-			// opaque loadComponent() error with no hint the manifest itself was ever at fault.
-			if route.Kind != "" && route.Kind != apisv1.PluginRouteKindComponent && route.Kind != apisv1.PluginRouteKindRoutes {
-				return nil, fmt.Errorf("manifest's 'federation.routes[%d].kind' %q is not one of %q, %q", i, route.Kind, apisv1.PluginRouteKindComponent, apisv1.PluginRouteKindRoutes)
-			}
-			// The reservations the backend can enforce on a route's Path itself are the root
-			// path and the nginx-served prefixes (see isReservedRoutePath), neither specific to
-			// any one frontend. A route colliding with a given host's own built-in pages (e.g.
-			// "/settings") is instead the host's job to reject, the same way this repo's
-			// plugins.ts (RESERVED_PATHS/dedupeByPath) already does for its own code-registered
-			// routes - the backend has no way to know a given host's built-in path list, and the
-			// out-of-tree, module-federation-aware host that actually consumes 'federation' needs
-			// its own equivalent for manifest-declared routes.
-			normalized := normalizeRoutePath(route.Path)
-			if isReservedRoutePath(normalized) {
-				return nil, fmt.Errorf("manifest's 'federation.routes[%d].path' %q is the root path or falls under a reserved prefix (%s)", i, route.Path, strings.Join(reservedRoutePrefixes, ", "))
-			}
-			if other, ok := seenPaths[normalized]; ok {
-				return nil, fmt.Errorf("manifest's 'federation.routes[%d].path' %q duplicates earlier route %q in the same manifest", i, route.Path, other)
-			}
-			seenPaths[normalized] = route.Path
-		}
-		// A PluginRouteKindRoutes route owns every sub-path under its own Path - that's the whole
-		// point of it (see apis/v1.PluginRoute.Kind) - so a sibling route nested under one is the
-		// same collision an exact duplicate Path is, just spelled differently: the plugin's own
-		// route tree and the sibling both claim that path, and which one a host's router mounts
-		// there is whichever it happens to match first. Checked in its own pass over the routes
-		// so it doesn't depend on the order the two are declared in.
-		for i, route := range manifest.Federation.Routes {
-			if route.Kind != apisv1.PluginRouteKindRoutes {
-				continue
-			}
-			owner := normalizeRoutePath(route.Path)
-			for j, other := range manifest.Federation.Routes {
-				if i == j {
-					continue
-				}
-				if !strings.HasPrefix(normalizeRoutePath(other.Path), owner+"/") {
-					continue
-				}
-				return nil, fmt.Errorf("manifest's 'federation.routes[%d].path' %q falls under 'federation.routes[%d].path' %q, whose kind %q makes the plugin own that whole route tree", j, other.Path, i, route.Path, apisv1.PluginRouteKindRoutes)
-			}
-		}
-	}
-	return &pluginEntry{manifest: manifest, files: files}, nil
 }
 
-// sortedConfigMapNames returns the currently known backing ConfigMap names in
-// a deterministic order, so that dedup-by-plugin-name (in Index and File)
-// consistently picks the same winner on every call.
-func (r *Registry) sortedConfigMapNames() []string {
-	names := make([]string, 0, len(r.plugins))
-	for name := range r.plugins {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	return names
+// sourcedEntry pairs a pluginEntry with the deterministic sort key ("configmap/<name>" or
+// "directory/<name>") Index/File use to resolve a plugin-name or federation-route-path collision
+// to a single winner - mirrors the frontend's dedupeByPath in plugins.ts. ConfigMap-backed keys
+// sort before directory-backed ones, so a ConfigMap always wins a collision against a
+// same-named directory plugin.
+type sourcedEntry struct {
+	sortKey string
+	entry   pluginEntry
 }
 
-// Index returns the current set of plugin manifests, deduplicated by
-// manifest name and by federation route path.
+// sortedEntries returns every currently known plugin entry from both sources, in the order
+// Index/File resolve collisions against (see sourcedEntry). Callers must hold at least
+// r.mu.RLock().
+func (r *Registry) sortedEntries() []sourcedEntry {
+	all := make([]sourcedEntry, 0, len(r.plugins)+len(r.diskPlugins))
+	for name, entry := range r.plugins {
+		all = append(all, sourcedEntry{sortKey: configMapSourceName + "/" + name, entry: entry})
+	}
+	for name, entry := range r.diskPlugins {
+		all = append(all, sourcedEntry{sortKey: directorySourceName + "/" + name, entry: entry})
+	}
+	sort.Slice(all, func(i, j int) bool { return all[i].sortKey < all[j].sortKey })
+	return all
+}
+
+// refreshResolvedEntriesLocked recomputes r.resolved and r.claimed from sortedEntries.
 //
-// If two ConfigMaps declare the same plugin name, the one whose backing
-// ConfigMap name sorts first wins outright; the other is dropped (and
-// logged) in full, including its 'entry' - File would otherwise still serve
-// files for the loser, which Index no longer lists.
+// If two sources declare the same plugin name, whichever sorts first (see sortedEntries) wins
+// outright; the other is dropped (and logged) in full, including its 'entry' - File would
+// otherwise still serve files for the loser, which resolved (and so Index) no longer lists.
 //
-// If two different plugins' federation routes collide on path, only the
-// colliding routes are dropped from the later plugin (by ConfigMap name
-// sort), not the whole manifest - unlike the plugin-name case, 'entry' is
-// still eagerly import()ed by every listed manifest regardless of
-// 'federation' (see PluginManifest.Entry), so dropping the manifest would
-// cost that plugin's page-extension registrations over a route only an
-// out-of-tree, federation-aware host ever mounts. This differs from the
-// frontend's dedupeByPath in plugins.ts in the same way: dedupeByPath also
-// drops individual routes rather than a whole plugin, but its winner is
-// registration order (whichever plugin's entry module ran first), not
-// ConfigMap name sort. If every one of a plugin's routes collides, its
-// federation is left with no routes to serve, which is as meaningless as
-// the empty-routes case parsePluginConfigMap already rejects, so the whole
-// manifest is dropped instead - same as the plugin-name case.
+// If two different plugins' federation routes collide on path, only the colliding routes are
+// dropped from the later plugin (by that same sort order), not the whole manifest - unlike the
+// plugin-name case, 'entry' is still eagerly import()ed by every listed manifest regardless of
+// 'federation' (see PluginManifest.Entry), so dropping the manifest would cost that plugin's
+// page-extension registrations over a route only an out-of-tree, federation-aware host ever
+// mounts. This differs from the frontend's dedupeByPath in plugins.ts in the same way:
+// dedupeByPath also drops individual routes rather than a whole plugin, but its winner is
+// registration order (whichever plugin's entry module ran first), not this sort order. If every
+// one of a plugin's routes collides, its federation is left with no routes to serve, which is as
+// meaningless as the empty-routes case validateManifest already rejects, so the whole manifest
+// is dropped from resolved instead - same as the plugin-name case - though it still claims the
+// name (see claimed's doc comment on the Registry struct).
 //
-// Either way, a plugin name is claimed by the first ConfigMap that reaches
-// it in sort order, whether or not that ConfigMap's manifest ends up listed
-// - a name left unclaimed just because its manifest was dropped for an
-// all-routes collision would let a later ConfigMap reusing that name win
-// the name outright in this loop, while File() (which walks the same order
-// independently) kept resolving it to the first, dropped, ConfigMap.
-func (r *Registry) Index() []apisv1.PluginManifest {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	seenNames := make(map[string]string)       // plugin name -> ConfigMap name that claimed it
+// Called after every mutation of either map (addConfigMapPlugin/deleteConfigMapPlugin/
+// addDiskPlugin/deleteDiskPlugin) rather than from Index()/File() on every call: File() in
+// particular backs an unauthenticated HTTP route, so redoing this sort/dedup/route-collision
+// work (and its log-per-duplicate lines) on every request would turn routine traffic against a
+// misconfigured pair of plugins into log spam. Callers must hold r.mu for writing.
+func (r *Registry) refreshResolvedEntriesLocked() {
 	seenRoutePaths := make(map[string]string)  // normalized route path -> plugin name that claimed it
 	seenRouteOwners := make(map[string]string) // normalized path of a claimed PluginRouteKindRoutes route -> plugin name that claimed it
-	manifests := make([]apisv1.PluginManifest, 0, len(r.plugins))
-	for _, cmName := range r.sortedConfigMapNames() {
-		entry := r.plugins[cmName]
-		if owner, ok := seenNames[entry.manifest.Name]; ok {
-			r.logger.Info("Duplicate plugin name, dropping", "plugin", entry.manifest.Name, "configMap", cmName, "keptConfigMap", owner)
+	all := r.sortedEntries()
+	claimed := make(map[string]sourcedEntry, len(all))
+	resolved := make(map[string]pluginEntry, len(all))
+	for _, s := range all {
+		if owner, ok := claimed[s.entry.manifest.Name]; ok {
+			r.logger.Info("Duplicate plugin name, dropping", "plugin", s.entry.manifest.Name, "source", s.sortKey, "keptSource", owner.sortKey)
 			continue
 		}
 
-		manifest := entry.manifest
+		manifest := s.entry.manifest
 		if manifest.Federation != nil {
 			kept := make([]apisv1.PluginRoute, 0, len(manifest.Federation.Routes))
 			for _, route := range manifest.Federation.Routes {
 				normalized := normalizeRoutePath(route.Path)
 				if owner, ok := seenRoutePaths[normalized]; ok {
-					r.logger.Info("Plugin's federation route path collides with an earlier plugin, dropping the route", "plugin", manifest.Name, "configMap", cmName, "path", route.Path, "collidesWithPlugin", owner)
+					r.logger.Info("Plugin's federation route path collides with an earlier plugin, dropping the route", "plugin", manifest.Name, "source", s.sortKey, "path", route.Path, "collidesWithPlugin", owner)
 					continue
 				}
 				if ownerPath, owner, ok := findRouteOwner(seenRouteOwners, normalized); ok {
-					r.logger.Info("Plugin's federation route path falls under an earlier plugin's route-tree-owning route, dropping the route", "plugin", manifest.Name, "configMap", cmName, "path", route.Path, "collidesWithPlugin", owner, "ownerPath", ownerPath)
+					r.logger.Info("Plugin's federation route path falls under an earlier plugin's route-tree-owning route, dropping the route", "plugin", manifest.Name, "source", s.sortKey, "path", route.Path, "collidesWithPlugin", owner, "ownerPath", ownerPath)
 					continue
 				}
 				if route.Kind == apisv1.PluginRouteKindRoutes {
 					if nestedPath, owner, ok := findRouteUnder(seenRoutePaths, normalized); ok {
-						r.logger.Info("Plugin's route-tree-owning federation route already contains an earlier plugin's route, dropping the route", "plugin", manifest.Name, "configMap", cmName, "path", route.Path, "collidesWithPlugin", owner, "nestedPath", nestedPath)
+						r.logger.Info("Plugin's route-tree-owning federation route already contains an earlier plugin's route, dropping the route", "plugin", manifest.Name, "source", s.sortKey, "path", route.Path, "collidesWithPlugin", owner, "nestedPath", nestedPath)
 						continue
 					}
 				}
@@ -373,13 +312,12 @@ func (r *Registry) Index() []apisv1.PluginManifest {
 				kept = append(kept, route)
 			}
 			if len(kept) == 0 {
-				r.logger.Info("All of plugin's federation routes collided with an earlier plugin, dropping the plugin", "plugin", manifest.Name, "configMap", cmName)
-				// Still claim the name: this ConfigMap is the one File() would
-				// otherwise serve for it (sortedConfigMapNames order matches this
-				// loop's), and leaving it unclaimed would let a later ConfigMap
-				// reusing the same name win Index() while File() kept resolving
-				// to this one.
-				seenNames[manifest.Name] = cmName
+				r.logger.Info("All of plugin's federation routes collided with an earlier plugin, dropping the plugin", "plugin", manifest.Name, "source", s.sortKey)
+				// Still claim the name: this is the source File() should still resolve it
+				// to, and leaving it unclaimed would let a later entry reusing the same
+				// name win the name outright here, while File() (via claimed) kept
+				// resolving it to this one.
+				claimed[manifest.Name] = s
 				continue
 			}
 			if len(kept) != len(manifest.Federation.Routes) {
@@ -389,30 +327,45 @@ func (r *Registry) Index() []apisv1.PluginManifest {
 			}
 		}
 
-		seenNames[manifest.Name] = cmName
-		manifests = append(manifests, manifest)
+		s.entry.manifest = manifest
+		claimed[manifest.Name] = s
+		resolved[manifest.Name] = s.entry
+	}
+	r.resolved = resolved
+	r.claimed = claimed
+}
+
+// Index returns the current set of plugin manifests, deduplicated by manifest name and by
+// federation route path, across both the ConfigMap and directory sources (see
+// refreshResolvedEntriesLocked), sorted by name for a deterministic response.
+func (r *Registry) Index() []apisv1.PluginManifest {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	names := make([]string, 0, len(r.resolved))
+	for name := range r.resolved {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	manifests := make([]apisv1.PluginManifest, 0, len(r.resolved))
+	for _, name := range names {
+		manifests = append(manifests, r.resolved[name].manifest)
 	}
 	return manifests
 }
 
-// File returns the contents of filename belonging to the plugin named
-// pluginName, as currently known to the registry. When the plugin name is
-// claimed by more than one ConfigMap, it resolves to the ConfigMap that
-// claimed the name in Index() - usually the one whose manifest Index()
-// lists, except when every one of that manifest's federation routes
-// collided and Index() dropped it entirely while still leaving it holding
-// the name (see Index).
-func (r *Registry) File(pluginName, filename string) ([]byte, bool) {
+// File returns a reader (and its size in bytes, for Content-Length) for filename belonging to
+// the plugin named pluginName, as currently known to the registry. Callers must Close the
+// returned ReadCloser. When the plugin name is claimed by more than one source, it resolves to
+// the source that claimed the name in Index() - usually the one whose manifest Index() lists,
+// except when every one of that manifest's federation routes collided and Index() dropped it
+// entirely while still leaving it holding the name (see refreshResolvedEntriesLocked).
+func (r *Registry) File(pluginName, filename string) (io.ReadCloser, int64, bool) {
 	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	for _, cmName := range r.sortedConfigMapNames() {
-		entry := r.plugins[cmName]
-		if entry.manifest.Name != pluginName {
-			continue
-		}
-		data, ok := entry.files[filename]
-		return data, ok
+	claimed, ok := r.claimed[pluginName]
+	r.mu.RUnlock()
+	if !ok {
+		return nil, 0, false
 	}
-	return nil, false
+	return claimed.entry.open(filename)
 }

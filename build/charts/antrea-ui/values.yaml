@@ -46,6 +46,26 @@ plugins:
   # If set to anything other than the release namespace, whoever runs `helm install`/`upgrade`
   # needs permission to create a Role/RoleBinding in that other namespace too.
   namespace: ""
+  # -- Filesystem path (inside the backend container) the backend also watches for plugin
+  # bundles - one subdirectory per plugin, each holding a manifest.json plus a bundle.zip (see
+  # docs/plugins.md). Meant as a fallback for a plugin whose bundle.zip outgrows a ConfigMap's
+  # ~1MiB cap: mount whatever shared volume actually delivers the bundle there (a hostPath, a
+  # PVC, ...) via the top-level extraVolumes/backend.extraVolumeMounts values, then point this
+  # at that mount path. Empty (the default) disables directory-based loading entirely;
+  # ConfigMap-based loading is unaffected either way.
+  directory: ""
+  # -- Caps how many distinct ConfigMap-backed plugins the backend tracks at once. A new plugin
+  # past this limit is rejected and logged; updates to an already-tracked one are never blocked
+  # by it. 0 means unbounded.
+  maxConfigMapPlugins: 10
+  # -- Same as maxConfigMapPlugins, but for the directory source above. 0 means unbounded.
+  maxDirectoryPlugins: 10
+  # -- Caps how many bytes a single plugin's bundle.zip may decompress to in total, shared by
+  # both sources. A ConfigMap's own ~1MiB etcd size limit only bounds the compressed bytes, not
+  # what they decompress to, and a plugin directory has no equivalent limit at all, so this is
+  # what actually protects the backend from a maliciously high-ratio archive ("zip bomb")
+  # exhausting its disk. 0 means unbounded.
+  maxBundleBytes: 10485760
 
 # Flow Aggregator gRPC integration (live flow visibility in the UI).
 flowAggregator:
