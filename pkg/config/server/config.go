@@ -36,6 +36,14 @@ const (
 	DefaultMaxDirectoryPlugins = 10
 
 	DefaultMaxBundleBytes = 10 * 1024 * 1024 // 10MiB
+
+	// DefaultMaxConcurrentFlowStreams bounds how many SSE flow-stream requests antrea-ui will
+	// open against the Flow Aggregator at once. The Flow Aggregator's own
+	// maxStreamsPerClientIP (default 64) keys on antrea-ui's own source IP, so every antrea-ui
+	// user shares that one cap; this keeps antrea-ui from being the thing that fills it, and
+	// turns "over the limit" into an immediate, clear error instead of a gRPC ResourceExhausted
+	// surfacing from a shared budget the user has no way to reason about.
+	DefaultMaxConcurrentFlowStreams = 64
 )
 
 type FlowAggregatorConfig struct {
@@ -55,6 +63,9 @@ type FlowAggregatorConfig struct {
 	// InsecureSkipVerify disables TLS server certificate verification.
 	// This should only be used for development/testing and must never be enabled in production.
 	InsecureSkipVerify bool
+	// MaxConcurrentSubscriptions bounds how many flow streams antrea-ui keeps open against the
+	// Flow Aggregator at once. See DefaultMaxConcurrentFlowStreams.
+	MaxConcurrentSubscriptions int
 }
 
 type Config struct {
@@ -284,6 +295,7 @@ func LoadConfig() (*Config, error) {
 	v.SetDefault("flowAggregator.namespace", "flow-aggregator")
 	v.SetDefault("flowAggregator.serverName", "")
 	v.SetDefault("flowAggregator.insecureSkipVerify", false)
+	v.SetDefault("flowAggregator.maxConcurrentSubscriptions", DefaultMaxConcurrentFlowStreams)
 
 	// By default, look for a file named config (any supported extension) in the working directory.
 	v.AddConfigPath(".")

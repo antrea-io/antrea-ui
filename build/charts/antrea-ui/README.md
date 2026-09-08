@@ -43,9 +43,10 @@ Kubernetes: `>= 1.28.0-0`
 | backend.resources | object | `{}` | Resource requests and limits for the backend container. |
 | extraVolumes | list | `[]` | Additional volumes. |
 | flowAggregator.address | string | `"flow-aggregator.flow-aggregator.svc:14740"` | gRPC address (host:port) of the FlowStreamService. |
-| flowAggregator.caConfigMap | string | `"flow-aggregator-ca"` | Name of the ConfigMap (in namespace below) containing the CA certificate (key: ca.crt) used to verify the FlowStreamService server certificate. The FlowStreamService uses server-side TLS only (no client authentication). Leave empty to skip server certificate verification (dev/test only). |
+| flowAggregator.caConfigMap | string | `"flow-aggregator-ca"` | Name of the ConfigMap (in namespace below) containing the CA certificate (key: ca.crt) used to verify the FlowStreamService server certificate. Leave empty to skip server certificate verification (dev/test only). |
 | flowAggregator.enabled | bool | `false` | When true, the backend connects to Flow Aggregator's FlowStreamService over gRPC. |
 | flowAggregator.insecureSkipVerify | bool | `false` | Disable TLS server certificate verification. Should only be used for development or testing; never enable this in production. |
+| flowAggregator.maxConcurrentSubscriptions | int | `64` | Caps how many flow streams the backend keeps open against the Flow Aggregator at once. The Flow Aggregator's own maxStreamsPerClientIP (default 64) keys on the backend's source IP, so every antrea-ui user shares that one budget; this bounds antrea-ui's own usage of it so hitting the cap is an immediate, clear error rather than a shared limit discovered as a gRPC ResourceExhausted error. |
 | flowAggregator.namespace | string | `"flow-aggregator"` | Namespace where the Flow Aggregator is installed. |
 | flowAggregator.serverName | string | `""` | Override the TLS server name used for certificate verification. Useful when dialing via kubectl port-forward (loopback address) while the server cert is issued for the in-cluster Service DNS name (e.g. flow-aggregator.flow-aggregator.svc). Leave empty to use the hostname from the address field. |
 | frontend.extraVolumeMounts | list | `[]` | Additional volumeMounts. |

@@ -29,3 +29,13 @@ rules:
       - "antrea-ui-admin"
     verbs:
       - "impersonate"
+{{- if .Values.flowAggregator.enabled }}
+  - apiGroups:
+      - ""
+    resources:
+      - "serviceaccounts/token"
+    resourceNames:
+      - "antrea-ui-admin"
+    verbs:
+      - "create"
+{{- end }}

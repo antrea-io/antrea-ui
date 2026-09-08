@@ -41,5 +41,6 @@ flowAggregator:
   namespace: {{ .Values.flowAggregator.namespace | default "flow-aggregator" | quote }}
   serverName: {{ .Values.flowAggregator.serverName | quote }}
   insecureSkipVerify: {{ .Values.flowAggregator.insecureSkipVerify }}
+  maxConcurrentSubscriptions: {{ .Values.flowAggregator.maxConcurrentSubscriptions }}
 {{- end }}
 {{- end }}

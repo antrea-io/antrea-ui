@@ -230,9 +230,19 @@ func run() error {
 		if err != nil {
 			return fmt.Errorf("failed to build TLS config for FlowAggregator: %w", err)
 		}
+		// Admin-password sessions (session.KindImpersonate) carry no bearer token or client
+		// cert of their own - the two credential shapes FlowStreamService accepts - so a
+		// real, short-lived token is minted for the antrea-ui-admin ServiceAccount and used
+		// for this call only. k8sClientset authenticates as antrea-ui's own ServiceAccount,
+		// which is what build/charts/antrea-ui/templates/role.yaml grants the
+		// "serviceaccounts/token" create verb to.
+		adminTokenSource := flowstream.NewAdminTokenSource(k8sClientset, env.GetNamespace(), antreaUIAdminSAName)
+
 		grpcSubscriber, err := flowstream.NewGRPCFlowStreamSubscriber(logger, flowstream.GRPCConfig{
-			Address:   config.FlowAggregator.Address,
-			TLSConfig: tlsCfg,
+			Address:                    config.FlowAggregator.Address,
+			TLSConfig:                  tlsCfg,
+			AdminTokenSource:           adminTokenSource,
+			MaxConcurrentSubscriptions: config.FlowAggregator.MaxConcurrentSubscriptions,
 		})
 		if err != nil {
 			return fmt.Errorf("failed to create gRPC flow stream handler: %w", err)

@@ -75,7 +75,6 @@ flowAggregator:
   address: "flow-aggregator.flow-aggregator.svc:14740"
   # -- Name of the ConfigMap (in namespace below) containing the CA certificate (key: ca.crt)
   # used to verify the FlowStreamService server certificate.
-  # The FlowStreamService uses server-side TLS only (no client authentication).
   # Leave empty to skip server certificate verification (dev/test only).
   caConfigMap: flow-aggregator-ca
   # -- Namespace where the Flow Aggregator is installed.
@@ -88,6 +87,12 @@ flowAggregator:
   # -- Disable TLS server certificate verification. Should only be used for development
   # or testing; never enable this in production.
   insecureSkipVerify: false
+  # -- Caps how many flow streams the backend keeps open against the Flow Aggregator at once.
+  # The Flow Aggregator's own maxStreamsPerClientIP (default 64) keys on the backend's source
+  # IP, so every antrea-ui user shares that one budget; this bounds antrea-ui's own usage of it
+  # so hitting the cap is an immediate, clear error rather than a shared limit discovered as a
+  # gRPC ResourceExhausted error.
+  maxConcurrentSubscriptions: 64
 
 security:
   # -- (bool) Set the Secure attribute for Antrea UI cookies. The attribute is set by default when HTTPS is

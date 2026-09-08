@@ -61,9 +61,11 @@ var errUnauthenticatedStream = errors.New("flow stream request carries no resolv
 // SSEHandler handles the SSE endpoint for flow streaming.
 //
 // Known gap, deliberate for now: this endpoint is authenticated but not authorized per user. The
-// subscriber reaches the Flow Aggregator over antrea-ui's own mTLS gRPC connection, so unlike
-// every other API route, the caller's Kubernetes RBAC has no say in what they see. As an interim
-// measure the route is restricted to the built-in admin and to Kubernetes cluster admins
+// subscriber now presents the caller's own credential to the Flow Aggregator (a bearer token or
+// client cert; see grpc.go's resolveCall) instead of a shared connection, so FA knows who is
+// asking - but FA's authorization decision today is limited to "did this request authenticate at
+// all". It does not consult the caller's Kubernetes RBAC to decide which flows they may see. As an
+// interim measure the route is restricted to the built-in admin and to Kubernetes cluster admins
 // (requireFlowVisibility in pkg/server/api/flowstream.go), which narrows who is exposed but does
 // not close the gap: within that set, every caller still sees every exported flow. Authorization
 // is being implemented upstream in antrea-io/antrea#8221; see the "Flow data is not yet per-user"
@@ -175,7 +177,7 @@ func (h *SSEHandler) StreamFlows(c *gin.Context) {
 	// Emit one SSE comment and flush before blocking on the first gRPC read. Otherwise, when the
 	// Flow Aggregator ring buffer is empty, the select below blocks indefinitely with no bytes
 	// written, so HTTP response headers are never flushed and clients (fetch, curl) see a hang
-	// or "Disconnected" even though mTLS and auth succeeded.
+	// or "Disconnected" even though TLS and auth succeeded.
 	preambleWritten := false
 	writePreamble := func(w io.Writer) {
 		if preambleWritten {
