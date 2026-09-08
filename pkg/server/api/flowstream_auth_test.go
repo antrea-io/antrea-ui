@@ -44,12 +44,14 @@ type flowingSubscriber struct {
 	subscribes atomic.Int32
 }
 
-func (s *flowingSubscriber) Subscribe(ctx context.Context, _ *flowstream.FlowStreamFilter) (<-chan apisv1.FlowStreamEvent, <-chan error) {
+func (s *flowingSubscriber) Subscribe(ctx context.Context, _ *flowstream.FlowStreamFilter) (<-chan apisv1.FlowStreamEvent, <-chan error, <-chan struct{}) {
 	s.subscribes.Add(1)
 	flowsCh := make(chan apisv1.FlowStreamEvent, 1)
 	errCh := make(chan error)
+	ready := make(chan struct{})
+	close(ready)
 	flowsCh <- apisv1.FlowStreamEvent{Flows: []apisv1.Flow{{}}}
-	return flowsCh, errCh
+	return flowsCh, errCh, ready
 }
 
 // newStreamingServer builds a Server whose flow stream route is the real one (a nil subscriber
