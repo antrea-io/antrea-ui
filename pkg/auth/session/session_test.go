@@ -81,3 +81,22 @@ func TestCredentialZero(t *testing.T) {
 	assert.Nil(t, cred.Token)
 	assert.Equal(t, make([]byte, len(secretToken)), token, "the underlying array should be overwritten, not just dereferenced")
 }
+
+// Session.Credential's returned Token must not alias the session's own copy: Session.zero and
+// applyRefresh overwrite the session's credential bytes in place (not just replace the reference),
+// so a caller that took a Credential snapshot earlier - e.g. a flow stream call mid-flight - would
+// otherwise see its bytes silently turn to zero out from under it the moment either runs
+// concurrently, a data race a probe with -race reliably catches without this cloning.
+func TestSessionCredentialIsIndependentOfConcurrentZero(t *testing.T) {
+	st, _ := newTestStore(t)
+	s, err := st.Create(&Spec{
+		Mode:       ModeKubeconfig,
+		Credential: Credential{Kind: KindBearer, Token: []byte(secretToken)},
+	})
+	require.NoError(t, err)
+
+	cred := s.Credential()
+	st.Delete(s.ID())
+
+	assert.Equal(t, secretToken, string(cred.Token), "a Credential snapshot must survive the session being zeroed concurrently")
+}

@@ -27,8 +27,17 @@ import (
 // and relay flow events to the caller.
 type FlowStreamSubscriber interface {
 	// Subscribe starts streaming flows matching the given filter.
-	// It returns a channel of FlowStreamEvent and a channel of errors.
-	// The caller should read from both channels until they are closed.
+	// It returns a channel of FlowStreamEvent, a channel of errors, and a channel that closes
+	// once the stream is confirmed live - i.e. the upstream call cleared authentication and
+	// authorization and is ready to serve flows, even if none have arrived yet. A caller
+	// deciding when it is safe to commit to a response (see StreamFlows) can wait on the ready
+	// channel instead of guessing how long that takes; it is never closed on a failure path,
+	// since errCh already reports those.
+	// The caller should read from all three until flowsCh and errCh are closed.
 	// Cancel the context to stop the stream.
-	Subscribe(ctx context.Context, filter *FlowStreamFilter) (<-chan apisv1.FlowStreamEvent, <-chan error)
+	//
+	// ctx must carry the request's *session.RequestAuth (see session.WithRequestAuth): the
+	// GRPCFlowStreamSubscriber implementation reads it to decide which credential to present
+	// to the Flow Aggregator.
+	Subscribe(ctx context.Context, filter *FlowStreamFilter) (<-chan apisv1.FlowStreamEvent, <-chan error, <-chan struct{})
 }
