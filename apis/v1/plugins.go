@@ -59,11 +59,22 @@ const (
 	PluginRouteKindRoutes    = "routes"
 )
 
+// PluginSidebarLabel maps a BCP 47 language tag (e.g. "en", "en-US", "zh-Hans") to the sidebar
+// label text for that locale. Every manifest must carry at least "en" as a default a
+// locale-unaware or unsupported-locale host can always fall back to; a host with no i18n
+// mechanism at all (e.g. this repo's own frontend, or cayman_antrea-ui's Angular shell today)
+// simply always reads "en".
+type PluginSidebarLabel map[string]string
+
+// DefaultLocale is the locale key every PluginSidebarLabel must carry, for a host with no i18n
+// mechanism, or no entry for its active locale, to fall back to.
+const DefaultLocale = "en"
+
 // PluginRoute mirrors registerRoute()/registerSidebarEntry()'s
 // antrea-ui-plugin-sdk info, as data, plus which component to mount.
 type PluginRoute struct {
-	Path         string `json:"path"`
-	SidebarLabel string `json:"sidebarLabel"`
+	Path         string             `json:"path"`
+	SidebarLabel PluginSidebarLabel `json:"sidebarLabel"`
 	// Icon is optional SVG path "d" data, 16x16 viewBox "0 0 16 16", matching
 	// PluginSidebarEntry.icon in antrea-ui-plugin-sdk.
 	Icon string `json:"icon,omitempty"`

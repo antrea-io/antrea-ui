@@ -94,8 +94,8 @@ func TestParsePluginArchiveIncludesRoutesAndFederation(t *testing.T) {
 			"federation": {
 				"remoteEntry": "remoteEntry.json",
 				"routes": [
-					{"path": "/policies", "sidebarLabel": "Policy Management", "icon": "M0 0h16v16H0z", "exposedModule": "./PolicyManagementPage"},
-					{"path": "/policies/audit", "sidebarLabel": "Policy Audit Log", "exposedModule": "./PolicyAuditPage"}
+					{"path": "/policies", "sidebarLabel":{"en":"Policy Management"}, "icon": "M0 0h16v16H0z", "exposedModule": "./PolicyManagementPage"},
+					{"path": "/policies/audit", "sidebarLabel":{"en":"Policy Audit Log"}, "exposedModule": "./PolicyAuditPage"}
 				]
 			}
 		}`, map[string]string{
@@ -112,8 +112,8 @@ func TestParsePluginArchiveIncludesRoutesAndFederation(t *testing.T) {
 		Federation: &apisv1.PluginFederation{
 			RemoteEntry: "remoteEntry.json",
 			Routes: []apisv1.PluginRoute{
-				{Path: "/policies", SidebarLabel: "Policy Management", Icon: "M0 0h16v16H0z", ExposedModule: "./PolicyManagementPage"},
-				{Path: "/policies/audit", SidebarLabel: "Policy Audit Log", ExposedModule: "./PolicyAuditPage"},
+				{Path: "/policies", SidebarLabel: apisv1.PluginSidebarLabel{"en": "Policy Management"}, Icon: "M0 0h16v16H0z", ExposedModule: "./PolicyManagementPage"},
+				{Path: "/policies/audit", SidebarLabel: apisv1.PluginSidebarLabel{"en": "Policy Audit Log"}, ExposedModule: "./PolicyAuditPage"},
 			},
 		},
 	}, entry.manifest)
@@ -125,11 +125,11 @@ func TestParsePluginArchiveRejectsInvalidFederationRoutes(t *testing.T) {
 		bundle   map[string]string
 	}{
 		"route missing path": {
-			`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"sidebarLabel":"Plugin","exposedModule":"./Page"}]}}`,
+			`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"sidebarLabel":{"en":"Plugin"},"exposedModule":"./Page"}]}}`,
 			map[string]string{"index.js": "x", "remoteEntry.json": "x"},
 		},
 		"route path under reserved api/ prefix": {
-			`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"path":"/api/v1/plugin","sidebarLabel":"Plugin","exposedModule":"./Page"}]}}`,
+			`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"path":"/api/v1/plugin","sidebarLabel":{"en":"Plugin"},"exposedModule":"./Page"}]}}`,
 			map[string]string{"index.js": "x", "remoteEntry.json": "x"},
 		},
 		"federation remoteEntry file not present": {
