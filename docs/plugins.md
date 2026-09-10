@@ -174,7 +174,7 @@ lives inside `bundle.zip`:
 | `name` | yes | Unique name; also the path segment used to serve the plugin, e.g. `/api/v1/plugins/<name>/`. |
 | `version` | yes | Informational only. |
 | `entry` | yes | Plugin's JS module filename; must be an entry in the same plugin's `bundle.zip`. Always eagerly `import()`-ed by the host at startup, for whatever page-extension registration the plugin's code performs (see below) — independent of `federation`. Required even for a plugin whose only page(s) are a `federation` remote with no other page-extension registration; such a plugin still needs a real ES module here, distinct from `federation.remoteEntry` — see below. |
-| `federation` | no | `{remoteEntry, routes: [{path, sidebarLabel, icon?, exposedModule, kind?}]}` — a [Native Federation](https://www.npmjs.com/package/@angular-architects/native-federation) remote (its own entry in `bundle.zip`, separate from `entry`) plus the whole-page routes/sidebar entries it serves, as data instead of registering them in code (see below). Antrea UI's own frontend has no module federation loader and ignores this field entirely (see `plugins.ts`); it's consumed by a separate, out-of-tree Angular-based host, which lazily loads a route's `exposedModule` out of `remoteEntry`, only once that route is actually visited. `kind` is `"component"` (the default) or `"routes"` — any other value is rejected, dropping the whole plugin (see below): `"component"` expects `exposedModule` to export a single page component; `"routes"` expects it to export a whole route tree the plugin owns end to end, letting it nest its own sub-paths and register its own route-level providers without the host knowing anything about them. Since a `"routes"` route owns every sub-path under its own `path`, no other route in the same manifest may fall under it (rejected the same way two routes with an identical `path` are); a route nested under it in a *different*, already-installed plugin's manifest is resolved the same way an identical `path` across plugins is (see below). |
+| `federation` | no | `{remoteEntry, routes: [{path, sidebarLabel: {<locale>: <label>, ...}, icon?, exposedModule, kind?}]}` — a [Native Federation](https://www.npmjs.com/package/@angular-architects/native-federation) remote (its own entry in `bundle.zip`, separate from `entry`) plus the whole-page routes/sidebar entries it serves, as data instead of registering them in code (see below). Antrea UI's own frontend has no module federation loader and ignores this field entirely (see `plugins.ts`); it's consumed by a separate, out-of-tree Angular-based host, which lazily loads a route's `exposedModule` out of `remoteEntry`, only once that route is actually visited. `sidebarLabel` maps a BCP 47 locale tag (e.g. `en`, `en-US`, `zh-Hans`) to that locale's label text, and must always carry an `"en"` entry: a host with no i18n mechanism of its own (e.g. this repo's own frontend, or `cayman_antrea-ui`'s Angular shell today) always reads `sidebarLabel["en"]`; a host with real i18n picks whichever locale key matches its active locale, falling back to `"en"` if the map has no entry for it. `kind` is `"component"` (the default) or `"routes"` — any other value is rejected, dropping the whole plugin (see below): `"component"` expects `exposedModule` to export a single page component; `"routes"` expects it to export a whole route tree the plugin owns end to end, letting it nest its own sub-paths and register its own route-level providers without the host knowing anything about them. Since a `"routes"` route owns every sub-path under its own `path`, no other route in the same manifest may fall under it (rejected the same way two routes with an identical `path` are); a route nested under it in a *different*, already-installed plugin's manifest is resolved the same way an identical `path` across plugins is (see below). |
 
 `bundle.zip`'s own internal layout is entirely up to the plugin — a flat set
 of files, or nested paths like `assets/logo.png` for anything referenced by
@@ -205,7 +205,7 @@ A manifest declaring `federation`:
     "routes": [
       {
         "path": "/policies",
-        "sidebarLabel": "Policy Management",
+        "sidebarLabel": {"en": "Policy Management"},
         "icon": "M0 0h16v16H0z",
         "exposedModule": "./PolicyManagementPage"
       }
@@ -229,7 +229,9 @@ it:
   remote entry is not.
 - `federation.routes` must be non-empty — a remote with nothing to mount is
   meaningless on its own.
-- Each route needs `path`, `sidebarLabel`, and `exposedModule`.
+- Each route needs `path`, `sidebarLabel`, and `exposedModule`. `sidebarLabel` is a locale-keyed
+  map and must include an `"en"` entry; an empty value for any locale key it does carry is also
+  rejected (omit the key entirely for a locale with no translation, rather than a blank string).
 - `path` may not be the root path (`/`) or fall under a path nginx proxies
   straight to the backend (currently `api`, `auth`, e.g. `/api/v1/foo` or
   `/authors`) — the former collides with the host's own home page, the

@@ -173,7 +173,7 @@ func TestRegistrySkipsInvalidConfigMaps(t *testing.T) {
 		},
 		"route missing path": func(t *testing.T) *corev1.ConfigMap {
 			return withBundle(t,
-				`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"sidebarLabel":"Plugin","exposedModule":"./Page"}]}}`,
+				`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"sidebarLabel":{"en":"Plugin"},"exposedModule":"./Page"}]}}`,
 				map[string]string{"index.js": "x", "remoteEntry.json": "x"})
 		},
 		"route missing sidebarLabel": func(t *testing.T) *corev1.ConfigMap {
@@ -181,21 +181,31 @@ func TestRegistrySkipsInvalidConfigMaps(t *testing.T) {
 				`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"path":"/plugin","exposedModule":"./Page"}]}}`,
 				map[string]string{"index.js": "x", "remoteEntry.json": "x"})
 		},
+		"route sidebarLabel missing the en locale": func(t *testing.T) *corev1.ConfigMap {
+			return withBundle(t,
+				`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"path":"/plugin","sidebarLabel":{"fr":"Plugin"},"exposedModule":"./Page"}]}}`,
+				map[string]string{"index.js": "x", "remoteEntry.json": "x"})
+		},
+		"route sidebarLabel has a blank value for a locale": func(t *testing.T) *corev1.ConfigMap {
+			return withBundle(t,
+				`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"path":"/plugin","sidebarLabel":{"en":"Plugin","fr":""},"exposedModule":"./Page"}]}}`,
+				map[string]string{"index.js": "x", "remoteEntry.json": "x"})
+		},
 		"route missing exposedModule": func(t *testing.T) *corev1.ConfigMap {
 			return withBundle(t,
-				`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"path":"/plugin","sidebarLabel":"Plugin"}]}}`,
+				`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"path":"/plugin","sidebarLabel":{"en":"Plugin"}}]}}`,
 				map[string]string{"index.js": "x", "remoteEntry.json": "x"})
 		},
 		"route with an unknown kind": func(t *testing.T) *corev1.ConfigMap {
 			return withBundle(t,
-				`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"path":"/plugin","sidebarLabel":"Plugin","exposedModule":"./Page","kind":"route"}]}}`,
+				`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"path":"/plugin","sidebarLabel":{"en":"Plugin"},"exposedModule":"./Page","kind":"route"}]}}`,
 				map[string]string{"index.js": "x", "remoteEntry.json": "x"})
 		},
 		"route nested under a routes-kind route": func(t *testing.T) *corev1.ConfigMap {
 			return withBundle(t,
 				`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[
-					{"path":"/policies","sidebarLabel":"Policies","exposedModule":"./PolicyRoutes","kind":"routes"},
-					{"path":"/policies/audit","sidebarLabel":"Audit","exposedModule":"./PolicyAuditPage"}
+					{"path":"/policies","sidebarLabel":{"en":"Policies"},"exposedModule":"./PolicyRoutes","kind":"routes"},
+					{"path":"/policies/audit","sidebarLabel":{"en":"Audit"},"exposedModule":"./PolicyAuditPage"}
 				]}}`,
 				map[string]string{"index.js": "x", "remoteEntry.json": "x"})
 		},
@@ -204,52 +214,52 @@ func TestRegistrySkipsInvalidConfigMaps(t *testing.T) {
 		"routes-kind route declared after the route it owns": func(t *testing.T) *corev1.ConfigMap {
 			return withBundle(t,
 				`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[
-					{"path":"policies/audit","sidebarLabel":"Audit","exposedModule":"./PolicyAuditPage"},
-					{"path":"/policies/","sidebarLabel":"Policies","exposedModule":"./PolicyRoutes","kind":"routes"}
+					{"path":"policies/audit","sidebarLabel":{"en":"Audit"},"exposedModule":"./PolicyAuditPage"},
+					{"path":"/policies/","sidebarLabel":{"en":"Policies"},"exposedModule":"./PolicyRoutes","kind":"routes"}
 				]}}`,
 				map[string]string{"index.js": "x", "remoteEntry.json": "x"})
 		},
 		"route path under reserved api prefix": func(t *testing.T) *corev1.ConfigMap {
 			return withBundle(t,
-				`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"path":"/apiobjects","sidebarLabel":"Plugin","exposedModule":"./Page"}]}}`,
+				`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"path":"/apiobjects","sidebarLabel":{"en":"Plugin"},"exposedModule":"./Page"}]}}`,
 				map[string]string{"index.js": "x", "remoteEntry.json": "x"})
 		},
 		"route path under reserved auth prefix": func(t *testing.T) *corev1.ConfigMap {
 			return withBundle(t,
-				`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"path":"/authors","sidebarLabel":"Plugin","exposedModule":"./Page"}]}}`,
+				`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"path":"/authors","sidebarLabel":{"en":"Plugin"},"exposedModule":"./Page"}]}}`,
 				map[string]string{"index.js": "x", "remoteEntry.json": "x"})
 		},
 		"route path is the root path": func(t *testing.T) *corev1.ConfigMap {
 			return withBundle(t,
-				`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"path":"/","sidebarLabel":"Plugin","exposedModule":"./Page"}]}}`,
+				`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"path":"/","sidebarLabel":{"en":"Plugin"},"exposedModule":"./Page"}]}}`,
 				map[string]string{"index.js": "x", "remoteEntry.json": "x"})
 		},
 		"route path collapses to the root path via dot segments": func(t *testing.T) *corev1.ConfigMap {
 			return withBundle(t,
-				`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"path":"/plugin/..","sidebarLabel":"Plugin","exposedModule":"./Page"}]}}`,
+				`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"path":"/plugin/..","sidebarLabel":{"en":"Plugin"},"exposedModule":"./Page"}]}}`,
 				map[string]string{"index.js": "x", "remoteEntry.json": "x"})
 		},
 		"duplicate route path in the same manifest": func(t *testing.T) *corev1.ConfigMap {
 			return withBundle(t,
 				`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[
-					{"path":"/plugin","sidebarLabel":"Plugin","exposedModule":"./Page"},
-					{"path":"/plugin","sidebarLabel":"Plugin Again","exposedModule":"./OtherPage"}
+					{"path":"/plugin","sidebarLabel":{"en":"Plugin"},"exposedModule":"./Page"},
+					{"path":"/plugin","sidebarLabel":{"en":"Plugin Again"},"exposedModule":"./OtherPage"}
 				]}}`,
 				map[string]string{"index.js": "x", "remoteEntry.json": "x"})
 		},
 		"duplicate route path differing only by leading slash": func(t *testing.T) *corev1.ConfigMap {
 			return withBundle(t,
 				`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[
-					{"path":"/plugin","sidebarLabel":"Plugin","exposedModule":"./Page"},
-					{"path":"plugin","sidebarLabel":"Plugin Again","exposedModule":"./OtherPage"}
+					{"path":"/plugin","sidebarLabel":{"en":"Plugin"},"exposedModule":"./Page"},
+					{"path":"plugin","sidebarLabel":{"en":"Plugin Again"},"exposedModule":"./OtherPage"}
 				]}}`,
 				map[string]string{"index.js": "x", "remoteEntry.json": "x"})
 		},
 		"duplicate route path differing only by doubled and trailing slashes": func(t *testing.T) *corev1.ConfigMap {
 			return withBundle(t,
 				`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[
-					{"path":"/plugin","sidebarLabel":"Plugin","exposedModule":"./Page"},
-					{"path":"//plugin/","sidebarLabel":"Plugin Again","exposedModule":"./OtherPage"}
+					{"path":"/plugin","sidebarLabel":{"en":"Plugin"},"exposedModule":"./Page"},
+					{"path":"//plugin/","sidebarLabel":{"en":"Plugin Again"},"exposedModule":"./OtherPage"}
 				]}}`,
 				map[string]string{"index.js": "x", "remoteEntry.json": "x"})
 		},
@@ -263,12 +273,12 @@ func TestRegistrySkipsInvalidConfigMaps(t *testing.T) {
 		},
 		"federation remoteEntry same file as entry": func(t *testing.T) *corev1.ConfigMap {
 			return withBundle(t,
-				`{"name":"plugin","version":"0.1.0","entry":"shared.js","federation":{"remoteEntry":"shared.js","routes":[{"path":"/plugin","sidebarLabel":"Plugin","exposedModule":"./Page"}]}}`,
+				`{"name":"plugin","version":"0.1.0","entry":"shared.js","federation":{"remoteEntry":"shared.js","routes":[{"path":"/plugin","sidebarLabel":{"en":"Plugin"},"exposedModule":"./Page"}]}}`,
 				map[string]string{"shared.js": "x"})
 		},
 		"federation remoteEntry same file as entry, differing only by a non-clean prefix": func(t *testing.T) *corev1.ConfigMap {
 			return withBundle(t,
-				`{"name":"plugin","version":"0.1.0","entry":"shared.js","federation":{"remoteEntry":"./shared.js","routes":[{"path":"/plugin","sidebarLabel":"Plugin","exposedModule":"./Page"}]}}`,
+				`{"name":"plugin","version":"0.1.0","entry":"shared.js","federation":{"remoteEntry":"./shared.js","routes":[{"path":"/plugin","sidebarLabel":{"en":"Plugin"},"exposedModule":"./Page"}]}}`,
 				map[string]string{"shared.js": "x"})
 		},
 		"federation remoteEntry file not present": func(t *testing.T) *corev1.ConfigMap {

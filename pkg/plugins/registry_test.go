@@ -40,9 +40,9 @@ func TestRegistryIndexIncludesFederation(t *testing.T) {
 				"federation": {
 					"remoteEntry": "remoteEntry.json",
 					"routes": [
-						{"path": "/policies", "sidebarLabel": "Policy Management", "icon": "M0 0h16v16H0z", "exposedModule": "./PolicyRoutes", "kind": "routes"},
-						{"path": "/policy-audit", "sidebarLabel": "Policy Audit Log", "exposedModule": "./PolicyAuditPage"},
-						{"path": "/policy-summary", "sidebarLabel": "Policy Summary", "exposedModule": "./PolicySummaryPage", "kind": "component"}
+						{"path": "/policies", "sidebarLabel":{"en":"Policy Management"}, "icon": "M0 0h16v16H0z", "exposedModule": "./PolicyRoutes", "kind": "routes"},
+						{"path": "/policy-audit", "sidebarLabel":{"en":"Policy Audit Log"}, "exposedModule": "./PolicyAuditPage"},
+						{"path": "/policy-summary", "sidebarLabel":{"en":"Policy Summary"}, "exposedModule": "./PolicySummaryPage", "kind": "component"}
 					]
 				}
 			}`,
@@ -59,9 +59,9 @@ func TestRegistryIndexIncludesFederation(t *testing.T) {
 		Federation: &apisv1.PluginFederation{
 			RemoteEntry: "remoteEntry.json",
 			Routes: []apisv1.PluginRoute{
-				{Path: "/policies", SidebarLabel: "Policy Management", Icon: "M0 0h16v16H0z", ExposedModule: "./PolicyRoutes", Kind: "routes"},
-				{Path: "/policy-audit", SidebarLabel: "Policy Audit Log", ExposedModule: "./PolicyAuditPage"},
-				{Path: "/policy-summary", SidebarLabel: "Policy Summary", ExposedModule: "./PolicySummaryPage", Kind: "component"},
+				{Path: "/policies", SidebarLabel: apisv1.PluginSidebarLabel{"en": "Policy Management"}, Icon: "M0 0h16v16H0z", ExposedModule: "./PolicyRoutes", Kind: "routes"},
+				{Path: "/policy-audit", SidebarLabel: apisv1.PluginSidebarLabel{"en": "Policy Audit Log"}, ExposedModule: "./PolicyAuditPage"},
+				{Path: "/policy-summary", SidebarLabel: apisv1.PluginSidebarLabel{"en": "Policy Summary"}, ExposedModule: "./PolicySummaryPage", Kind: "component"},
 			},
 		},
 	}}, r.Index())
@@ -96,9 +96,9 @@ func TestRegistryIndexDropsPluginWhenAllFederationRoutesCollide(t *testing.T) {
 	r := newTestRegistry(t)
 
 	r.handleUpsert(federationConfigMap(t, "b-configmap", "b-plugin", "index.js",
-		`[{"path": "//policies/", "sidebarLabel": "Policies", "exposedModule": "./Page"}]`))
+		`[{"path": "//policies/", "sidebarLabel":{"en":"Policies"}, "exposedModule": "./Page"}]`))
 	r.handleUpsert(federationConfigMap(t, "a-configmap", "a-plugin", "index.js",
-		`[{"path": "/policies", "sidebarLabel": "Policies", "exposedModule": "./Page"}]`))
+		`[{"path": "/policies", "sidebarLabel":{"en":"Policies"}, "exposedModule": "./Page"}]`))
 
 	manifests := r.Index()
 	require.Len(t, manifests, 1)
@@ -113,11 +113,11 @@ func TestRegistryIndexFiltersCollidingFederationRouteKeepsRestOfPlugin(t *testin
 	r := newTestRegistry(t)
 
 	r.handleUpsert(federationConfigMap(t, "a-configmap", "a-plugin", "a.js",
-		`[{"path": "/policies", "sidebarLabel": "Policies", "exposedModule": "./Page"}]`))
+		`[{"path": "/policies", "sidebarLabel":{"en":"Policies"}, "exposedModule": "./Page"}]`))
 	r.handleUpsert(federationConfigMap(t, "b-configmap", "b-plugin", "b.js",
 		`[
-			{"path": "/policies", "sidebarLabel": "Policies Again", "exposedModule": "./OtherPage"},
-			{"path": "/other", "sidebarLabel": "Other", "exposedModule": "./OtherPage"}
+			{"path": "/policies", "sidebarLabel":{"en":"Policies Again"}, "exposedModule": "./OtherPage"},
+			{"path": "/other", "sidebarLabel":{"en":"Other"}, "exposedModule": "./OtherPage"}
 		]`))
 
 	manifests := r.Index()
@@ -126,7 +126,7 @@ func TestRegistryIndexFiltersCollidingFederationRouteKeepsRestOfPlugin(t *testin
 	assert.Equal(t, "b-plugin", manifests[1].Name)
 	require.NotNil(t, manifests[1].Federation)
 	assert.Equal(t, []apisv1.PluginRoute{
-		{Path: "/other", SidebarLabel: "Other", ExposedModule: "./OtherPage"},
+		{Path: "/other", SidebarLabel: apisv1.PluginSidebarLabel{"en": "Other"}, ExposedModule: "./OtherPage"},
 	}, manifests[1].Federation.Routes)
 }
 
@@ -141,11 +141,11 @@ func TestRegistryIndexFiltersFederationRouteUnderEarlierPluginsRouteTree(t *test
 	r := newTestRegistry(t)
 
 	r.handleUpsert(federationConfigMap(t, "a-configmap", "a-plugin", "a.js",
-		`[{"path": "/policies", "sidebarLabel": "Policies", "exposedModule": "./Page", "kind": "routes"}]`))
+		`[{"path": "/policies", "sidebarLabel":{"en":"Policies"}, "exposedModule": "./Page", "kind": "routes"}]`))
 	r.handleUpsert(federationConfigMap(t, "b-configmap", "b-plugin", "b.js",
 		`[
-			{"path": "/policies/audit", "sidebarLabel": "Policy Audit", "exposedModule": "./AuditPage"},
-			{"path": "/other", "sidebarLabel": "Other", "exposedModule": "./OtherPage"}
+			{"path": "/policies/audit", "sidebarLabel":{"en":"Policy Audit"}, "exposedModule": "./AuditPage"},
+			{"path": "/other", "sidebarLabel":{"en":"Other"}, "exposedModule": "./OtherPage"}
 		]`))
 
 	manifests := r.Index()
@@ -154,7 +154,7 @@ func TestRegistryIndexFiltersFederationRouteUnderEarlierPluginsRouteTree(t *test
 	assert.Equal(t, "b-plugin", manifests[1].Name)
 	require.NotNil(t, manifests[1].Federation)
 	assert.Equal(t, []apisv1.PluginRoute{
-		{Path: "/other", SidebarLabel: "Other", ExposedModule: "./OtherPage"},
+		{Path: "/other", SidebarLabel: apisv1.PluginSidebarLabel{"en": "Other"}, ExposedModule: "./OtherPage"},
 	}, manifests[1].Federation.Routes)
 }
 
@@ -170,11 +170,11 @@ func TestRegistryIndexFiltersRouteTreeRouteThatWouldClaimAnAlreadyClaimedPath(t 
 	r := newTestRegistry(t)
 
 	r.handleUpsert(federationConfigMap(t, "a-configmap", "a-plugin", "a.js",
-		`[{"path": "/policies/audit", "sidebarLabel": "Policy Audit", "exposedModule": "./AuditPage"}]`))
+		`[{"path": "/policies/audit", "sidebarLabel":{"en":"Policy Audit"}, "exposedModule": "./AuditPage"}]`))
 	r.handleUpsert(federationConfigMap(t, "b-configmap", "b-plugin", "b.js",
 		`[
-			{"path": "/policies", "sidebarLabel": "Policies", "exposedModule": "./Page", "kind": "routes"},
-			{"path": "/other", "sidebarLabel": "Other", "exposedModule": "./OtherPage"}
+			{"path": "/policies", "sidebarLabel":{"en":"Policies"}, "exposedModule": "./Page", "kind": "routes"},
+			{"path": "/other", "sidebarLabel":{"en":"Other"}, "exposedModule": "./OtherPage"}
 		]`))
 
 	manifests := r.Index()
@@ -182,13 +182,13 @@ func TestRegistryIndexFiltersRouteTreeRouteThatWouldClaimAnAlreadyClaimedPath(t 
 	assert.Equal(t, "a-plugin", manifests[0].Name)
 	require.NotNil(t, manifests[0].Federation)
 	assert.Equal(t, []apisv1.PluginRoute{
-		{Path: "/policies/audit", SidebarLabel: "Policy Audit", ExposedModule: "./AuditPage"},
+		{Path: "/policies/audit", SidebarLabel: apisv1.PluginSidebarLabel{"en": "Policy Audit"}, ExposedModule: "./AuditPage"},
 	}, manifests[0].Federation.Routes)
 
 	assert.Equal(t, "b-plugin", manifests[1].Name)
 	require.NotNil(t, manifests[1].Federation)
 	assert.Equal(t, []apisv1.PluginRoute{
-		{Path: "/other", SidebarLabel: "Other", ExposedModule: "./OtherPage"},
+		{Path: "/other", SidebarLabel: apisv1.PluginSidebarLabel{"en": "Other"}, ExposedModule: "./OtherPage"},
 	}, manifests[1].Federation.Routes)
 }
 
@@ -202,13 +202,13 @@ func TestRegistryIndexAndFileStayConsistentWhenAllRoutesCollide(t *testing.T) {
 	r := newTestRegistry(t)
 
 	r.handleUpsert(federationConfigMap(t, "a-configmap", "aaa", "a.js",
-		`[{"path": "/policies", "sidebarLabel": "Policies", "exposedModule": "./Page"}]`))
+		`[{"path": "/policies", "sidebarLabel":{"en":"Policies"}, "exposedModule": "./Page"}]`))
 	// b-configmap sorts before c-configmap, and claims the "dup" name first;
 	// its one route collides with aaa's, so the whole manifest is dropped.
 	r.handleUpsert(federationConfigMap(t, "b-configmap", "dup", "b.js",
-		`[{"path": "/policies", "sidebarLabel": "Policies", "exposedModule": "./Page"}]`))
+		`[{"path": "/policies", "sidebarLabel":{"en":"Policies"}, "exposedModule": "./Page"}]`))
 	r.handleUpsert(federationConfigMap(t, "c-configmap", "dup", "c.js",
-		`[{"path": "/other", "sidebarLabel": "Other", "exposedModule": "./Page"}]`))
+		`[{"path": "/other", "sidebarLabel":{"en":"Other"}, "exposedModule": "./Page"}]`))
 
 	manifests := r.Index()
 	names := make([]string, len(manifests))

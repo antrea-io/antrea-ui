@@ -126,8 +126,16 @@ func validateManifest(manifestJSON []byte, names map[string]bool) (*apisv1.Plugi
 			if route.Path == "" {
 				return nil, fmt.Errorf("manifest's 'federation.routes[%d]' is missing 'path'", i)
 			}
-			if route.SidebarLabel == "" {
+			if len(route.SidebarLabel) == 0 {
 				return nil, fmt.Errorf("manifest's 'federation.routes[%d]' is missing 'sidebarLabel'", i)
+			}
+			if route.SidebarLabel[apisv1.DefaultLocale] == "" {
+				return nil, fmt.Errorf("manifest's 'federation.routes[%d].sidebarLabel' is missing a %q entry", i, apisv1.DefaultLocale)
+			}
+			for locale, label := range route.SidebarLabel {
+				if label == "" {
+					return nil, fmt.Errorf("manifest's 'federation.routes[%d].sidebarLabel' has an empty value for locale %q", i, locale)
+				}
 			}
 			if route.ExposedModule == "" {
 				return nil, fmt.Errorf("manifest's 'federation.routes[%d]' is missing 'exposedModule'", i)
