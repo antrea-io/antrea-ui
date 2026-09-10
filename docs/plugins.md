@@ -124,7 +124,14 @@ and the directory copy is dropped (and logged).
    for the two to have separate limits, and a plugin directory has no
    equivalent to a `ConfigMap`'s etcd size cap at all, making this the only
    thing bounding its decompressed size (it does not cap the number of
-   entries in a bundle). Both the extraction step and file serving clamp a
+   entries in a bundle). On this source the same value additionally bounds
+   `bundle.zip`'s own *compressed* size: the backend copies the archive into
+   its own scratch directory before verifying and extracting it (see
+   "Signature verification" below), and an archive already larger than the
+   budget is rejected before any of it is verified or extracted — the copy
+   itself stops at the budget, so an oversized archive costs at most that
+   many bytes of scratch space, not its full size. Both the extraction
+   step and file serving clamp a
    `../`-style path (in an archive entry name, or in a
    request path) into the plugin's own directory instead of rejecting it
    outright — the same technique `net/http.Dir` uses — so it can never
@@ -141,6 +148,230 @@ and the directory copy is dropped (and logged).
    existing page" functions below to extend one Antrea UI already ships.
    This is modeled on
    [Headlamp's plugin registry](https://headlamp.dev/docs/latest/development/plugins/functionality/).
+
+## Signature verification
+
+By default, anything that can write a labeled ConfigMap in
+`plugins.namespace`, or write into `plugins.directory`, gets arbitrary
+JavaScript executed in every Antrea UI user's browser session: the only
+gates are structural (manifest schema, zip-slip clamping, a decompressed
+size budget). Optionally, the backend can additionally require every plugin
+to be signed by one of a set of keys the operator trusts, and refuse to load
+anything else. Read "What it does not protect against" below before relying
+on it: with the default `plugins.namespace`, it protects against much less
+than it appears to.
+
+Verification is entirely backend-side: a rejected plugin never reaches
+`/api/v1/plugins/index.json` and its files never resolve, so the frontend
+needs no awareness of it.
+
+### What is signed, and why the manifest
+
+The **signed manifest is the root of trust**. A plugin gains two artifacts:
+
+- a `bundleSha256` field in `manifest.json`, the hex SHA-256 of `bundle.zip`
+  exactly as delivered;
+- a detached signature over `manifest.json`'s exact bytes, delivered
+  alongside it (a third ConfigMap key, or a third file in the plugin
+  directory). For OpenPGP, the only signature type supported today, that is
+  `manifest.json.asc`, an ASCII-armored signature. Dots are legal in a
+  ConfigMap key, same as `manifest.json` itself.
+
+Only `manifest.json` is signed; `bundle.zip` is authenticated transitively,
+through the digest in that signed manifest. Signing the bundle instead would
+leave the manifest tamperable, and the manifest is not inert: `entry`
+decides *which* file inside the signed bundle actually executes, `name`
+decides which plugin this one shadows or replaces, and `federation.routes`
+claims route paths and sidebar labels. Signing the manifest covers all of
+that, keeps it human-readable in `kubectl get configmap -o yaml` with the
+digest visible in it, and needs one signature file per plugin.
+
+Each signature type has its own signature file, so a plugin can carry
+signatures of several types side by side, and a future type can be added
+without changing how existing plugins are signed.
+
+### What is accepted and what is rejected
+
+| trusted keys configured | signature | `bundleSha256` | result |
+| --- | --- | --- | --- |
+| no | — | absent | load (the default behavior) |
+| no | — | present, matches | load |
+| no | — | present, mismatch | **reject** |
+| yes | missing | — | **reject** |
+| yes | present, verifies against no trusted key | — | **reject** |
+| yes | verifies against a trusted key | absent | **reject** |
+| yes | verifies against a trusted key | mismatch | **reject** |
+| yes | verifies against a trusted key | matches | load |
+
+A few rules the table implies but doesn't spell out:
+
+- With several trusted keys, a signature verifying against **any one** of
+  them is enough. The backend logs which one when it loads the plugin
+  (`verifiedBy`).
+- With no trusted key configured, signature files are **ignored entirely**:
+  not read, not an error. There is nothing to verify them against. Only
+  `bundleSha256` is honored in that mode.
+- `bundleSha256`, when present, must be exactly 64 hex characters (either
+  case). Anything else (wrong length, non-hex, a `sha256:` prefix) is a
+  **rejection**, not a "treat as absent", so a typo can't silently downgrade
+  a plugin to unverified.
+
+The signing key must be valid **at the time the plugin is loaded**: neither
+expired nor revoked. This is stricter than OpenPGP's usual rule, which
+accepts a signature made while the key was still valid: that time is
+written into the signature by the signer, so anyone holding an expired key
+could backdate one. Here, a key's expiry really does stop it being trusted.
+If a signer extends their key's expiry, re-export it into the key file (see
+below), replacing the old export: the plugins it signed verify again.
+Revocation is honored only as far as the configured key file itself carries
+it; there is no keyserver or OCSP-style lookup.
+
+A rejection is loud (an error in the backend's log, `skipping invalid
+plugin ConfigMap` / `skipping invalid plugin directory`, with the specific
+reason) and never silent.
+
+### What it does not protect against
+
+- **Anyone who can write ConfigMaps in the release namespace.** The
+  backend's own configuration (the `antrea-ui-backend` ConfigMap, which is
+  where `plugins.signature` ends up), the nginx configuration
+  (`antrea-ui-nginx`) and the trusted key ConfigMaps all live in Antrea UI's
+  release namespace. Whoever can write ConfigMaps there can turn
+  verification off or swap in their own key, effective at the next Pod
+  restart (a rollout, an eviction, a node drain). Since `plugins.namespace`
+  defaults to the release namespace, verification only protects against
+  whoever writes plugin ConfigMaps once `plugins.namespace` is set to a
+  separate, dedicated namespace, and those writers have no write access to
+  the release namespace. The chart prints a warning when verification is
+  enabled with both namespaces the same.
+- **Replaying an older signed plugin.** Nothing ties a signature to a plugin
+  version or to a cluster: any manifest a trusted key has ever signed keeps
+  loading, together with its bundle, for as long as that key is trusted.
+  Someone who can write plugin ConfigMaps (or into `plugins.directory`) can
+  therefore reinstall an older signed version, for instance one with a known
+  vulnerability, or a plugin signed for another deployment that trusts the
+  same key. The only way to withdraw what a key signed is to stop trusting
+  it: let it expire, revoke it in the key file, or remove it from the key
+  file. Use signing keys dedicated to plugins, trusted only by the
+  deployments that should run everything they sign.
+
+### Accepted OpenPGP algorithms
+
+The backend only accepts OpenPGP keys and signatures that use:
+
+- **keys**: EdDSA (Ed25519, Ed448), ECDSA on NIST P-256, P-384 or P-521, or
+  RSA of **at least 3072 bits**. DSA, ElGamal, Brainpool and secp256k1 keys
+  are refused.
+- **hashes**: SHA-256, SHA-384, SHA-512, SHA3-256 or SHA3-512, both for the
+  plugin's signature and for the self-signatures inside the trusted key.
+  SHA-1 and SHA-224 are refused.
+
+GnuPG's defaults satisfy this (Ed25519 since GnuPG 2.3, RSA-3072 before
+that, with SHA-512 signatures). A trusted key that can't sign under these
+rules fails the backend at startup, naming the key, rather than loading and
+then rejecting everything it signs. The most likely cause is a key created
+by an old GnuPG version, whose self-signatures use SHA-1: `gpg
+--quick-set-expire <fingerprint> <expiry>` re-signs them with the current
+default, after which the key can be exported again.
+
+### Enabling it
+
+Each trusted key file goes in a ConfigMap you create yourself, in Antrea
+UI's **release namespace**: the backend Pod can only mount ConfigMaps from
+its own namespace, so not in `plugins.namespace` when that is set to
+another one. The chart deliberately doesn't create it, since a trust anchor
+doesn't belong in `values.yaml`:
+
+```bash
+gpg --armor --export <your-signing-key> > public-key.asc
+kubectl create configmap antrea-ui-plugin-keys -n <release-namespace> \
+  --from-file=public-key.asc=public-key.asc
+```
+
+Then list it under `plugins.signature.trustedKeys` and enable verification:
+
+```yaml
+plugins:
+  signature:
+    enabled: true
+    trustedKeys:
+      - name: antrea            # a DNS-1123 label, unique within the list
+        type: openpgp
+        configMap:
+          name: antrea-ui-plugin-keys
+          key: public-key.asc
+```
+
+The chart mounts each ConfigMap read-only at `/app/plugin-keys/<name>/` and
+lists its key file in the backend's `plugins.signature.trustedKeys`
+configuration (`name`, `type`, and the `file` path). Enabling verification
+with an empty `trustedKeys` list fails the Helm render.
+
+There are two ways to trust more than one key, and both are how a
+deployment rotates keys without a window where plugins fail to load: add the
+new key before retiring the old one.
+
+- **Several keys in one key file.** Either a single export of several keys
+  (`gpg --armor --export <old-key> <new-key>`) or several exports appended
+  one after the other works; every armored block in the file is read. Each
+  key may appear only once, though: to update a key already in the file (to
+  extend its expiry or add its revocation), replace its export rather than
+  appending a new one. A key file holding the same key twice fails the
+  backend at startup, since only the first copy would ever be used and a
+  revocation in a later one would be silently ignored.
+- **Several `trustedKeys` entries**, each with its own ConfigMap. Better
+  suited to independent signers (a vendor, another team), who can then each
+  own their key's ConfigMap, and which the backend's log tells apart by
+  name.
+
+Trusted keys are read once at startup, so a changed key ConfigMap takes a
+backend restart to take effect.
+
+A missing or malformed key file, including a key ConfigMap that was never
+created, and an unknown `type`, **fail the backend at startup**
+(CrashLoopBackOff, with the reason in its log) rather than quietly serving a
+UI with no plugins, which is indistinguishable from "no plugins installed"
+unless someone reads the logs. A key ConfigMap created in the wrong
+namespace counts as never created. One case is not caught at startup: a key
+file whose keys have all expired or been revoked loads fine, and the backend
+then rejects every plugin, logging why for each one.
+
+### Packaging a signed plugin
+
+The order matters: the digest has to be written into `manifest.json`
+*before* `manifest.json` is signed. Sign first and you get a plugin that
+looks well-formed and fails verification at load time, because the
+manifest's `bundleSha256` sits outside what the signature covers.
+[`hack/sign-plugin.sh`](../hack/sign-plugin.sh) does both steps in the right
+order, on a built plugin directory (a `manifest.json` plus a `bundle.zip` —
+exactly what the example plugin's `npm run build` produces):
+
+```bash
+cd plugins/examples/pod-counter
+npm install && npm run build
+../../../hack/sign-plugin.sh dist/            # or: ... dist/ <gpg-key-id>
+```
+
+It's idempotent: re-running it on an already-signed directory re-computes
+the digest and overwrites the signature.
+
+Note that the signature covers `manifest.json`'s **exact bytes**. `kubectl
+create configmap --from-file` preserves them, but hand-editing a plugin
+ConfigMap with `kubectl edit` — which may reflow the YAML or drop a trailing
+newline — will break the signature. Rebuild and re-sign instead.
+
+### When an already-loaded plugin stops verifying
+
+The two sources differ here, and the difference is security-relevant:
+
+- **ConfigMap**: a plugin whose ConfigMap is edited to carry a bad signature
+  keeps serving its **last successfully verified** bundle until the
+  ConfigMap is deleted. This is the general behavior for any failed
+  re-parse, and it's the right outcome — the retained bytes are ones that
+  did pass verification.
+- **Directory**: a plugin directory that fails verification stops being
+  served immediately, since any parse failure drops the tracked plugin
+  outright.
 
 ### Upgrading an existing plugin ConfigMap
 
@@ -174,6 +405,7 @@ lives inside `bundle.zip`:
 | `name` | yes | Unique name; also the path segment used to serve the plugin, e.g. `/api/v1/plugins/<name>/`. |
 | `version` | yes | Informational only. |
 | `entry` | yes | Plugin's JS module filename; must be an entry in the same plugin's `bundle.zip`. Always eagerly `import()`-ed by the host at startup, for whatever page-extension registration the plugin's code performs (see below) — independent of `federation`. Required even for a plugin whose only page(s) are a `federation` remote with no other page-extension registration; such a plugin still needs a real ES module here, distinct from `federation.remoteEntry` — see below. |
+| `bundleSha256` | no* | Hex SHA-256 of the plugin's `bundle.zip` as delivered (64 characters, compared case-insensitively). Verified whenever present, and **required** when the backend is configured with a plugin signing key — it is what makes the signature over `manifest.json` cover the bundle too. See "Signature verification" above. |
 | `federation` | no | `{remoteEntry, routes: [{path, sidebarLabel, icon?, exposedModule, kind?}]}` — a [Native Federation](https://www.npmjs.com/package/@angular-architects/native-federation) remote (its own entry in `bundle.zip`, separate from `entry`) plus the whole-page routes/sidebar entries it serves, as data instead of registering them in code (see below). Antrea UI's own frontend has no module federation loader and ignores this field entirely (see `plugins.ts`); it's consumed by a separate, out-of-tree Angular-based host, which lazily loads a route's `exposedModule` out of `remoteEntry`, only once that route is actually visited. `kind` is `"component"` (the default) or `"routes"` — any other value is rejected, dropping the whole plugin (see below): `"component"` expects `exposedModule` to export a single page component; `"routes"` expects it to export a whole route tree the plugin owns end to end, letting it nest its own sub-paths and register its own route-level providers without the host knowing anything about them. Since a `"routes"` route owns every sub-path under its own `path`, no other route in the same manifest may fall under it (rejected the same way two routes with an identical `path` are); a route nested under it in a *different*, already-installed plugin's manifest is resolved the same way an identical `path` across plugins is (see below). |
 
 `bundle.zip`'s own internal layout is entirely up to the plugin — a flat set
@@ -446,6 +678,16 @@ mkdir -p <plugins.directory>/pod-counter
 cp dist/manifest.json dist/bundle.zip <plugins.directory>/pod-counter/
 ```
 
+If the backend was installed with `plugins.signature.enabled=true`, sign the
+build first and copy the signature across too (see "Signature verification"
+above):
+
+```bash
+../../../hack/sign-plugin.sh dist/
+cp dist/manifest.json dist/bundle.zip dist/manifest.json.asc \
+  <plugins.directory>/pod-counter/
+```
+
 The backend's directory watch picks this up immediately, no restart needed
 — refresh the browser and the plugin's page shows up. To iterate, just
 rebuild and `cp` again; to remove it, delete
@@ -470,6 +712,18 @@ kubectl label configmap pod-counter-plugin -n <namespace> \
   ui.antrea.io/plugin=true
 kubectl apply -f clusterrole.yaml
 ```
+
+With `plugins.signature.enabled=true`, run `../../../hack/sign-plugin.sh
+dist/` after the build and add a third file to the ConfigMap:
+
+```bash
+kubectl create configmap pod-counter-plugin -n <namespace> \
+  --from-file=dist/manifest.json --from-file=dist/bundle.zip \
+  --from-file=dist/manifest.json.asc
+```
+
+Use `kubectl create`/`delete` to update it, never `kubectl edit`: the
+signature covers `manifest.json`'s exact bytes, and an edit can reflow them.
 
 The last command grants the plugin's own RBAC (see above); without it, the
 plugin's page loads but its K8s API call gets a 403. No Helm upgrade, no pod

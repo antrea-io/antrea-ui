@@ -39,3 +39,24 @@ backend:
       subPath: ca.crt
       readOnly: true
 logVerbosity: 2
+# Plugin signature verification, so the e2e job covers the signed-plugin path (and, via
+# TestPluginWithoutSignatureIsRejected, the rejection path) rather than only the default
+# no-verification one.
+# The antrea-ui-plugin-keys ConfigMap is created by the workflow from a key generated on the
+# runner; the chart never creates it. See docs/plugins.md.
+# Plugin ConfigMaps go in their own namespace rather than the release namespace, which also holds
+# the backend configuration and the trusted keys: the only setup in which signature verification
+# protects anything, and so the one worth testing.
+plugins:
+  # Matches PLUGINS_NAMESPACE in ci/e2e-plugins.sh, which creates it before Antrea UI is
+  # installed (the chart creates its Role/RoleBinding there).
+  namespace: antrea-ui-plugins
+  signature:
+    enabled: true
+    trustedKeys:
+      # Matches KEY_CONFIGMAP/KEY_CONFIGMAP_KEY in ci/e2e-plugins.sh.
+      - name: e2e
+        type: openpgp
+        configMap:
+          name: antrea-ui-plugin-keys
+          key: public-key.asc

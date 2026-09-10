@@ -83,6 +83,9 @@ type pluginEntry struct {
 	// which redelivers every object as an Update (through this same handler) even though nothing
 	// about it changed at all.
 	resourceVersion string
+	// verifiedBy is the name of the trusted key whose signature this entry's manifest verified
+	// against, logged when the plugin loads; empty when signature verification is disabled.
+	verifiedBy string
 }
 
 // open returns a reader (and its size, for Content-Length) for filename within this plugin's
@@ -117,6 +120,13 @@ type Registry struct {
 	// Checked while extracting (extractZip) rather than after the fact - a backstop against a
 	// "zip bomb". Zero means unbounded.
 	maxBundleBytes int64
+	// signatureVerifiers, when there is at least one, requires every plugin from either source
+	// to carry a signature verifying against one of them, and a manifest bundleSha256 matching
+	// its bundle.zip. None - nil or empty - disables signature enforcement; a bundleSha256
+	// present anyway is still verified. Every decision point goes through requireSignature
+	// rather than testing this field directly, and that function documents why empty means
+	// "disabled" rather than "reject everything".
+	signatureVerifiers []SignatureVerifier
 
 	mu          sync.RWMutex
 	plugins     map[string]pluginEntry // keyed by the backing ConfigMap's name
@@ -150,15 +160,32 @@ type Registry struct {
 	cacheRoot   string
 }
 
-func NewRegistry(logger logr.Logger, clientset kubernetes.Interface, namespace, labelSelector string, maxConfigMapPlugins, maxDirectoryPlugins int, maxBundleBytes int64) *Registry {
+// Options configures a Registry. A struct rather than positional parameters: the constructor
+// otherwise takes three int/int64 arguments in a row, where a transposed pair compiles fine and
+// silently mis-caps a limit.
+type Options struct {
+	Logger        logr.Logger
+	Clientset     kubernetes.Interface
+	Namespace     string
+	LabelSelector string
+	// MaxConfigMapPlugins/MaxDirectoryPlugins/MaxBundleBytes/SignatureVerifiers map to the
+	// identically named Registry fields above - see their documentation there.
+	MaxConfigMapPlugins int
+	MaxDirectoryPlugins int
+	MaxBundleBytes      int64
+	SignatureVerifiers  []SignatureVerifier
+}
+
+func NewRegistry(opts Options) *Registry {
 	return &Registry{
-		logger:              logger,
-		clientset:           clientset,
-		namespace:           namespace,
-		labelSelector:       labelSelector,
-		maxConfigMapPlugins: maxConfigMapPlugins,
-		maxDirectoryPlugins: maxDirectoryPlugins,
-		maxBundleBytes:      maxBundleBytes,
+		logger:              opts.Logger,
+		clientset:           opts.Clientset,
+		namespace:           opts.Namespace,
+		labelSelector:       opts.LabelSelector,
+		maxConfigMapPlugins: opts.MaxConfigMapPlugins,
+		maxDirectoryPlugins: opts.MaxDirectoryPlugins,
+		maxBundleBytes:      opts.MaxBundleBytes,
+		signatureVerifiers:  opts.SignatureVerifiers,
 		plugins:             make(map[string]pluginEntry),
 		diskPlugins:         make(map[string]pluginEntry),
 	}
