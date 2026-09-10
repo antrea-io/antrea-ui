@@ -30,6 +30,9 @@ rules:
     verbs:
       - "impersonate"
 {{- if .Values.flowAggregator.enabled }}
+  # Lets antrea-ui mint a real, short-lived token for antrea-ui-admin and present it to the Flow
+  # Aggregator's FlowStreamService, which does not support impersonation (see
+  # serviceaccounts.yaml).
   - apiGroups:
       - ""
     resources:

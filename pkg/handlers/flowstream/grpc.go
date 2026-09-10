@@ -47,9 +47,9 @@ const flowStreamConnKey = "flow-aggregator-grpc"
 // before giving up and surfacing the error to the client.
 const maxResourceExhaustedRetries = 5
 
-// defaultResourceExhaustedBackoff is the base backoff between ResourceExhausted retries. It
-// doubles on each attempt, capped by maxResourceExhaustedBackoff.
-const defaultResourceExhaustedBackoff = 2 * time.Second
+// resourceExhaustedBackoff is the base backoff between ResourceExhausted retries. It doubles on
+// each attempt, capped by maxResourceExhaustedBackoff.
+const resourceExhaustedBackoff = 2 * time.Second
 const maxResourceExhaustedBackoff = 30 * time.Second
 
 // GRPCFlowStreamSubscriber connects to the FlowAggregator's FlowStreamService
@@ -70,8 +70,22 @@ type GRPCFlowStreamSubscriber struct {
 	// sem bounds how many GetFlows streams are open against the Flow Aggregator at once. See
 	// serverconfig.DefaultMaxConcurrentFlowStreams.
 	sem chan struct{}
-	// resourceExhaustedBackoff is a field so tests do not have to wait seconds for a retry.
-	resourceExhaustedBackoff time.Duration
+	// resourceExhaustedBackoffOverride is a field so tests do not have to wait seconds for a
+	// retry. testing/synctest was tried instead (it fakes time.After and would let this go
+	// away), but a bufconn+grpc test spins up real gRPC transport goroutines blocked on
+	// network I/O, which synctest's docs call out as unsafe: those goroutines never register
+	// as "durably blocked", so the bubble's fake clock stops advancing after the first
+	// backoff. Zero means resourceExhaustedBackoff.
+	resourceExhaustedBackoffOverride time.Duration
+}
+
+// resourceExhaustedBackoffFor returns h's configured backoff, or the production default if no
+// test override is set.
+func (h *GRPCFlowStreamSubscriber) resourceExhaustedBackoffFor() time.Duration {
+	if h.resourceExhaustedBackoffOverride > 0 {
+		return h.resourceExhaustedBackoffOverride
+	}
+	return resourceExhaustedBackoff
 }
 
 // GRPCConfig holds the connection parameters for the FlowAggregator gRPC server.
@@ -110,14 +124,13 @@ func NewGRPCFlowStreamSubscriber(logger logr.Logger, cfg GRPCConfig) (*GRPCFlowS
 	}
 
 	return &GRPCFlowStreamSubscriber{
-		logger:                   logger,
-		address:                  cfg.Address,
-		tlsConfig:                cfg.TLSConfig,
-		client:                   client,
-		conn:                     conn,
-		adminTokenSource:         cfg.AdminTokenSource,
-		sem:                      make(chan struct{}, maxConcurrent),
-		resourceExhaustedBackoff: defaultResourceExhaustedBackoff,
+		logger:           logger,
+		address:          cfg.Address,
+		tlsConfig:        cfg.TLSConfig,
+		client:           client,
+		conn:             conn,
+		adminTokenSource: cfg.AdminTokenSource,
+		sem:              make(chan struct{}, maxConcurrent),
 	}, nil
 }
 
@@ -270,7 +283,7 @@ func (h *GRPCFlowStreamSubscriber) Subscribe(ctx context.Context, filter *FlowSt
 // has. A nil stream with a nil error means ctx ended while retrying (see the ctx.Done() case
 // below); the caller treats that as an ordinary disconnect, not a failure.
 func (h *GRPCFlowStreamSubscriber) startStreamWithRetry(ctx context.Context, client flowpb.FlowStreamServiceClient, callCtx context.Context, req *flowpb.GetFlowsRequest) (flowpb.FlowStreamService_GetFlowsClient, *flowpb.GetFlowsResponse, error) {
-	backoff := h.resourceExhaustedBackoff
+	backoff := h.resourceExhaustedBackoffFor()
 	for attempt := 0; ; attempt++ {
 		stream, err := client.GetFlows(callCtx, req)
 		if err == nil {
@@ -283,6 +296,14 @@ func (h *GRPCFlowStreamSubscriber) startStreamWithRetry(ctx context.Context, cli
 			default:
 				err = recvErr
 			}
+		}
+		if ctx.Err() != nil {
+			// The caller is gone, not FA: an ordinary client disconnect while this call or
+			// the wait for a first matching flow was still in flight (which, with a narrow
+			// filter, can take a while). Same treatment as the ctx.Done() case in the
+			// backoff loop below, and as the receive loop's own ctx.Err() != nil check:
+			// stop without an error rather than surfacing it as an SSE "error" event.
+			return nil, nil, nil
 		}
 		if status.Code(err) != codes.ResourceExhausted || attempt >= maxResourceExhaustedRetries {
 			h.logger.Error(err, "Failed to start GetFlows stream")

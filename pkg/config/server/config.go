@@ -38,11 +38,12 @@ const (
 	DefaultMaxBundleBytes = 10 * 1024 * 1024 // 10MiB
 
 	// DefaultMaxConcurrentFlowStreams bounds how many SSE flow-stream requests antrea-ui will
-	// open against the Flow Aggregator at once. The Flow Aggregator's own
-	// maxStreamsPerClientIP (default 64) keys on antrea-ui's own source IP, so every antrea-ui
-	// user shares that one cap; this keeps antrea-ui from being the thing that fills it, and
-	// turns "over the limit" into an immediate, clear error instead of a gRPC ResourceExhausted
-	// surfacing from a shared budget the user has no way to reason about.
+	// open against the Flow Aggregator at once. It matches the Flow Aggregator's own default
+	// maxStreamsPerClientIP (64), which keys on antrea-ui's own source IP and so is shared by
+	// every antrea-ui user - matching it does not stop antrea-ui from being able to fill that
+	// budget on its own, it just turns "over the limit" into an immediate, clear local error
+	// instead of a gRPC ResourceExhausted surfacing from a shared budget the user has no way
+	// to reason about.
 	DefaultMaxConcurrentFlowStreams = 64
 )
 

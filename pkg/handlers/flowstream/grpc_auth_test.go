@@ -80,11 +80,11 @@ func newTestSubscriberWithConcurrency(t *testing.T, fake *fakeFlowStreamServer, 
 	t.Cleanup(func() { conn.Close() })
 
 	return &GRPCFlowStreamSubscriber{
-		logger:                   testr.New(t),
-		client:                   flowpb.NewFlowStreamServiceClient(conn),
-		conn:                     conn,
-		sem:                      make(chan struct{}, maxConcurrent),
-		resourceExhaustedBackoff: 20 * time.Millisecond,
+		logger:                           testr.New(t),
+		client:                           flowpb.NewFlowStreamServiceClient(conn),
+		conn:                             conn,
+		sem:                              make(chan struct{}, maxConcurrent),
+		resourceExhaustedBackoffOverride: 20 * time.Millisecond,
 	}
 }
 
@@ -153,12 +153,12 @@ func TestSubscribeFailsWithoutResolvedIdentity(t *testing.T) {
 	assert.Zero(t, fake.calls.Load(), "must not have dialed GetFlows with no resolved identity")
 }
 
-// codes.Unauthenticated means FA rejected the credential itself - a credential problem, not an FA
-// outage - so it must invalidate the backing session the same way an upstream 401 from the
-// kube-apiserver would: FA is a different server, trusting a different CA and potentially a
-// different token audience, so a credential FA rejects may still be perfectly valid for every
-// other antrea-ui call. Ending the whole UI session over it would log the user out of unrelated
-// pages, on every re-login, if that mismatch is just how the deployment is configured.
+// codes.Unauthenticated means FA rejected the credential itself, but that must not invalidate the
+// backing session the way an upstream 401 from the kube-apiserver would: FA is a different
+// server, trusting a different CA and potentially a different token audience, so a credential FA
+// rejects may still be perfectly valid for every other antrea-ui call. Ending the whole UI session
+// over it would log the user out of unrelated pages, on every re-login, if that mismatch is just
+// how the deployment is configured.
 func TestSubscribeDoesNotInvalidateSessionOnUnauthenticated(t *testing.T) {
 	fake := &fakeFlowStreamServer{handle: func(_ int, _ string) error {
 		return status.Error(codes.Unauthenticated, "no credential")
@@ -211,6 +211,36 @@ func TestSubscribeRetriesOnResourceExhausted(t *testing.T) {
 		t.Fatal("timed out waiting for retry to succeed")
 	}
 	assert.Equal(t, int32(failuresBeforeSuccess+1), fake.calls.Load())
+}
+
+// An ordinary client disconnect (tab closed, filter changed) while startStreamWithRetry is still
+// waiting for the first matching flow - which, with a narrow filter, can take a while - must not
+// surface as a stream error: it is indistinguishable from every other client-initiated teardown.
+func TestSubscribeStopsSilentlyOnDisconnectDuringFirstRecv(t *testing.T) {
+	never := make(chan struct{})
+	fake := &fakeFlowStreamServer{handle: func(_ int, _ string) error {
+		<-never // block until the test cancels ctx; GetFlows call succeeds but no flow ever arrives.
+		return nil
+	}}
+	h := newTestSubscriber(t, fake)
+
+	store := newTestStore(t)
+	baseCtx, _ := ctxWithSessionAuth(t, store, &session.Spec{
+		Mode:       session.ModeToken,
+		Credential: session.Credential{Kind: session.KindBearer, Token: []byte("tok")},
+	})
+	ctx, cancel := context.WithCancel(baseCtx)
+
+	_, errCh := h.Subscribe(ctx, &FlowStreamFilter{})
+	require.Eventually(t, func() bool { return fake.calls.Load() >= 1 }, time.Second, time.Millisecond)
+	cancel()
+
+	select {
+	case _, ok := <-errCh:
+		assert.False(t, ok, "a client disconnect while waiting for the first flow must not be reported as an error")
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the stream to stop")
+	}
 }
 
 // A credential kind FA does not support (session.KindImpersonate with no admin token source
