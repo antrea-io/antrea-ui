@@ -32,7 +32,6 @@ import (
 
 	apisv1 "antrea.io/antrea-ui/apis/v1"
 	"antrea.io/antrea-ui/pkg/auth/session"
-	serverconfig "antrea.io/antrea-ui/pkg/config/server"
 	flowpb "antrea.io/antrea-ui/pkg/flowpb"
 )
 
@@ -67,9 +66,6 @@ type GRPCFlowStreamSubscriber struct {
 	// adminTokenSource mints the bearer token used for admin-password (KindImpersonate)
 	// sessions. Nil disables flow streaming for that login mode.
 	adminTokenSource *AdminTokenSource
-	// sem bounds how many GetFlows streams are open against the Flow Aggregator at once. See
-	// serverconfig.DefaultMaxConcurrentFlowStreams.
-	sem chan struct{}
 	// resourceExhaustedBackoffOverride is a field so tests do not have to wait seconds for a
 	// retry. testing/synctest was tried instead (it fakes time.After and would let this go
 	// away), but a bufconn+grpc test spins up real gRPC transport goroutines blocked on
@@ -98,9 +94,6 @@ type GRPCConfig struct {
 	// AdminTokenSource mints the bearer token used for admin-password sessions. May be nil, in
 	// which case that login mode cannot use flow streaming.
 	AdminTokenSource *AdminTokenSource
-	// MaxConcurrentSubscriptions bounds concurrent GetFlows streams. Non-positive means
-	// serverconfig.DefaultMaxConcurrentFlowStreams.
-	MaxConcurrentSubscriptions int
 }
 
 func NewGRPCFlowStreamSubscriber(logger logr.Logger, cfg GRPCConfig) (*GRPCFlowStreamSubscriber, error) {
@@ -118,11 +111,6 @@ func NewGRPCFlowStreamSubscriber(logger logr.Logger, cfg GRPCConfig) (*GRPCFlowS
 	// server is reachable.
 	logger.Info("FlowAggregator gRPC client created", "address", cfg.Address)
 
-	maxConcurrent := cfg.MaxConcurrentSubscriptions
-	if maxConcurrent <= 0 {
-		maxConcurrent = serverconfig.DefaultMaxConcurrentFlowStreams
-	}
-
 	return &GRPCFlowStreamSubscriber{
 		logger:           logger,
 		address:          cfg.Address,
@@ -130,7 +118,6 @@ func NewGRPCFlowStreamSubscriber(logger logr.Logger, cfg GRPCConfig) (*GRPCFlowS
 		client:           client,
 		conn:             conn,
 		adminTokenSource: cfg.AdminTokenSource,
-		sem:              make(chan struct{}, maxConcurrent),
 	}, nil
 }
 
@@ -206,18 +193,6 @@ func (h *GRPCFlowStreamSubscriber) Subscribe(ctx context.Context, filter *FlowSt
 		// all buffered flow events before errCh closes and terminates the stream.
 		defer close(errCh)
 		defer close(flowsCh)
-
-		// Non-blocking: a full semaphore means antrea-ui itself is already at its configured
-		// concurrency cap, which is meant to be an immediate, clear error (see
-		// serverconfig.DefaultMaxConcurrentFlowStreams) rather than a silent hang - a caller
-		// stuck waiting for a slot sees nothing but keepalive comments until it gives up.
-		select {
-		case h.sem <- struct{}{}:
-			defer func() { <-h.sem }()
-		default:
-			errCh <- fmt.Errorf("too many concurrent flow streams, please retry: %w", status.Error(codes.ResourceExhausted, "antrea-ui concurrent flow stream limit reached"))
-			return
-		}
 
 		client, callCtx, err := h.resolveCall(ctx)
 		if err != nil {

@@ -105,6 +105,12 @@ func TestParseFlowStreamFilter(t *testing.T) {
 type stubFlowStreamSubscriber struct {
 	events []apisv1.FlowStreamEvent
 	err    error
+	// closeFlowsChOnErr additionally closes flowsCh right after buffering err into errCh,
+	// reproducing the real GRPCFlowStreamSubscriber.Subscribe shape: every one of its error
+	// paths does "errCh <- err; return", and its deferred close(flowsCh)/close(errCh) then run
+	// with both channels ready at once. Left false by default (leaving flowsCh open) for
+	// tests that don't care about that race; see TestStreamFlowsErrorSurvivesFlowsChRace.
+	closeFlowsChOnErr bool
 }
 
 func (s *stubFlowStreamSubscriber) Subscribe(_ context.Context, _ *FlowStreamFilter) (<-chan apisv1.FlowStreamEvent, <-chan error) {
@@ -113,13 +119,16 @@ func (s *stubFlowStreamSubscriber) Subscribe(_ context.Context, _ *FlowStreamFil
 
 	if s.err != nil {
 		errCh <- s.err
+		if s.closeFlowsChOnErr {
+			close(flowsCh)
+		}
+		// Otherwise leave flowsCh open so the select picks up errCh first.
 	} else {
 		for _, e := range s.events {
 			flowsCh <- e
 		}
 		close(flowsCh)
 	}
-	// When err is set, leave flowsCh open so the select picks up errCh first.
 
 	return flowsCh, errCh
 }
@@ -209,6 +218,41 @@ func TestStreamFlowsErrorPath(t *testing.T) {
 
 	assert.Contains(t, body.String(), "event:error")
 	assert.Contains(t, body.String(), "upstream connection lost")
+}
+
+// When Subscribe's error paths buffer an error into errCh and then close both channels (the real
+// GRPCFlowStreamSubscriber shape - see closeFlowsChOnErr), the closed flowsCh and the buffered
+// errCh value become two independently-ready select cases at once. Go's select picks uniformly
+// among ready cases, so without draining errCh in the flowsCh branch, roughly half of all calls
+// would take the closed-flowsCh path and silently drop the error. Run enough iterations that a
+// regression would very likely produce at least one miss.
+func TestStreamFlowsErrorSurvivesFlowsChRace(t *testing.T) {
+	logger := testr.New(t)
+
+	for i := 0; i < 50; i++ {
+		stub := &stubFlowStreamSubscriber{
+			err:               fmt.Errorf("at capacity"),
+			closeFlowsChOnErr: true,
+		}
+		sseHandler := NewSSEHandler(logger, stub)
+		ts := httptest.NewServer(newTestRouter(sseHandler))
+
+		resp, err := http.Get(ts.URL + "/api/v1/flows/stream")
+		require.NoError(t, err)
+
+		scanner := bufio.NewScanner(resp.Body)
+		var body strings.Builder
+		for scanner.Scan() {
+			body.WriteString(scanner.Text())
+			body.WriteString("\n")
+		}
+		require.NoError(t, scanner.Err())
+		resp.Body.Close()
+		ts.Close()
+
+		assert.Contains(t, body.String(), "event:error", "iteration %d: error event must survive the flowsCh/errCh race", i)
+		assert.Contains(t, body.String(), "at capacity", "iteration %d", i)
+	}
 }
 
 func TestStreamFlowsBadFilter(t *testing.T) {

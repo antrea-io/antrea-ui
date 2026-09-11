@@ -75,7 +75,9 @@ flowAggregator:
   address: "flow-aggregator.flow-aggregator.svc:14740"
   # -- Name of the ConfigMap (in namespace below) containing the CA certificate (key: ca.crt)
   # used to verify the FlowStreamService server certificate.
-  # Leave empty to skip server certificate verification (dev/test only).
+  # Leaving this empty does not skip server certificate verification: it falls back to the
+  # system trust store, which will not verify the Flow Aggregator's self-signed certificate, and
+  # the connection will fail. Use insecureSkipVerify below for that (dev/test only).
   caConfigMap: flow-aggregator-ca
   # -- Namespace where the Flow Aggregator is installed.
   namespace: flow-aggregator
@@ -91,13 +93,6 @@ flowAggregator:
   # freshly minted antrea-ui-admin token - all replayable against the real Kubernetes API
   # server by whoever controls that address.
   insecureSkipVerify: false
-  # -- (int) Caps how many flow streams the backend keeps open against the Flow Aggregator at once.
-  # The Flow Aggregator's own maxStreamsPerClientIP keys on the backend's source IP, so every
-  # antrea-ui user shares that one budget; this bounds antrea-ui's own usage of it so hitting
-  # the cap is an immediate, clear error rather than a shared limit discovered as a gRPC
-  # ResourceExhausted error. Leave unset to use the backend's own built-in default.
-  # @default -- the backend's own built-in default
-  maxConcurrentSubscriptions:
 
 security:
   # -- (bool) Set the Secure attribute for Antrea UI cookies. The attribute is set by default when HTTPS is

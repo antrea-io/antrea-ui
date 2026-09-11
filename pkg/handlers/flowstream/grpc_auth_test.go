@@ -16,18 +16,22 @@ package flowstream
 
 import (
 	"context"
+	"crypto/tls"
 	"net"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/go-logr/logr/testr"
+	"github.com/madflojo/testcerts"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 
@@ -42,6 +46,9 @@ type fakeFlowStreamServer struct {
 	// handle is called for every GetFlows call; it decides what the call returns.
 	handle func(callNum int, bearer string) error
 	calls  atomic.Int32
+	// peerDNSNames captures the DNS SAN names of the TLS client certificate presented on the
+	// connection, if any. Only the KindCert test reads it.
+	peerDNSNames atomic.Value
 }
 
 func (f *fakeFlowStreamServer) GetFlows(_ *flowpb.GetFlowsRequest, stream grpc.ServerStreamingServer[flowpb.GetFlowsResponse]) error {
@@ -52,6 +59,11 @@ func (f *fakeFlowStreamServer) GetFlows(_ *flowpb.GetFlowsRequest, stream grpc.S
 			bearer = vals[0]
 		}
 	}
+	if p, ok := peer.FromContext(stream.Context()); ok {
+		if tlsInfo, ok := p.AuthInfo.(credentials.TLSInfo); ok && len(tlsInfo.State.PeerCertificates) > 0 {
+			f.peerDNSNames.Store(tlsInfo.State.PeerCertificates[0].DNSNames)
+		}
+	}
 	return f.handle(callNum, bearer)
 }
 
@@ -59,11 +71,6 @@ func (f *fakeFlowStreamServer) GetFlows(_ *flowpb.GetFlowsRequest, stream grpc.S
 // GRPCFlowStreamSubscriber dialed against it with no TLS, bypassing the real constructor (which
 // requires real TLS credentials).
 func newTestSubscriber(t *testing.T, fake *fakeFlowStreamServer) *GRPCFlowStreamSubscriber {
-	t.Helper()
-	return newTestSubscriberWithConcurrency(t, fake, 4)
-}
-
-func newTestSubscriberWithConcurrency(t *testing.T, fake *fakeFlowStreamServer, maxConcurrent int) *GRPCFlowStreamSubscriber {
 	t.Helper()
 	lis := bufconn.Listen(1024 * 1024)
 	srv := grpc.NewServer()
@@ -83,7 +90,32 @@ func newTestSubscriberWithConcurrency(t *testing.T, fake *fakeFlowStreamServer, 
 		logger:                           testr.New(t),
 		client:                           flowpb.NewFlowStreamServiceClient(conn),
 		conn:                             conn,
-		sem:                              make(chan struct{}, maxConcurrent),
+		resourceExhaustedBackoffOverride: 20 * time.Millisecond,
+	}
+}
+
+// newCertTestSubscriber starts fake on a real TCP listener secured with serverCert and requiring
+// a client certificate signed by ca, and returns a GRPCFlowStreamSubscriber whose tlsConfig
+// trusts ca. Unlike newTestSubscriber, this cannot use bufconn: buildCertConn dials h.address
+// directly, with no injectable dialer, so the KindCert path needs a real address to connect to.
+func newCertTestSubscriber(t *testing.T, fake *fakeFlowStreamServer, ca *testcerts.CertificateAuthority, serverCert tls.Certificate, serverName string) *GRPCFlowStreamSubscriber {
+	t.Helper()
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	srv := grpc.NewServer(grpc.Creds(credentials.NewTLS(&tls.Config{
+		Certificates: []tls.Certificate{serverCert},
+		ClientAuth:   tls.RequireAndVerifyClientCert,
+		ClientCAs:    ca.CertPool(),
+	})))
+	flowpb.RegisterFlowStreamServiceServer(srv, fake)
+	go srv.Serve(lis) //nolint:errcheck
+	t.Cleanup(srv.Stop)
+	t.Cleanup(func() { lis.Close() })
+
+	return &GRPCFlowStreamSubscriber{
+		logger:                           testr.New(t),
+		address:                          lis.Addr().String(),
+		tlsConfig:                        &tls.Config{RootCAs: ca.CertPool(), ServerName: serverName},
 		resourceExhaustedBackoffOverride: 20 * time.Millisecond,
 	}
 }
@@ -217,8 +249,10 @@ func TestSubscribeRetriesOnResourceExhausted(t *testing.T) {
 // waiting for the first matching flow - which, with a narrow filter, can take a while - must not
 // surface as a stream error: it is indistinguishable from every other client-initiated teardown.
 func TestSubscribeStopsSilentlyOnDisconnectDuringFirstRecv(t *testing.T) {
+	reached := make(chan struct{})
 	never := make(chan struct{})
 	fake := &fakeFlowStreamServer{handle: func(_ int, _ string) error {
+		close(reached)
 		<-never // block until the test cancels ctx; GetFlows call succeeds but no flow ever arrives.
 		return nil
 	}}
@@ -232,7 +266,11 @@ func TestSubscribeStopsSilentlyOnDisconnectDuringFirstRecv(t *testing.T) {
 	ctx, cancel := context.WithCancel(baseCtx)
 
 	_, errCh := h.Subscribe(ctx, &FlowStreamFilter{})
-	require.Eventually(t, func() bool { return fake.calls.Load() >= 1 }, time.Second, time.Millisecond)
+	select {
+	case <-reached:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the fake server to be called")
+	}
 	cancel()
 
 	select {
@@ -266,51 +304,50 @@ func TestSubscribeFailsForImpersonateWithoutAdminTokenSource(t *testing.T) {
 	assert.Zero(t, fake.calls.Load())
 }
 
-// A caller that arrives once antrea-ui is already at its own concurrency cap must get an
-// immediate, clear error - not silently hang waiting for a slot, which would look like a stuck
-// connection (keepalive comments, no data, no error) instead of the capacity problem it is.
-func TestSubscribeFailsImmediatelyWhenAtCapacity(t *testing.T) {
-	holdFirstCall := make(chan struct{})
-	fake := &fakeFlowStreamServer{handle: func(callNum int, _ string) error {
-		if callNum == 1 {
-			<-holdFirstCall
-		}
-		return nil
-	}}
-	h := newTestSubscriberWithConcurrency(t, fake, 1)
+// A KindCert credential is presented as the TLS client certificate on its own connection, dialed
+// by buildCertConn via resolveCall's KindCert branch and connFor's per-session cache - nothing
+// else in this file, or in context_test.go's generic connFor coverage with a stub builder,
+// exercises that path. It matters beyond coverage: (*tls.Config).Clone on a nil receiver returns
+// nil, so a nil h.tlsConfig nil-panics inside the Subscribe goroutine, which has no recover() and
+// would take the process down. Unreachable through NewGRPCFlowStreamSubscriber today, since it
+// always sets tlsConfig from the caller-supplied GRPCConfig - but this test exercises the real
+// buildCertConn/connFor path end to end, so it would catch that regressing.
+func TestSubscribeUsesClientCertForKindCert(t *testing.T) {
+	ca := testcerts.NewCA()
+
+	const serverName = "flow-aggregator-test"
+	serverKP, err := ca.NewKeyPair(serverName)
+	require.NoError(t, err)
+	serverCert, err := tls.X509KeyPair(serverKP.PublicKey(), serverKP.PrivateKey())
+	require.NoError(t, err)
+
+	const clientName = "flow-viewer-client"
+	clientKP, err := ca.NewKeyPair(clientName)
+	require.NoError(t, err)
+
+	fake := &fakeFlowStreamServer{handle: func(_ int, _ string) error { return nil }}
+	h := newCertTestSubscriber(t, fake, ca, serverCert, serverName)
+
 	store := newTestStore(t)
-
-	ctx1, _ := ctxWithSessionAuth(t, store, &session.Spec{
-		Mode:       session.ModeToken,
-		Credential: session.Credential{Kind: session.KindBearer, Token: []byte("tok1")},
+	ctx, _ := ctxWithSessionAuth(t, store, &session.Spec{
+		Mode: session.ModeKubeconfig,
+		Credential: session.Credential{
+			Kind:    session.KindCert,
+			CertPEM: clientKP.PublicKey(),
+			KeyPEM:  clientKP.PrivateKey(),
+		},
 	})
-	_, errCh1 := h.Subscribe(ctx1, &FlowStreamFilter{})
 
-	// Wait for the first call to actually reach the fake server (and so hold the semaphore)
-	// before starting the second one.
-	require.Eventually(t, func() bool { return fake.calls.Load() >= 1 }, time.Second, time.Millisecond)
-
-	ctx2, _ := ctxWithSessionAuth(t, store, &session.Spec{
-		Mode:       session.ModeToken,
-		Credential: session.Credential{Kind: session.KindBearer, Token: []byte("tok2")},
-	})
-	start := time.Now()
-	_, errCh2 := h.Subscribe(ctx2, &FlowStreamFilter{})
+	_, errCh := h.Subscribe(ctx, &FlowStreamFilter{})
 	select {
-	case err, ok := <-errCh2:
-		require.True(t, ok)
-		assert.Error(t, err)
-		assert.Less(t, time.Since(start), 500*time.Millisecond, "an at-capacity caller must fail immediately, not block waiting for a slot")
+	case err, ok := <-errCh:
+		if ok {
+			t.Fatalf("unexpected error: %v", err)
+		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for the at-capacity error")
+		t.Fatal("timed out waiting for stream to finish")
 	}
-	assert.Equal(t, int32(1), fake.calls.Load(), "the second call must never reach the server")
-
-	close(holdFirstCall)
-	select {
-	case _, ok := <-errCh1:
-		assert.False(t, ok)
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for the first stream to finish")
-	}
+	assert.Equal(t, int32(1), fake.calls.Load())
+	names, _ := fake.peerDNSNames.Load().([]string)
+	assert.Contains(t, names, clientName, "FA must see the credential's own client certificate on the connection")
 }

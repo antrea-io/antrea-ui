@@ -36,15 +36,6 @@ const (
 	DefaultMaxDirectoryPlugins = 10
 
 	DefaultMaxBundleBytes = 10 * 1024 * 1024 // 10MiB
-
-	// DefaultMaxConcurrentFlowStreams bounds how many SSE flow-stream requests antrea-ui will
-	// open against the Flow Aggregator at once. It matches the Flow Aggregator's own default
-	// maxStreamsPerClientIP (64), which keys on antrea-ui's own source IP and so is shared by
-	// every antrea-ui user - matching it does not stop antrea-ui from being able to fill that
-	// budget on its own, it just turns "over the limit" into an immediate, clear local error
-	// instead of a gRPC ResourceExhausted surfacing from a shared budget the user has no way
-	// to reason about.
-	DefaultMaxConcurrentFlowStreams = 64
 )
 
 type FlowAggregatorConfig struct {
@@ -52,7 +43,9 @@ type FlowAggregatorConfig struct {
 	Address string
 	// CAConfigMap is the name of the ConfigMap (in Namespace) containing the CA
 	// certificate (key: ca.crt) used to verify the FlowStreamService server cert.
-	// When empty, server certificate verification is skipped (dev/test only).
+	// When empty, verification falls back to the system trust store, which will not verify
+	// the Flow Aggregator's self-signed certificate: the connection fails rather than skipping
+	// verification. Use InsecureSkipVerify for that (dev/test only).
 	CAConfigMap string
 	// Namespace is the Kubernetes namespace where the Flow Aggregator is installed.
 	Namespace string
@@ -64,9 +57,6 @@ type FlowAggregatorConfig struct {
 	// InsecureSkipVerify disables TLS server certificate verification.
 	// This should only be used for development/testing and must never be enabled in production.
 	InsecureSkipVerify bool
-	// MaxConcurrentSubscriptions bounds how many flow streams antrea-ui keeps open against the
-	// Flow Aggregator at once. See DefaultMaxConcurrentFlowStreams.
-	MaxConcurrentSubscriptions int
 }
 
 type Config struct {
@@ -296,7 +286,6 @@ func LoadConfig() (*Config, error) {
 	v.SetDefault("flowAggregator.namespace", "flow-aggregator")
 	v.SetDefault("flowAggregator.serverName", "")
 	v.SetDefault("flowAggregator.insecureSkipVerify", false)
-	v.SetDefault("flowAggregator.maxConcurrentSubscriptions", DefaultMaxConcurrentFlowStreams)
 
 	// By default, look for a file named config (any supported extension) in the working directory.
 	v.AddConfigPath(".")

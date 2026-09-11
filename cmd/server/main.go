@@ -239,10 +239,9 @@ func run() error {
 		adminTokenSource := flowstream.NewAdminTokenSource(k8sClientset, env.GetNamespace(), antreaUIAdminSAName)
 
 		grpcSubscriber, err := flowstream.NewGRPCFlowStreamSubscriber(logger, flowstream.GRPCConfig{
-			Address:                    config.FlowAggregator.Address,
-			TLSConfig:                  tlsCfg,
-			AdminTokenSource:           adminTokenSource,
-			MaxConcurrentSubscriptions: config.FlowAggregator.MaxConcurrentSubscriptions,
+			Address:          config.FlowAggregator.Address,
+			TLSConfig:        tlsCfg,
+			AdminTokenSource: adminTokenSource,
 		})
 		if err != nil {
 			return fmt.Errorf("failed to create gRPC flow stream handler: %w", err)

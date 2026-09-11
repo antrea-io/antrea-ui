@@ -35,6 +35,10 @@ const adminTokenExpiration = 10 * time.Minute
 // never races a token that is about to be rejected.
 const adminTokenRenewBefore = time.Minute
 
+// adminTokenMintTimeout bounds the CreateToken call singleflight's leader makes. Without it, a
+// wedged API server would block the leader - and every follower riding the same call - forever.
+const adminTokenMintTimeout = 10 * time.Second
+
 // AdminTokenSource mints short-lived, self-issued tokens for the antrea-ui-admin ServiceAccount
 // via the TokenRequest API, and caches them until they are close to expiry.
 //
@@ -79,17 +83,22 @@ func (a *AdminTokenSource) Token(ctx context.Context) (string, error) {
 	}
 
 	// singleflight.Do de-duplicates concurrent callers that all missed the cache onto one
-	// CreateToken call; ctx is only used for the caller that actually launches it, which is a
-	// standard singleflight caveat (a caller that cancels does not cancel the shared call, and
-	// a caller that arrives after it started does not get its own ctx honored either).
+	// CreateToken call. The call deliberately does not use any caller's ctx directly: the
+	// leader is just whichever caller happened to arrive first, so canceling it (closing that
+	// user's tab mid-mint) must not fail every other user's request riding the same call with a
+	// spurious "context canceled". context.WithoutCancel keeps the call alive independent of
+	// any one caller's lifetime; adminTokenMintTimeout is what actually bounds it, so a wedged
+	// API server cannot block the leader (and everyone behind it) forever.
 	v, err, _ := a.group.Do("token", func() (any, error) {
 		// Another caller may have refreshed the cache while we were waiting to become the
 		// leader of this singleflight call.
 		if token, ok := a.cached(); ok {
 			return token, nil
 		}
+		mintCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), adminTokenMintTimeout)
+		defer cancel()
 		expirationSeconds := int64(adminTokenExpiration.Seconds())
-		tr, err := a.clientset.CoreV1().ServiceAccounts(a.namespace).CreateToken(ctx, a.saName, &authenticationv1.TokenRequest{
+		tr, err := a.clientset.CoreV1().ServiceAccounts(a.namespace).CreateToken(mintCtx, a.saName, &authenticationv1.TokenRequest{
 			Spec: authenticationv1.TokenRequestSpec{
 				ExpirationSeconds: &expirationSeconds,
 			},

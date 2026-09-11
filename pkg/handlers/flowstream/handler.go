@@ -221,6 +221,20 @@ func (h *SSEHandler) StreamFlows(c *gin.Context) {
 		return ra.KeepAlive(ctx)
 	}
 
+	// emitStreamError writes streamErr as an SSE "error" event and reports whether the caller
+	// should keep streaming (it never does: every caller treats an error as terminal).
+	emitStreamError := func(streamErr error) bool {
+		errEvent := apisv1.FlowStreamErrorEvent{Message: streamErr.Error()}
+		data, err := json.Marshal(errEvent)
+		if err != nil {
+			h.logger.Error(err, "Failed to marshal error event")
+			return false
+		}
+		c.SSEvent("error", string(data))
+		h.logger.Error(streamErr, "Flow stream error")
+		return false
+	}
+
 	c.Stream(func(w io.Writer) bool {
 		writePreamble(w)
 		select {
@@ -240,6 +254,22 @@ func (h *SSEHandler) StreamFlows(c *gin.Context) {
 			return true
 		case event, ok := <-flowsCh:
 			if !ok {
+				// Subscribe closes flowsCh before errCh (see its own comment on why), but a
+				// final error it buffered into errCh just before closing both is a second,
+				// independently-ready case by the time this select runs - select picks
+				// uniformly among ready cases, so without this drain, roughly half the time
+				// this branch would be chosen over the errCh one and the error would never
+				// reach the client. A non-blocking receive here catches it either way: errCh
+				// already holds the value (ok), is already closed with nothing buffered
+				// (!ok, the common case), or isn't closed yet, in which case Subscribe is
+				// still running and errCh could not have been written to end this stream.
+				select {
+				case streamErr, ok := <-errCh:
+					if ok {
+						return emitStreamError(streamErr)
+					}
+				default:
+				}
 				return false
 			}
 			if event.DroppedCount > 0 {
@@ -269,15 +299,7 @@ func (h *SSEHandler) StreamFlows(c *gin.Context) {
 				errCh = nil
 				return true
 			}
-			errEvent := apisv1.FlowStreamErrorEvent{Message: streamErr.Error()}
-			data, err := json.Marshal(errEvent)
-			if err != nil {
-				h.logger.Error(err, "Failed to marshal error event")
-				return false
-			}
-			c.SSEvent("error", string(data))
-			h.logger.Error(streamErr, "Flow stream error")
-			return false
+			return emitStreamError(streamErr)
 		}
 	})
 }
