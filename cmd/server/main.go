@@ -144,7 +144,34 @@ func run() error {
 	if pluginsNamespace == "" {
 		pluginsNamespace = env.GetNamespace()
 	}
-	pluginRegistry := pluginregistry.NewRegistry(logger, k8sClientset, pluginsNamespace, config.Plugins.LabelSelector, config.Plugins.MaxConfigMapPlugins, config.Plugins.MaxDirectoryPlugins, config.Plugins.MaxBundleBytes)
+	// Left empty when no trusted key is configured, which is what disables signature enforcement
+	// in the registry (see requireSignature). NewSignatureVerifier never returns a verifier that
+	// trusts no key, so a configured trusted key always means enforcement is genuinely on.
+	var signatureVerifiers []pluginregistry.SignatureVerifier
+	for _, key := range config.Plugins.Signature.TrustedKeys {
+		verifier, err := pluginregistry.NewSignatureVerifier(key.Name, key.Type, key.File)
+		if err != nil {
+			// Fail the process rather than start up without a key the operator configured:
+			// every plugin it signed would be rejected, which looks exactly like a deployment
+			// with no plugins installed unless someone goes and reads the logs.
+			return fmt.Errorf("failed to load plugin signature trusted key %q from %s: %w", key.Name, key.File, err)
+		}
+		logger.Info("Loaded plugin signature trusted key", "name", key.Name, "type", key.Type, "file", key.File)
+		signatureVerifiers = append(signatureVerifiers, verifier)
+	}
+	if len(signatureVerifiers) > 0 {
+		logger.Info("Plugin signature verification enabled", "trustedKeys", len(signatureVerifiers))
+	}
+	pluginRegistry := pluginregistry.NewRegistry(pluginregistry.Options{
+		Logger:              logger,
+		Clientset:           k8sClientset,
+		Namespace:           pluginsNamespace,
+		LabelSelector:       config.Plugins.LabelSelector,
+		MaxConfigMapPlugins: config.Plugins.MaxConfigMapPlugins,
+		MaxDirectoryPlugins: config.Plugins.MaxDirectoryPlugins,
+		MaxBundleBytes:      config.Plugins.MaxBundleBytes,
+		SignatureVerifiers:  signatureVerifiers,
+	})
 	accessResolver := accesshandler.NewResolver(logger, k8sClientset)
 
 	antreaSvcHandler, err := antreasvchandler.NewRequestsHandler(logger, k8sRESTConfig, config.AntreaNamespace)

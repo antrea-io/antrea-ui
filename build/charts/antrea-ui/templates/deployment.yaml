@@ -121,6 +121,17 @@ spec:
               mountPath: /app/server-conf.yaml
               subPath: server.conf
               readOnly: true
+            {{- if .Values.plugins.signature.enabled }}
+            # One directory per trusted key, not a subPath: a subPath mount is resolved once at
+            # container start, so a rotated key ConfigMap would never be reflected in the
+            # container. It still takes a restart to reload the keys, but the files are at least
+            # current.
+            {{- range $i, $key := .Values.plugins.signature.trustedKeys }}
+            - name: plugin-keys-{{ $i }}
+              mountPath: /app/plugin-keys/{{ $key.name }}
+              readOnly: true
+            {{- end }}
+            {{- end }}
             {{- with .Values.backend.extraVolumeMounts }}
             {{- toYaml . | trim | nindent 12 }}
             {{- end }}
@@ -143,6 +154,22 @@ spec:
         - name: server-conf
           configMap:
             name: antrea-ui-backend
+        {{- if .Values.plugins.signature.enabled }}
+        {{- include "antrea-ui.validatePluginTrustedKeys" . }}
+        # Not created by this chart - a trust anchor doesn't belong in values.yaml. See
+        # docs/plugins.md for how to create them. Optional so that a ConfigMap that was never
+        # created mounts as an empty directory: the backend then fails to read the key file and
+        # crash-loops with an error naming it, while a required volume would hold the whole Pod
+        # (frontend included) in ContainerCreating behind a FailedMount event. Volumes are named
+        # by index rather than by the entry's name, which (up to 63 characters) might not fit in
+        # a volume name once prefixed.
+        {{- range $i, $key := .Values.plugins.signature.trustedKeys }}
+        - name: plugin-keys-{{ $i }}
+          configMap:
+            name: {{ $key.configMap.name }}
+            optional: true
+        {{- end }}
+        {{- end }}
         {{- if .Values.https.enable }}
         {{- $secretName := "antrea-ui-tls-helm" }}
         {{- if eq .Values.https.method "secret" }}

@@ -162,6 +162,11 @@ func TestRegistrySkipsInvalidConfigMaps(t *testing.T) {
 				BinaryData: map[string][]byte{"bundle.zip": []byte("not a zip")},
 			}
 		},
+		// No public key is configured for this registry, so nothing requires a manifest.json.asc
+		// - but a bundleSha256 that is present is still verified, and a mismatch is a rejection.
+		"bundleSha256 not matching bundle.zip": func(t *testing.T) *corev1.ConfigMap {
+			return withBundle(t, manifestWithDigest("plugin", "0.1.0", "index.js", bundleDigest([]byte("some other bundle"))), map[string]string{"index.js": "x"})
+		},
 		"missing name": func(t *testing.T) *corev1.ConfigMap {
 			return withBundle(t, `{"version":"0.1.0","entry":"index.js"}`, map[string]string{"index.js": "x"})
 		},
@@ -299,7 +304,7 @@ func TestRegistryHandleUpsertSkipsInvalidConfigMap(t *testing.T) {
 }
 
 func TestRegistryRejectsNewConfigMapPluginPastLimit(t *testing.T) {
-	r := NewRegistry(testr.New(t), nil, "antrea-ui", "ui.antrea.io/plugin=true", 1, 0, 0)
+	r := NewRegistry(Options{Logger: testr.New(t), Clientset: nil, Namespace: "antrea-ui", LabelSelector: "ui.antrea.io/plugin=true", MaxConfigMapPlugins: 1, MaxDirectoryPlugins: 0, MaxBundleBytes: 0})
 	t.Cleanup(r.Close)
 
 	r.handleUpsert(configMap(t, "first-cm", "first", "0.1.0", "index.js", map[string]string{"index.js": "x"}))
@@ -312,7 +317,7 @@ func TestRegistryRejectsNewConfigMapPluginPastLimit(t *testing.T) {
 }
 
 func TestRegistryRejectsConfigMapBundlePastTheDecompressedSizeLimit(t *testing.T) {
-	r := NewRegistry(testr.New(t), nil, "antrea-ui", "ui.antrea.io/plugin=true", 0, 0, 100)
+	r := NewRegistry(Options{Logger: testr.New(t), Clientset: nil, Namespace: "antrea-ui", LabelSelector: "ui.antrea.io/plugin=true", MaxConfigMapPlugins: 0, MaxDirectoryPlugins: 0, MaxBundleBytes: 100})
 	t.Cleanup(r.Close)
 
 	// A single entry over the limit...
@@ -386,7 +391,7 @@ func invalidConfigMap(name string) *corev1.ConfigMap {
 // here, so the plugin can only load if the already-scheduled retry picks up the newer object.
 func TestConfigMapQueueRetriesFailureUntilItSucceeds(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		r := NewRegistry(testr.New(t), nil, "antrea-ui", "ui.antrea.io/plugin=true", 0, 0, 0)
+		r := NewRegistry(Options{Logger: testr.New(t), Clientset: nil, Namespace: "antrea-ui", LabelSelector: "ui.antrea.io/plugin=true", MaxConfigMapPlugins: 0, MaxDirectoryPlugins: 0, MaxBundleBytes: 0})
 		t.Cleanup(r.Close)
 
 		broken := invalidConfigMap("pod-counter-cm")
@@ -424,7 +429,7 @@ func TestConfigMapQueueRetriesFailureUntilItSucceeds(t *testing.T) {
 // again, rather than being requeued for the life of the process.
 func TestConfigMapQueueGivesUpAfterMaxRetries(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		r := NewRegistry(testr.New(t), nil, "antrea-ui", "ui.antrea.io/plugin=true", 0, 0, 0)
+		r := NewRegistry(Options{Logger: testr.New(t), Clientset: nil, Namespace: "antrea-ui", LabelSelector: "ui.antrea.io/plugin=true", MaxConfigMapPlugins: 0, MaxDirectoryPlugins: 0, MaxBundleBytes: 0})
 		t.Cleanup(r.Close)
 
 		broken := invalidConfigMap("pod-counter-cm")
@@ -460,7 +465,7 @@ func TestConfigMapQueueGivesUpAfterMaxRetries(t *testing.T) {
 // TestConfigMapQueueRetriesFailureUntilItSucceeds). No timing involved, so this drives
 // processConfigMapQueueItem directly.
 func TestConfigMapQueueCapRejectionSkipsRetryBudget(t *testing.T) {
-	r := NewRegistry(testr.New(t), nil, "antrea-ui", "ui.antrea.io/plugin=true", 1, 0, 0)
+	r := NewRegistry(Options{Logger: testr.New(t), Clientset: nil, Namespace: "antrea-ui", LabelSelector: "ui.antrea.io/plugin=true", MaxConfigMapPlugins: 1, MaxDirectoryPlugins: 0, MaxBundleBytes: 0})
 	t.Cleanup(r.Close)
 
 	first := configMap(t, "first-cm", "first", "0.1.0", "index.js", map[string]string{"index.js": "x"})

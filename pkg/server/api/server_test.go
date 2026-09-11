@@ -134,7 +134,7 @@ func newTestServer(t *testing.T, options ...testServerOptions) *testServer {
 	}
 
 	pluginsClientset := k8sfake.NewSimpleClientset()
-	pluginRegistry := plugins.NewRegistry(logger, pluginsClientset, "antrea-ui", "ui.antrea.io/plugin=true", 0, 0, 0)
+	pluginRegistry := plugins.NewRegistry(plugins.Options{Logger: logger, Clientset: pluginsClientset, Namespace: "antrea-ui", LabelSelector: "ui.antrea.io/plugin=true", MaxConfigMapPlugins: 0, MaxDirectoryPlugins: 0, MaxBundleBytes: 0})
 	t.Cleanup(pluginRegistry.Close)
 	stopCh := make(chan struct{})
 	var wg sync.WaitGroup

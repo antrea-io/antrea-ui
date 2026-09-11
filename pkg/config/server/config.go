@@ -17,10 +17,13 @@ package server
 import (
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
+	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/apimachinery/pkg/util/validation"
 )
 
 const (
@@ -101,8 +104,43 @@ type PluginsConfig struct {
 	// pkg/plugins/zip.go's extractZip. A ConfigMap's own ~1MiB etcd size limit only bounds
 	// the compressed bytes, not what they decompress to, and a plugin directory has no equivalent
 	// limit at all, so without this a small, maliciously high-ratio archive ("zip bomb") could
-	// still exhaust the backend's disk. Zero means unbounded.
+	// still exhaust the backend's disk. For the directory source it also bounds bundle.zip
+	// itself, which the backend copies into its own scratch directory before verifying and
+	// extracting it (see copyBundleForVerification): an archive whose compressed size already
+	// exceeds this is rejected up front. Zero means unbounded.
 	MaxBundleBytes int64
+	// Signature configures cryptographic provenance for plugins from either source.
+	Signature SignatureConfig
+}
+
+// SignatureConfig configures signature verification for plugin bundles.
+type SignatureConfig struct {
+	// TrustedKeys lists the keys a plugin may be signed by: a plugin loads when its manifest
+	// verifies against any one of them. Entries can be of different signature types, and several
+	// can share one, so a deployment can trust several signers (each with its own key file,
+	// e.g. its own ConfigMap) and move a signer to a new signature type without re-signing every
+	// plugin at once. Empty (the default) disables signature enforcement entirely - a manifest's
+	// bundleSha256 is still verified when present, but nothing requires one. Every key is loaded
+	// once at startup (see cmd/server/main.go): a missing or malformed key file, or an unknown
+	// type, fails the process rather than quietly serving a UI with no plugins, which is
+	// indistinguishable from "no plugins installed" unless someone reads the logs.
+	TrustedKeys []TrustedKeyConfig
+}
+
+// TrustedKeyConfig is one entry of SignatureConfig.TrustedKeys.
+type TrustedKeyConfig struct {
+	// Name identifies this trusted key in the backend's logs, including as the key that
+	// vouched for each plugin it loads. Must be a DNS-1123 label, unique within TrustedKeys: the
+	// Helm chart also uses it to name the key file's mount point.
+	Name string
+	// Type is the signature type, which decides both the key file's format and which file a
+	// plugin carries its signature in. Only "openpgp" is supported today: File is then an OpenPGP
+	// public key file (ASCII-armored or binary, possibly holding several keys, so a signer can
+	// rotate keys by adding the new one before retiring the old), and plugins carry a detached
+	// ASCII-armored signature in manifest.json.asc.
+	Type string
+	// File is the path, inside the backend container, to the key file.
+	File string
 }
 
 // SessionConfig configures the server-side session store, which holds the Kubernetes credential
@@ -218,6 +256,24 @@ func validateConfig(config *Config) error {
 	}
 	if config.Plugins.MaxBundleBytes < 0 {
 		return fmt.Errorf("plugins.maxBundleBytes must be >= 0 (0 means unbounded)")
+	}
+	// Type is deliberately not checked here: the plugins package is what knows which types
+	// exist, and cmd/server fails at startup on one it doesn't.
+	trustedKeyNames := sets.New[string]()
+	for i, key := range config.Plugins.Signature.TrustedKeys {
+		if errs := validation.IsDNS1123Label(key.Name); len(errs) > 0 {
+			return fmt.Errorf("plugins.signature.trustedKeys[%d].name %q is invalid: %s", i, key.Name, strings.Join(errs, "; "))
+		}
+		if trustedKeyNames.Has(key.Name) {
+			return fmt.Errorf("plugins.signature.trustedKeys[%d].name %q is not unique", i, key.Name)
+		}
+		trustedKeyNames.Insert(key.Name)
+		if key.Type == "" {
+			return fmt.Errorf("plugins.signature.trustedKeys[%d] (%s) is missing a type", i, key.Name)
+		}
+		if key.File == "" {
+			return fmt.Errorf("plugins.signature.trustedKeys[%d] (%s) is missing a file", i, key.Name)
+		}
 	}
 
 	return nil

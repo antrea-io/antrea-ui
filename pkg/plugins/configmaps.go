@@ -177,7 +177,7 @@ func (r *Registry) handleUpsert(cm *corev1.ConfigMap) bool {
 		r.logger.Error(err, "skipping plugin ConfigMap", "configMap", cm.Name)
 		return false
 	}
-	entry, err := parsePluginConfigMap(cm, dest, r.maxBundleBytes)
+	entry, err := parsePluginConfigMap(cm, dest, r.maxBundleBytes, r.signatureVerifiers)
 	if err != nil {
 		if errors.Is(err, errDestGone) {
 			// Unlike a parse/validation failure (where dest is untouched and the previous,
@@ -196,7 +196,7 @@ func (r *Registry) handleUpsert(cm *corev1.ConfigMap) bool {
 		r.removeExtractedPluginDir(configMapSourceName, cm.Name)
 		return false
 	}
-	r.logger.Info("Loaded plugin from ConfigMap", "configMap", cm.Name, "plugin", entry.manifest.Name, "version", entry.manifest.Version)
+	r.logger.Info("Loaded plugin from ConfigMap", "configMap", cm.Name, "plugin", entry.manifest.Name, "version", entry.manifest.Version, "verifiedBy", entry.verifiedBy)
 	return true
 }
 
@@ -273,7 +273,15 @@ func (r *Registry) deleteConfigMapPlugin(name string) bool {
 // parsePluginConfigMap validates cm's manifest.json/bundle.zip and extracts the latter into dest
 // (see extractZip - a fresh, atomically-swapped-into-place directory, up to maxBundleBytes of
 // combined decompressed size).
-func parsePluginConfigMap(cm *corev1.ConfigMap, dest string, maxBundleBytes int64) (*pluginEntry, error) {
+//
+// When verifiers is non-empty, cm must also carry a signature (e.g. a manifest.json.asc key)
+// verifying against one of them, and its manifest must carry a bundleSha256 matching bundle.zip
+// (see signature.go). Both checks run before extractZip, the only step here with a side effect -
+// extractZip removes the previous extraction to make way for the new one, so an unverified bundle
+// must never reach it and displace a verified one. With no verifiers, any signature key is ignored
+// entirely (there is nothing to verify it against), but a bundleSha256 present in the manifest is
+// still checked.
+func parsePluginConfigMap(cm *corev1.ConfigMap, dest string, maxBundleBytes int64, verifiers []SignatureVerifier) (*pluginEntry, error) {
 	manifestData, ok := cm.Data[manifestFileName]
 	if !ok {
 		// manifest.json is meant to be a small UTF-8 text file and normally lands in Data, but
@@ -291,6 +299,24 @@ func parsePluginConfigMap(cm *corev1.ConfigMap, dest string, maxBundleBytes int6
 	if !ok {
 		return nil, fmt.Errorf("missing %s", bundleFileName)
 	}
+	var verifiedBy string
+	if requireSignature(verifiers) {
+		// Same Data-then-BinaryData fallback as manifest.json above: an armored signature is
+		// ASCII, so it normally lands in Data, but where `kubectl create configmap --from-file`
+		// puts a given file is not something to rely on.
+		readSignature := func(fileName string) ([]byte, bool, error) {
+			if signature, ok := cm.Data[fileName]; ok {
+				return []byte(signature), true, nil
+			}
+			signature, ok := cm.BinaryData[fileName]
+			return signature, ok, nil
+		}
+		signer, err := verifyManifestSignature(verifiers, []byte(manifestData), readSignature)
+		if err != nil {
+			return nil, err
+		}
+		verifiedBy = signer
+	}
 	zr, err := zip.NewReader(bytes.NewReader(bundleData), int64(len(bundleData)))
 	if err != nil {
 		return nil, fmt.Errorf("invalid %s: %w", bundleFileName, err)
@@ -299,9 +325,14 @@ func parsePluginConfigMap(cm *corev1.ConfigMap, dest string, maxBundleBytes int6
 	if err != nil {
 		return nil, err
 	}
+	// Hashed over bundleData - the binaryData value as Go sees it, not its base64 encoding in the
+	// ConfigMap's YAML.
+	if err := verifyManifestBundleDigest(verifiers, manifest, bytes.NewReader(bundleData)); err != nil {
+		return nil, err
+	}
 	extractRoot, err := extractZip(zr, dest, maxBundleBytes)
 	if err != nil {
 		return nil, err
 	}
-	return &pluginEntry{manifest: *manifest, diskRoot: extractRoot, resourceVersion: cm.ResourceVersion}, nil
+	return &pluginEntry{manifest: *manifest, diskRoot: extractRoot, resourceVersion: cm.ResourceVersion, verifiedBy: verifiedBy}, nil
 }
