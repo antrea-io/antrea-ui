@@ -19,10 +19,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/go-logr/logr/testr"
@@ -111,6 +113,11 @@ type stubFlowStreamSubscriber struct {
 	// with both channels ready at once. Left false by default (leaving flowsCh open) for
 	// tests that don't care about that race; see TestStreamFlowsErrorSurvivesFlowsChRace.
 	closeFlowsChOnErr bool
+	// delay, if set, buffers err into errCh (and closes flowsCh, if closeFlowsChOnErr) from a
+	// goroutine after delay instead of before Subscribe returns. Used to place the error after
+	// StreamFlows's initial synchronous-failure peek (see errorPeekTimeout) so a test can still
+	// exercise the flowsCh/errCh race inside the later c.Stream loop.
+	delay time.Duration
 }
 
 func (s *stubFlowStreamSubscriber) Subscribe(_ context.Context, _ *FlowStreamFilter) (<-chan apisv1.FlowStreamEvent, <-chan error) {
@@ -118,11 +125,18 @@ func (s *stubFlowStreamSubscriber) Subscribe(_ context.Context, _ *FlowStreamFil
 	errCh := make(chan error, 1)
 
 	if s.err != nil {
-		errCh <- s.err
-		if s.closeFlowsChOnErr {
-			close(flowsCh)
+		deliver := func() {
+			errCh <- s.err
+			if s.closeFlowsChOnErr {
+				close(flowsCh)
+			}
+			// Otherwise leave flowsCh open so the select picks up errCh first.
 		}
-		// Otherwise leave flowsCh open so the select picks up errCh first.
+		if s.delay > 0 {
+			go func() { time.Sleep(s.delay); deliver() }()
+		} else {
+			deliver()
+		}
 	} else {
 		for _, e := range s.events {
 			flowsCh <- e
@@ -194,6 +208,10 @@ func TestStreamFlowsHappyPath(t *testing.T) {
 	assert.True(t, foundFlowEvent, "expected at least one flow event in SSE stream")
 }
 
+// Subscribe failing before StreamFlows commits to a 200 (the common case: every failure this
+// endpoint can hit today is discovered on Subscribe's first GetFlows call or its first Recv, not
+// partway through an established stream) must surface as a real HTTP error status with a JSON
+// body, not as a 200 followed by an SSE "error" event buried in prose.
 func TestStreamFlowsErrorPath(t *testing.T) {
 	logger := testr.New(t)
 	stub := &stubFlowStreamSubscriber{
@@ -208,16 +226,29 @@ func TestStreamFlowsErrorPath(t *testing.T) {
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
-	scanner := bufio.NewScanner(resp.Body)
-	var body strings.Builder
-	for scanner.Scan() {
-		body.WriteString(scanner.Text())
-		body.WriteString("\n")
-	}
-	require.NoError(t, scanner.Err())
+	assert.Equal(t, http.StatusBadGateway, resp.StatusCode)
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Contains(t, string(body), "upstream connection lost")
+}
 
-	assert.Contains(t, body.String(), "event:error")
-	assert.Contains(t, body.String(), "upstream connection lost")
+// classifyStreamErr's StreamError.Code maps to a specific, more useful HTTP status than the
+// generic default.
+func TestStreamFlowsErrorPathClassifiedStatus(t *testing.T) {
+	logger := testr.New(t)
+	stub := &stubFlowStreamSubscriber{
+		err: &StreamError{msg: "at capacity", Code: StreamErrorCodeResourceExhausted, Retryable: true},
+	}
+
+	sseHandler := NewSSEHandler(logger, stub)
+	ts := httptest.NewServer(newTestRouter(sseHandler))
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/api/v1/flows/stream")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
 }
 
 // When Subscribe's error paths buffer an error into errCh and then close both channels (the real
@@ -233,8 +264,13 @@ func TestStreamFlowsErrorSurvivesFlowsChRace(t *testing.T) {
 		stub := &stubFlowStreamSubscriber{
 			err:               fmt.Errorf("at capacity"),
 			closeFlowsChOnErr: true,
+			// Past errorPeekTimeout below, so the error lands after StreamFlows has
+			// already committed to a 200 and is running the c.Stream loop this test
+			// means to exercise, instead of being caught by the earlier peek.
+			delay: 5 * time.Millisecond,
 		}
 		sseHandler := NewSSEHandler(logger, stub)
+		sseHandler.errorPeekTimeout = time.Millisecond
 		ts := httptest.NewServer(newTestRouter(sseHandler))
 
 		resp, err := http.Get(ts.URL + "/api/v1/flows/stream")

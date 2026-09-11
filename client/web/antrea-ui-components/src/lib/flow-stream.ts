@@ -58,7 +58,7 @@ export interface FlowStreamCallbacks {
 interface SSEEvent { type: string; data: string; }
 interface SSEFlowEvent { flows: Flow[]; }
 interface SSEDroppedEvent { droppedCount: number; }
-interface SSEErrorEvent { message: string; }
+interface SSEErrorEvent { message: string; code?: string; retryable?: boolean; }
 
 function buildStreamURL(filter: FlowStreamFilter): string {
     const params = new URLSearchParams();
@@ -87,6 +87,12 @@ export class FlowStreamClient {
     private batchTimer: ReturnType<typeof setInterval> | null = null;
     private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     private reconnectAttempts = 0;
+    // Set by handleSSEEvent when the backend reports a non-retryable stream error (e.g. FA
+    // rejected the credential). Checked once the current connect() attempt ends, so a permanent
+    // failure stops the client instead of retrying it every reconnectDelay forever - the backend's
+    // 200-then-error-event shape otherwise looks identical to a healthy connection that happened
+    // to drop, which is what reconnectAttempts is normally reset for.
+    private streamErrorIsPermanent = false;
     private filter: FlowStreamFilter;
     private callbacks: FlowStreamCallbacks;
     private batchIntervalMs: number;
@@ -153,6 +159,7 @@ export class FlowStreamClient {
     private async connect(): Promise<void> {
         if (!this.running) return;
         this.abortController = new AbortController();
+        this.streamErrorIsPermanent = false;
         const url = buildStreamURL(this.filter);
         try {
             const response = await fetch(url, {
@@ -190,7 +197,6 @@ export class FlowStreamClient {
             if (!response.ok) throw new Error(`Flow stream: ${response.status} ${response.statusText}`);
             if (!response.body) throw new Error('Response body is null');
 
-            this.reconnectAttempts = 0;
             this.callbacks.onConnected?.();
 
             const reader = response.body.getReader();
@@ -210,6 +216,12 @@ export class FlowStreamClient {
             this.callbacks.onError(err instanceof Error ? err : new Error(String(err)));
         }
         this.callbacks.onDisconnected?.();
+        if (this.streamErrorIsPermanent) {
+            // Same terminal treatment as onAuthError/onDisabled/onForbidden above: retrying
+            // would just reproduce the same rejection every reconnectDelay, forever.
+            this.running = false;
+            return;
+        }
         if (this.running) this.scheduleReconnect();
     }
 
@@ -238,12 +250,22 @@ export class FlowStreamClient {
         try {
             if (event.type === 'flow') {
                 const payload = JSON.parse(event.data) as SSEFlowEvent;
-                if (payload.flows?.length) this.batchBuffer.push(...payload.flows);
+                if (payload.flows?.length) {
+                    // Reset here, not on the 200 that opens the connection: the backend can
+                    // return 200 and then fail immediately via an "error" event (see below), so
+                    // resetting on the 200 alone made every failure retry at a flat 1s delay
+                    // forever instead of backing off. Actual data flowing is the real signal that
+                    // the connection is healthy.
+                    this.reconnectAttempts = 0;
+                    this.batchBuffer.push(...payload.flows);
+                }
             } else if (event.type === 'dropped') {
                 const payload = JSON.parse(event.data) as SSEDroppedEvent;
+                this.reconnectAttempts = 0;
                 this.callbacks.onDropped?.(payload.droppedCount);
             } else if (event.type === 'error') {
                 const payload = JSON.parse(event.data) as SSEErrorEvent;
+                if (payload.retryable === false) this.streamErrorIsPermanent = true;
                 this.callbacks.onError(new Error(payload.message));
             }
         } catch (err) { console.error('Failed to parse SSE event', event, err); }

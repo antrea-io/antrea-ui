@@ -87,10 +87,9 @@ func newTestSubscriber(t *testing.T, fake *fakeFlowStreamServer) *GRPCFlowStream
 	t.Cleanup(func() { conn.Close() })
 
 	return &GRPCFlowStreamSubscriber{
-		logger:                           testr.New(t),
-		client:                           flowpb.NewFlowStreamServiceClient(conn),
-		conn:                             conn,
-		resourceExhaustedBackoffOverride: 20 * time.Millisecond,
+		logger: testr.New(t),
+		client: flowpb.NewFlowStreamServiceClient(conn),
+		conn:   conn,
 	}
 }
 
@@ -113,10 +112,9 @@ func newCertTestSubscriber(t *testing.T, fake *fakeFlowStreamServer, ca *testcer
 	t.Cleanup(func() { lis.Close() })
 
 	return &GRPCFlowStreamSubscriber{
-		logger:                           testr.New(t),
-		address:                          lis.Addr().String(),
-		tlsConfig:                        &tls.Config{RootCAs: ca.CertPool(), ServerName: serverName},
-		resourceExhaustedBackoffOverride: 20 * time.Millisecond,
+		logger:    testr.New(t),
+		address:   lis.Addr().String(),
+		tlsConfig: &tls.Config{RootCAs: ca.CertPool(), ServerName: serverName},
 	}
 }
 
@@ -215,15 +213,12 @@ func TestSubscribeDoesNotInvalidateSessionOnUnauthenticated(t *testing.T) {
 	assert.NoError(t, err, "an FA-rejected credential must not end the antrea-ui session")
 }
 
-// codes.ResourceExhausted (the stream limiter, or FA's token-auth semaphore) is retryable: the
-// call must succeed once FA has capacity again rather than failing the stream outright.
-func TestSubscribeRetriesOnResourceExhausted(t *testing.T) {
-	const failuresBeforeSuccess = 2
-	fake := &fakeFlowStreamServer{handle: func(callNum int, _ string) error {
-		if callNum <= failuresBeforeSuccess {
-			return status.Error(codes.ResourceExhausted, "at capacity")
-		}
-		return nil
+// codes.ResourceExhausted (the stream limiter, or FA's token-auth semaphore) is reported to the
+// caller as a retryable StreamError rather than retried here: retrying is the frontend's job,
+// driven by its own reconnect backoff (see startStream's doc comment).
+func TestSubscribeReportsResourceExhaustedAsRetryable(t *testing.T) {
+	fake := &fakeFlowStreamServer{handle: func(_ int, _ string) error {
+		return status.Error(codes.ResourceExhausted, "at capacity")
 	}}
 	h := newTestSubscriber(t, fake)
 
@@ -236,18 +231,47 @@ func TestSubscribeRetriesOnResourceExhausted(t *testing.T) {
 	_, errCh := h.Subscribe(ctx, &FlowStreamFilter{})
 	select {
 	case err, ok := <-errCh:
-		if ok {
-			t.Fatalf("unexpected error: %v", err)
-		}
+		require.True(t, ok)
+		var streamErr *StreamError
+		require.ErrorAs(t, err, &streamErr)
+		assert.Equal(t, StreamErrorCodeResourceExhausted, streamErr.Code)
+		assert.True(t, streamErr.Retryable)
 	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for retry to succeed")
+		t.Fatal("timed out waiting for error")
 	}
-	assert.Equal(t, int32(failuresBeforeSuccess+1), fake.calls.Load())
+	assert.Equal(t, int32(1), fake.calls.Load(), "must not retry on its own")
 }
 
-// An ordinary client disconnect (tab closed, filter changed) while startStreamWithRetry is still
-// waiting for the first matching flow - which, with a narrow filter, can take a while - must not
-// surface as a stream error: it is indistinguishable from every other client-initiated teardown.
+// codes.Unauthenticated is reported as a non-retryable StreamError: the same credential will be
+// rejected again, so the frontend must stop rather than keep reconnecting into it.
+func TestSubscribeReportsUnauthenticatedAsNotRetryable(t *testing.T) {
+	fake := &fakeFlowStreamServer{handle: func(_ int, _ string) error {
+		return status.Error(codes.Unauthenticated, "no credential")
+	}}
+	h := newTestSubscriber(t, fake)
+
+	store := newTestStore(t)
+	ctx, _ := ctxWithSessionAuth(t, store, &session.Spec{
+		Mode:       session.ModeToken,
+		Credential: session.Credential{Kind: session.KindBearer, Token: []byte("bad")},
+	})
+
+	_, errCh := h.Subscribe(ctx, &FlowStreamFilter{})
+	select {
+	case err, ok := <-errCh:
+		require.True(t, ok)
+		var streamErr *StreamError
+		require.ErrorAs(t, err, &streamErr)
+		assert.Equal(t, StreamErrorCodeUnauthenticated, streamErr.Code)
+		assert.False(t, streamErr.Retryable)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for error")
+	}
+}
+
+// An ordinary client disconnect (tab closed, filter changed) while startStream is still waiting
+// for the first matching flow - which, with a narrow filter, can take a while - must not surface
+// as a stream error: it is indistinguishable from every other client-initiated teardown.
 func TestSubscribeStopsSilentlyOnDisconnectDuringFirstRecv(t *testing.T) {
 	reached := make(chan struct{})
 	never := make(chan struct{})
@@ -307,11 +331,8 @@ func TestSubscribeFailsForImpersonateWithoutAdminTokenSource(t *testing.T) {
 // A KindCert credential is presented as the TLS client certificate on its own connection, dialed
 // by buildCertConn via resolveCall's KindCert branch and connFor's per-session cache - nothing
 // else in this file, or in context_test.go's generic connFor coverage with a stub builder,
-// exercises that path. It matters beyond coverage: (*tls.Config).Clone on a nil receiver returns
-// nil, so a nil h.tlsConfig nil-panics inside the Subscribe goroutine, which has no recover() and
-// would take the process down. Unreachable through NewGRPCFlowStreamSubscriber today, since it
-// always sets tlsConfig from the caller-supplied GRPCConfig - but this test exercises the real
-// buildCertConn/connFor path end to end, so it would catch that regressing.
+// exercises that path end to end. It does not cover a nil h.tlsConfig: see
+// TestBuildCertConnRejectsNilTLSConfig for that.
 func TestSubscribeUsesClientCertForKindCert(t *testing.T) {
 	ca := testcerts.NewCA()
 
@@ -350,4 +371,74 @@ func TestSubscribeUsesClientCertForKindCert(t *testing.T) {
 	assert.Equal(t, int32(1), fake.calls.Load())
 	names, _ := fake.peerDNSNames.Load().([]string)
 	assert.Contains(t, names, clientName, "FA must see the credential's own client certificate on the connection")
+}
+
+// When a KindCert session ends (logout, eviction, GC), Session.zero closes the per-session
+// ClientConn the stream is running on. The resulting Recv error (codes.Canceled) must be treated
+// as a quiet disconnect, the same as an ordinary client-initiated teardown, not surfaced as a
+// stream error - a normal logout should not show the user a flow-stream error.
+func TestSubscribeStopsSilentlyWhenSessionEndsDuringKindCertStream(t *testing.T) {
+	ca := testcerts.NewCA()
+
+	const serverName = "flow-aggregator-test"
+	serverKP, err := ca.NewKeyPair(serverName)
+	require.NoError(t, err)
+	serverCert, err := tls.X509KeyPair(serverKP.PublicKey(), serverKP.PrivateKey())
+	require.NoError(t, err)
+
+	clientKP, err := ca.NewKeyPair("flow-viewer-client")
+	require.NoError(t, err)
+
+	reached := make(chan struct{})
+	never := make(chan struct{})
+	fake := &fakeFlowStreamServer{handle: func(_ int, _ string) error {
+		close(reached)
+		<-never // block until the test ends the session; no flow ever arrives.
+		return nil
+	}}
+	h := newCertTestSubscriber(t, fake, ca, serverCert, serverName)
+
+	store := newTestStore(t)
+	ctx, ra := ctxWithSessionAuth(t, store, &session.Spec{
+		Mode: session.ModeKubeconfig,
+		Credential: session.Credential{
+			Kind:    session.KindCert,
+			CertPEM: clientKP.PublicKey(),
+			KeyPEM:  clientKP.PrivateKey(),
+		},
+	})
+
+	_, errCh := h.Subscribe(ctx, &FlowStreamFilter{})
+	select {
+	case <-reached:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the fake server to be called")
+	}
+
+	// Simulate a normal logout: ctx stays alive, but this closes the per-session ClientConn the
+	// stream is running on (Session.zero -> dropTransportsLocked).
+	store.Delete(ra.SessionID())
+
+	select {
+	case _, ok := <-errCh:
+		assert.False(t, ok, "a session ending must not surface as a stream error, like an ordinary disconnect")
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the stream to stop")
+	}
+}
+
+// NewGRPCFlowStreamSubscriber must reject a nil TLSConfig rather than construct a subscriber that
+// nil-panics later: (*tls.Config).Clone returns nil for a nil receiver, so buildCertConn's use of
+// h.tlsConfig.Clone() would nil-panic inside the Subscribe goroutine, which has no recover().
+func TestNewGRPCFlowStreamSubscriberRejectsNilTLSConfig(t *testing.T) {
+	_, err := NewGRPCFlowStreamSubscriber(testr.New(t), GRPCConfig{Address: "127.0.0.1:0"})
+	assert.Error(t, err)
+}
+
+// Defense in depth for the same nil-panic, for a GRPCFlowStreamSubscriber built directly (as the
+// other tests in this file do) with tlsConfig left unset.
+func TestBuildCertConnRejectsNilTLSConfig(t *testing.T) {
+	h := &GRPCFlowStreamSubscriber{logger: testr.New(t), address: "127.0.0.1:0"}
+	_, _, err := h.buildCertConn(&session.Credential{})
+	assert.Error(t, err)
 }

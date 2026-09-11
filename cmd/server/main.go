@@ -235,8 +235,13 @@ func run() error {
 		// real, short-lived token is minted for the antrea-ui-admin ServiceAccount and used
 		// for this call only. k8sClientset authenticates as antrea-ui's own ServiceAccount,
 		// which is what build/charts/antrea-ui/templates/role.yaml grants the
-		// "serviceaccounts/token" create verb to.
-		adminTokenSource := flowstream.NewAdminTokenSource(k8sClientset, env.GetNamespace(), antreaUIAdminSAName)
+		// "serviceaccounts/token" create verb to - only when auth.basic.enable is also set,
+		// since that is the only login mode that produces a KindImpersonate session and so the
+		// only one that ever needs this token minted.
+		var adminTokenSource *flowstream.AdminTokenSource
+		if config.Auth.Basic.Enabled {
+			adminTokenSource = flowstream.NewAdminTokenSource(k8sClientset, env.GetNamespace(), antreaUIAdminSAName)
+		}
 
 		grpcSubscriber, err := flowstream.NewGRPCFlowStreamSubscriber(logger, flowstream.GRPCConfig{
 			Address:          config.FlowAggregator.Address,

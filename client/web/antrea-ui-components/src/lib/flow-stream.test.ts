@@ -50,6 +50,20 @@ describe('FlowStreamClient', () => {
         return new Response(stream, { status });
     }
 
+    // Unlike sseResponse, closes the stream after all chunks: needed for tests that check what
+    // happens once a connection attempt ends (reconnect scheduling), since a stream left open
+    // never lets connect()'s read loop finish.
+    function closingSseResponse(chunks: string[], status = 200): Response {
+        const encoder = new TextEncoder();
+        const stream = new ReadableStream<Uint8Array>({
+            start(controller) {
+                for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
+                controller.close();
+            },
+        });
+        return new Response(stream, { status });
+    }
+
     function makeCallbacks(): FlowStreamCallbacks & {
         flows: unknown[];
         errors: Error[];
@@ -298,6 +312,75 @@ describe('FlowStreamClient', () => {
         expect(cb.errors.at(-1)?.message).toBe('Max reconnect attempts reached');
         await vi.advanceTimersByTimeAsync(60_000);
         expect(fetchMock).toHaveBeenCalledTimes(4);
+    });
+
+    // A stream "error" event with retryable:false (e.g. FA rejected the credential) is a
+    // permanent answer for this connection, not a transient failure: the client must not keep
+    // reconnecting into the same rejection every reconnectDelay forever.
+    test('a non-retryable stream error event stops the client without reconnecting', async () => {
+        stubFetch(async () => closingSseResponse([
+            'event: error\ndata: {"message":"rejected","code":"unauthenticated","retryable":false}\n\n',
+        ]));
+        const cb = makeCallbacks();
+        const client = new FlowStreamClient({}, cb, 10);
+        client.start();
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(cb.errors.map(e => e.message)).toEqual(['rejected']);
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    // A stream "error" event with retryable:true (e.g. FA at capacity) must still reconnect with
+    // the normal exponential backoff.
+    test('a retryable stream error event still reconnects', async () => {
+        let calls = 0;
+        stubFetch(async () => {
+            calls++;
+            return closingSseResponse([
+                'event: error\ndata: {"message":"at capacity","code":"resource_exhausted","retryable":true}\n\n',
+            ]);
+        });
+        const cb = makeCallbacks();
+        const client = new FlowStreamClient({}, cb, 10);
+        client.start();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(calls).toBe(1);
+
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(calls).toBe(2);
+        client.stop();
+    });
+
+    // reconnectAttempts must reset on actual data flowing, not on the HTTP 200 that opens the
+    // connection: the backend can return 200 and then fail immediately via an "error" event, so
+    // resetting on the 200 alone would keep every retry at the flat first backoff step forever
+    // instead of growing it.
+    test('reconnectAttempts resets on a flow event, not on the 200 that opens the connection', async () => {
+        let call = 0;
+        stubFetch(async () => {
+            call++;
+            // Every connection attempt returns 200 and then an immediate retryable error, with
+            // no flow data ever received.
+            return closingSseResponse([
+                'event: error\ndata: {"message":"at capacity","code":"resource_exhausted","retryable":true}\n\n',
+            ]);
+        });
+        const cb = makeCallbacks();
+        const client = new FlowStreamClient({}, cb, 10);
+        client.start();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(call).toBe(1);
+
+        // If reconnectAttempts were reset on the 200, this would still be a 1000ms backoff
+        // instead of growing to 2000ms.
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(call).toBe(2);
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(call).toBe(2); // Not yet: backoff grew to 2000ms.
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(call).toBe(3);
+        client.stop();
     });
 
     test('stop() aborts the in-flight fetch', async () => {

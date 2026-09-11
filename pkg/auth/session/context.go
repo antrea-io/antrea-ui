@@ -80,10 +80,9 @@ func NewEphemeralAuth(cred Credential, username string) *RequestAuth {
 // Credential returns the credential to present to Kubernetes for this request. Do not log it.
 //
 // It reads through to the session on every call rather than returning a snapshot taken when the
-// request was authenticated. The session zeroes its credential material in place on refresh and on
-// eviction, so a snapshot held across either would silently become zeros while the request was
-// still using it. The returned struct still shares its byte slices with the session, so callers
-// must use it immediately and must neither retain nor modify it.
+// request was authenticated: the session's own credential can be refreshed or zeroed at any time.
+// Session.Credential clones the credential's byte slices, so the returned struct is independent of
+// the session and safe to retain across the rest of the request.
 //
 // Prefer TransportFor, which handles all of this: this is for the callers that genuinely need the
 // credential itself rather than a transport built from it.

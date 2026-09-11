@@ -54,6 +54,25 @@ type FlowStreamFilter struct {
 // defaultKeepAliveInterval is how often the stream emits an SSE comment and re-checks its session.
 const defaultKeepAliveInterval = 5 * time.Second
 
+// initialErrorPeekTimeout bounds how long StreamFlows waits for Subscribe to report a synchronous
+// failure before committing to a 200 response. See the comment where it is used.
+const initialErrorPeekTimeout = 200 * time.Millisecond
+
+// statusForStreamErr maps a flow-stream failure to the HTTP status StreamFlows returns for it when
+// caught before the response is committed to a 200.
+func statusForStreamErr(err error) int {
+	var streamErr *StreamError
+	if errors.As(err, &streamErr) {
+		switch streamErr.Code {
+		case StreamErrorCodeUnauthenticated:
+			return http.StatusUnauthorized
+		case StreamErrorCodeResourceExhausted:
+			return http.StatusServiceUnavailable
+		}
+	}
+	return http.StatusBadGateway
+}
+
 // errUnauthenticatedStream means the handler was reached without the authentication middleware
 // having resolved an identity, which is a wiring bug rather than anything a client can cause.
 var errUnauthenticatedStream = errors.New("flow stream request carries no resolved identity")
@@ -75,6 +94,8 @@ type SSEHandler struct {
 	handler FlowStreamSubscriber
 	// keepAliveInterval is a field so tests do not have to wait seconds for a tick.
 	keepAliveInterval time.Duration
+	// errorPeekTimeout is a field so tests do not have to wait for the production timeout.
+	errorPeekTimeout time.Duration
 }
 
 func NewSSEHandler(logger logr.Logger, handler FlowStreamSubscriber) *SSEHandler {
@@ -82,6 +103,7 @@ func NewSSEHandler(logger logr.Logger, handler FlowStreamSubscriber) *SSEHandler
 		logger:            logger,
 		handler:           handler,
 		keepAliveInterval: defaultKeepAliveInterval,
+		errorPeekTimeout:  initialErrorPeekTimeout,
 	}
 }
 
@@ -163,6 +185,26 @@ func (h *SSEHandler) StreamFlows(c *gin.Context) {
 	ctx := c.Request.Context()
 	flowsCh, errCh := h.handler.Subscribe(ctx, filter)
 
+	// Every failure this endpoint can hit today - a rejected credential, FA at capacity, a dial
+	// or credential-resolution failure - surfaces on Subscribe's first GetFlows call or its first
+	// Recv (see startStream), not partway through an established stream. Giving that a brief
+	// window to arrive before committing to a 200 lets a real failure reach the client as an HTTP
+	// status instead of prose inside a 200 body, which the frontend's fetch-based client can
+	// otherwise only tell apart from a healthy connection by parsing an SSE "error" event.
+	select {
+	case streamErr, ok := <-errCh:
+		if ok {
+			c.JSON(statusForStreamErr(streamErr), gin.H{"error": streamErr.Error()})
+			return
+		}
+		// errCh closed with nothing buffered: Subscribe ended (e.g. ctx already canceled)
+		// without an error. Disable this case for the rest of the request, same as the
+		// c.Stream loop below does for the same situation.
+		errCh = nil
+	case <-time.After(h.errorPeekTimeout):
+		// No fast answer: proceed as an ordinary 200 SSE stream.
+	}
+
 	// Set headers required for Server-Sent Events (SSE).
 	// Content-Type must be text/event-stream for browsers to process the stream.
 	// Cache-Control: no-cache prevents intermediary proxies from caching the stream data.
@@ -225,6 +267,11 @@ func (h *SSEHandler) StreamFlows(c *gin.Context) {
 	// should keep streaming (it never does: every caller treats an error as terminal).
 	emitStreamError := func(streamErr error) bool {
 		errEvent := apisv1.FlowStreamErrorEvent{Message: streamErr.Error()}
+		var se *StreamError
+		if errors.As(streamErr, &se) {
+			errEvent.Code = se.Code
+			errEvent.Retryable = se.Retryable
+		}
 		data, err := json.Marshal(errEvent)
 		if err != nil {
 			h.logger.Error(err, "Failed to marshal error event")

@@ -41,15 +41,37 @@ import (
 // do not change under a live session.
 const flowStreamConnKey = "flow-aggregator-grpc"
 
-// maxResourceExhaustedRetries bounds how many times Subscribe retries a GetFlows call that FA
-// rejected with ResourceExhausted (the stream limiter, or FA's 8-slot token-auth semaphore)
-// before giving up and surfacing the error to the client.
-const maxResourceExhaustedRetries = 5
+// StreamError classifies a flow-stream failure for callers that need to react to it (the frontend,
+// via the "code"/"retryable" fields on apisv1.FlowStreamErrorEvent) without parsing Error() text.
+type StreamError struct {
+	msg string
+	// Code is a stable, machine-readable identifier for the failure kind.
+	Code string
+	// Retryable reports whether the same request is expected to succeed if retried, as opposed
+	// to a failure that will recur until something about the request or the deployment changes.
+	Retryable bool
+}
 
-// resourceExhaustedBackoff is the base backoff between ResourceExhausted retries. It doubles on
-// each attempt, capped by maxResourceExhaustedBackoff.
-const resourceExhaustedBackoff = 2 * time.Second
-const maxResourceExhaustedBackoff = 30 * time.Second
+func (e *StreamError) Error() string { return e.msg }
+
+const (
+	// StreamErrorCodeUnauthenticated means the Flow Aggregator rejected the credential it was
+	// presented. Not retryable: the same credential will be rejected again.
+	StreamErrorCodeUnauthenticated = "unauthenticated"
+	// StreamErrorCodeResourceExhausted means the Flow Aggregator is at capacity (its stream
+	// limiter or its token-auth semaphore). Retryable: capacity is expected to free up.
+	StreamErrorCodeResourceExhausted = "resource_exhausted"
+	// StreamErrorCodeInternal covers everything else: a dial failure, a credential this backend
+	// could not resolve or mint, or any other error. Not retryable by default, since most of
+	// these reflect a persistent local or configuration problem rather than a transient one.
+	StreamErrorCodeInternal = "internal"
+)
+
+// internalStreamError wraps err as a non-retryable StreamError with StreamErrorCodeInternal, for
+// failures resolved locally rather than reported by the Flow Aggregator.
+func internalStreamError(err error) *StreamError {
+	return &StreamError{msg: err.Error(), Code: StreamErrorCodeInternal, Retryable: false}
+}
 
 // GRPCFlowStreamSubscriber connects to the FlowAggregator's FlowStreamService
 // over gRPC and implements the FlowStreamSubscriber interface.
@@ -66,22 +88,6 @@ type GRPCFlowStreamSubscriber struct {
 	// adminTokenSource mints the bearer token used for admin-password (KindImpersonate)
 	// sessions. Nil disables flow streaming for that login mode.
 	adminTokenSource *AdminTokenSource
-	// resourceExhaustedBackoffOverride is a field so tests do not have to wait seconds for a
-	// retry. testing/synctest was tried instead (it fakes time.After and would let this go
-	// away), but a bufconn+grpc test spins up real gRPC transport goroutines blocked on
-	// network I/O, which synctest's docs call out as unsafe: those goroutines never register
-	// as "durably blocked", so the bubble's fake clock stops advancing after the first
-	// backoff. Zero means resourceExhaustedBackoff.
-	resourceExhaustedBackoffOverride time.Duration
-}
-
-// resourceExhaustedBackoffFor returns h's configured backoff, or the production default if no
-// test override is set.
-func (h *GRPCFlowStreamSubscriber) resourceExhaustedBackoffFor() time.Duration {
-	if h.resourceExhaustedBackoffOverride > 0 {
-		return h.resourceExhaustedBackoffOverride
-	}
-	return resourceExhaustedBackoff
 }
 
 // GRPCConfig holds the connection parameters for the FlowAggregator gRPC server.
@@ -97,6 +103,9 @@ type GRPCConfig struct {
 }
 
 func NewGRPCFlowStreamSubscriber(logger logr.Logger, cfg GRPCConfig) (*GRPCFlowStreamSubscriber, error) {
+	if cfg.TLSConfig == nil {
+		return nil, fmt.Errorf("TLSConfig must not be nil")
+	}
 	conn, err := grpc.NewClient(
 		cfg.Address,
 		grpc.WithTransportCredentials(credentials.NewTLS(cfg.TLSConfig)),
@@ -133,6 +142,12 @@ func (h *GRPCFlowStreamSubscriber) Close() error {
 // authenticates a KindCert credential from the connection, not from per-call metadata, so it
 // needs its own connection (and its own pool) rather than reusing the shared one.
 func (h *GRPCFlowStreamSubscriber) buildCertConn(cred *session.Credential) (*grpc.ClientConn, func(), error) {
+	if h.tlsConfig == nil {
+		// (*tls.Config).Clone() returns nil for a nil receiver, which would nil-panic below.
+		// NewGRPCFlowStreamSubscriber rejects a nil TLSConfig, so this only guards against a
+		// struct built directly (e.g. by a test) with tlsConfig left unset.
+		return nil, nil, fmt.Errorf("flow aggregator client TLS config is not configured")
+	}
 	cert, err := tls.X509KeyPair(cred.CertPEM, cred.KeyPEM)
 	if err != nil {
 		// Deliberately not wrapping err with any credential detail.
@@ -155,7 +170,7 @@ func (h *GRPCFlowStreamSubscriber) buildCertConn(cred *session.Credential) (*grp
 func (h *GRPCFlowStreamSubscriber) resolveCall(ctx context.Context) (flowpb.FlowStreamServiceClient, context.Context, error) {
 	ra, ok := session.RequestAuthFrom(ctx)
 	if !ok {
-		return nil, nil, fmt.Errorf("flow stream request carries no resolved identity")
+		return nil, nil, internalStreamError(fmt.Errorf("flow stream request carries no resolved identity"))
 	}
 	cred := ra.Credential()
 	switch cred.Kind {
@@ -164,23 +179,23 @@ func (h *GRPCFlowStreamSubscriber) resolveCall(ctx context.Context) (flowpb.Flow
 	case session.KindCert:
 		conn, err := ra.ConnFor(flowStreamConnKey, h.buildCertConn)
 		if err != nil {
-			return nil, nil, fmt.Errorf("failed to build FlowAggregator client certificate connection: %w", err)
+			return nil, nil, internalStreamError(fmt.Errorf("failed to build FlowAggregator client certificate connection: %w", err))
 		}
 		return flowpb.NewFlowStreamServiceClient(conn), ctx, nil
 	case session.KindImpersonate:
 		if h.adminTokenSource == nil {
-			return nil, nil, fmt.Errorf("flow visibility is unavailable in admin-password mode: no admin token source is configured")
+			return nil, nil, internalStreamError(fmt.Errorf("flow visibility is unavailable in admin-password mode: no admin token source is configured"))
 		}
 		token, err := h.adminTokenSource.Token(ctx)
 		if err != nil {
-			return nil, nil, fmt.Errorf("failed to mint admin token for flow stream: %w", err)
+			return nil, nil, internalStreamError(fmt.Errorf("failed to mint admin token for flow stream: %w", err))
 		}
 		// FA charges a token-auth slot whenever authorization metadata is present, so this
 		// path (like KindBearer) must never also carry a client cert on the connection -
 		// h.client is the shared, cert-free connection, so that is guaranteed here.
 		return h.client, metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+token), nil
 	default:
-		return nil, nil, fmt.Errorf("unsupported credential kind %q for flow stream", cred.Kind)
+		return nil, nil, internalStreamError(fmt.Errorf("unsupported credential kind %q for flow stream", cred.Kind))
 	}
 }
 
@@ -202,18 +217,19 @@ func (h *GRPCFlowStreamSubscriber) Subscribe(ctx context.Context, filter *FlowSt
 		}
 
 		req := filterToGetFlowsRequest(filter)
-		// startStreamWithRetry has to read the first response too, not just call GetFlows:
-		// for a server-streaming RPC, an error the server returns before sending anything
-		// (FA's Unauthenticated/ResourceExhausted included) surfaces on the first Recv, not
-		// on the call that opens the stream.
-		stream, firstResp, err := h.startStreamWithRetry(ctx, client, callCtx, req)
+		// startStream has to read the first response too, not just call GetFlows: for a
+		// server-streaming RPC, an error the server returns before sending anything (FA's
+		// Unauthenticated/ResourceExhausted included) surfaces on the first Recv, not on the
+		// call that opens the stream.
+		stream, firstResp, err := h.startStream(ctx, client, callCtx, req)
 		if err != nil {
 			errCh <- err
 			return
 		}
 		if stream == nil {
-			// ctx ended while retrying: an ordinary client disconnect, not a stream
-			// failure. Nothing to report.
+			// ctx ended, or the connection was closed from under the call (e.g. a KindCert
+			// session logging out): an ordinary client disconnect, not a stream failure.
+			// Nothing to report.
 			return
 		}
 
@@ -229,7 +245,11 @@ func (h *GRPCFlowStreamSubscriber) Subscribe(ctx context.Context, filter *FlowSt
 		for {
 			resp, err := stream.Recv()
 			if err != nil {
-				if errors.Is(err, io.EOF) || ctx.Err() != nil {
+				if errors.Is(err, io.EOF) || ctx.Err() != nil || status.Code(err) == codes.Canceled {
+					// A Canceled Recv with ctx still alive means the connection itself was
+					// closed out from under this call - e.g. a KindCert session logging out
+					// drops its per-session ClientConn (see Session.zero). That is an
+					// ordinary disconnect, not a stream failure worth reporting.
 					return
 				}
 				h.logger.Error(err, "Error receiving from flow stream")
@@ -245,59 +265,39 @@ func (h *GRPCFlowStreamSubscriber) Subscribe(ctx context.Context, filter *FlowSt
 	return flowsCh, errCh
 }
 
-// startStreamWithRetry calls GetFlows and reads the first response, retrying both with backoff on
-// codes.ResourceExhausted - FA's stream limiter or its 8-slot token-auth semaphore, both of which
-// are expected to free up shortly - up to maxResourceExhaustedRetries. Any other error, including
-// a retry budget exhausted, is classified by classifyStreamErr and returned.
+// startStream calls GetFlows and reads the first response. It does not retry: classifyStreamErr
+// marks a retryable failure (e.g. ResourceExhausted) as such, and retrying is the frontend's job,
+// driven by its own reconnect backoff. Retrying here too would double up that backoff behind a
+// single opaque error, hiding the failure kind (and whether it is worth retrying at all) from the
+// client for as long as this loop kept trying.
 //
 // The first response has to be read here, not left for the caller's receive loop: for a
 // server-streaming RPC, FA reports both Unauthenticated and ResourceExhausted before sending any
 // message, and that kind of error does not surface on the call that opens the stream - only on
 // the first Recv. A nil firstResp with a nil error means the server closed the stream immediately
 // with no error and no message; the caller's receive loop handles that the same way it always
-// has. A nil stream with a nil error means ctx ended while retrying (see the ctx.Done() case
-// below); the caller treats that as an ordinary disconnect, not a failure.
-func (h *GRPCFlowStreamSubscriber) startStreamWithRetry(ctx context.Context, client flowpb.FlowStreamServiceClient, callCtx context.Context, req *flowpb.GetFlowsRequest) (flowpb.FlowStreamService_GetFlowsClient, *flowpb.GetFlowsResponse, error) {
-	backoff := h.resourceExhaustedBackoffFor()
-	for attempt := 0; ; attempt++ {
-		stream, err := client.GetFlows(callCtx, req)
-		if err == nil {
-			resp, recvErr := stream.Recv()
-			switch {
-			case recvErr == nil:
-				return stream, resp, nil
-			case errors.Is(recvErr, io.EOF):
-				return stream, nil, nil
-			default:
-				err = recvErr
-			}
-		}
-		if ctx.Err() != nil {
-			// The caller is gone, not FA: an ordinary client disconnect while this call or
-			// the wait for a first matching flow was still in flight (which, with a narrow
-			// filter, can take a while). Same treatment as the ctx.Done() case in the
-			// backoff loop below, and as the receive loop's own ctx.Err() != nil check:
-			// stop without an error rather than surfacing it as an SSE "error" event.
-			return nil, nil, nil
-		}
-		if status.Code(err) != codes.ResourceExhausted || attempt >= maxResourceExhaustedRetries {
-			h.logger.Error(err, "Failed to start GetFlows stream")
-			return nil, nil, h.classifyStreamErr(err)
-		}
-		h.logger.Info("FlowAggregator at capacity, retrying", "attempt", attempt+1, "backoff", backoff)
-		select {
-		case <-ctx.Done():
-			// The caller (the SSE handler) is gone, not FA: an ordinary client disconnect
-			// during backoff, not a stream failure. Report it the same way the receive
-			// loop treats ctx.Err() != nil - by stopping without an error - rather than
-			// surfacing it as an SSE "error" event.
-			return nil, nil, nil
-		case <-time.After(backoff):
-		}
-		if backoff *= 2; backoff > maxResourceExhaustedBackoff {
-			backoff = maxResourceExhaustedBackoff
+// has. A nil stream with a nil error means ctx ended, or the underlying connection was closed
+// (codes.Canceled) while this call or the wait for a first matching flow was still in flight
+// (which, with a narrow filter, can take a while); the caller treats that as an ordinary
+// disconnect, not a failure.
+func (h *GRPCFlowStreamSubscriber) startStream(ctx context.Context, client flowpb.FlowStreamServiceClient, callCtx context.Context, req *flowpb.GetFlowsRequest) (flowpb.FlowStreamService_GetFlowsClient, *flowpb.GetFlowsResponse, error) {
+	stream, err := client.GetFlows(callCtx, req)
+	if err == nil {
+		resp, recvErr := stream.Recv()
+		switch {
+		case recvErr == nil:
+			return stream, resp, nil
+		case errors.Is(recvErr, io.EOF):
+			return stream, nil, nil
+		default:
+			err = recvErr
 		}
 	}
+	if ctx.Err() != nil || status.Code(err) == codes.Canceled {
+		return nil, nil, nil
+	}
+	h.logger.Error(err, "Failed to start GetFlows stream")
+	return nil, nil, h.classifyStreamErr(err)
 }
 
 // forwardResp converts resp to a FlowStreamEvent and sends it on flowsCh if it carries anything
@@ -328,27 +328,40 @@ func (h *GRPCFlowStreamSubscriber) forwardResp(ctx context.Context, resp *flowpb
 	}
 }
 
-// classifyStreamErr turns a gRPC error from GetFlows/Recv into one of the shapes callers of
-// Subscribe need to distinguish:
-//   - Unauthenticated: the credential FA saw was rejected. This is deliberately *not* treated as
-//     a reason to invalidate the antrea-ui session the way an upstream 401 from the
-//     kube-apiserver is (see RequestAuth.Invalidate): FA is a different server, trusting a
+// classifyStreamErr turns a gRPC error from GetFlows/Recv into a StreamError callers of Subscribe
+// (ultimately the frontend, via FlowStreamErrorEvent's code/retryable fields) can act on without
+// parsing the message:
+//   - Unauthenticated: the credential FA saw was rejected. Not retryable. This is deliberately
+//     *not* treated as a reason to invalidate the antrea-ui session the way an upstream 401 from
+//     the kube-apiserver is (see RequestAuth.Invalidate): FA is a different server, trusting a
 //     different CA and (for a bearer token) potentially a different audience than the
 //     kube-apiserver, so a credential FA rejects may still be perfectly valid for every other
 //     antrea-ui call. Ending the whole UI session over it would log the user out of pages that
 //     have nothing to do with flow visibility, on every single re-login, if that mismatch is
 //     simply how the deployment is configured.
-//   - ResourceExhausted: the retry budget in startStreamWithRetry was exhausted; still reported
-//     as a capacity problem rather than a generic failure.
-//   - anything else: wrapped as a generic stream failure.
-func (h *GRPCFlowStreamSubscriber) classifyStreamErr(err error) error {
+//   - ResourceExhausted: FA is at capacity (its stream limiter or its token-auth semaphore).
+//     Retryable.
+//   - anything else: a generic, non-retryable stream failure.
+func (h *GRPCFlowStreamSubscriber) classifyStreamErr(err error) *StreamError {
 	switch status.Code(err) {
 	case codes.Unauthenticated:
-		return fmt.Errorf("FlowAggregator rejected the credential: %w", err)
+		return &StreamError{
+			msg:       fmt.Errorf("FlowAggregator rejected the credential: %w", err).Error(),
+			Code:      StreamErrorCodeUnauthenticated,
+			Retryable: false,
+		}
 	case codes.ResourceExhausted:
-		return fmt.Errorf("FlowAggregator is at capacity, please retry: %w", err)
+		return &StreamError{
+			msg:       fmt.Errorf("FlowAggregator is at capacity, please retry: %w", err).Error(),
+			Code:      StreamErrorCodeResourceExhausted,
+			Retryable: true,
+		}
 	default:
-		return fmt.Errorf("flow stream error: %w", err)
+		return &StreamError{
+			msg:       fmt.Errorf("flow stream error: %w", err).Error(),
+			Code:      StreamErrorCodeInternal,
+			Retryable: false,
+		}
 	}
 }
 

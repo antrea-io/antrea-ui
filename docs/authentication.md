@@ -191,6 +191,11 @@ it does not consult the caller's Kubernetes permissions to decide which flows
 they may see, so every caller who reaches the endpoint still sees every flow
 the Flow Aggregator exports. The interim restriction below narrows *who reaches
 it*, using a coarse cluster-admin check; it does not make the data per-user.
+This describes FA as antrea-ui's `pkg/flowpb` bindings model it; FA on Antrea
+`main` has since added its own per-request authorization (requiring a
+`cluster_wide`/`namespaces` scope on every `GetFlowsRequest`, and a
+`SubjectAccessReview` against the caller's credential), which this backend does
+not yet speak - tracked separately from the authentication work this PR covers.
 
 **Interim restriction.** Because there is no per-user answer to fall back on,
 the endpoint is currently limited to two kinds of caller:

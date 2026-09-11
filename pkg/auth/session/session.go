@@ -94,6 +94,15 @@ func (c Credential) String() string {
 	return fmt.Sprintf("Credential{Kind:%s,UserName:%s,Redacted}", c.Kind, c.UserName)
 }
 
+// clone returns a copy of c whose byte slices do not alias c's: safe to retain and read after the
+// original is zeroed or overwritten concurrently, at the cost of one allocation per field in use.
+func (c Credential) clone() Credential {
+	c.Token = append([]byte(nil), c.Token...)
+	c.CertPEM = append([]byte(nil), c.CertPEM...)
+	c.KeyPEM = append([]byte(nil), c.KeyPEM...)
+	return c
+}
+
 // MarshalJSON makes Credential safe to log through a structured logger (logr/zap serializes
 // unknown values by reflection, which would otherwise dump the raw bytes).
 func (c Credential) MarshalJSON() ([]byte, error) {
@@ -240,12 +249,13 @@ func (s *Session) LastSeen() time.Time {
 	return s.lastSeen
 }
 
-// Credential returns the current credential. The returned struct shares its byte slices with the
-// session, so callers must not modify (or retain) them: they are zeroed on eviction.
+// Credential returns a copy of the current credential, with its byte slices cloned so the result
+// is safe to read and retain even if the session's own credential is refreshed or zeroed
+// concurrently.
 func (s *Session) Credential() Credential {
 	s.mutex.RLock()
 	defer s.mutex.RUnlock()
-	return s.credential
+	return s.credential.clone()
 }
 
 // String keeps a Session from leaking credential material if it is ever logged.
