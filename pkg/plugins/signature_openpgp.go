@@ -19,6 +19,7 @@ import (
 	"crypto"
 	"fmt"
 	"os"
+	"sync"
 	"time"
 
 	// The v2 API, not github.com/ProtonMail/go-crypto/openpgp: only v2 enforces the algorithm
@@ -70,8 +71,13 @@ func newOpenPGPPolicy() *packet.Config {
 		crypto.SHA3_256: true,
 		crypto.SHA3_512: true,
 	}
+	// A fixed range well past the highest crypto.Hash today (BLAKE2b_512, 19) rather than up to
+	// it, so the allowlist doesn't depend on the toolchain. Today a hash go-crypto doesn't map an
+	// OpenPGP hash ID to fails to parse before this policy runs; the range is a safety net for a
+	// later go-crypto that maps a newer crypto.Hash, which would otherwise fall outside the map
+	// and be accepted.
 	rejectedHashes := make(map[crypto.Hash]bool)
-	for h := crypto.MD4; h <= crypto.BLAKE2b_512; h++ {
+	for h := crypto.Hash(0); h < 256; h++ {
 		if !allowedHashes[h] {
 			rejectedHashes[h] = true
 		}
@@ -107,7 +113,14 @@ func newOpenPGPPolicy() *packet.Config {
 
 // openPGPVerifier is the SignatureVerifier for one OpenPGP trusted key file.
 type openPGPVerifier struct {
-	name    string
+	name string
+	// mu serializes Verify. go-crypto caches signature-validity results by writing them back onto
+	// keyring's entities during verification, so verifying is not read-only on the ring, and the
+	// ConfigMap and directory watches verify concurrently. loadOpenPGPKeyRing's policy check
+	// happens to populate most of those caches at startup, but not all of them (not for a revoked
+	// key, for one), and nothing in go-crypto promises it would. Plugin loads are rare enough that
+	// serializing them costs nothing.
+	mu      sync.Mutex
 	keyring openpgp.EntityList
 }
 
@@ -124,6 +137,8 @@ func (v *openPGPVerifier) SignatureFileName() string {
 // neither expired nor revoked - where only the revocation signatures embedded in the key ring
 // itself are honored, there is no keyserver lookup.
 func (v *openPGPVerifier) Verify(manifest, signature []byte) error {
+	v.mu.Lock()
+	defer v.mu.Unlock()
 	sig, signer, err := openpgp.VerifyArmoredDetachedSignature(v.keyring, bytes.NewReader(manifest), bytes.NewReader(signature), openPGPPolicy)
 	if err != nil {
 		return err

@@ -42,4 +42,12 @@ against plugin ConfigMap writers. See "Signature verification" in docs/plugins.m
 
 {{- end }}
 
+{{- if and (not .Values.plugins.signature.enabled) .Values.plugins.signature.trustedKeys }}
+
+WARNING: plugins.signature.trustedKeys is set, but plugins.signature.enabled is false, so these keys
+are ignored and plugins load without any signature verification. Set plugins.signature.enabled to
+true to require plugins to be signed by one of them. See "Signature verification" in docs/plugins.md.
+
+{{- end }}
+
 For the Antrea documentation, please visit https://antrea.io

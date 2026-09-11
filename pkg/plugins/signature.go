@@ -51,7 +51,8 @@ type SignatureVerifier interface {
 	// carry signatures of several types side by side. Verifiers of the same type share it.
 	SignatureFileName() string
 	// Verify returns an error unless signature is a valid signature, by a key this verifier
-	// trusts, over manifest's exact bytes.
+	// trusts, over manifest's exact bytes. It must be safe for concurrent use: the ConfigMap and
+	// directory watches share the same verifiers and verify from their own goroutines.
 	Verify(manifest, signature []byte) error
 }
 

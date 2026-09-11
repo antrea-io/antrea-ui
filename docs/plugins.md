@@ -305,7 +305,9 @@ plugins:
 The chart mounts each ConfigMap read-only at `/app/plugin-keys/<name>/` and
 lists its key file in the backend's `plugins.signature.trustedKeys`
 configuration (`name`, `type`, and the `file` path). Enabling verification
-with an empty `trustedKeys` list fails the Helm render.
+with an empty `trustedKeys` list fails the Helm render. The reverse, a
+`trustedKeys` list with `enabled` left at `false`, renders but ignores the
+keys, so the chart prints a warning: plugins then load unverified.
 
 There are two ways to trust more than one key, and both are how a
 deployment rotates keys without a window where plugins fail to load: add the

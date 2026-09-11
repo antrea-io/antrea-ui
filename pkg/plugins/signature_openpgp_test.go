@@ -133,6 +133,41 @@ func TestOpenPGPSignatureHashPolicy(t *testing.T) {
 	}
 }
 
+// TestOpenPGPVerifyConcurrent covers Verify being called from the ConfigMap and the directory
+// watches at once, against the same key ring: go-crypto caches signature validity by writing it
+// back onto the ring's entities, so verification is not read-only. The revoked key is what makes
+// the race reachable: loadOpenPGPKeyRing's policy check stops at the revocation, leaving the
+// entity's self-signature caches unpopulated, and a signature made before a "superseded"
+// revocation gets past go-crypto's revocation check to populate them during Verify. Run with
+// -race, as `make test` does.
+func TestOpenPGPVerifyConcurrent(t *testing.T) {
+	config := ed25519Config()
+	created := time.Now().Add(-time.Hour)
+	config.Time = func() time.Time { return created }
+	signer := newTestEntity(config, 0)
+	manifest := []byte(`{"name":"pod-counter"}`)
+	signature := sign(t, signer, manifest)
+	require.NoError(t, signer.Revoke(packet.KeySuperseded, "rotated", nil))
+	verifier := trustedOpenPGPKey(t, "test", signer)
+
+	const goroutines = 2
+	errs := make(chan error, goroutines)
+	for range goroutines {
+		go func() { errs <- verifier.Verify(manifest, signature) }()
+	}
+	for range goroutines {
+		assert.ErrorContains(t, <-errs, "revoked")
+	}
+}
+
+// TestOpenPGPPolicyRejectsUnknownHashes checks that the hash allowlist holds for crypto.Hash
+// values past the highest one Go defines today, which a later Go release could add.
+func TestOpenPGPPolicyRejectsUnknownHashes(t *testing.T) {
+	unknown := crypto.BLAKE2b_512 + 1
+	assert.True(t, openPGPPolicy.RejectHashAlgorithm(unknown))
+	assert.True(t, openPGPPolicy.RejectMessageHashAlgorithm(unknown))
+}
+
 // signWithHash is sign with the hash forced, built at the packet level: go-crypto's signing API
 // picks a hash itself, and silently upgrades a weak one rather than using it.
 func signWithHash(t *testing.T, entity *openpgp.Entity, data []byte, hash crypto.Hash) []byte {

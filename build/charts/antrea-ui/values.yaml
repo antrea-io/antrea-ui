@@ -81,7 +81,8 @@ plugins:
     # manifest.json.asc), and a `configMap` (`name` and `key`) selecting the ConfigMap in the
     # release namespace, and the key within it, that holds the key file. You create these
     # ConfigMaps yourself (see docs/plugins.md); the chart deliberately does not, since a trust
-    # anchor does not belong in values.yaml.
+    # anchor does not belong in values.yaml. Ignored unless enabled is true: with enabled false,
+    # plugins load unverified even when keys are listed here.
     trustedKeys: []
     # - name: antrea
     #   type: openpgp
