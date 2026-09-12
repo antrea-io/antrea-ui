@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"io"
 	"net/netip"
+	"strings"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -71,6 +72,21 @@ const (
 // failures resolved locally rather than reported by the Flow Aggregator.
 func internalStreamError(err error) *StreamError {
 	return &StreamError{msg: err.Error(), Code: StreamErrorCodeInternal, Retryable: false}
+}
+
+// isMessageSizeErr reports whether a ResourceExhausted error is grpc-go's own "message too large
+// for the configured limit" (4 MiB by default on receive), raised in the client rather than sent by
+// the Flow Aggregator. Nothing in the gRPC status distinguishes the two, so this matches on the
+// message grpc-go builds - deliberately on the substring common to all of its variants (receive,
+// receive-after-decompression, send), since which one fires does not change the answer.
+//
+// It matters because the two ends of this one code need opposite handling: FA at capacity is
+// transient and worth retrying, while a batch that will not fit is a fixed mismatch between FA's
+// batch size and this client's limit. Retrying it just re-fetches the same oversized batch, and
+// reporting it as "FlowAggregator is at capacity" sends whoever debugs it looking at FA's load
+// instead of at the size limit.
+func isMessageSizeErr(err error) bool {
+	return strings.Contains(status.Convert(err).Message(), "larger than max")
 }
 
 // GRPCFlowStreamSubscriber connects to the FlowAggregator's FlowStreamService
@@ -340,7 +356,8 @@ func (h *GRPCFlowStreamSubscriber) forwardResp(ctx context.Context, resp *flowpb
 //     have nothing to do with flow visibility, on every single re-login, if that mismatch is
 //     simply how the deployment is configured.
 //   - ResourceExhausted: FA is at capacity (its stream limiter or its token-auth semaphore).
-//     Retryable.
+//     Retryable - except for the one ResourceExhausted grpc-go raises locally, see
+//     isMessageSizeErr.
 //   - anything else: a generic, non-retryable stream failure.
 func (h *GRPCFlowStreamSubscriber) classifyStreamErr(err error) *StreamError {
 	switch status.Code(err) {
@@ -351,6 +368,13 @@ func (h *GRPCFlowStreamSubscriber) classifyStreamErr(err error) *StreamError {
 			Retryable: false,
 		}
 	case codes.ResourceExhausted:
+		if isMessageSizeErr(err) {
+			return &StreamError{
+				msg:       fmt.Errorf("FlowAggregator sent a message larger than this client accepts: %w", err).Error(),
+				Code:      StreamErrorCodeInternal,
+				Retryable: false,
+			}
+		}
 		return &StreamError{
 			msg:       fmt.Errorf("FlowAggregator is at capacity, please retry: %w", err).Error(),
 			Code:      StreamErrorCodeResourceExhausted,

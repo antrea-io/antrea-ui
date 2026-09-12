@@ -18,6 +18,7 @@ import (
 	"context"
 	"crypto/tls"
 	"net"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -45,7 +46,10 @@ type fakeFlowStreamServer struct {
 	flowpb.UnimplementedFlowStreamServiceServer
 	// handle is called for every GetFlows call; it decides what the call returns.
 	handle func(callNum int, bearer string) error
-	calls  atomic.Int32
+	// send, when set, is called before handle and can put messages on the stream. Only the
+	// oversized-response test uses it.
+	send  func(stream grpc.ServerStreamingServer[flowpb.GetFlowsResponse]) error
+	calls atomic.Int32
 	// peerDNSNames captures the DNS SAN names of the TLS client certificate presented on the
 	// connection, if any. Only the KindCert test reads it.
 	peerDNSNames atomic.Value
@@ -64,13 +68,21 @@ func (f *fakeFlowStreamServer) GetFlows(_ *flowpb.GetFlowsRequest, stream grpc.S
 			f.peerDNSNames.Store(tlsInfo.State.PeerCertificates[0].DNSNames)
 		}
 	}
+	if f.send != nil {
+		if err := f.send(stream); err != nil {
+			return err
+		}
+	}
 	return f.handle(callNum, bearer)
 }
 
 // newTestSubscriber starts fake on an in-memory bufconn listener and returns a
 // GRPCFlowStreamSubscriber dialed against it with no TLS, bypassing the real constructor (which
 // requires real TLS credentials).
-func newTestSubscriber(t *testing.T, fake *fakeFlowStreamServer) *GRPCFlowStreamSubscriber {
+//
+// extraDialOpts are appended to the client's dial options, for a test that needs to change how the
+// client itself behaves (see TestSubscribeReportsOversizedMessageAsNotRetryable).
+func newTestSubscriber(t *testing.T, fake *fakeFlowStreamServer, extraDialOpts ...grpc.DialOption) *GRPCFlowStreamSubscriber {
 	t.Helper()
 	lis := bufconn.Listen(1024 * 1024)
 	srv := grpc.NewServer()
@@ -78,11 +90,11 @@ func newTestSubscriber(t *testing.T, fake *fakeFlowStreamServer) *GRPCFlowStream
 	go srv.Serve(lis) //nolint:errcheck
 	t.Cleanup(srv.Stop)
 
-	conn, err := grpc.NewClient(
-		"passthrough:///bufnet",
+	dialOpts := append([]grpc.DialOption{
 		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) { return lis.DialContext(ctx) }),
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
-	)
+	}, extraDialOpts...)
+	conn, err := grpc.NewClient("passthrough:///bufnet", dialOpts...)
 	require.NoError(t, err)
 	t.Cleanup(func() { conn.Close() })
 
@@ -240,6 +252,42 @@ func TestSubscribeReportsResourceExhaustedAsRetryable(t *testing.T) {
 		t.Fatal("timed out waiting for error")
 	}
 	assert.Equal(t, int32(1), fake.calls.Load(), "must not retry on its own")
+}
+
+// grpc-go raises codes.ResourceExhausted in the *client* when a response exceeds the configured
+// receive limit (4 MiB by default), which is a fixed mismatch between FA's batch size and this
+// client's limit - nothing like FA being at capacity. Reporting it as capacity would both retry a
+// batch that cannot ever fit and point whoever debugs it at FA's load instead of the size limit.
+func TestSubscribeReportsOversizedMessageAsNotRetryable(t *testing.T) {
+	// Comfortably past the 1 KiB receive limit set below, so the client rejects the response
+	// before it is ever handed to forwardResp.
+	oversized := &flowpb.GetFlowsResponse{Flows: []*flowpb.Flow{{Id: strings.Repeat("x", 4096)}}}
+	fake := &fakeFlowStreamServer{handle: func(_ int, _ string) error {
+		return nil
+	}}
+	fake.send = func(stream grpc.ServerStreamingServer[flowpb.GetFlowsResponse]) error {
+		return stream.Send(oversized)
+	}
+	h := newTestSubscriber(t, fake, grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(1024)))
+
+	store := newTestStore(t)
+	ctx, _ := ctxWithSessionAuth(t, store, &session.Spec{
+		Mode:       session.ModeToken,
+		Credential: session.Credential{Kind: session.KindBearer, Token: []byte("tok")},
+	})
+
+	_, errCh := h.Subscribe(ctx, &FlowStreamFilter{})
+	select {
+	case err, ok := <-errCh:
+		require.True(t, ok)
+		var streamErr *StreamError
+		require.ErrorAs(t, err, &streamErr)
+		assert.Equal(t, StreamErrorCodeInternal, streamErr.Code)
+		assert.False(t, streamErr.Retryable)
+		assert.NotContains(t, streamErr.Error(), "at capacity")
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for error")
+	}
 }
 
 // codes.Unauthenticated is reported as a non-retryable StreamError: the same credential will be

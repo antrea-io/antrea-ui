@@ -58,17 +58,39 @@ const defaultKeepAliveInterval = 5 * time.Second
 // failure before committing to a 200 response. See the comment where it is used.
 const initialErrorPeekTimeout = 200 * time.Millisecond
 
+// streamErrorEvent describes streamErr for a client, carrying classifyStreamErr's code and
+// retryable flag when it has them so the client does not have to parse Message. It is the body of
+// both the SSE "error" event and the pre-200 HTTP error response, so the frontend parses one
+// shape either way.
+func streamErrorEvent(streamErr error) apisv1.FlowStreamErrorEvent {
+	evt := apisv1.FlowStreamErrorEvent{Message: streamErr.Error()}
+	var se *StreamError
+	if errors.As(streamErr, &se) {
+		evt.Code = se.Code
+		evt.Retryable = se.Retryable
+	}
+	return evt
+}
+
 // statusForStreamErr maps a flow-stream failure to the HTTP status StreamFlows returns for it when
 // caught before the response is committed to a 200.
+//
+// Deliberately never 401, even for StreamErrorCodeUnauthenticated: a 401 from any antrea-ui
+// endpoint means "your antrea-ui session is over, log in again", and the frontend acts on it by
+// doing exactly that. A credential the Flow Aggregator rejects says nothing about the antrea-ui
+// session - FA is a different server, trusting a different CA and potentially a different audience
+// than the kube-apiserver (see classifyStreamErr for the full reasoning, and
+// TestSubscribeDoesNotInvalidateSessionOnUnauthenticated for the backend half of it). Returning a
+// 401 here would log the user out of every page in the UI because flow visibility alone could not
+// authenticate, on every single re-login, whenever that mismatch is simply how the deployment is
+// configured. The failure is an upstream one, so it gets an upstream status; the client tells the
+// kinds apart from the response body's code/retryable fields, not from the status.
 func statusForStreamErr(err error) int {
 	var streamErr *StreamError
-	if errors.As(err, &streamErr) {
-		switch streamErr.Code {
-		case StreamErrorCodeUnauthenticated:
-			return http.StatusUnauthorized
-		case StreamErrorCodeResourceExhausted:
-			return http.StatusServiceUnavailable
-		}
+	if errors.As(err, &streamErr) && streamErr.Code == StreamErrorCodeResourceExhausted {
+		// Capacity, not a broken upstream: the one pre-200 failure worth retrying, and 503
+		// is the status that says so.
+		return http.StatusServiceUnavailable
 	}
 	return http.StatusBadGateway
 }
@@ -194,7 +216,8 @@ func (h *SSEHandler) StreamFlows(c *gin.Context) {
 	select {
 	case streamErr, ok := <-errCh:
 		if ok {
-			c.JSON(statusForStreamErr(streamErr), gin.H{"error": streamErr.Error()})
+			h.logger.Error(streamErr, "Flow stream failed before the response was committed")
+			c.JSON(statusForStreamErr(streamErr), streamErrorEvent(streamErr))
 			return
 		}
 		// errCh closed with nothing buffered: Subscribe ended (e.g. ctx already canceled)
@@ -266,13 +289,7 @@ func (h *SSEHandler) StreamFlows(c *gin.Context) {
 	// emitStreamError writes streamErr as an SSE "error" event and reports whether the caller
 	// should keep streaming (it never does: every caller treats an error as terminal).
 	emitStreamError := func(streamErr error) bool {
-		errEvent := apisv1.FlowStreamErrorEvent{Message: streamErr.Error()}
-		var se *StreamError
-		if errors.As(streamErr, &se) {
-			errEvent.Code = se.Code
-			errEvent.Retryable = se.Retryable
-		}
-		data, err := json.Marshal(errEvent)
+		data, err := json.Marshal(streamErrorEvent(streamErr))
 		if err != nil {
 			h.logger.Error(err, "Failed to marshal error event")
 			return false

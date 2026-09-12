@@ -249,6 +249,43 @@ func TestStreamFlowsErrorPathClassifiedStatus(t *testing.T) {
 	defer resp.Body.Close()
 
 	assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
+
+	var evt apisv1.FlowStreamErrorEvent
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&evt))
+	assert.Equal(t, StreamErrorCodeResourceExhausted, evt.Code)
+	assert.True(t, evt.Retryable, "the client reconnects off this flag, so it has to reach the client")
+}
+
+// A credential the Flow Aggregator rejects must never come back as a 401. A 401 from any
+// antrea-ui endpoint means "your antrea-ui session is over", and the frontend acts on it by
+// logging the user out of the whole UI - but FA is a different server than the kube-apiserver
+// (see statusForStreamErr and classifyStreamErr), so a credential it rejects can still be
+// perfectly valid for every other antrea-ui call. The failure has to reach the client as
+// something only the flow-visibility page reacts to.
+func TestStreamFlowsUnauthenticatedIsNotA401(t *testing.T) {
+	logger := testr.New(t)
+	stub := &stubFlowStreamSubscriber{
+		err: &StreamError{msg: "FlowAggregator rejected the credential", Code: StreamErrorCodeUnauthenticated, Retryable: false},
+	}
+
+	sseHandler := NewSSEHandler(logger, stub)
+	ts := httptest.NewServer(newTestRouter(sseHandler))
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/api/v1/flows/stream")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusBadGateway, resp.StatusCode)
+	assert.NotEqual(t, http.StatusUnauthorized, resp.StatusCode)
+
+	// The status is deliberately generic, so the code/retryable fields are the only thing that
+	// tells the client this one is not worth retrying.
+	var evt apisv1.FlowStreamErrorEvent
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&evt))
+	assert.Equal(t, StreamErrorCodeUnauthenticated, evt.Code)
+	assert.False(t, evt.Retryable)
+	assert.Contains(t, evt.Message, "rejected the credential")
 }
 
 // When Subscribe's error paths buffer an error into errCh and then close both channels (the real

@@ -331,6 +331,88 @@ describe('FlowStreamClient', () => {
         expect(fetchMock).toHaveBeenCalledTimes(1);
     });
 
+    // The batch timer is an interval, so a terminal path that only clears `running` leaves it
+    // firing for the life of the page. Nothing else observes it, which is exactly why it is
+    // asserted here: after a permanent stop, no timer of ours may be left pending.
+    test('a non-retryable stream error event leaves no timer behind', async () => {
+        stubFetch(async () => closingSseResponse([
+            'event: error\ndata: {"message":"rejected","code":"unauthenticated","retryable":false}\n\n',
+        ]));
+        const cb = makeCallbacks();
+        const client = new FlowStreamClient({}, cb, 10);
+        client.start();
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(vi.getTimerCount()).toBe(0);
+    });
+
+    // The backend peeks for a synchronous failure before committing to a 200 (see StreamFlows's
+    // errorPeekTimeout), so the failures that would otherwise arrive as an SSE "error" event
+    // mostly arrive as an HTTP error status carrying the same code/retryable body. A permanent one
+    // must be just as terminal on that path - otherwise a rejected credential gets retried the
+    // full maxReconnectAttempts times purely because it was reported early rather than late.
+    test('a non-retryable pre-200 error body stops the client without reconnecting', async () => {
+        stubFetch(async () => new Response(
+            JSON.stringify({ message: 'FlowAggregator rejected the credential', code: 'unauthenticated', retryable: false }),
+            { status: 502, headers: { 'Content-Type': 'application/json' } },
+        ));
+        const cb = makeCallbacks();
+        const client = new FlowStreamClient({}, cb, 10);
+        client.start();
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(cb.errors.map(e => e.message)).toEqual(['FlowAggregator rejected the credential']);
+        // Emphatically not onAuthError: FA rejecting the credential says nothing about the
+        // antrea-ui session, and the host logs the user out when that fires.
+        expect(cb.authErrors).toBe(0);
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        expect(vi.getTimerCount()).toBe(0);
+    });
+
+    // The retryable half of the same path: FA at capacity before the 200 is a 503, and capacity is
+    // expected to free up, so this one goes back through the normal backoff.
+    test('a retryable pre-200 error body reconnects with backoff', async () => {
+        let calls = 0;
+        stubFetch(async () => {
+            calls++;
+            return new Response(
+                JSON.stringify({ message: 'at capacity', code: 'resource_exhausted', retryable: true }),
+                { status: 503, headers: { 'Content-Type': 'application/json' } },
+            );
+        });
+        const cb = makeCallbacks();
+        const client = new FlowStreamClient({}, cb, 10);
+        client.start();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(calls).toBe(1);
+        expect(cb.errors.map(e => e.message)).toEqual(['at capacity']);
+
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(calls).toBe(2);
+        client.stop();
+    });
+
+    // An error status whose body is not ours at all - an nginx HTML error page, a body that never
+    // arrived - must fall through to the retry path rather than being read as permanent, and the
+    // reported message has to fall back to the status line so the user sees something.
+    test('an unparseable error body falls back to the status line and reconnects', async () => {
+        let calls = 0;
+        stubFetch(async () => {
+            calls++;
+            return new Response('<html>502 Bad Gateway</html>', { status: 502 });
+        });
+        const cb = makeCallbacks();
+        const client = new FlowStreamClient({}, cb, 10);
+        client.start();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(cb.errors[0].message).toContain('502');
+
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(calls).toBe(2);
+        client.stop();
+    });
+
     // A stream "error" event with retryable:true (e.g. FA at capacity) must still reconnect with
     // the normal exponential backoff.
     test('a retryable stream error event still reconnects', async () => {
