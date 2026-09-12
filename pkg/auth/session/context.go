@@ -19,6 +19,8 @@ import (
 	"fmt"
 	"net/http"
 	"time"
+
+	"google.golang.org/grpc"
 )
 
 // TransportKeyK8s is the cache key for the transport used to reach the kube-apiserver. It is
@@ -78,10 +80,9 @@ func NewEphemeralAuth(cred Credential, username string) *RequestAuth {
 // Credential returns the credential to present to Kubernetes for this request. Do not log it.
 //
 // It reads through to the session on every call rather than returning a snapshot taken when the
-// request was authenticated. The session zeroes its credential material in place on refresh and on
-// eviction, so a snapshot held across either would silently become zeros while the request was
-// still using it. The returned struct still shares its byte slices with the session, so callers
-// must use it immediately and must neither retain nor modify it.
+// request was authenticated: the session's own credential can be refreshed or zeroed at any time.
+// Session.Credential clones the credential's byte slices, so the returned struct is independent of
+// the session and safe to retain across the rest of the request.
 //
 // Prefer TransportFor, which handles all of this: this is for the callers that genuinely need the
 // credential itself rather than a transport built from it.
@@ -119,6 +120,27 @@ func (ra *RequestAuth) TransportFor(key string, build TransportBuilder) (http.Ro
 	}
 	rt, _, err := build(&ra.ephemeralCredential)
 	return rt, err
+}
+
+// ConnFor returns a gRPC connection that authenticates as this request's credential, the gRPC
+// counterpart of TransportFor.
+//
+// Unlike TransportFor, this has no ephemeral (session-less) path: a gRPC connection owns real
+// resources (a socket, a TLS session) that something has to close, and there is nowhere to cache
+// a cleanup callback for a request with no session. TransportFor gets away with discarding the
+// cleanup for its ephemeral case because a bearer credential's "transport" is cheap - just a
+// header wrapper around a shared base transport - and an ephemeral RequestAuth is always bearer
+// (see NewEphemeralAuth). ConnFor's only caller (a KindCert credential) never produces an
+// ephemeral RequestAuth for the same reason, so this fails closed instead of leaking a connection
+// per request if that ever stops being true.
+func (ra *RequestAuth) ConnFor(key string, build ConnBuilder) (*grpc.ClientConn, error) {
+	if build == nil {
+		return nil, fmt.Errorf("no connection builder provided")
+	}
+	if ra.session == nil {
+		return nil, fmt.Errorf("gRPC connection caching requires a session-backed credential")
+	}
+	return ra.session.connFor(key, build)
 }
 
 // KeepAlive re-resolves the session the way an ordinary request would, and reports whether it is

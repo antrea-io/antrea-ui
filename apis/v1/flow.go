@@ -161,4 +161,11 @@ type FlowStreamDroppedEvent struct {
 // FlowStreamErrorEvent is the JSON payload for an SSE "error" event.
 type FlowStreamErrorEvent struct {
 	Message string `json:"message"`
+	// Code is a stable, machine-readable identifier for the failure kind (see
+	// pkg/handlers/flowstream.StreamError), so a client can decide how to react without parsing
+	// Message. Empty for an error this backend could not classify.
+	Code string `json:"code,omitempty"`
+	// Retryable reports whether the same request is expected to succeed if retried. The
+	// frontend uses this to decide whether to keep reconnecting or to stop and show Message.
+	Retryable bool `json:"retryable"`
 }

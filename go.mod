@@ -40,6 +40,7 @@ require (
 	github.com/gruntwork-io/terratest/modules/helm/v2 v2.0.0-beta.2
 	github.com/gruntwork-io/terratest/modules/httphelper/v2 v2.0.0-beta.2
 	github.com/gruntwork-io/terratest/modules/k8s/v2 v2.0.0-beta.2
+	golang.org/x/sync v0.23.0
 )
 
 require (
@@ -112,7 +113,6 @@ require (
 	go.yaml.in/yaml/v2 v2.4.4 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.org/x/arch v0.29.0 // indirect
-	golang.org/x/sync v0.23.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect
 	golang.org/x/term v0.46.0 // indirect
 	golang.org/x/text v0.42.0 // indirect

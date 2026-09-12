@@ -174,11 +174,28 @@ installed next month adds".
 ### Flow data is not yet per-user
 
 The flow visibility stream (`GET /api/v1/flows/stream`) is the one part of the
-UI that per-user RBAC does **not** cover. The backend subscribes to the Flow
-Aggregator over its own mTLS gRPC connection, and no per-user answer exists to
-filter what comes back, so every caller who reaches the endpoint sees every flow
+UI that per-user RBAC does **not** cover, even though the connection to the
+Flow Aggregator is now authenticated per caller: for most login modes, the
+backend presents the signed-in user's own credential (their bearer token, or
+their client certificate on the connection) to the Flow Aggregator's
+FlowStreamService, which rejects a call that presents neither. The one
+exception is the admin-password login mode: it normally reaches the
+kube-apiserver by impersonating the `antrea-ui-admin` ServiceAccount, but FA
+accepts no impersonation header, so the backend instead mints a short-lived,
+real token for that same ServiceAccount (via the TokenRequest API) and
+presents that — the one case where the credential FA sees is not literally the
+signed-in user's own.
+
+But FA's own authorization stops at "did this request authenticate at all" —
+it does not consult the caller's Kubernetes permissions to decide which flows
+they may see, so every caller who reaches the endpoint still sees every flow
 the Flow Aggregator exports. The interim restriction below narrows *who reaches
 it*, using a coarse cluster-admin check; it does not make the data per-user.
+This describes FA as antrea-ui's `pkg/flowpb` bindings model it; FA on Antrea
+`main` has since added its own per-request authorization (requiring a
+`cluster_wide`/`namespaces` scope on every `GetFlowsRequest`, and a
+`SubjectAccessReview` against the caller's credential), which this backend does
+not yet speak - tracked separately from the authentication work this PR covers.
 
 **Interim restriction.** Because there is no per-user answer to fall back on,
 the endpoint is currently limited to two kinds of caller:
@@ -206,7 +223,11 @@ the frontend has no permission answer at all, it shows the entry and lets the
 403 explain, rather than hiding the page on a failure the backend never saw.
 
 This narrows who is exposed; it does not make flow data per-user. Within that
-set, every caller still sees every flow.
+set, every caller still sees every flow. FA also authenticates a stream once,
+at open time, and holds that identity for as long as the stream stays open:
+revoking a token or deleting a ServiceAccount stops *new* streams, not ones
+already running, and a client certificate's revocation is never checked at
+all.
 
 The check runs when the stream is opened, not continuously. A caller whose
 cluster-admin binding is removed keeps the stream they already have until it
@@ -216,16 +237,18 @@ absolute lifetime cap (12h by default), whichever comes first.
 This is temporary. Authorization for `FlowStreamService` is being implemented
 upstream in
 [antrea-io/antrea#8221](https://github.com/antrea-io/antrea/pull/8221); once it
-lands and Antrea UI can present the caller's identity to the Flow Aggregator,
-the restriction goes away and flow data becomes per-user like everything else.
+lands, the per-caller credential this backend already presents can be checked
+against the caller's Kubernetes RBAC, and both the interim restriction and
+this section go away — flow data becomes per-user like everything else.
 
 To turn the integration off entirely rather than restrict it, deploy with
 `flowAggregator.enabled=false` (the chart default). The endpoint then returns
 501 for every user, including admins.
 
 Note that this restriction is Antrea UI's alone. Enabling `FlowStreamService`
-in the Flow Aggregator means anyone with network access to it can read flow
-data directly, regardless of what Antrea UI allows.
+in the Flow Aggregator means anyone with network access to it, and holding a
+credential FA accepts, can read flow data directly, regardless of what Antrea
+UI allows.
 
 ### The plugin trade-off
 

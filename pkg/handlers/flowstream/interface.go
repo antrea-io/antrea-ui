@@ -30,5 +30,9 @@ type FlowStreamSubscriber interface {
 	// It returns a channel of FlowStreamEvent and a channel of errors.
 	// The caller should read from both channels until they are closed.
 	// Cancel the context to stop the stream.
+	//
+	// ctx must carry the request's *session.RequestAuth (see session.WithRequestAuth): the
+	// GRPCFlowStreamSubscriber implementation reads it to decide which credential to present
+	// to the Flow Aggregator.
 	Subscribe(ctx context.Context, filter *FlowStreamFilter) (<-chan apisv1.FlowStreamEvent, <-chan error)
 }

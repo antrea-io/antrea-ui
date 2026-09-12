@@ -75,8 +75,9 @@ flowAggregator:
   address: "flow-aggregator.flow-aggregator.svc:14740"
   # -- Name of the ConfigMap (in namespace below) containing the CA certificate (key: ca.crt)
   # used to verify the FlowStreamService server certificate.
-  # The FlowStreamService uses server-side TLS only (no client authentication).
-  # Leave empty to skip server certificate verification (dev/test only).
+  # Leaving this empty does not skip server certificate verification: it falls back to the
+  # system trust store, which will not verify the Flow Aggregator's self-signed certificate, and
+  # the connection will fail. Use insecureSkipVerify below for that (dev/test only).
   caConfigMap: flow-aggregator-ca
   # -- Namespace where the Flow Aggregator is installed.
   namespace: flow-aggregator
@@ -86,7 +87,11 @@ flowAggregator:
   # Leave empty to use the hostname from the address field.
   serverName: ""
   # -- Disable TLS server certificate verification. Should only be used for development
-  # or testing; never enable this in production.
+  # or testing; never enable this in production. With this on, any server answering at
+  # `address` is trusted: the backend hands it every flow viewer's credential (a bearer
+  # token, or a client certificate on the connection) and, for admin-password sessions, a
+  # freshly minted antrea-ui-admin token - all replayable against the real Kubernetes API
+  # server by whoever controls that address.
   insecureSkipVerify: false
 
 security:

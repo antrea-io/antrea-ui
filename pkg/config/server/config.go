@@ -43,7 +43,9 @@ type FlowAggregatorConfig struct {
 	Address string
 	// CAConfigMap is the name of the ConfigMap (in Namespace) containing the CA
 	// certificate (key: ca.crt) used to verify the FlowStreamService server cert.
-	// When empty, server certificate verification is skipped (dev/test only).
+	// When empty, verification falls back to the system trust store, which will not verify
+	// the Flow Aggregator's self-signed certificate: the connection fails rather than skipping
+	// verification. Use InsecureSkipVerify for that (dev/test only).
 	CAConfigMap string
 	// Namespace is the Kubernetes namespace where the Flow Aggregator is installed.
 	Namespace string
