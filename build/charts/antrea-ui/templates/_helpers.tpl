@@ -142,3 +142,29 @@ until the first Kubernetes call. */ -}}
 {{- end -}}
 
 {{- end -}}
+
+{{- /* Validates plugins.signature.trustedKeys, which only means anything when
+plugins.signature.enabled is true. Included from both the backend configuration and the
+Deployment, which each read the entries, so a bad entry fails the render with this message rather
+than a template error about a nil field. Entry types are not checked here: the backend knows which
+ones exist, and fails at startup on one it doesn't. */ -}}
+{{- define "antrea-ui.validatePluginTrustedKeys" -}}
+{{- if empty .Values.plugins.signature.trustedKeys -}}
+{{- fail "plugins.signature.trustedKeys must hold at least one entry when plugins.signature.enabled is true" -}}
+{{- end -}}
+{{- $seen := dict -}}
+{{- range $i, $key := .Values.plugins.signature.trustedKeys -}}
+{{- $name := required (printf "plugins.signature.trustedKeys[%d].name is required" $i) $key.name -}}
+{{- if not (regexMatch "^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$" $name) -}}
+{{- fail (printf "plugins.signature.trustedKeys[%d].name %q must be a DNS-1123 label (at most 63 lowercase alphanumerics or '-', starting and ending with an alphanumeric)" $i $name) -}}
+{{- end -}}
+{{- if hasKey $seen $name -}}
+{{- fail (printf "plugins.signature.trustedKeys[%d].name %q is not unique" $i $name) -}}
+{{- end -}}
+{{- $_ := set $seen $name true -}}
+{{- $_ := required (printf "plugins.signature.trustedKeys[%d].type is required" $i) $key.type -}}
+{{- $configMap := required (printf "plugins.signature.trustedKeys[%d].configMap is required" $i) $key.configMap -}}
+{{- $_ := required (printf "plugins.signature.trustedKeys[%d].configMap.name is required" $i) $configMap.name -}}
+{{- $_ := required (printf "plugins.signature.trustedKeys[%d].configMap.key is required" $i) $configMap.key -}}
+{{- end -}}
+{{- end -}}

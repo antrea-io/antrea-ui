@@ -66,6 +66,29 @@ plugins:
   # what actually protects the backend from a maliciously high-ratio archive ("zip bomb")
   # exhausting its disk. 0 means unbounded.
   maxBundleBytes: 10485760
+  signature:
+    # -- When true, every plugin must ship a signature that verifies against at least one of
+    # trustedKeys below, and a manifest bundleSha256 matching its bundle.zip. Plugins that fail
+    # either check are not loaded (an error is logged). Requires at least one trustedKeys entry.
+    # Only protects against whoever writes plugin ConfigMaps if plugins.namespace is a dedicated
+    # namespace, not the release namespace, which holds the backend configuration and the trusted
+    # keys. See docs/plugins.md.
+    enabled: false
+    # -- Keys a plugin may be signed by: a plugin loads when its signature verifies against any
+    # one of them. Each entry has a `name` (a DNS-1123 label, unique within the list, used in
+    # the backend's logs and in the key file's mount path), a `type` (only `openpgp` today: an
+    # OpenPGP public key file, which may hold several keys, and plugins signed with a detached
+    # manifest.json.asc), and a `configMap` (`name` and `key`) selecting the ConfigMap in the
+    # release namespace, and the key within it, that holds the key file. You create these
+    # ConfigMaps yourself (see docs/plugins.md); the chart deliberately does not, since a trust
+    # anchor does not belong in values.yaml. Ignored unless enabled is true: with enabled false,
+    # plugins load unverified even when keys are listed here.
+    trustedKeys: []
+    # - name: antrea
+    #   type: openpgp
+    #   configMap:
+    #     name: antrea-ui-plugin-keys
+    #     key: public-key.asc
 
 # Flow Aggregator gRPC integration (live flow visibility in the UI).
 flowAggregator:

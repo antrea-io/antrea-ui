@@ -57,6 +57,11 @@ jobs:
       run: |
         npm ci
         npm run build
+    # The e2e deployment turns plugin signature verification on (see ci/antrea-ui-values.yml),
+    # so pod-counter has to be signed or the backend will refuse to load it. The key is
+    # generated on the runner and thrown away with it; nothing is committed.
+    - name: Sign the example plugin
+      run: ci/e2e-plugins.sh sign
     - name: Install Kind
       run: |
         curl -Lo ./kind https://github.com/kubernetes-sigs/kind/releases/download/${KIND_VERSION}/kind-$(uname)-amd64
@@ -84,8 +89,13 @@ jobs:
     # test identity its RBAC. Needs the cluster up, and Antrea UI not yet installed.
     - name: Configure cluster for OIDC
       run: ci/e2e-oidc.sh configure-cluster
-    # We install Antrea UI with extra features enabled (OIDC, kubeconfig login) for better test
-    # coverage; see the comments in ci/antrea-ui-values.yml.
+    # Creates the dedicated plugins namespace and the signing key ConfigMap. Must run before
+    # antrea-ui is installed: the chart creates a Role/RoleBinding in that namespace, and the
+    # backend loads the key ring once, at startup.
+    - name: Configure cluster for plugins
+      run: ci/e2e-plugins.sh configure-cluster
+    # We install Antrea UI with extra features enabled (OIDC, kubeconfig login, plugin signature
+    # verification) for better test coverage; see the comments in ci/antrea-ui-values.yml.
     - name: Install Antrea UI
       run: |
         helm install --namespace kube-system antrea-ui \
@@ -94,17 +104,11 @@ jobs:
           --set hostAliases[0].hostnames[0]=dex.e2e \
           ./build/charts/antrea-ui
         kubectl rollout status -n kube-system deployment/antrea-ui --timeout=5m
-    # The pod-counter example plugin is delivered as a labeled ConfigMap, the same mechanism a
-    # real plugin deployment would use (see docs/plugins.md) — the backend's ConfigMap watch
-    # picks it up with no antrea-ui restart.
-    - name: Create example plugin ConfigMap
-      run: |
-        kubectl create configmap pod-counter-plugin --namespace kube-system \
-          --from-file=plugins/examples/pod-counter/dist/bundle.zip \
-          --from-file=plugins/examples/pod-counter/dist/manifest.json
-        kubectl label configmap pod-counter-plugin --namespace kube-system \
-          ui.antrea.io/plugin=true
-        kubectl apply -f plugins/examples/pod-counter/clusterrole.yaml
+    # Installs both the signed pod-counter plugin and one carrying no signature that must be
+    # rejected, as labeled ConfigMaps in the dedicated plugins namespace - the same mechanism a
+    # real deployment uses (see docs/plugins.md).
+    - name: Create plugin ConfigMaps
+      run: ci/e2e-plugins.sh create-plugins
     # For e2e tests, Antrea UI should be installed first
     - name: Run e2e tests
       run: go test -v ./test/e2e

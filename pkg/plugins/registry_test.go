@@ -225,7 +225,7 @@ func TestRegistryIndexMergesBothSources(t *testing.T) {
 	dir := t.TempDir()
 	writePluginDir(t, dir, "disk-plugin", podCounterManifest("disk-plugin", "0.1.0"), podCounterBundle())
 
-	r := NewRegistry(testr.New(t), nil, "antrea-ui", "ui.antrea.io/plugin=true", 0, 0, 0)
+	r := NewRegistry(Options{Logger: testr.New(t), Clientset: nil, Namespace: "antrea-ui", LabelSelector: "ui.antrea.io/plugin=true", MaxConfigMapPlugins: 0, MaxDirectoryPlugins: 0, MaxBundleBytes: 0})
 	t.Cleanup(r.Close)
 	r.handleUpsert(configMap(t, "cm-plugin", "cm-plugin", "0.1.0", "index.js", map[string]string{"index.js": "x"}))
 
@@ -252,7 +252,7 @@ func TestRegistryDuplicatePluginNameKeepsConfigMapOverDirectory(t *testing.T) {
 	dir := t.TempDir()
 	writePluginDir(t, dir, "shared-name", podCounterManifest("shared", "from-disk"), podCounterBundle())
 
-	r := NewRegistry(testr.New(t), nil, "antrea-ui", "ui.antrea.io/plugin=true", 0, 0, 0)
+	r := NewRegistry(Options{Logger: testr.New(t), Clientset: nil, Namespace: "antrea-ui", LabelSelector: "ui.antrea.io/plugin=true", MaxConfigMapPlugins: 0, MaxDirectoryPlugins: 0, MaxBundleBytes: 0})
 	t.Cleanup(r.Close)
 	r.handleUpsert(configMap(t, "shared-name", "shared", "from-configmap", "index.js", map[string]string{"index.js": "x"}))
 

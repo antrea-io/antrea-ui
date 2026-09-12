@@ -36,6 +36,15 @@ type PluginManifest struct {
 	// own file, not Entry, so an eager page extension and a lazily-loaded
 	// federated page never have to share one build artifact.
 	Federation *PluginFederation `json:"federation,omitempty"`
+
+	// BundleSha256 is the hex SHA-256 (64 characters, either case) of the plugin's bundle.zip,
+	// as delivered (the ConfigMap binaryData value, or the file on disk) - not of its extracted
+	// contents. It is
+	// what makes a signature over this manifest cover the bundle too: manifest.json is the only
+	// artifact that is signed (manifest.json.asc), and the bundle is authenticated transitively
+	// through this digest. Required when plugins.signature.trustedKeys is non-empty; optional
+	// otherwise, but always verified when present.
+	BundleSha256 string `json:"bundleSha256,omitempty"`
 }
 
 // PluginFederation is the plugin's federation remote entry file, plus the

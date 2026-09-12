@@ -17,6 +17,8 @@ package plugins
 import (
 	"archive/zip"
 	"fmt"
+	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -298,7 +300,7 @@ func (r *Registry) loadDiskPlugin(rootDir, pluginName string, watcher *fsnotify.
 		r.logger.Error(err, "skipping plugin directory", "directory", pluginDir)
 		return false
 	}
-	entry, err := parsePluginArchive(pluginDir, dest, r.maxBundleBytes)
+	entry, err := parsePluginArchive(pluginDir, dest, r.maxBundleBytes, r.signatureVerifiers)
 	if err != nil {
 		// Unlike the ConfigMap source (see handleUpsert), this deletes the tracked plugin (if
 		// any) outright rather than keeping the last known-good version being served - a
@@ -316,7 +318,7 @@ func (r *Registry) loadDiskPlugin(rootDir, pluginName string, watcher *fsnotify.
 		r.removeExtractedPluginDir(directorySourceName, pluginName)
 		return false
 	}
-	r.logger.Info("Loaded plugin from directory", "directory", pluginDir, "plugin", entry.manifest.Name, "version", entry.manifest.Version)
+	r.logger.Info("Loaded plugin from directory", "directory", pluginDir, "plugin", entry.manifest.Name, "version", entry.manifest.Version, "verifiedBy", entry.verifiedBy)
 	return watched
 }
 
@@ -369,26 +371,147 @@ func (r *Registry) diskPluginNames() []string {
 // manifest against the archive's file names (cheap: bundle.zip's central directory lists names
 // without decompressing anything), and only then extracts bundle.zip into dest (see
 // extractZip) - no reason to write a bundle to disk that's going to be rejected anyway.
-func parsePluginArchive(pluginDir, dest string, maxBundleBytes int64) (*pluginEntry, error) {
+//
+// When verifiers is non-empty, pluginDir must also hold a signature (e.g. a manifest.json.asc)
+// verifying against one of them, and the manifest must carry a bundleSha256 matching bundle.zip
+// (see signature.go). With no verifiers, any signature file is ignored entirely, but a
+// bundleSha256 present in the manifest is still checked. Everything past the signature check
+// reads a private copy of bundle.zip rather than pluginDir's - see copyBundleForVerification for
+// why.
+func parsePluginArchive(pluginDir, dest string, maxBundleBytes int64, verifiers []SignatureVerifier) (*pluginEntry, error) {
 	manifestData, err := os.ReadFile(filepath.Join(pluginDir, manifestFileName))
 	if err != nil {
 		return nil, fmt.Errorf("failed to read %s: %w", manifestFileName, err)
 	}
 
-	zr, err := zip.OpenReader(filepath.Join(pluginDir, bundleFileName))
-	if err != nil {
-		return nil, fmt.Errorf("failed to open %s: %w", bundleFileName, err)
+	var verifiedBy string
+	if requireSignature(verifiers) {
+		readSignature := func(fileName string) ([]byte, bool, error) {
+			signature, err := os.ReadFile(filepath.Join(pluginDir, fileName))
+			if os.IsNotExist(err) {
+				return nil, false, nil
+			}
+			if err != nil {
+				return nil, false, err
+			}
+			return signature, true, nil
+		}
+		verifiedBy, err = verifyManifestSignature(verifiers, manifestData, readSignature)
+		if err != nil {
+			return nil, err
+		}
 	}
-	defer zr.Close()
 
-	manifest, err := validateManifest(manifestData, zipEntryNames(&zr.Reader))
+	bundle, size, err := copyBundleForVerification(pluginDir, dest, maxBundleBytes)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		bundle.Close()
+		os.Remove(bundle.Name())
+	}()
+
+	zr, err := zip.NewReader(bundle, size)
+	if err != nil {
+		return nil, fmt.Errorf("invalid %s: %w", bundleFileName, err)
+	}
+
+	manifest, err := validateManifest(manifestData, zipEntryNames(zr))
 	if err != nil {
 		return nil, err
 	}
 
-	extractRoot, err := extractZip(&zr.Reader, dest, maxBundleBytes)
+	// Through a SectionReader rather than bundle itself: the copy's offset is at EOF, where
+	// copyBundleForVerification's io.Copy left it, and reading from there would hash zero bytes
+	// and make every plugin's digest "mismatch". Like zip.Reader, a SectionReader reads through
+	// ReaderAt and never touches the offset.
+	if err := verifyManifestBundleDigest(verifiers, manifest, io.NewSectionReader(bundle, 0, size)); err != nil {
+		return nil, err
+	}
+
+	extractRoot, err := extractZip(zr, dest, maxBundleBytes)
 	if err != nil {
 		return nil, err
 	}
-	return &pluginEntry{manifest: *manifest, diskRoot: extractRoot}, nil
+	return &pluginEntry{manifest: *manifest, diskRoot: extractRoot, verifiedBy: verifiedBy}, nil
+}
+
+// copyBundleForVerification copies pluginDir/bundle.zip into a private file next to dest, and
+// returns it open, along with its size. Every read after this one - the central directory, the
+// digest, the extraction - goes through the copy, so the bytes verifyBundleDigest hashes are
+// provably the bytes extractZip extracts.
+//
+// Reading pluginDir's own bundle.zip three times instead would leave a window that defeats
+// signature verification on this source: archive/zip is lazy, so an entry's contents are read
+// from the file during extraction, after the digest check. Whoever can write into
+// plugins.directory - the capability signature verification exists to neutralize - could ship a
+// genuinely signed manifest/bundle/signature triple, let the digest check pass, rewrite
+// bundle.zip in place before extraction, and then restore the signed bytes: their code is
+// extracted and served, and every later reload verifies clean. Holding one file handle across
+// all three reads does not help, because it pins the inode (defeating a rename over the path),
+// not the contents of the file that inode holds. The ConfigMap source has this property for
+// free - it hashes and extracts one in-memory []byte from the informer cache.
+//
+// The copy is bounded by maxBundleBytes because a plugin directory has nothing like the
+// ConfigMap source's ~1MiB etcd limit on the compressed bytes (see PluginsConfig.MaxBundleBytes)
+// and this writes them out in full. That value is the decompressed-size budget, reused rather
+// than made a second knob: an archive whose compressed form already exceeds the budget cannot
+// extract within it either, short of a pathologically compressible one no real plugin resembles.
+func copyBundleForVerification(pluginDir, dest string, maxBundleBytes int64) (*os.File, int64, error) {
+	src, err := os.Open(filepath.Join(pluginDir, bundleFileName))
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to open %s: %w", bundleFileName, err)
+	}
+	defer src.Close()
+
+	// Alongside the extraction directory, not in the system temp dir: the copy then lands on the
+	// same filesystem whose space maxBundleBytes is meant to bound, and a process that dies
+	// before the caller's defer runs leaves it inside cacheRoot, which Close/the container
+	// runtime reclaims wholesale.
+	parent := filepath.Dir(dest)
+	if err := os.MkdirAll(parent, 0o700); err != nil {
+		return nil, 0, fmt.Errorf("failed to create %q: %w", parent, err)
+	}
+	dst, err := os.CreateTemp(parent, filepath.Base(dest)+".bundle-*")
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to create a temporary copy of %s: %w", bundleFileName, err)
+	}
+	succeeded := false
+	defer func() {
+		if !succeeded {
+			dst.Close()
+			os.Remove(dst.Name())
+		}
+	}()
+
+	// A non-positive maxBundleBytes means unbounded, the same convention extractZip uses.
+	budget := maxBundleBytes
+	if budget <= 0 {
+		budget = math.MaxInt64
+	}
+	// Copy exactly budget bytes, then peek one more, rather than io.CopyN(dst, src, budget+1):
+	// budget can be math.MaxInt64 here, where budget+1 overflows. Same shape as extractZipFile.
+	size, err := io.Copy(dst, io.LimitReader(src, budget))
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to copy %s: %w", bundleFileName, err)
+	}
+	if size == budget {
+		// io.Reader permits a (0, nil) return that callers must not treat as EOF, so loop until
+		// we get either a byte (the file is larger than the budget) or a real error/io.EOF.
+		var extra [1]byte
+		for {
+			n, err := src.Read(extra[:])
+			if n > 0 {
+				return nil, 0, fmt.Errorf("%s is larger than this plugin's bundle size budget (%d bytes), refusing to load it", bundleFileName, maxBundleBytes)
+			}
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				return nil, 0, fmt.Errorf("failed to read %s past its size budget: %w", bundleFileName, err)
+			}
+		}
+	}
+	succeeded = true
+	return dst, size, nil
 }

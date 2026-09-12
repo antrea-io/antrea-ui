@@ -33,6 +33,16 @@ plugins:
   maxConfigMapPlugins: {{ .Values.plugins.maxConfigMapPlugins }}
   maxDirectoryPlugins: {{ .Values.plugins.maxDirectoryPlugins }}
   maxBundleBytes: {{ .Values.plugins.maxBundleBytes }}
+{{- if .Values.plugins.signature.enabled }}
+{{- include "antrea-ui.validatePluginTrustedKeys" . }}
+  signature:
+    trustedKeys:
+    {{- range .Values.plugins.signature.trustedKeys }}
+      - name: {{ .name | quote }}
+        type: {{ .type | quote }}
+        file: {{ printf "/app/plugin-keys/%s/%s" .name .configMap.key | quote }}
+    {{- end }}
+{{- end }}
 flowAggregator:
   enabled: {{ .Values.flowAggregator.enabled }}
   address: {{ .Values.flowAggregator.address | quote }}

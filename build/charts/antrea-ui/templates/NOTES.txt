@@ -32,4 +32,22 @@ we recommend that you set security.cookieSecure to true.
 
 {{- end }}
 
+{{- if and .Values.plugins.signature.enabled (eq (.Values.plugins.namespace | default .Release.Namespace) .Release.Namespace) }}
+
+WARNING: plugin signature verification is enabled, but plugins.namespace is the release namespace
+({{ .Release.Namespace }}). Anyone who can write plugin ConfigMaps there can also edit the backend
+configuration or the trusted key ConfigMaps in that same namespace, and so disable verification or
+replace the trusted keys. Set plugins.namespace to a dedicated namespace for verification to protect
+against plugin ConfigMap writers. See "Signature verification" in docs/plugins.md.
+
+{{- end }}
+
+{{- if and (not .Values.plugins.signature.enabled) .Values.plugins.signature.trustedKeys }}
+
+WARNING: plugins.signature.trustedKeys is set, but plugins.signature.enabled is false, so these keys
+are ignored and plugins load without any signature verification. Set plugins.signature.enabled to
+true to require plugins to be signed by one of them. See "Signature verification" in docs/plugins.md.
+
+{{- end }}
+
 For the Antrea documentation, please visit https://antrea.io

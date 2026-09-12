@@ -158,6 +158,11 @@ export interface PluginManifest {
     name: string;
     version: string;
     entry: string;
+    // bundleSha256 is the hex SHA-256 of the plugin's bundle.zip, and is what a signature over
+    // manifest.json transitively covers the bundle with. Mirrored here for documentation only:
+    // verification is entirely backend-side (see pkg/plugins/signature.go), so a plugin that
+    // fails it never reaches this index at all.
+    bundleSha256?: string;
     federation?: {
         remoteEntry: string;
         // kind mirrors apis/v1's PluginRouteKindComponent/PluginRouteKindRoutes; the backend

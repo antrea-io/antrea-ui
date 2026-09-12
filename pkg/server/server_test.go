@@ -178,7 +178,7 @@ func newTestServerWithLogger(t *testing.T, logger logr.Logger, options ...testSe
 		MaxSessions: config.Session.MaxSessions,
 	})
 
-	pluginRegistry := plugins.NewRegistry(logger, nil, "", "", 0, 0, 0)
+	pluginRegistry := plugins.NewRegistry(plugins.Options{Logger: logger, Clientset: nil, Namespace: "", LabelSelector: "", MaxConfigMapPlugins: 0, MaxDirectoryPlugins: 0, MaxBundleBytes: 0})
 	t.Cleanup(pluginRegistry.Close)
 
 	// we use nil for parameters which are only used by the API server

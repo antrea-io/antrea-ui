@@ -62,7 +62,7 @@ func TestParsePluginArchive(t *testing.T) {
 	dir := t.TempDir()
 	writePluginDir(t, dir, "pod-counter", podCounterManifest("pod-counter", "0.1.0"), podCounterBundle())
 
-	entry, err := parsePluginArchive(filepath.Join(dir, "pod-counter"), filepath.Join(t.TempDir(), "pod-counter"), 0)
+	entry, err := parsePluginArchive(filepath.Join(dir, "pod-counter"), filepath.Join(t.TempDir(), "pod-counter"), 0, nil)
 	require.NoError(t, err)
 	assert.Equal(t, apisv1.PluginManifest{Name: "pod-counter", Version: "0.1.0", Entry: "index.js"}, entry.manifest)
 	rc, size, ok := entry.open("index.js")
@@ -78,7 +78,7 @@ func TestParsePluginArchiveIncludesNestedPaths(t *testing.T) {
 		"assets/logo.png": "fake-png-bytes",
 	})
 
-	entry, err := parsePluginArchive(filepath.Join(dir, "pod-counter"), filepath.Join(t.TempDir(), "pod-counter"), 0)
+	entry, err := parsePluginArchive(filepath.Join(dir, "pod-counter"), filepath.Join(t.TempDir(), "pod-counter"), 0, nil)
 	require.NoError(t, err)
 	rc, _, ok := entry.open("assets/logo.png")
 	require.True(t, ok, "a bundle.zip entry under a subdirectory must be extracted and servable")
@@ -103,7 +103,7 @@ func TestParsePluginArchiveIncludesRoutesAndFederation(t *testing.T) {
 		"remoteEntry.json": "{}",
 	})
 
-	entry, err := parsePluginArchive(filepath.Join(dir, "policy-management"), filepath.Join(t.TempDir(), "policy-management"), 0)
+	entry, err := parsePluginArchive(filepath.Join(dir, "policy-management"), filepath.Join(t.TempDir(), "policy-management"), 0, nil)
 	require.NoError(t, err)
 	assert.Equal(t, apisv1.PluginManifest{
 		Name:    "policy-management",
@@ -141,7 +141,7 @@ func TestParsePluginArchiveRejectsInvalidFederationRoutes(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			dir := t.TempDir()
 			writePluginDir(t, dir, "plugin", c.manifest, c.bundle)
-			_, err := parsePluginArchive(filepath.Join(dir, "plugin"), filepath.Join(t.TempDir(), "plugin"), 0)
+			_, err := parsePluginArchive(filepath.Join(dir, "plugin"), filepath.Join(t.TempDir(), "plugin"), 0, nil)
 			assert.Error(t, err)
 		})
 	}
@@ -169,12 +169,18 @@ func TestParsePluginArchiveInvalid(t *testing.T) {
 		[]byte(`{"name":"plugin","version":"0.1.0","entry":"index.js"}`), 0o600))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "malformed-bundle", bundleFileName), []byte("not a zip"), 0o600))
 
+	// No keyring is passed below, so nothing requires a manifest.json.asc - but a bundleSha256
+	// that is present is still verified, and a mismatch is a rejection.
+	writePluginDir(t, dir, "digest-mismatch",
+		manifestWithDigest("plugin", "0.1.0", "index.js", bundleDigest([]byte("some other bundle"))),
+		map[string]string{"index.js": "x"})
+
 	for _, name := range []string{
 		"missing-name", "missing-entry", "entry-not-present", "malformed-manifest",
-		"missing-manifest", "missing-bundle", "malformed-bundle",
+		"missing-manifest", "missing-bundle", "malformed-bundle", "digest-mismatch",
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := parsePluginArchive(filepath.Join(dir, name), filepath.Join(t.TempDir(), name), 0)
+			_, err := parsePluginArchive(filepath.Join(dir, name), filepath.Join(t.TempDir(), name), 0, nil)
 			assert.Error(t, err)
 		})
 	}
@@ -184,7 +190,7 @@ func TestRunDirectoryWatchLoadsExistingPlugins(t *testing.T) {
 	dir := t.TempDir()
 	writePluginDir(t, dir, "pod-counter", podCounterManifest("pod-counter", "0.1.0"), podCounterBundle())
 
-	r := NewRegistry(testr.New(t), nil, "antrea-ui", "ui.antrea.io/plugin=true", 0, 0, 0)
+	r := NewRegistry(Options{Logger: testr.New(t), Clientset: nil, Namespace: "antrea-ui", LabelSelector: "ui.antrea.io/plugin=true", MaxConfigMapPlugins: 0, MaxDirectoryPlugins: 0, MaxBundleBytes: 0})
 	t.Cleanup(r.Close)
 	startDirectoryWatch(t, r, dir)
 
@@ -210,7 +216,7 @@ func TestRunDirectoryWatchRetriesUntilDirectoryAppears(t *testing.T) {
 	parent := t.TempDir()
 	dir := filepath.Join(parent, "plugins")
 
-	r := NewRegistry(testr.New(t), nil, "antrea-ui", "ui.antrea.io/plugin=true", 0, 0, 0)
+	r := NewRegistry(Options{Logger: testr.New(t), Clientset: nil, Namespace: "antrea-ui", LabelSelector: "ui.antrea.io/plugin=true", MaxConfigMapPlugins: 0, MaxDirectoryPlugins: 0, MaxBundleBytes: 0})
 	t.Cleanup(r.Close)
 	startDirectoryWatch(t, r, dir)
 
@@ -237,7 +243,7 @@ func TestRunDirectoryWatchLoadsPluginBehindSymlink(t *testing.T) {
 	writePluginDir(t, realDir, "pod-counter", podCounterManifest("pod-counter", "0.1.0"), podCounterBundle())
 	require.NoError(t, os.Symlink(filepath.Join(realDir, "pod-counter"), filepath.Join(dir, "pod-counter")))
 
-	r := NewRegistry(testr.New(t), nil, "antrea-ui", "ui.antrea.io/plugin=true", 0, 0, 0)
+	r := NewRegistry(Options{Logger: testr.New(t), Clientset: nil, Namespace: "antrea-ui", LabelSelector: "ui.antrea.io/plugin=true", MaxConfigMapPlugins: 0, MaxDirectoryPlugins: 0, MaxBundleBytes: 0})
 	t.Cleanup(r.Close)
 	startDirectoryWatch(t, r, dir)
 
@@ -263,7 +269,7 @@ func TestRunDirectoryWatchDropsPluginsWhenDirectoryIsRenamedAway(t *testing.T) {
 	dir := filepath.Join(parent, "plugins")
 	writePluginDir(t, dir, "pod-counter", podCounterManifest("pod-counter", "0.1.0"), podCounterBundle())
 
-	r := NewRegistry(testr.New(t), nil, "antrea-ui", "ui.antrea.io/plugin=true", 0, 0, 0)
+	r := NewRegistry(Options{Logger: testr.New(t), Clientset: nil, Namespace: "antrea-ui", LabelSelector: "ui.antrea.io/plugin=true", MaxConfigMapPlugins: 0, MaxDirectoryPlugins: 0, MaxBundleBytes: 0})
 	t.Cleanup(r.Close)
 	startDirectoryWatch(t, r, dir)
 
@@ -285,7 +291,7 @@ func TestRunDirectoryWatchPicksUpNewAndUpdatedAndRemovedPlugins(t *testing.T) {
 
 	dir := t.TempDir()
 
-	r := NewRegistry(testr.New(t), nil, "antrea-ui", "ui.antrea.io/plugin=true", 0, 0, 0)
+	r := NewRegistry(Options{Logger: testr.New(t), Clientset: nil, Namespace: "antrea-ui", LabelSelector: "ui.antrea.io/plugin=true", MaxConfigMapPlugins: 0, MaxDirectoryPlugins: 0, MaxBundleBytes: 0})
 	t.Cleanup(r.Close)
 	startDirectoryWatch(t, r, dir)
 
@@ -315,7 +321,7 @@ func TestRunDirectoryWatchRejectsNewPluginPastLimit(t *testing.T) {
 	writePluginDir(t, dir, "first", podCounterManifest("first", "0.1.0"), podCounterBundle())
 	writePluginDir(t, dir, "second", podCounterManifest("second", "0.1.0"), podCounterBundle())
 
-	r := NewRegistry(testr.New(t), nil, "antrea-ui", "ui.antrea.io/plugin=true", 0, 1, 0)
+	r := NewRegistry(Options{Logger: testr.New(t), Clientset: nil, Namespace: "antrea-ui", LabelSelector: "ui.antrea.io/plugin=true", MaxConfigMapPlugins: 0, MaxDirectoryPlugins: 1, MaxBundleBytes: 0})
 	t.Cleanup(r.Close)
 	startDirectoryWatch(t, r, dir)
 
@@ -343,7 +349,7 @@ func TestDebounceCollapsesBurstIntoOneDelayedReload(t *testing.T) {
 	defer watcher.Close()
 
 	synctest.Test(t, func(t *testing.T) {
-		r := NewRegistry(testr.New(t), nil, "antrea-ui", "ui.antrea.io/plugin=true", 0, 0, 0)
+		r := NewRegistry(Options{Logger: testr.New(t), Clientset: nil, Namespace: "antrea-ui", LabelSelector: "ui.antrea.io/plugin=true", MaxConfigMapPlugins: 0, MaxDirectoryPlugins: 0, MaxBundleBytes: 0})
 		t.Cleanup(r.Close)
 		queue := workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[string]())
 		defer func() {
@@ -373,7 +379,7 @@ func TestDebounceCollapsesBurstIntoOneDelayedReload(t *testing.T) {
 }
 
 func TestRunDirectoryWatchIsNoopWhenDirectoryEmpty(t *testing.T) {
-	r := NewRegistry(testr.New(t), nil, "antrea-ui", "ui.antrea.io/plugin=true", 0, 0, 0)
+	r := NewRegistry(Options{Logger: testr.New(t), Clientset: nil, Namespace: "antrea-ui", LabelSelector: "ui.antrea.io/plugin=true", MaxConfigMapPlugins: 0, MaxDirectoryPlugins: 0, MaxBundleBytes: 0})
 	t.Cleanup(r.Close)
 	stopCh := make(chan struct{})
 	done := make(chan struct{})
@@ -409,4 +415,59 @@ func TestLoadDiskPluginReportsFailedWatch(t *testing.T) {
 	index := r.Index()
 	require.Len(t, index, 1, "the plugin must still be loaded and served despite the failed watch")
 	assert.Equal(t, "pod-counter", index[0].Name)
+}
+
+// TestParsePluginArchiveRejectsBundleFileLargerThanTheBudget covers the compressed-size half of
+// maxBundleBytes, which only the directory source has (see copyBundleForVerification): the
+// backend copies bundle.zip before verifying and extracting it, and that copy has to be bounded.
+// A single one-byte entry keeps the decompressed total (1 byte) well inside the budget, so a
+// rejection here can only come from the file's own size, not from extractZip's existing check.
+func TestParsePluginArchiveRejectsBundleFileLargerThanTheBudget(t *testing.T) {
+	dir := t.TempDir()
+	writePluginDir(t, dir, "plugin", podCounterManifest("plugin", "0.1.0"), map[string]string{"index.js": "x"})
+
+	bundleSize := fileSize(t, filepath.Join(dir, "plugin", bundleFileName))
+	require.Greater(t, bundleSize, int64(1), "a zip of a one-byte entry should still carry more than a byte of framing")
+
+	_, err := parsePluginArchive(filepath.Join(dir, "plugin"), filepath.Join(t.TempDir(), "plugin"), bundleSize-1, nil)
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "larger than this plugin's bundle size budget")
+
+	// Exactly at the budget is fine - the same boundary extractZipFile draws.
+	_, err = parsePluginArchive(filepath.Join(dir, "plugin"), filepath.Join(t.TempDir(), "plugin"), bundleSize, nil)
+	assert.NoError(t, err)
+}
+
+// TestParsePluginArchiveLeavesNoBundleCopyBehind pins that the private copy of bundle.zip
+// copyBundleForVerification makes is removed on the way out, including when the load fails after
+// it was made - it lives in the same directory as the extractions themselves, so a leak here
+// would accumulate a full copy of every bundle the backend ever reloaded.
+func TestParsePluginArchiveLeavesNoBundleCopyBehind(t *testing.T) {
+	src := t.TempDir()
+	writePluginDir(t, src, "good", podCounterManifest("good", "0.1.0"), podCounterBundle())
+	// Rejected by the digest check, which runs after the copy is made.
+	writePluginDir(t, src, "bad",
+		manifestWithDigest("bad", "0.1.0", "index.js", bundleDigest([]byte("some other bundle"))),
+		podCounterBundle())
+
+	cacheRoot := t.TempDir()
+	_, err := parsePluginArchive(filepath.Join(src, "good"), filepath.Join(cacheRoot, "good"), 0, nil)
+	require.NoError(t, err)
+	_, err = parsePluginArchive(filepath.Join(src, "bad"), filepath.Join(cacheRoot, "bad"), 0, nil)
+	require.Error(t, err)
+
+	entries, err := os.ReadDir(cacheRoot)
+	require.NoError(t, err)
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	assert.Equal(t, []string{"good"}, names, "only the successful plugin's extraction directory should remain")
+}
+
+func fileSize(t *testing.T, path string) int64 {
+	t.Helper()
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+	return info.Size()
 }

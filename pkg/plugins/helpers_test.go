@@ -17,13 +17,20 @@ package plugins
 import (
 	"archive/zip"
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/ProtonMail/go-crypto/openpgp/armor"
+	"github.com/ProtonMail/go-crypto/openpgp/packet"
+	openpgp "github.com/ProtonMail/go-crypto/openpgp/v2"
+	"github.com/fsnotify/fsnotify"
 	"github.com/go-logr/logr/testr"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
@@ -31,7 +38,7 @@ import (
 )
 
 func newTestRegistry(t *testing.T) *Registry {
-	r := NewRegistry(testr.New(t), nil, "antrea-ui", "ui.antrea.io/plugin=true", 0, 0, 0)
+	r := NewRegistry(Options{Logger: testr.New(t), Clientset: nil, Namespace: "antrea-ui", LabelSelector: "ui.antrea.io/plugin=true", MaxConfigMapPlugins: 0, MaxDirectoryPlugins: 0, MaxBundleBytes: 0})
 	t.Cleanup(r.Close)
 	return r
 }
@@ -131,4 +138,168 @@ func startDirectoryWatch(t *testing.T, r *Registry, dir string) {
 		close(stopCh)
 		<-done
 	})
+}
+
+// Test OpenPGP entities, generated once per package rather than per case: three are needed
+// across the signature suite (the trusted signer, a different signer, and an expired key), and
+// regenerating any of them per table row would show up in the package's runtime for no added
+// coverage.
+//
+// Ed25519 rather than go-crypto's RSA default: keygen is effectively instant, where an RSA key
+// large enough for openPGPPolicy takes a noticeable fraction of a second. The algorithm policy
+// itself has its own tests (see signature_openpgp_test.go).
+var (
+	testSigner        = sync.OnceValue(func() *openpgp.Entity { return newTestEntity(ed25519Config(), 0) })
+	testOtherSigner   = sync.OnceValue(func() *openpgp.Entity { return newTestEntity(ed25519Config(), 0) })
+	testExpiredSigner = sync.OnceValue(func() *openpgp.Entity {
+		// Created two hours ago with a one-hour lifetime, so it is already expired by the time
+		// any test uses it - and so is every signature it makes.
+		return newTestEntity(ed25519Config(), time.Hour)
+	})
+)
+
+func ed25519Config() *packet.Config {
+	return &packet.Config{Algorithm: packet.PubKeyAlgoEd25519}
+}
+
+// newTestEntity generates a throwaway OpenPGP entity with the key type config selects. A non-zero
+// lifetime backdates the key by twice that duration, producing one that is already expired.
+func newTestEntity(config *packet.Config, lifetime time.Duration) *openpgp.Entity {
+	if lifetime > 0 {
+		created := time.Now().Add(-2 * lifetime)
+		config.Time = func() time.Time { return created }
+		config.KeyLifetimeSecs = uint32(lifetime.Seconds())
+	}
+	entity, err := openpgp.NewEntity("antrea-ui plugin test", "", "", config)
+	if err != nil {
+		panic(err)
+	}
+	return entity
+}
+
+// sign returns an armored detached OpenPGP signature over data, as manifest.json.asc holds.
+func sign(t *testing.T, entity *openpgp.Entity, data []byte) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	// The entity's own creation time, so a backdated (expired) key produces a signature that was
+	// valid when made and has since expired, rather than one dated before its own key existed.
+	config := &packet.Config{Time: func() time.Time { return entity.PrimaryKey.CreationTime }}
+	require.NoError(t, openpgp.ArmoredDetachSign(&buf, []*openpgp.Entity{entity}, bytes.NewReader(data), &openpgp.SignParams{Config: config}))
+	return buf.Bytes()
+}
+
+// publicKeySerializer is what armoredPublicKey needs from an entity: satisfied by both the v2
+// openpgp.Entity the tests normally use and the v1 one signature_openpgp_test.go builds the
+// fixtures v2 refuses to produce with.
+type publicKeySerializer interface {
+	Serialize(w io.Writer) error
+}
+
+// armoredPublicKey serializes entities' public halves the way `gpg --armor --export` does, for
+// loadOpenPGPKeyRing's tests and for building a trusted key to verify against.
+func armoredPublicKey(t *testing.T, entities ...publicKeySerializer) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	w, err := armor.Encode(&buf, openpgp.PublicKeyType, nil)
+	require.NoError(t, err)
+	for _, entity := range entities {
+		require.NoError(t, entity.Serialize(w))
+	}
+	require.NoError(t, w.Close())
+	return buf.Bytes()
+}
+
+// trustedOpenPGPKey builds the SignatureVerifier a Registry is configured with for an OpenPGP
+// trusted key named name, holding only entities' public halves - going through the same key file
+// NewSignatureVerifier loads at startup, so openPGPPolicy's load-time check applies too.
+func trustedOpenPGPKey(t *testing.T, name string, entities ...publicKeySerializer) SignatureVerifier {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "public-key.asc")
+	require.NoError(t, os.WriteFile(path, armoredPublicKey(t, entities...), 0o600))
+	verifier, err := NewSignatureVerifier(name, SignatureTypeOpenPGP, path)
+	require.NoError(t, err)
+	return verifier
+}
+
+// bundleDigest is bundleZip's lowercase hex SHA-256 - what a manifest's bundleSha256 must hold.
+func bundleDigest(bundleZip []byte) string {
+	return hex.EncodeToString(sha256Sum(bundleZip))
+}
+
+func sha256Sum(data []byte) []byte {
+	sum := sha256.Sum256(data)
+	return sum[:]
+}
+
+// manifestWithDigest builds a manifest JSON with an arbitrary bundleSha256 string, including the
+// malformed ones the signature suite needs.
+func manifestWithDigest(pluginName, version, entry, digest string) string {
+	return fmt.Sprintf(`{"name":%q,"version":%q,"entry":%q,"bundleSha256":%q}`, pluginName, version, entry, digest)
+}
+
+// signedManifest returns a manifest JSON pinning bundleZip's real SHA-256 in bundleSha256.
+func signedManifest(pluginName, version, entry string, bundleZip []byte) string {
+	return manifestWithDigest(pluginName, version, entry, bundleDigest(bundleZip))
+}
+
+// signedConfigMap builds a plugin ConfigMap carrying manifestJSON verbatim plus one key per entry
+// of signatures (signature file name to its bytes). Separate from configMap above rather than an
+// option on it: this one takes the manifest as a string, because several signature cases are
+// precisely about the manifest not being what the signature covers.
+func signedConfigMap(t *testing.T, name, manifestJSON string, signatures map[string][]byte, bundleZip []byte) *corev1.ConfigMap {
+	t.Helper()
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "antrea-ui", ResourceVersion: "1"},
+		Data:       map[string]string{manifestFileName: manifestJSON},
+		BinaryData: map[string][]byte{bundleFileName: bundleZip},
+	}
+	for fileName, signature := range signatures {
+		cm.Data[fileName] = string(signature)
+	}
+	return cm
+}
+
+// signedPluginDir is signedConfigMap's directory-source counterpart: manifest.json, bundle.zip
+// and one file per entry of signatures written into root/name/.
+func signedPluginDir(t *testing.T, root, name, manifestJSON string, signatures map[string][]byte, bundleZip []byte) string {
+	t.Helper()
+	dir := filepath.Join(root, name)
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, manifestFileName), []byte(manifestJSON), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, bundleFileName), bundleZip, 0o600))
+	for fileName, signature := range signatures {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, fileName), signature, 0o600))
+	}
+	return dir
+}
+
+// serializePublicKey is armoredPublicKey's binary (non-armored) counterpart, for the binary key
+// file format loadOpenPGPKeyRing also accepts.
+func serializePublicKey(t *testing.T, entity *openpgp.Entity) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	require.NoError(t, entity.Serialize(&buf))
+	return buf.Bytes()
+}
+
+// emptyArmoredBlock is a well-formed PGP PUBLIC KEY BLOCK holding no key at all - the case
+// loadOpenPGPKeyRing must reject rather than turn into an empty ring, which would leave a
+// configured trusted key that trusts nothing.
+func emptyArmoredBlock(t *testing.T) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	w, err := armor.Encode(&buf, openpgp.PublicKeyType, nil)
+	require.NoError(t, err)
+	require.NoError(t, w.Close())
+	return buf.Bytes()
+}
+
+// newTestWatcher returns an fsnotify watcher for a test driving loadDiskPlugin directly (which
+// registers a per-plugin watch before loading), closed when the test finishes.
+func newTestWatcher(t *testing.T) *fsnotify.Watcher {
+	t.Helper()
+	watcher, err := fsnotify.NewWatcher()
+	require.NoError(t, err)
+	t.Cleanup(func() { watcher.Close() })
+	return watcher
 }
