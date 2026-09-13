@@ -24,25 +24,6 @@ Object.defineProperty(globalThis, 'ResizeObserver', {
     writable: true,
 });
 
-// jsdom v29 + vitest v4: the jsdom Storage implementation is not accessible via
-// the bare `localStorage` global inside vitest's vm sandbox. Provide a simple
-// in-memory replacement so tests that use localStorage work correctly.
-const localStorageMock = (() => {
-    let store: Record<string, string> = {};
-    return {
-        getItem: (key: string) => store[key] ?? null,
-        setItem: (key: string, value: string) => { store[key] = String(value); },
-        removeItem: (key: string) => { delete store[key]; },
-        clear: () => { store = {}; },
-        get length() { return Object.keys(store).length; },
-        key: (index: number) => Object.keys(store)[index] ?? null,
-    };
-})();
-Object.defineProperty(globalThis, 'localStorage', {
-    value: localStorageMock,
-    writable: true,
-});
-
 // jsdom doesn't implement HTMLFormElement.requestSubmit() ("Not implemented" thrown at
 // runtime) — antrea-button and antrea-input both call it to submit their owning form from
 // inside a shadow root, where native implicit submission doesn't reach. Without this, tests
