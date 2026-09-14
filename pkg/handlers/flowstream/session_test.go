@@ -81,6 +81,7 @@ func TestStreamKeepsSessionAlive(t *testing.T) {
 
 	handler := NewSSEHandler(testr.New(t), &silentSubscriber{})
 	handler.keepAliveInterval = 20 * time.Millisecond
+	handler.errorPeekTimeout = time.Millisecond
 	ts := httptest.NewServer(sessionRouter(handler, store, sess.ID()))
 	defer ts.Close()
 
@@ -125,6 +126,7 @@ func TestStreamStopsWhenSessionEnds(t *testing.T) {
 
 	handler := NewSSEHandler(testr.New(t), &silentSubscriber{})
 	handler.keepAliveInterval = 20 * time.Millisecond
+	handler.errorPeekTimeout = time.Millisecond
 	ts := httptest.NewServer(sessionRouter(handler, store, sess.ID()))
 	defer ts.Close()
 
@@ -161,6 +163,7 @@ func TestStreamStopsWhenSessionEnds(t *testing.T) {
 func TestStreamStopsWithoutResolvedIdentity(t *testing.T) {
 	handler := NewSSEHandler(testr.New(t), &silentSubscriber{})
 	handler.keepAliveInterval = 20 * time.Millisecond
+	handler.errorPeekTimeout = time.Millisecond
 
 	// Deliberately no session.WithRequestAuth on the request context.
 	router := gin.New()
@@ -210,6 +213,7 @@ func TestStreamStopsWhenBearerCredentialExpires(t *testing.T) {
 		t.Helper()
 		handler := NewSSEHandler(testr.New(t), &silentSubscriber{})
 		handler.keepAliveInterval = 20 * time.Millisecond
+		handler.errorPeekTimeout = time.Millisecond
 		ts := httptest.NewServer(ephemeralRouter(handler, cred))
 		defer ts.Close()
 
