@@ -17,6 +17,7 @@ package flowstream
 import (
 	"context"
 	"crypto/tls"
+	"fmt"
 	"net"
 	"strings"
 	"sync/atomic"
@@ -35,6 +36,10 @@ import (
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
+	authenticationv1 "k8s.io/api/authentication/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	"antrea.io/antrea-ui/pkg/auth/session"
 	flowpb "antrea.io/antrea-ui/pkg/flowpb"
@@ -290,6 +295,35 @@ func TestSubscribeReportsOversizedMessageAsNotRetryable(t *testing.T) {
 	}
 }
 
+// codes.Unavailable, and any other gRPC code with no case of its own in classifyStreamErr, is what
+// grpc-go returns for an ordinary transient failure - FA restarting, rolling, or a network blip -
+// and before this package existed, the frontend's own reconnect loop recovered from exactly this.
+// It must still be reported as retryable now that classifyStreamErr owns the decision.
+func TestSubscribeReportsUnknownCodeAsRetryable(t *testing.T) {
+	fake := &fakeFlowStreamServer{handle: func(_ int, _ string) error {
+		return status.Error(codes.Unavailable, "connection reset")
+	}}
+	h := newTestSubscriber(t, fake)
+
+	store := newTestStore(t)
+	ctx, _ := ctxWithSessionAuth(t, store, &session.Spec{
+		Mode:       session.ModeToken,
+		Credential: session.Credential{Kind: session.KindBearer, Token: []byte("tok")},
+	})
+
+	_, errCh := h.Subscribe(ctx, &FlowStreamFilter{})
+	select {
+	case err, ok := <-errCh:
+		require.True(t, ok)
+		var streamErr *StreamError
+		require.ErrorAs(t, err, &streamErr)
+		assert.Equal(t, StreamErrorCodeInternal, streamErr.Code)
+		assert.True(t, streamErr.Retryable)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for error")
+	}
+}
+
 // codes.Unauthenticated is reported as a non-retryable StreamError: the same credential will be
 // rejected again, so the frontend must stop rather than keep reconnecting into it.
 func TestSubscribeReportsUnauthenticatedAsNotRetryable(t *testing.T) {
@@ -370,6 +404,64 @@ func TestSubscribeFailsForImpersonateWithoutAdminTokenSource(t *testing.T) {
 	case err, ok := <-errCh:
 		require.True(t, ok)
 		assert.Error(t, err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for error")
+	}
+	assert.Zero(t, fake.calls.Load())
+}
+
+// Most ways CreateToken can fail are transient (the mint timeout firing, an apiserver 5xx,
+// client-side throttling), so a session that opens the flow page during a brief apiserver hiccup
+// must be told to retry rather than stopped for good.
+func TestSubscribeReportsAdminTokenMintFailureAsRetryable(t *testing.T) {
+	fake := &fakeFlowStreamServer{handle: func(_ int, _ string) error { return nil }}
+	h := newTestSubscriber(t, fake)
+	h.adminTokenSource = NewAdminTokenSource(newContextAwareClientset(func(context.Context, string, *authenticationv1.TokenRequest, metav1.CreateOptions) (*authenticationv1.TokenRequest, error) {
+		return nil, fmt.Errorf("apiserver unavailable")
+	}), "ns", "antrea-ui-admin")
+
+	store := newTestStore(t)
+	ctx, _ := ctxWithSessionAuth(t, store, &session.Spec{
+		Mode:       session.ModeAdmin,
+		Credential: session.Credential{Kind: session.KindImpersonate, UserName: "antrea-ui-admin"},
+	})
+
+	_, errCh := h.Subscribe(ctx, &FlowStreamFilter{})
+	select {
+	case err, ok := <-errCh:
+		require.True(t, ok)
+		var streamErr *StreamError
+		require.ErrorAs(t, err, &streamErr)
+		assert.True(t, streamErr.Retryable)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for error")
+	}
+	assert.Zero(t, fake.calls.Load())
+}
+
+// A missing serviceaccounts/token grant or a deleted antrea-ui-admin ServiceAccount needs an
+// operator to fix, so retrying the same request will not help - unlike the generic mint failure
+// in TestSubscribeReportsAdminTokenMintFailureAsRetryable.
+func TestSubscribeReportsForbiddenAdminTokenMintAsNotRetryable(t *testing.T) {
+	fake := &fakeFlowStreamServer{handle: func(_ int, _ string) error { return nil }}
+	h := newTestSubscriber(t, fake)
+	h.adminTokenSource = NewAdminTokenSource(newContextAwareClientset(func(context.Context, string, *authenticationv1.TokenRequest, metav1.CreateOptions) (*authenticationv1.TokenRequest, error) {
+		return nil, apierrors.NewForbidden(schema.GroupResource{Resource: "serviceaccounts/token"}, "antrea-ui-admin", fmt.Errorf("no create verb"))
+	}), "ns", "antrea-ui-admin")
+
+	store := newTestStore(t)
+	ctx, _ := ctxWithSessionAuth(t, store, &session.Spec{
+		Mode:       session.ModeAdmin,
+		Credential: session.Credential{Kind: session.KindImpersonate, UserName: "antrea-ui-admin"},
+	})
+
+	_, errCh := h.Subscribe(ctx, &FlowStreamFilter{})
+	select {
+	case err, ok := <-errCh:
+		require.True(t, ok)
+		var streamErr *StreamError
+		require.ErrorAs(t, err, &streamErr)
+		assert.False(t, streamErr.Retryable)
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for error")
 	}

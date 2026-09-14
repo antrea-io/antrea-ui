@@ -30,6 +30,7 @@ import (
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 
 	apisv1 "antrea.io/antrea-ui/apis/v1"
 	"antrea.io/antrea-ui/pkg/auth/session"
@@ -63,15 +64,24 @@ const (
 	// limiter or its token-auth semaphore). Retryable: capacity is expected to free up.
 	StreamErrorCodeResourceExhausted = "resource_exhausted"
 	// StreamErrorCodeInternal covers everything else: a dial failure, a credential this backend
-	// could not resolve or mint, or any other error. Not retryable by default, since most of
-	// these reflect a persistent local or configuration problem rather than a transient one.
+	// could not resolve or mint, or any other error. Retryable or not depends on which
+	// constructor built it - see internalStreamError vs retryableInternalStreamError.
 	StreamErrorCodeInternal = "internal"
 )
 
 // internalStreamError wraps err as a non-retryable StreamError with StreamErrorCodeInternal, for
-// failures resolved locally rather than reported by the Flow Aggregator.
+// failures resolved locally, rather than reported by the Flow Aggregator, that retrying will not
+// fix: a wiring bug, a credential shape this backend does not support, a fixed configuration
+// mismatch.
 func internalStreamError(err error) *StreamError {
 	return &StreamError{msg: err.Error(), Code: StreamErrorCodeInternal, Retryable: false}
+}
+
+// retryableInternalStreamError is internalStreamError's counterpart for a locally-resolved failure
+// that is expected to be transient - a dependency call that timed out or hit a 5xx, for example -
+// rather than a fixed local or configuration problem.
+func retryableInternalStreamError(err error) *StreamError {
+	return &StreamError{msg: err.Error(), Code: StreamErrorCodeInternal, Retryable: true}
 }
 
 // isMessageSizeErr reports whether a ResourceExhausted error is grpc-go's own "message too large
@@ -204,7 +214,15 @@ func (h *GRPCFlowStreamSubscriber) resolveCall(ctx context.Context) (flowpb.Flow
 		}
 		token, err := h.adminTokenSource.Token(ctx)
 		if err != nil {
-			return nil, nil, internalStreamError(fmt.Errorf("failed to mint admin token for flow stream: %w", err))
+			mintErr := fmt.Errorf("failed to mint admin token for flow stream: %w", err)
+			if apierrors.IsForbidden(err) || apierrors.IsNotFound(err) {
+				// Retrying will not fix a missing serviceaccounts/token grant or a deleted
+				// antrea-ui-admin ServiceAccount: both need an operator to act.
+				return nil, nil, internalStreamError(mintErr)
+			}
+			// Most CreateToken failures are transient - the mint timeout firing, an
+			// apiserver 5xx, client-side throttling - and are expected to succeed on retry.
+			return nil, nil, retryableInternalStreamError(mintErr)
 		}
 		// FA charges a token-auth slot whenever authorization metadata is present, so this
 		// path (like KindBearer) must never also carry a client cert on the connection -
@@ -358,7 +376,11 @@ func (h *GRPCFlowStreamSubscriber) forwardResp(ctx context.Context, resp *flowpb
 //   - ResourceExhausted: FA is at capacity (its stream limiter or its token-auth semaphore).
 //     Retryable - except for the one ResourceExhausted grpc-go raises locally, see
 //     isMessageSizeErr.
-//   - anything else: a generic, non-retryable stream failure.
+//   - anything else: retryable by default. Most codes that reach here - Unavailable,
+//     DeadlineExceeded, Aborted - are what grpc-go returns for an ordinary transient failure (FA
+//     restarting, rolling, or a network blip), and before this package existed, the frontend's
+//     own reconnect loop recovered from exactly these the same way. A permanent failure gets its
+//     own case above instead of falling through to a non-retryable default here.
 func (h *GRPCFlowStreamSubscriber) classifyStreamErr(err error) *StreamError {
 	switch status.Code(err) {
 	case codes.Unauthenticated:
@@ -384,7 +406,7 @@ func (h *GRPCFlowStreamSubscriber) classifyStreamErr(err error) *StreamError {
 		return &StreamError{
 			msg:       fmt.Errorf("flow stream error: %w", err).Error(),
 			Code:      StreamErrorCodeInternal,
-			Retryable: false,
+			Retryable: true,
 		}
 	}
 }
