@@ -446,14 +446,14 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@hpcc-js/wasm@npm:2.35.0":
-  version: 2.35.0
-  resolution: "@hpcc-js/wasm@npm:2.35.0"
+"@hpcc-js/wasm@npm:2.35.1":
+  version: 2.35.1
+  resolution: "@hpcc-js/wasm@npm:2.35.1"
   dependencies:
-    yargs: "npm:18.0.0"
+    yargs: "npm:18.1.0"
   bin:
     dot-wasm: deprecated/dot-wasm.js
-  checksum: 10c0/2b0c9e7630ccf14b398375f0084cf10fa5151e9c321a71086b852374632d1744364e6b0663080bbca850f9b1a0de37b23a4531684056968a4c62c53f96efb3fe
+  checksum: 10c0/56753caa094bf47168083ffb79591dd4440b6aaf5a23fadd3fc9c27c968d111c6cace199ab48887634b3c26421ff0ddf7209a81d94671028819fe15550737042
   languageName: node
   linkType: hard
 
@@ -5849,21 +5849,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"yargs@npm:18.0.0":
-  version: 18.0.0
-  resolution: "yargs@npm:18.0.0"
-  dependencies:
-    cliui: "npm:^9.0.1"
-    escalade: "npm:^3.1.1"
-    get-caller-file: "npm:^2.0.5"
-    string-width: "npm:^7.2.0"
-    y18n: "npm:^5.0.5"
-    yargs-parser: "npm:^22.0.0"
-  checksum: 10c0/bf290e4723876ea9c638c786a5c42ac28e03c9ca2325e1424bf43b94e5876456292d3ed905b853ebbba6daf43ed29e772ac2a6b3c5fb1b16533245d6211778f3
-  languageName: node
-  linkType: hard
-
-"yargs@npm:^18.1.0":
+"yargs@npm:18.1.0, yargs@npm:^18.1.0":
   version: 18.1.0
   resolution: "yargs@npm:18.1.0"
   dependencies:
