@@ -40,11 +40,14 @@ plugins:
   # -- Label selector for the ConfigMaps (in the namespace below) that the backend watches for
   # frontend plugins.
   labelSelector: "ui.antrea.io/plugin=true"
-  # -- Namespace to watch for plugin ConfigMaps. Defaults to the release namespace. Set this to
-  # isolate plugin ConfigMaps away from antrea-ui's own release namespace - useful since
-  # antrea-ui is commonly installed into kube-system, which can host other sensitive ConfigMaps.
-  # If set to anything other than the release namespace, whoever runs `helm install`/`upgrade`
-  # needs permission to create a Role/RoleBinding in that other namespace too.
+  # -- Namespace to watch for plugin ConfigMaps. Empty (the default) disables the ConfigMap
+  # plugin source entirely, and with it the Role/RoleBinding that would otherwise grant
+  # antrea-ui's ServiceAccount get/list/watch on every ConfigMap in that namespace. Set this to
+  # enable the source - antrea-ui is commonly installed into kube-system, which can host other
+  # sensitive ConfigMaps, so docs/plugins.md recommends a dedicated namespace over reusing the
+  # release namespace. If set to anything other than the release namespace, whoever runs
+  # `helm install`/`upgrade` needs permission to create a Role/RoleBinding in that other
+  # namespace too.
   namespace: ""
   # -- Filesystem path (inside the backend container) the backend also watches for plugin
   # bundles - one subdirectory per plugin, each holding a manifest.json plus a bundle.zip (see
