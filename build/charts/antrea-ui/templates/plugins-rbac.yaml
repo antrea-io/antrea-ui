@@ -1,17 +1,22 @@
+{{- if .Values.plugins.namespace }}
 # Grants antrea-ui's own ServiceAccount read access to ConfigMaps in the namespace the backend
-# watches for frontend plugins (see values.yaml's plugins.namespace and docs/plugins.md). Split
-# out from role.yaml into its own namespace-parameterized Role/RoleBinding pair, rather than a
-# rule on the base antrea-ui Role, since plugins.namespace can differ from the release namespace
-# - e.g. to keep plugin ConfigMaps out of kube-system, where antrea-ui is commonly installed
-# alongside other, unrelated, more sensitive ConfigMaps. Note this grants get/list/watch on
-# every ConfigMap in that namespace, not just labeled plugin ones - the label selector is applied
-# client-side by the backend's informer, not by RBAC, so isolating plugin ConfigMaps into their
-# own namespace (rather than relying on the label alone) is the actual mitigation here.
+# watches for frontend plugins (see values.yaml's plugins.namespace and docs/plugins.md). Rendered
+# only when plugins.namespace is non-empty - this falls out of the "empty disables the ConfigMap
+# source entirely" semantics for free, rather than needing a separate switch. Split out from
+# role.yaml into its own namespace-parameterized Role/RoleBinding pair, rather than a rule on
+# the base antrea-ui Role, since plugins.namespace can differ from the release namespace - e.g.
+# to keep plugin ConfigMaps out of kube-system, where antrea-ui is commonly installed alongside
+# other, unrelated, more sensitive ConfigMaps. Note this grants get/list/watch on every ConfigMap
+# in that namespace, not just labeled plugin ones: the informer does pass plugins.labelSelector
+# to the API server, but RBAC has no label dimension, and resourceNames does not apply to
+# list/watch, so the grant cannot be narrowed below "all ConfigMaps in this namespace". Isolating
+# plugin ConfigMaps into their own namespace, rather than relying on the label, is the actual
+# mitigation here.
 kind: Role
 apiVersion: rbac.authorization.k8s.io/v1
 metadata:
   name: antrea-ui-plugins
-  namespace: {{ .Values.plugins.namespace | default .Release.Namespace }}
+  namespace: {{ .Values.plugins.namespace }}
   labels:
     app: antrea-ui
 rules:
@@ -32,7 +37,7 @@ kind: RoleBinding
 apiVersion: rbac.authorization.k8s.io/v1
 metadata:
   name: antrea-ui-plugins
-  namespace: {{ .Values.plugins.namespace | default .Release.Namespace }}
+  namespace: {{ .Values.plugins.namespace }}
   labels:
     app: antrea-ui
 subjects:
@@ -43,3 +48,4 @@ roleRef:
   kind: Role
   name: antrea-ui-plugins
   apiGroup: rbac.authorization.k8s.io
+{{- end }}

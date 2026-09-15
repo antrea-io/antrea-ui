@@ -79,8 +79,9 @@ type PluginsConfig struct {
 	// LabelSelector selects the ConfigMaps (in Namespace) that the backend watches for
 	// frontend plugins, e.g. "ui.antrea.io/plugin=true".
 	LabelSelector string
-	// Namespace is the Kubernetes namespace the backend watches for plugin ConfigMaps.
-	// Empty means antrea-ui's own namespace (see env.GetNamespace()).
+	// Namespace is the Kubernetes namespace the backend watches for plugin ConfigMaps. Empty
+	// (the default) disables the ConfigMap plugin source entirely, the same as an empty
+	// Directory below disables the disk source.
 	Namespace string
 	// Directory, if set, is a filesystem path the backend also watches for plugin bundles - one
 	// subdirectory per plugin, each holding a manifest.json plus a bundle.zip with the files it

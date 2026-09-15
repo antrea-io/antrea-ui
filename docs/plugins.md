@@ -12,19 +12,20 @@ complete, minimal example.
 ## How it works
 
 A plugin bundle can come from either of two sources, watched at the same
-time: a labeled Kubernetes `ConfigMap`, or a subdirectory of a filesystem
-directory the backend is pointed at (`plugins.directory`). Both are
-described below; if a plugin name is delivered by both, the ConfigMap wins
-and the directory copy is dropped (and logged).
+time if both are enabled: a labeled Kubernetes `ConfigMap`, or a
+subdirectory of a filesystem directory the backend is pointed at
+(`plugins.directory`). Both are disabled by default and described below; if
+a plugin name is delivered by both, the ConfigMap wins and the directory
+copy is dropped (and logged).
 
 1. A plugin is delivered as a Kubernetes `ConfigMap`, in the namespace the
-   backend watches for plugins (`plugins.namespace`, default: antrea-ui's own
-   release namespace), labeled to match `plugins.labelSelector` (default:
-   `ui.antrea.io/plugin=true`). Its `data` holds `manifest.json` (small and
-   human-readable, so `kubectl get configmap -o yaml` shows it directly);
-   everything else the manifest references — the entry file, and for a
-   federation remote, `remoteEntry` plus every file it names — is zipped
-   into one `bundle.zip` key under `binaryData`.
+   backend watches for plugins (`plugins.namespace`; empty, the default,
+   disables this source entirely), labeled to match `plugins.labelSelector`
+   (default: `ui.antrea.io/plugin=true`). Its `data` holds `manifest.json`
+   (small and human-readable, so `kubectl get configmap -o yaml` shows it
+   directly); everything else the manifest references — the entry file, and
+   for a federation remote, `remoteEntry` plus every file it names — is
+   zipped into one `bundle.zip` key under `binaryData`.
 
    A single archive rather than one ConfigMap key per file for two reasons:
    a `data`/`binaryData` key name can't contain `/` at all (rejected by the
@@ -35,16 +36,20 @@ and the directory copy is dropped (and logged).
    is simpler than juggling an arbitrary key set. See "The manifest" below
    for the exact layout.
 
-   The RBAC this requires (`get`/`list`/`watch` on ConfigMaps) is granted on
-   every ConfigMap in that namespace, not just labeled plugin ones — the
-   label selector is applied by the backend's watch, not by RBAC. Since
-   antrea-ui is commonly installed into `kube-system`, which can host other,
+   The chart only renders the `Role`/`RoleBinding` this requires when
+   `plugins.namespace` is set — with the default empty value, the source is
+   off and antrea-ui's ServiceAccount gets no ConfigMap access at all. The
+   RBAC granted (`get`/`list`/`watch` on ConfigMaps) covers every ConfigMap
+   in that namespace, not just labeled plugin ones — the backend's watch
+   asks the API server for labeled ConfigMaps only, but RBAC cannot express
+   a label filter, so the grant itself cannot be narrowed. Since antrea-ui
+   is commonly installed into `kube-system`, which can host other,
    unrelated, more sensitive ConfigMaps, set `plugins.namespace` to a
-   dedicated namespace if you want plugin ConfigMaps isolated from it. If
-   that namespace differs from the release namespace, whoever runs
-   `helm install`/`upgrade` needs permission to create a `Role`/`RoleBinding`
-   there too — the chart can't grant permissions outside its own release
-   namespace. `plugins.maxConfigMapPlugins` (default 10) caps how many
+   dedicated namespace rather than the release namespace. If that namespace
+   differs from the release namespace, whoever runs `helm install`/`upgrade`
+   needs permission to create a `Role`/`RoleBinding` there too — the chart
+   can't grant permissions outside its own release namespace.
+   `plugins.maxConfigMapPlugins` (default 10) caps how many
    distinct ConfigMap-backed plugins the backend will track at once — a new
    plugin past the cap is rejected and logged, though updates to an
    already-tracked one are never blocked by it. `plugins.maxBundleBytes`
@@ -158,8 +163,8 @@ gates are structural (manifest schema, zip-slip clamping, a decompressed
 size budget). Optionally, the backend can additionally require every plugin
 to be signed by one of a set of keys the operator trusts, and refuse to load
 anything else. Read "What it does not protect against" below before relying
-on it: with the default `plugins.namespace`, it protects against much less
-than it appears to.
+on it: when `plugins.namespace` is the release namespace, it protects
+against much less than it appears to.
 
 Verification is entirely backend-side: a rejected plugin never reaches
 `/api/v1/plugins/index.json` and its files never resolve, so the frontend
@@ -238,12 +243,12 @@ reason) and never silent.
   (`antrea-ui-nginx`) and the trusted key ConfigMaps all live in Antrea UI's
   release namespace. Whoever can write ConfigMaps there can turn
   verification off or swap in their own key, effective at the next Pod
-  restart (a rollout, an eviction, a node drain). Since `plugins.namespace`
-  defaults to the release namespace, verification only protects against
-  whoever writes plugin ConfigMaps once `plugins.namespace` is set to a
-  separate, dedicated namespace, and those writers have no write access to
-  the release namespace. The chart prints a warning when verification is
-  enabled with both namespaces the same.
+  restart (a rollout, an eviction, a node drain). Verification only
+  protects against whoever writes plugin ConfigMaps once `plugins.namespace`
+  is set to a separate, dedicated namespace, and those writers have no
+  write access to the release namespace. The chart prints a warning when
+  verification is enabled with `plugins.namespace` set to the release
+  namespace.
 - **Replaying an older signed plugin.** Nothing ties a signature to a plugin
   version or to a cluster: any manifest a trusted key has ever signed keeps
   loading, together with its bundle, for as long as that key is trusted.
@@ -701,8 +706,8 @@ The rest of this section instead delivers the same plugin as a `ConfigMap`,
 useful for testing that path specifically (e.g. before a real deployment, or
 in the e2e test below). The commands below assume `@antrea/ui-plugin-sdk` is
 already built (see "Writing a plugin" above), and that `<namespace>` is
-wherever the backend watches for plugins — `plugins.namespace` if set,
-otherwise Antrea UI's own release namespace (see "How it works" above).
+`plugins.namespace` (see "How it works" above), which must be set for the
+backend to watch for ConfigMap plugins at all.
 
 ```bash
 cd plugins/examples/pod-counter
