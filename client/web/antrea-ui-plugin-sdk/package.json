@@ -20,6 +20,6 @@
   },
   "devDependencies": {
     "@antrea/ui-components": "0.1.0",
-    "typescript": "^6.0.0"
+    "typescript": "^7.0.0"
   }
 }
