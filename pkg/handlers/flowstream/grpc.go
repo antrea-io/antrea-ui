@@ -63,6 +63,24 @@ const (
 	// StreamErrorCodeResourceExhausted means the Flow Aggregator is at capacity (its stream
 	// limiter or its token-auth semaphore). Retryable: capacity is expected to free up.
 	StreamErrorCodeResourceExhausted = "resource_exhausted"
+	// StreamErrorCodeForbidden means the Flow Aggregator authenticated the credential but
+	// refused the stream: the caller does not hold the flows RBAC grant in the scope it asked
+	// for. Not retryable - a permanent 403 retried in a reconnect loop is the failure mode to
+	// avoid. Raised both at stream open and mid-stream, when upstream's periodic revalidation
+	// finds a grant has been revoked.
+	StreamErrorCodeForbidden = "forbidden"
+	// StreamErrorCodeInvalidRequest means the Flow Aggregator rejected the request itself: an
+	// unset or over-long scope, or an empty Namespace name. A client bug, not a permission
+	// problem. Not retryable: the same request will be rejected again.
+	StreamErrorCodeInvalidRequest = "invalid_request"
+	// StreamErrorCodeFlowAggregatorTooOld means the Flow Aggregator predates per-user flow
+	// authorization, so it would ignore the stream's scope and stream every flow it has,
+	// unredacted. Not retryable, and terminal for this deployment until the Flow Aggregator is
+	// upgraded. The frontend has no dedicated panel for this code yet, unlike onDisabled's 501
+	// or onForbidden's 403 - it falls through to the generic permanent-error banner via onError,
+	// whose message (see flowAggregatorTooOldErr) at least names the address to upgrade. See
+	// version.go.
+	StreamErrorCodeFlowAggregatorTooOld = "flow_aggregator_too_old"
 	// StreamErrorCodeInternal covers everything else: a dial failure, a credential this backend
 	// could not resolve or mint, or any other error. Retryable or not depends on which
 	// constructor built it - see internalStreamError vs retryableInternalStreamError.
@@ -114,6 +132,9 @@ type GRPCFlowStreamSubscriber struct {
 	// adminTokenSource mints the bearer token used for admin-password (KindImpersonate)
 	// sessions. Nil disables flow streaming for that login mode.
 	adminTokenSource *AdminTokenSource
+	// versionProbe caches whether the Flow Aggregator supports per-user flow authorization.
+	// See version.go; Subscribe consults it before sending any real request.
+	versionProbe versionProbe
 }
 
 // GRPCConfig holds the connection parameters for the FlowAggregator gRPC server.
@@ -190,8 +211,8 @@ func (h *GRPCFlowStreamSubscriber) buildCertConn(cred *session.Credential) (*grp
 
 // resolveCall returns the client to call GetFlows on and the context to call it with (carrying
 // bearer credential metadata, where the credential kind uses one), for the identity resolved for
-// ctx's request. See docs/authentication.md, "Flow data is not yet per-user": FA accepts exactly
-// two credential shapes, a bearer token in call metadata or a client cert on the connection, and
+// ctx's request. See docs/authentication.md, "Flow data is per-user": FA accepts exactly two
+// credential shapes, a bearer token in call metadata or a client cert on the connection, and
 // nothing else.
 func (h *GRPCFlowStreamSubscriber) resolveCall(ctx context.Context) (flowpb.FlowStreamServiceClient, context.Context, error) {
 	ra, ok := session.RequestAuthFrom(ctx)
@@ -233,7 +254,7 @@ func (h *GRPCFlowStreamSubscriber) resolveCall(ctx context.Context) (flowpb.Flow
 	}
 }
 
-func (h *GRPCFlowStreamSubscriber) Subscribe(ctx context.Context, filter *FlowStreamFilter) (<-chan apisv1.FlowStreamEvent, <-chan error, <-chan struct{}) {
+func (h *GRPCFlowStreamSubscriber) Subscribe(ctx context.Context, scope *FlowStreamScope, filter *FlowStreamFilter) (<-chan apisv1.FlowStreamEvent, <-chan error, <-chan struct{}) {
 	flowsCh := make(chan apisv1.FlowStreamEvent, 16)
 	errCh := make(chan error, 1)
 	ready := make(chan struct{})
@@ -251,13 +272,28 @@ func (h *GRPCFlowStreamSubscriber) Subscribe(ctx context.Context, filter *FlowSt
 			return
 		}
 
-		req := filterToGetFlowsRequest(filter)
+		// Probe before the real request, never after: a Flow Aggregator that predates
+		// per-user flow authorization would silently ignore this request's scope and stream
+		// the whole cluster unredacted, and nothing in the response would say so. See
+		// checkFlowAggregatorVersion.
+		if err := h.checkFlowAggregatorVersion(ctx, client, callCtx); err != nil {
+			if errors.Is(err, errProbeCanceled) {
+				// The request this probe was made for went away. An ordinary client
+				// disconnect, nothing to report.
+				return
+			}
+			errCh <- err
+			return
+		}
+
+		req := filterToGetFlowsRequest(scope, filter)
 		// startStream has to read the first response too, not just call GetFlows: for a
 		// server-streaming RPC, an error the server returns before sending anything (FA's
 		// Unauthenticated/ResourceExhausted included) surfaces on the first Recv, not on the
 		// call that opens the stream.
 		stream, firstResp, err := h.startStream(ctx, client, callCtx, req)
 		if err != nil {
+			h.logDenial(ctx, err)
 			errCh <- err
 			return
 		}
@@ -296,7 +332,9 @@ func (h *GRPCFlowStreamSubscriber) Subscribe(ctx context.Context, filter *FlowSt
 					return
 				}
 				h.logger.Error(err, "Error receiving from flow stream")
-				errCh <- h.classifyStreamErr(err)
+				streamErr := h.classifyStreamErr(err)
+				h.logDenial(ctx, streamErr)
+				errCh <- streamErr
 				return
 			}
 			if !h.forwardResp(ctx, resp, &lastDroppedCount, flowsCh) {
@@ -382,6 +420,14 @@ func (h *GRPCFlowStreamSubscriber) forwardResp(ctx context.Context, resp *flowpb
 //     antrea-ui call. Ending the whole UI session over it would log the user out of pages that
 //     have nothing to do with flow visibility, on every single re-login, if that mismatch is
 //     simply how the deployment is configured.
+//   - PermissionDenied: FA authenticated the credential but the caller does not hold the flows
+//     RBAC grant in the scope it asked for. Not retryable. Raised both at stream open and
+//     mid-stream by FA's periodic revalidation when a grant is revoked. Note the asymmetry
+//     upstream documents: a stream open fails closed, while revalidation fails open, so a revoked
+//     grant ends a running stream on the next revalidation interval rather than immediately.
+//   - InvalidArgument: FA rejected the request itself. A client bug; parseFlowStreamScope's local
+//     400s should make it unreachable, but it is classified anyway so it surfaces as a bug rather
+//     than a retry storm. It also invalidates the version-probe cache - see the case body.
 //   - ResourceExhausted: FA is at capacity (its stream limiter or its token-auth semaphore).
 //     Retryable - except for the one ResourceExhausted grpc-go raises locally, see
 //     isMessageSizeErr.
@@ -396,6 +442,25 @@ func (h *GRPCFlowStreamSubscriber) classifyStreamErr(err error) *StreamError {
 		return &StreamError{
 			msg:       fmt.Errorf("FlowAggregator rejected the credential: %w", err).Error(),
 			Code:      StreamErrorCodeUnauthenticated,
+			Retryable: false,
+		}
+	case codes.PermissionDenied:
+		return &StreamError{
+			msg:       fmt.Errorf("FlowAggregator refused the flow stream: %w", err).Error(),
+			Code:      StreamErrorCodeForbidden,
+			Retryable: false,
+		}
+	case codes.InvalidArgument:
+		// Only a real stream reaches here: the version probe deliberately provokes an
+		// InvalidArgument and reads it as its own answer, in version.go, without going
+		// through this function. So an InvalidArgument here means a request this client
+		// built was rejected, which a cached "too old" verdict would explain - the Flow
+		// Aggregator has been upgraded and is now enforcing fields it used to ignore. Drop
+		// the verdict so the next open re-probes instead of waiting out the TTL.
+		h.versionProbe.invalidate()
+		return &StreamError{
+			msg:       fmt.Errorf("FlowAggregator rejected the flow stream request: %w", err).Error(),
+			Code:      StreamErrorCodeInvalidRequest,
 			Retryable: false,
 		}
 	case codes.ResourceExhausted:
@@ -420,14 +485,41 @@ func (h *GRPCFlowStreamSubscriber) classifyStreamErr(err error) *StreamError {
 	}
 }
 
+// logDenial records a refused flow stream, with the username it was refused for.
+//
+// Authorization is now entirely the Flow Aggregator's decision, so antrea-ui no longer denies
+// these itself - but nothing else here would record that a flow stream was refused, and the
+// removed requireFlowVisibility gate logged exactly that. The Flow Aggregator's own audit trail
+// names the subject it reviewed, not the antrea-ui session it arrived from, so this line is what
+// ties the two together.
+func (h *GRPCFlowStreamSubscriber) logDenial(ctx context.Context, err error) {
+	var streamErr *StreamError
+	if !errors.As(err, &streamErr) || streamErr.Code != StreamErrorCodeForbidden {
+		return
+	}
+	username := ""
+	if ra, ok := session.RequestAuthFrom(ctx); ok {
+		username = ra.Username
+	}
+	h.logger.Info("FlowAggregator denied flow visibility request", "username", username, "reason", streamErr.Error())
+}
+
 var filterDirectionToProto = map[FlowFilterDirection]flowpb.FlowFilterDirection{
 	FlowFilterDirectionBoth: flowpb.FlowFilterDirection_FLOW_FILTER_DIRECTION_BOTH,
 	FlowFilterDirectionFrom: flowpb.FlowFilterDirection_FLOW_FILTER_DIRECTION_FROM,
 	FlowFilterDirectionTo:   flowpb.FlowFilterDirection_FLOW_FILTER_DIRECTION_TO,
 }
 
-// filterToGetFlowsRequest translates our internal filter type to the protobuf request.
-func filterToGetFlowsRequest(filter *FlowStreamFilter) *flowpb.GetFlowsRequest {
+// filterToGetFlowsRequest translates our internal scope and filter types to the protobuf request.
+//
+// Scope lands on GetFlowsRequest, filters on FlowFilter, and the two are never mixed: a Namespace
+// in filter.Namespaces is a peer selector that upstream explicitly allows to name a Namespace
+// outside the scope, so folding it into the scope would both over-request authorization and throw
+// that capability away.
+//
+// This is the only place the scalar FlowStreamScope.ObservedNamespace becomes the repeated
+// GetFlowsRequest.Namespaces, and is where a future multi-Namespace scope would land.
+func filterToGetFlowsRequest(scope *FlowStreamScope, filter *FlowStreamFilter) *flowpb.GetFlowsRequest {
 	pbFilter := &flowpb.FlowFilter{
 		Namespaces:       filter.Namespaces,
 		PodNames:         filter.PodNames,
@@ -439,12 +531,20 @@ func filterToGetFlowsRequest(filter *FlowStreamFilter) *flowpb.GetFlowsRequest {
 	for _, ft := range filter.FlowTypes {
 		pbFilter.FlowTypes = append(pbFilter.FlowTypes, flowpb.FlowType(ft))
 	}
-	return &flowpb.GetFlowsRequest{
+	req := &flowpb.GetFlowsRequest{
 		Filters: []*flowpb.FlowFilter{pbFilter},
 		// The SSE flow stream always requires follow mode so the Flow Aggregator does not
 		// close the gRPC stream on the first empty ring-buffer read (!follow && n==0).
+		// It is also why the RBAC verb the Flow Aggregator checks is watch, not list.
 		Follow: true,
 	}
+	if scope != nil {
+		req.ClusterWide = scope.ClusterWide
+		if scope.ObservedNamespace != "" {
+			req.Namespaces = []string{scope.ObservedNamespace}
+		}
+	}
+	return req
 }
 
 // ipBytesToString converts a protobuf bytes IP address to its string representation.
@@ -497,6 +597,8 @@ func protoFlowToAPI(pb *flowpb.Flow) apisv1.Flow {
 	if k := pb.GetK8S(); k != nil {
 		f.K8s = apisv1.FlowKubernetes{
 			FlowType:                       apisv1.FlowType(k.GetFlowType()),
+			SourceDisclosure:               apisv1.EndpointDisclosure(k.GetSourceDisclosure()),
+			DestinationDisclosure:          apisv1.EndpointDisclosure(k.GetDestinationDisclosure()),
 			SourcePodNamespace:             k.GetSourcePodNamespace(),
 			SourcePodName:                  k.GetSourcePodName(),
 			SourcePodUid:                   k.GetSourcePodUid(),

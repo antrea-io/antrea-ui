@@ -26,7 +26,7 @@ import (
 // Implementations connect to the FlowAggregator's gRPC FlowStreamService (see grpc.go)
 // and relay flow events to the caller.
 type FlowStreamSubscriber interface {
-	// Subscribe starts streaming flows matching the given filter.
+	// Subscribe starts streaming flows in the given scope, matching the given filter.
 	// It returns a channel of FlowStreamEvent, a channel of errors, and a channel that closes
 	// once the stream is confirmed live - i.e. the upstream call cleared authentication and
 	// authorization and is ready to serve flows, even if none have arrived yet. A caller
@@ -36,8 +36,14 @@ type FlowStreamSubscriber interface {
 	// The caller should read from all three until flowsCh and errCh are closed.
 	// Cancel the context to stop the stream.
 	//
+	// scope and filter are separate because they mean different things: scope is what the Flow
+	// Aggregator authorizes the stream against and resolves each endpoint's disclosure tier
+	// relative to, while filter only narrows what the stream delivers within it. scope must
+	// have exactly one of its fields set; parseFlowStreamScope guarantees that for requests
+	// arriving over HTTP.
+	//
 	// ctx must carry the request's *session.RequestAuth (see session.WithRequestAuth): the
 	// GRPCFlowStreamSubscriber implementation reads it to decide which credential to present
 	// to the Flow Aggregator.
-	Subscribe(ctx context.Context, filter *FlowStreamFilter) (<-chan apisv1.FlowStreamEvent, <-chan error, <-chan struct{})
+	Subscribe(ctx context.Context, scope *FlowStreamScope, filter *FlowStreamFilter) (<-chan apisv1.FlowStreamEvent, <-chan error, <-chan struct{})
 }

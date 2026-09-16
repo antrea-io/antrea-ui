@@ -20,8 +20,7 @@ import { Provider } from 'react-redux';
 import { resetAccessSummary } from '@antrea/ui-components';
 import type { AccessSummary } from '@antrea/ui-components';
 import { setupStore, setSession, setAuthenticated } from './store';
-import type { RootState } from './store';
-import { AccessProvider, useAccess, useCanViewFlows } from './access';
+import { AccessProvider, useAccess } from './access';
 import { HomeRedirect } from './pages';
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -141,68 +140,10 @@ describe('AccessProvider', () => {
     });
 });
 
-// useCanViewFlows is the interim admin-only rule for flow data: the built-in admin, or a
-// Kubernetes cluster admin. It mirrors requireFlowVisibility() in pkg/server/api/flowstream.go,
-// which is the authorization decision and fails closed on its own, so like the can() gates this
-// only decides what to render and fails open on a summary that never arrived.
-describe('useCanViewFlows', () => {
-    function FlowProbe() {
-        const { allowed, loaded } = useCanViewFlows();
-        return <div data-testid="probe">{JSON.stringify({ allowed, loaded })}</div>;
-    }
-
-    async function renderProbe(summary: AccessSummary | null, sessionInfo: RootState['sessionInfo']) {
-        vi.stubGlobal('fetch', vi.fn().mockResolvedValue(summary ? jsonResponse(summary) : new Response('', { status: 500 })));
-        const store = setupStore({ session: 'authenticated', sessionInfo });
-        render(
-            <Provider store={store}>
-                <AccessProvider><FlowProbe /></AccessProvider>
-            </Provider>,
-        );
-        await waitFor(() => expect(document.querySelector('[data-testid="probe"]')?.textContent)
-            .toContain('"loaded":true'));
-        return document.querySelector('[data-testid="probe"]')!.textContent!;
-    }
-
-    const adminSession = { authenticated: true, mode: 'admin' as const, username: 'admin' };
-    const tokenSession = { authenticated: true, mode: 'token' as const, username: 'alice' };
-
-    test('the built-in admin is allowed even though clusterAdmin is false', async () => {
-        // Not redundant with the clusterAdmin term: the static-admin session impersonates the
-        // antrea-ui-admin ServiceAccount, whose aggregated ClusterRole holds no */*/* rule, so
-        // the wildcard review genuinely answers false for it.
-        expect(await renderProbe(summaryWith({ clusterAdmin: false }), adminSession)).toContain('"allowed":true');
-    });
-
-    test('a cluster admin is allowed', async () => {
-        expect(await renderProbe(summaryWith({ clusterAdmin: true }), tokenSession)).toContain('"allowed":true');
-    });
-
-    test('an ordinary user is denied', async () => {
-        expect(await renderProbe(summaryWith({ clusterAdmin: false }), tokenSession)).toContain('"allowed":false');
-    });
-
-    test('a null summary (fetch failed) is allowed, deferring to the backend 403', async () => {
-        // Not an authorization hole: requireFlowVisibility still denies, and its 403 names the
-        // actual restriction instead of the generic permission panel. Denying here would instead
-        // strand a cluster admin for the rest of the page lifetime after one transient failure.
-        expect(await renderProbe(null, tokenSession)).toContain('"allowed":true');
-    });
-
-    test('a null sessionInfo is allowed, even against a definite clusterAdmin false', async () => {
-        // The case the backend resolves in the user's favour: sessionInfo is null when the login
-        // page's own GET /auth/session failed, which the built-in admin can hit while still
-        // logging in successfully, and their summary reports clusterAdmin false correctly. So
-        // this is the mode-unknown branch, not the ordinary-user one, and denying it would hide
-        // the page from exactly the caller requireFlowVisibility short-circuits to an allow.
-        expect(await renderProbe(summaryWith({ clusterAdmin: false }), null)).toContain('"allowed":true');
-    });
-});
-
 describe('HomeRedirect', () => {
-    function renderAt(summary: AccessSummary | null, sessionInfo: RootState['sessionInfo'] = null) {
+    function renderAt(summary: AccessSummary | null) {
         vi.stubGlobal('fetch', vi.fn().mockResolvedValue(summary ? jsonResponse(summary) : new Response('', { status: 500 })));
-        const store = setupStore({ session: 'authenticated', sessionInfo });
+        const store = setupStore({ session: 'authenticated' });
         return render(
             <Provider store={store}>
                 <AccessProvider>
@@ -234,16 +175,11 @@ describe('HomeRedirect', () => {
         await waitFor(() => expect(document.querySelector('[data-testid="landed"]')?.textContent).toBe('traceflow'));
     });
 
-    test('lands on /flows/list when only flow visibility is permitted', async () => {
-        renderAt(summaryWith({ clusterAdmin: true }), { authenticated: true, mode: 'token', username: 'alice' });
-        await waitFor(() => expect(document.querySelector('[data-testid="landed"]')?.textContent).toBe('flows'));
-    });
-
-    test('falls back to /settings when nothing else is permitted', async () => {
-        // Flow Visibility is no longer the floor: it is gated too, so a user permitted none of
-        // the three lands on Settings, which needs no permission. Needs a definite session: a
-        // null one is mode-unknown, which useCanViewFlows allows.
-        renderAt(summaryWith(), { authenticated: true, mode: 'token', username: 'alice' });
+    test('falls back to /settings when neither Summary nor Traceflow is granted', async () => {
+        // Flow Visibility is not a candidate here: its authorization is entirely FA's, so there
+        // is no access-summary answer for whether this user could view it. Settings needs no
+        // permission at all, so it is the floor now instead of a guess that could land on a 403.
+        renderAt(summaryWith());
         await waitFor(() => expect(document.querySelector('[data-testid="landed"]')?.textContent).toBe('settings'));
     });
 

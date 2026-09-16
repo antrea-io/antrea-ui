@@ -15,6 +15,7 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import './antrea-flow-visibility-page';
 import type { AntreaFlowVisibilityPage } from './antrea-flow-visibility-page';
+import type { FlowStreamFilter } from '../lib/flow-stream';
 import {
     Flow,
     FlowType,
@@ -119,6 +120,27 @@ async function mount(fetchImpl: (url: string, init?: RequestInit) => Promise<Res
     await el.updateComplete;
     return el;
 }
+
+// TEMPORARY, and paired with withTemporaryClusterWideScope: until the observed-namespace
+// selector exists, every stream this page opens asks for cluster scope. The backend rejects a
+// request naming no scope with a 400, so without this the page would not stream at all — which is
+// why it is worth an explicit test rather than being left implicit in the other cases' fixtures.
+// When the selector lands, this test is what should fail.
+describe('AntreaFlowVisibilityPage — temporary hardcoded cluster scope', () => {
+    test('every stream names cluster scope', async () => {
+        const fetchMock = vi.fn(async () => sseResponse([]));
+        await mount(fetchMock);
+        await vi.advanceTimersByTimeAsync(0);
+
+        const calls = streamCalls(fetchMock);
+        expect(calls.length).toBeGreaterThan(0);
+        for (const [url] of calls) {
+            const params = new URL(url as string, 'http://example.test').searchParams;
+            expect(params.get('clusterWide')).toBe('true');
+            expect(params.get('observedNamespace')).toBeNull();
+        }
+    });
+});
 
 describe('AntreaFlowVisibilityPage — smoke and stream lifecycle', () => {
     // There is no credential to wait for: the browser sends the session cookie itself, so the
@@ -408,28 +430,27 @@ describe('AntreaFlowVisibilityPage — flow visibility disabled server-side', ()
     });
 });
 
-// The 403 twin of the 501 case above, and load-bearing beyond the usual: "a 403 renders a terminal
-// panel naming the actual restriction" is the stated reason useCanViewFlows may fail open on a
-// missing access summary. If a 403 instead left the page retrying, or showed nothing, the frontend
-// gate's fail-open would be stranding users rather than deferring to a better error.
-describe('AntreaFlowVisibilityPage — forbidden by the interim admin-only gate', () => {
+// The 403 twin of the 501 case above: since nothing on the frontend gates access to this page
+// anymore (authorization is entirely FA's), a real per-scope denial has to render a terminal panel
+// naming the restriction on its own, rather than leaving the page retrying or showing nothing.
+describe('AntreaFlowVisibilityPage — forbidden', () => {
     test('a stream 403 shows the restriction message and does not retry the stream', async () => {
         const fetchMock = vi.fn(async () => sseResponse([], 403));
         const page = await mount(fetchMock);
         await vi.advanceTimersByTimeAsync(0);
 
         expect(page.shadowRoot!.querySelector('antrea-alert[status="danger"]')?.textContent)
-            .toContain('Flow visibility is restricted to administrators');
+            .toContain('not authorized to observe flows in this scope');
 
         expect(streamCalls(fetchMock)).toHaveLength(1);
         await vi.advanceTimersByTimeAsync(60_000);
         expect(streamCalls(fetchMock)).toHaveLength(1);
     });
 
-    // The 403 is terminal for the page, not just for the one open stream: every user action that
-    // restarts the client goes through _startStream, whose only defence is the
-    // _flowVisibilityDisabled guard. A handler that cleared _client but left that flag unset
-    // would silently reopen the stream on the next interaction and 403 again.
+    // The 403 survives a stream restart for the same request, not just the one open stream: every
+    // user action that restarts the client goes through _startStream, whose only defence is
+    // comparing _filterKey against _forbiddenFilterKey. A handler that cleared _client but left
+    // that field unset would silently reopen the stream on the next interaction and 403 again.
     //
     // Driven through the real Pause/Resume buttons rather than a synthetic event: filters and the
     // pause toggle are plain @click handlers on the toolbar, so there is no event to dispatch, and
@@ -453,7 +474,27 @@ describe('AntreaFlowVisibilityPage — forbidden by the interim admin-only gate'
 
         expect(streamCalls(fetchMock)).toHaveLength(1);
         expect(page.shadowRoot!.querySelector('antrea-alert[status="danger"]')?.textContent)
-            .toContain('Flow visibility is restricted to administrators');
+            .toContain('not authorized to observe flows in this scope');
+    });
+
+    // Authorization is per-scope, not per-page: a 403 for one request must not block a later,
+    // different request from ever being tried. Today every request hardcodes cluster-wide scope,
+    // so nothing changes _which_ scope is asked for, but a peer-filter change is already enough to
+    // prove the guard is keyed to the request that was refused rather than latched for the page's
+    // lifetime - _applyFilter's own early return on an unchanged filter key would otherwise make
+    // this indistinguishable from "the restriction survives a stream restart" above.
+    test('a filter change after a 403 retries with the new request', async () => {
+        const fetchMock = vi.fn(async () => sseResponse([], 403));
+        const page = await mount(fetchMock);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(streamCalls(fetchMock)).toHaveLength(1);
+
+        (page as unknown as { _applyFilter(filter: FlowStreamFilter): void })
+            ._applyFilter({ namespaces: ['ns-a'] });
+        await page.updateComplete;
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(streamCalls(fetchMock)).toHaveLength(2);
     });
 });
 

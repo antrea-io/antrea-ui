@@ -38,7 +38,7 @@ import (
 // what StreamFlows falls back on in every test below.
 type silentSubscriber struct{}
 
-func (s *silentSubscriber) Subscribe(ctx context.Context, _ *FlowStreamFilter) (<-chan apisv1.FlowStreamEvent, <-chan error, <-chan struct{}) {
+func (s *silentSubscriber) Subscribe(ctx context.Context, _ *FlowStreamScope, _ *FlowStreamFilter) (<-chan apisv1.FlowStreamEvent, <-chan error, <-chan struct{}) {
 	flowsCh := make(chan apisv1.FlowStreamEvent)
 	errCh := make(chan error)
 	ready := make(chan struct{})
@@ -90,7 +90,7 @@ func TestStreamKeepsSessionAlive(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, "GET", ts.URL+"/api/v1/flows/stream", nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", ts.URL+"/api/v1/flows/stream?clusterWide=true", nil)
 	require.NoError(t, err)
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
@@ -135,7 +135,7 @@ func TestStreamStopsWhenSessionEnds(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, "GET", ts.URL+"/api/v1/flows/stream", nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", ts.URL+"/api/v1/flows/stream?clusterWide=true", nil)
 	require.NoError(t, err)
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
@@ -176,7 +176,7 @@ func TestStreamStopsWithoutResolvedIdentity(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, "GET", ts.URL+"/api/v1/flows/stream", nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", ts.URL+"/api/v1/flows/stream?clusterWide=true", nil)
 	require.NoError(t, err)
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
@@ -222,7 +222,7 @@ func TestStreamStopsWhenBearerCredentialExpires(t *testing.T) {
 
 		ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
 		defer cancel()
-		req, err := http.NewRequestWithContext(ctx, "GET", ts.URL+"/api/v1/flows/stream", nil)
+		req, err := http.NewRequestWithContext(ctx, "GET", ts.URL+"/api/v1/flows/stream?clusterWide=true", nil)
 		require.NoError(t, err)
 		resp, err := http.DefaultClient.Do(req)
 		require.NoError(t, err)

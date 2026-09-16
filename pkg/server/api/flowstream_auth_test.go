@@ -17,6 +17,8 @@ package api
 import (
 	"bufio"
 	"context"
+	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -37,16 +39,33 @@ import (
 )
 
 // flowingSubscriber delivers one flow record immediately, so a test can tell whether the caller
-// actually received flow data rather than just a status code. It also counts Subscribe calls, so a
-// denied request can assert the stronger property: not merely that the caller got no data, but that
-// the backend never asked the Flow Aggregator for any on their behalf.
+// actually received flow data rather than just a status code. It also counts Subscribe calls and
+// records the scope it was called with, so a test can assert the stronger property: not merely
+// what the caller got back, but whether the backend asked the Flow Aggregator for flows on their
+// behalf at all, and in what scope.
+//
+// Setting err makes it behave like the real subscriber reporting a failure the Flow Aggregator
+// returned: buffer the error and close both channels, which is how a stream that never opened
+// reaches StreamFlows before it commits to a 200.
 type flowingSubscriber struct {
 	subscribes atomic.Int32
+	scope      atomic.Pointer[flowstream.FlowStreamScope]
+	err        error
 }
 
-func (s *flowingSubscriber) Subscribe(ctx context.Context, _ *flowstream.FlowStreamFilter) (<-chan apisv1.FlowStreamEvent, <-chan error, <-chan struct{}) {
+func (s *flowingSubscriber) Subscribe(ctx context.Context, scope *flowstream.FlowStreamScope, _ *flowstream.FlowStreamFilter) (<-chan apisv1.FlowStreamEvent, <-chan error, <-chan struct{}) {
 	s.subscribes.Add(1)
+	s.scope.Store(scope)
 	flowsCh := make(chan apisv1.FlowStreamEvent, 1)
+	if s.err != nil {
+		errCh := make(chan error, 1)
+		errCh <- s.err
+		close(flowsCh)
+		close(errCh)
+		// Never closed, matching the real GRPCFlowStreamSubscriber: a failure that never
+		// reached a live stream must never signal readiness.
+		return flowsCh, errCh, make(chan struct{})
+	}
 	errCh := make(chan error)
 	ready := make(chan struct{})
 	close(ready)
@@ -55,11 +74,11 @@ func (s *flowingSubscriber) Subscribe(ctx context.Context, _ *flowstream.FlowStr
 }
 
 // newStreamingServer builds a Server whose flow stream route is the real one (a nil subscriber
-// registers flowStreamDisabled instead, and with it no requireFlowVisibility middleware), on top
-// of the fake K8s API server so the gate's SelfSubjectAccessReview can be answered.
-func newStreamingServer(t *testing.T) (*testServer, *fakeAccessK8sAPIServer, *flowingSubscriber, <-chan struct{}) {
+// registers flowStreamDisabled instead), on top of the fake K8s API server so that a test can
+// observe whether any SelfSubjectAccessReview is issued for the route - the answer, since
+// authorization moved to the Flow Aggregator, is that none is.
+func newStreamingServer(t *testing.T, subscriber *flowingSubscriber) (*testServer, *fakeAccessK8sAPIServer, <-chan struct{}) {
 	ts, fakeAPIServer := newTestServerForAccess(t, nil)
-	subscriber := &flowingSubscriber{}
 	ts.s.flowStreamSSEHandler = flowstream.NewSSEHandler(testr.New(t), subscriber)
 	router := gin.New()
 	// Closed once the first request's whole handler chain has returned, which is the
@@ -77,15 +96,19 @@ func newStreamingServer(t *testing.T) (*testServer, *fakeAccessK8sAPIServer, *fl
 	})
 	ts.s.AddRoutes(&router.RouterGroup)
 	ts.router = router
-	return ts, fakeAPIServer, subscriber, handlerReturned
+	return ts, fakeAPIServer, handlerReturned
 }
 
 // httptest.ResponseRecorder does not implement http.CloseNotifier, which gin's Stream needs, so
 // the stream cases need a real server.
-func openStream(t *testing.T, ts *testServer, token string) (*http.Response, func()) {
+//
+// query is appended to the request URL. Every caller has to name a scope now: it is what the Flow
+// Aggregator authorizes the stream against, and StreamFlows rejects a request without one with a
+// 400 before any connection is made.
+func openStream(t *testing.T, ts *testServer, token, query string) (*http.Response, func()) {
 	srv := httptest.NewServer(ts.router)
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-	req, err := http.NewRequestWithContext(ctx, "GET", srv.URL+"/api/v1/flows/stream", nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", srv.URL+"/api/v1/flows/stream?"+query, nil)
 	require.NoError(t, err)
 	req.Header.Set("Authorization", "Bearer "+token)
 	resp, err := http.DefaultClient.Do(req)
@@ -102,10 +125,8 @@ func openStream(t *testing.T, ts *testServer, token string) (*http.Response, fun
 // after every code path that could have subscribed has run — no polling, and no window in which a
 // slow handler makes the assertion pass vacuously.
 //
-// A gate that stopped aborting would keep the response open and stream instead of returning, so the
-// chain never completes and this reports that directly. The wait cannot use testing/synctest: the
-// stream cases need a real server (see openStream), and goroutines blocked on real network I/O are
-// never durably blocked, so a bubble would simply hang.
+// The wait cannot use testing/synctest: the stream cases need a real server (see openStream), and
+// goroutines blocked on real network I/O are never durably blocked, so a bubble would simply hang.
 func assertRejectedWithoutSubscribing(t *testing.T, handlerReturned <-chan struct{}, subscriber *flowingSubscriber, msg string) {
 	t.Helper()
 	select {
@@ -130,138 +151,156 @@ func receivesFlow(t *testing.T, resp *http.Response) bool {
 	return false
 }
 
-// The flow stream *handler* never presents the caller's credential to Kubernetes: it reads from
-// the Flow Aggregator over antrea-ui's own connection. So "the API server will reject a bad token"
-// is not true of the handler, and a token that nothing validated would simply be believed. The
-// interim gate does present it (its SelfSubjectAccessReview runs as the caller), which happens to
-// catch a bogus token today — but that is a side effect of a temporary restriction, not the
-// guarantee, and it disappears when the gate does. The check in authn.bearer is what this test
-// pins. Flow data has no per-user authorization either, so the only thing narrowing what a
-// validated caller sees is requireFlowVisibility (see TestFlowStreamRequiresAdmin).
+// The flow stream handler never presents the caller's credential to Kubernetes: it presents it to
+// the Flow Aggregator instead. So "the API server will reject a bad token" is not true of this
+// route, and a token that nothing validated would simply be believed. The check in authn.bearer is
+// what this test pins - and it is now the only thing standing between an unvalidated token and the
+// Flow Aggregator, since there is no longer an antrea-ui-side authorization gate that would
+// incidentally present the credential to the API server on the way past.
 func TestFlowStreamRejectsUnvalidatedBearerToken(t *testing.T) {
 	t.Run("rejected token gets no data", func(t *testing.T) {
-		ts, fakeAPIServer, subscriber, handlerReturned := newStreamingServer(t)
-		fakeAPIServer.clusterAdmin = true
+		subscriber := &flowingSubscriber{}
+		ts, _, handlerReturned := newStreamingServer(t, subscriber)
 		ts.credentialValidator.rejected["bogus"] = true
-		resp, cleanup := openStream(t, ts, "bogus")
+		resp, cleanup := openStream(t, ts, "bogus", "clusterWide=true")
 		defer cleanup()
 		assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
 		assertRejectedWithoutSubscribing(t, handlerReturned, subscriber, "an unauthenticated request must not reach the Flow Aggregator")
 	})
 
 	t.Run("valid token streams", func(t *testing.T) {
-		ts, fakeAPIServer, _, _ := newStreamingServer(t)
-		// The token still has to clear requireFlowVisibility, which this test is not about.
-		fakeAPIServer.clusterAdmin = true
-		resp, cleanup := openStream(t, ts, "good")
+		ts, _, _ := newStreamingServer(t, &flowingSubscriber{})
+		resp, cleanup := openStream(t, ts, "good", "clusterWide=true")
 		defer cleanup()
 		require.Equal(t, http.StatusOK, resp.StatusCode)
 		assert.True(t, receivesFlow(t, resp), "a validated token should receive flow data")
 	})
 }
 
-// requireFlowVisibility is a temporary restriction: flow data has no per-user authorization, so
-// the endpoint is limited to the built-in admin and to Kubernetes cluster admins
-// (antrea-io/antrea-ui#1387).
-func TestFlowStreamRequiresAdmin(t *testing.T) {
-	t.Run("static admin allowed without a K8s call", func(t *testing.T) {
-		ts, fakeAPIServer, _, _ := newStreamingServer(t)
-		// False, so an allow can only come from the ModeAdmin short-circuit. That matches
-		// reality: the antrea-ui-admin ServiceAccount the static-admin session impersonates
-		// holds no */*/* rule.
+// Authorization for the flow stream is entirely the Flow Aggregator's: it checks Kubernetes RBAC
+// against a virtual "flows" resource in the scope the request names, and redacts each endpoint to
+// the tier the caller is entitled to. antrea-ui used to gate the route on "is an administrator"
+// (requireFlowVisibility), which had to go: it would make every per-Namespace grant unreachable,
+// refusing a Namespace administrator holding flow access in their own Namespace before the Flow
+// Aggregator ever saw the request.
+//
+// These cases pin the inversion. An ordinary caller now reaches the Flow Aggregator, and a refusal
+// is reported as the Flow Aggregator's, with its own error code, rather than manufactured here.
+func TestFlowStreamAuthorizationIsTheFlowAggregators(t *testing.T) {
+	t.Run("an ordinary user reaches the Flow Aggregator", func(t *testing.T) {
+		subscriber := &flowingSubscriber{}
+		ts, fakeAPIServer, _ := newStreamingServer(t, subscriber)
+		// The caller is emphatically not a cluster admin, which the removed gate would have
+		// refused on. Whether they may see any flows is now the Flow Aggregator's call.
 		fakeAPIServer.clusterAdmin = false
-		// And nothing at all is reachable, so a call would fail rather than answer false.
+		resp, cleanup := openStream(t, ts, "good", "observedNamespace=ns-b")
+		defer cleanup()
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.True(t, receivesFlow(t, resp), "an ordinary user's request must reach the Flow Aggregator")
+		assert.Equal(t, int32(1), subscriber.subscribes.Load())
+	})
+
+	t.Run("no SelfSubjectAccessReview is issued for the route", func(t *testing.T) {
+		subscriber := &flowingSubscriber{}
+		ts, fakeAPIServer, _ := newStreamingServer(t, subscriber)
+		// Nothing at all is reachable, so an antrea-ui-side review would fail the request
+		// rather than quietly answer. That is the strongest available form of "no review":
+		// the route works with the review endpoint broken.
+		fakeAPIServer.statusOverride["selfsubjectaccessreviews"] = http.StatusInternalServerError
+		var sawReview atomic.Bool
+		inner := fakeAPIServer.Config.Handler
+		// Safe to swap: the server has served nothing yet, and openStream below is what
+		// starts the first request.
+		fakeAPIServer.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.Contains(r.URL.Path, "selfsubjectaccessreviews") {
+				sawReview.Store(true)
+			}
+			inner.ServeHTTP(w, r)
+		})
+
+		resp, cleanup := openStream(t, ts, "good", "observedNamespace=ns-b")
+		defer cleanup()
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.True(t, receivesFlow(t, resp))
+		assert.False(t, sawReview.Load(), "opening a flow stream must not cost a SelfSubjectAccessReview")
+	})
+
+	t.Run("the static admin reaches the Flow Aggregator", func(t *testing.T) {
+		subscriber := &flowingSubscriber{}
+		ts, fakeAPIServer, _ := newStreamingServer(t, subscriber)
+		fakeAPIServer.clusterAdmin = false
 		fakeAPIServer.statusOverride["selfsubjectaccessreviews"] = http.StatusInternalServerError
 
 		srv := httptest.NewServer(ts.router)
 		defer srv.Close()
 		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 		defer cancel()
-		req, err := http.NewRequestWithContext(ctx, "GET", srv.URL+"/api/v1/flows/stream", nil)
+		req, err := http.NewRequestWithContext(ctx, "GET", srv.URL+"/api/v1/flows/stream?clusterWide=true", nil)
 		require.NoError(t, err)
 		ts.authorizeRequestAs(req, session.ModeAdmin)
 		resp, err := http.DefaultClient.Do(req)
 		require.NoError(t, err)
 		defer resp.Body.Close()
 		require.Equal(t, http.StatusOK, resp.StatusCode)
+		// The built-in admin presents a minted antrea-ui-admin token to the Flow Aggregator,
+		// which honours only Kubernetes RBAC - hence the antrea-ui-admin-flows ClusterRole
+		// this change adds to the chart.
 		assert.True(t, receivesFlow(t, resp), "the built-in admin should receive flow data")
 	})
 
-	t.Run("cluster admin token allowed", func(t *testing.T) {
-		ts, fakeAPIServer, _, _ := newStreamingServer(t)
-		fakeAPIServer.clusterAdmin = true
-		resp, cleanup := openStream(t, ts, "good")
-		defer cleanup()
-		require.Equal(t, http.StatusOK, resp.StatusCode)
-		assert.True(t, receivesFlow(t, resp), "a cluster admin should receive flow data")
-	})
-
-	t.Run("ordinary user forbidden", func(t *testing.T) {
-		ts, fakeAPIServer, subscriber, handlerReturned := newStreamingServer(t)
+	t.Run("the Flow Aggregator's PermissionDenied is surfaced", func(t *testing.T) {
+		// What a caller without the flows grant gets now: the Flow Aggregator's own refusal,
+		// wrapped the way the real subscriber wraps it, carrying the code and the
+		// not-retryable flag the frontend acts on. Never a 401, and a real 403 rather than the
+		// generic 502 - see statusForStreamErr.
+		subscriber := &flowingSubscriber{err: fmt.Errorf("stream refused: %w", &flowstream.StreamError{
+			Code:      flowstream.StreamErrorCodeForbidden,
+			Retryable: false,
+		})}
+		ts, fakeAPIServer, _ := newStreamingServer(t, subscriber)
 		fakeAPIServer.clusterAdmin = false
-		resp, cleanup := openStream(t, ts, "good")
+		resp, cleanup := openStream(t, ts, "good", "observedNamespace=ns-b")
 		defer cleanup()
 		require.Equal(t, http.StatusForbidden, resp.StatusCode)
-		// The point of the gate, and what the status code alone does not pin down: HandleError
-		// writes a response without aborting, so only requireFlowVisibility's c.Abort() keeps
-		// StreamFlows — and with it the gRPC subscription — from running anyway. Asserted before
-		// the body is read, which would block against a handler that did start streaming.
-		assertRejectedWithoutSubscribing(t, handlerReturned, subscriber, "a forbidden caller must not reach the Flow Aggregator")
+		assert.Equal(t, int32(1), subscriber.subscribes.Load(), "the request must have reached the Flow Aggregator to be refused by it")
+
 		body, err := io.ReadAll(resp.Body)
 		require.NoError(t, err)
-		assert.Contains(t, string(body), "restricted to administrators")
+		var evt apisv1.FlowStreamErrorEvent
+		require.NoError(t, json.Unmarshal(body, &evt))
+		assert.Equal(t, flowstream.StreamErrorCodeForbidden, evt.Code)
+		assert.False(t, evt.Retryable, "a permanent refusal must not be retried in a reconnect loop")
 	})
 
-	// The gate has to ask the API server "may *this caller* do everything", so it must present
-	// the caller's own credential. Nothing else in the test suite pins that: the fake API server
-	// answers from a field regardless of who asks, so a gate rewritten to use antrea-ui's own
-	// ServiceAccount would pass every other case here. That rewrite is not hypothetical-only —
-	// it is the shape a well-meaning "avoid a per-request client" refactor takes — and it turns
-	// the gate into a property of the deployment rather than of the caller: everyone is denied
-	// under the default chart (the ServiceAccount holds no */*/* rule), and everyone is allowed
-	// wherever an operator has bound it cluster-admin.
-	t.Run("the review is issued with the caller's own credential", func(t *testing.T) {
-		ts, fakeAPIServer, _, _ := newStreamingServer(t)
-		fakeAPIServer.clusterAdmin = true
-		var reviewAuth atomic.Pointer[string]
-		inner := fakeAPIServer.Config.Handler
-		// Safe to swap: the server has served nothing yet, and openStream below is what starts
-		// the first request.
-		fakeAPIServer.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if strings.Contains(r.URL.Path, "selfsubjectaccessreviews") {
-				h := r.Header.Get("Authorization")
-				reviewAuth.Store(&h)
-			}
-			inner.ServeHTTP(w, r)
-		})
-
-		resp, cleanup := openStream(t, ts, "good")
+	t.Run("the scope reaches the subscriber", func(t *testing.T) {
+		subscriber := &flowingSubscriber{}
+		ts, _, _ := newStreamingServer(t, subscriber)
+		resp, cleanup := openStream(t, ts, "good", "observedNamespace=ns-b&namespaces=ns-c")
 		defer cleanup()
 		require.Equal(t, http.StatusOK, resp.StatusCode)
-
-		seen := reviewAuth.Load()
-		require.NotNil(t, seen, "the gate did not issue a SelfSubjectAccessReview at all")
-		assert.Equal(t, "Bearer good", *seen, "the review must carry the caller's token, not antrea-ui's own credential")
+		require.True(t, receivesFlow(t, resp))
+		scope := subscriber.scope.Load()
+		require.NotNil(t, scope)
+		assert.Equal(t, "ns-b", scope.ObservedNamespace)
+		assert.False(t, scope.ClusterWide)
 	})
 
-	t.Run("review failure fails closed", func(t *testing.T) {
-		ts, fakeAPIServer, subscriber, handlerReturned := newStreamingServer(t)
-		fakeAPIServer.clusterAdmin = true
-		fakeAPIServer.statusOverride["selfsubjectaccessreviews"] = http.StatusInternalServerError
-		resp, cleanup := openStream(t, ts, "good")
+	t.Run("a request with no scope is rejected without subscribing", func(t *testing.T) {
+		subscriber := &flowingSubscriber{}
+		ts, _, handlerReturned := newStreamingServer(t, subscriber)
+		resp, cleanup := openStream(t, ts, "good", "")
 		defer cleanup()
-		assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
-		assertRejectedWithoutSubscribing(t, handlerReturned, subscriber, "a review we could not evaluate must not reach the Flow Aggregator")
+		require.Equal(t, http.StatusBadRequest, resp.StatusCode)
+		assertRejectedWithoutSubscribing(t, handlerReturned, subscriber, "a request naming no scope must not reach the Flow Aggregator")
 	})
 
-	t.Run("disabled path is not gated", func(t *testing.T) {
-		// A nil subscriber registers flowStreamDisabled, deliberately without the gate: every
-		// authenticated user should get the same 501 "not enabled" answer, not a 403 giving
-		// the wrong reason. Whether the integration is on is public in GET /api/v1/settings
-		// anyway.
+	t.Run("disabled path answers 501 for every authenticated user", func(t *testing.T) {
+		// A nil subscriber registers flowStreamDisabled: every authenticated user should get
+		// the same 501 "not enabled" answer. Whether the integration is on is public in GET
+		// /api/v1/settings anyway.
 		ts, fakeAPIServer := newTestServerForAccess(t, nil)
 		fakeAPIServer.clusterAdmin = false
-		req := httptest.NewRequest("GET", "/api/v1/flows/stream", nil)
+		req := httptest.NewRequest("GET", "/api/v1/flows/stream?clusterWide=true", nil)
 		ts.authorizeRequestAs(req, session.ModeToken)
 		rr := httptest.NewRecorder()
 		ts.router.ServeHTTP(rr, req)

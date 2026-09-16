@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -41,6 +42,11 @@ const (
 
 // FlowStreamFilter represents the parsed query parameters for the flow stream endpoint.
 // All specified filters are AND-ed. Within each filter, values are OR-ed.
+//
+// These narrow a stream; they do not authorize it. See FlowStreamScope, which does, and which is
+// deliberately a separate type: Namespaces here selects flows by either end, and upstream
+// explicitly allows naming a Namespace that is outside the stream's scope, which is how a flow is
+// selected by its peer rather than by its own end.
 type FlowStreamFilter struct {
 	Namespaces       []string
 	PodNames         []string
@@ -49,6 +55,19 @@ type FlowStreamFilter struct {
 	FlowTypes        []apisv1.FlowType
 	IPs              []string
 	Direction        FlowFilterDirection
+}
+
+// FlowStreamScope is the authorization scope of a stream, distinct from the filters that narrow
+// it: the Flow Aggregator checks RBAC against this and resolves each endpoint's disclosure tier
+// relative to it. Exactly one of ObservedNamespace and ClusterWide must be set.
+//
+// Scalar, though the protobuf field is repeated: the Flow Aggregator names one Namespace per
+// stream at most (maxRequestedNamespaces), and a cap it set to match this UI's single-select is
+// not worth carrying a slice through every layer for. filterToGetFlowsRequest builds the
+// one-element slice.
+type FlowStreamScope struct {
+	ObservedNamespace string
+	ClusterWide       bool
 }
 
 // defaultKeepAliveInterval is how often the stream emits an SSE comment and re-checks its session.
@@ -89,10 +108,19 @@ func streamErrorEvent(streamErr error) apisv1.FlowStreamErrorEvent {
 // kinds apart from the response body's code/retryable fields, not from the status.
 func statusForStreamErr(err error) int {
 	var streamErr *StreamError
-	if errors.As(err, &streamErr) && streamErr.Code == StreamErrorCodeResourceExhausted {
-		// Capacity, not a broken upstream: the one pre-200 failure worth retrying, and 503
-		// is the status that says so.
-		return http.StatusServiceUnavailable
+	if errors.As(err, &streamErr) {
+		switch streamErr.Code {
+		case StreamErrorCodeResourceExhausted:
+			// Capacity, not a broken upstream: the one pre-200 failure worth retrying, and
+			// 503 is the status that says so.
+			return http.StatusServiceUnavailable
+		case StreamErrorCodeForbidden:
+			// The Flow Aggregator authenticated the credential but refused the stream: a
+			// real 403, the same as any other antrea-ui endpoint's RBAC denial, and the one
+			// status FlowStreamClient checks for to render the "missing flows grant" panel
+			// instead of a generic error.
+			return http.StatusForbidden
+		}
 	}
 	return http.StatusBadGateway
 }
@@ -103,16 +131,17 @@ var errUnauthenticatedStream = errors.New("flow stream request carries no resolv
 
 // SSEHandler handles the SSE endpoint for flow streaming.
 //
-// Known gap, deliberate for now: this endpoint is authenticated but not authorized per user. The
-// subscriber now presents the caller's own credential to the Flow Aggregator (a bearer token or
-// client cert; see grpc.go's resolveCall) instead of a shared connection, so FA knows who is
-// asking - but FA's authorization decision today is limited to "did this request authenticate at
-// all". It does not consult the caller's Kubernetes RBAC to decide which flows they may see. As an
-// interim measure the route is restricted to the built-in admin and to Kubernetes cluster admins
-// (requireFlowVisibility in pkg/server/api/flowstream.go), which narrows who is exposed but does
-// not close the gap: within that set, every caller still sees every exported flow. Authorization
-// is being implemented upstream in antrea-io/antrea#8221; see the "Flow data is not yet per-user"
-// section of docs/authentication.md.
+// This endpoint is authenticated here and authorized entirely by the Flow Aggregator. The
+// subscriber presents the caller's own credential (a bearer token or client cert; see grpc.go's
+// resolveCall), and FlowStreamService checks Kubernetes RBAC against a virtual "flows" resource
+// in the scope the request names, then resolves each endpoint of each record to the disclosure
+// tier that caller is entitled to. Records therefore arrive here already redacted.
+//
+// antrea-ui performs no redaction of its own and must not: doing so would need antrea-ui's own
+// ServiceAccount to hold unredacted cluster-wide flow access, making it a privileged component
+// and duplicating the Flow Aggregator's tier logic. All this handler does with the scope is parse
+// it and validate it locally - see parseFlowStreamScope - so a request that cannot be authorized
+// is refused without a connection.
 type SSEHandler struct {
 	logger  logr.Logger
 	handler FlowStreamSubscriber
@@ -198,6 +227,49 @@ func parseFlowStreamFilter(c *gin.Context) (*FlowStreamFilter, error) {
 	return filter, nil
 }
 
+// parseFlowStreamScope reads the stream's authorization scope from the query string.
+//
+// Every rejection here is one the Flow Aggregator would also make, with INVALID_ARGUMENT, but
+// answering locally gives a message that names the query parameter at fault and costs no
+// connection to a server that was only going to refuse. A comma-separated list (or a repeated
+// parameter) is rejected rather than truncated to its first element, so a client can never come
+// away believing it asked for more than it got.
+func parseFlowStreamScope(c *gin.Context) (*FlowStreamScope, error) {
+	scope := &FlowStreamScope{}
+
+	if values := c.QueryArray("observedNamespace"); len(values) > 0 {
+		if len(values) > 1 {
+			return nil, fmt.Errorf("invalid observedNamespace: a stream observes a single namespace, but %d were given", len(values))
+		}
+		v := values[0]
+		if strings.Contains(v, ",") {
+			return nil, fmt.Errorf("invalid observedNamespace %q: a stream observes a single namespace, not a list", v)
+		}
+		if strings.TrimSpace(v) == "" {
+			return nil, fmt.Errorf("invalid observedNamespace: must not be empty; request cluster scope with clusterWide=true")
+		}
+		scope.ObservedNamespace = strings.TrimSpace(v)
+	}
+	if values := c.QueryArray("clusterWide"); len(values) > 0 {
+		if len(values) > 1 {
+			return nil, fmt.Errorf("invalid clusterWide: expected a single value, but %d were given", len(values))
+		}
+		v, err := strconv.ParseBool(values[0])
+		if err != nil {
+			return nil, fmt.Errorf("invalid clusterWide value %q: expected true or false", values[0])
+		}
+		scope.ClusterWide = v
+	}
+
+	switch {
+	case scope.ClusterWide && scope.ObservedNamespace != "":
+		return nil, fmt.Errorf("observedNamespace and clusterWide are mutually exclusive")
+	case !scope.ClusterWide && scope.ObservedNamespace == "":
+		return nil, fmt.Errorf("a flow stream must name its scope: set observedNamespace to a single namespace, or clusterWide=true")
+	}
+	return scope, nil
+}
+
 // StreamFlows handles GET /api/v1/flows/stream as an SSE endpoint.
 func (h *SSEHandler) StreamFlows(c *gin.Context) {
 	filter, err := parseFlowStreamFilter(c)
@@ -205,9 +277,14 @@ func (h *SSEHandler) StreamFlows(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	scope, err := parseFlowStreamScope(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 
 	ctx := c.Request.Context()
-	flowsCh, errCh, readyCh := h.handler.Subscribe(ctx, filter)
+	flowsCh, errCh, readyCh := h.handler.Subscribe(ctx, scope, filter)
 
 	// Every failure this endpoint can hit today - a rejected credential, FA at capacity, a dial
 	// or credential-resolution failure - surfaces on Subscribe's first GetFlows call or its first

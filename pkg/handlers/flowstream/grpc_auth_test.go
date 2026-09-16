@@ -49,8 +49,18 @@ import (
 // bearer token (if any) each call was made with.
 type fakeFlowStreamServer struct {
 	flowpb.UnimplementedFlowStreamServiceServer
-	// handle is called for every GetFlows call; it decides what the call returns.
+	// handle is called for every GetFlows call that is not the version probe; it decides what
+	// the call returns.
 	handle func(callNum int, bearer string) error
+	// probeHandle, when set, answers the version probe instead of the default
+	// "modern Flow Aggregator" reply. It is handed the stream so a test can imitate an old
+	// Flow Aggregator answering with a historical record. version_test.go is the only user;
+	// every other test relies on the default so that its own assertions are about the real
+	// stream.
+	probeHandle func(probeNum int, stream grpc.ServerStreamingServer[flowpb.GetFlowsResponse]) error
+	// probeCalls counts version probes, separately from calls, so the probe never disturbs a
+	// test asserting how many real GetFlows calls were made.
+	probeCalls atomic.Int32
 	// send, when set, is called before handle and can put messages on the stream. Only the
 	// oversized-response test uses it.
 	send  func(stream grpc.ServerStreamingServer[flowpb.GetFlowsResponse]) error
@@ -60,14 +70,31 @@ type fakeFlowStreamServer struct {
 	peerDNSNames atomic.Value
 }
 
-func (f *fakeFlowStreamServer) GetFlows(_ *flowpb.GetFlowsRequest, stream grpc.ServerStreamingServer[flowpb.GetFlowsResponse]) error {
-	callNum := int(f.calls.Add(1))
+// isVersionProbe reports whether req is probeFlowAggregatorVersion's request rather than a real
+// stream: it is the one request that sets both cluster_wide and namespaces, which a real one never
+// does because the two are mutually exclusive.
+func isVersionProbe(req *flowpb.GetFlowsRequest) bool {
+	return req.GetClusterWide() && len(req.GetNamespaces()) > 0
+}
+
+func (f *fakeFlowStreamServer) GetFlows(req *flowpb.GetFlowsRequest, stream grpc.ServerStreamingServer[flowpb.GetFlowsResponse]) error {
 	bearer := ""
 	if md, ok := metadata.FromIncomingContext(stream.Context()); ok {
 		if vals := md.Get("authorization"); len(vals) > 0 {
 			bearer = vals[0]
 		}
 	}
+	if isVersionProbe(req) {
+		probeNum := int(f.probeCalls.Add(1))
+		if f.probeHandle != nil {
+			return f.probeHandle(probeNum, stream)
+		}
+		// Default: behave like a Flow Aggregator that knows the fields and enforces their
+		// mutual exclusion, which is what every test other than version_test.go needs so
+		// that Subscribe gets as far as the real request.
+		return status.Error(codes.InvalidArgument, "namespaces and cluster_wide are mutually exclusive")
+	}
+	callNum := int(f.calls.Add(1))
 	if p, ok := peer.FromContext(stream.Context()); ok {
 		if tlsInfo, ok := p.AuthInfo.(credentials.TLSInfo); ok && len(tlsInfo.State.PeerCertificates) > 0 {
 			f.peerDNSNames.Store(tlsInfo.State.PeerCertificates[0].DNSNames)
@@ -168,7 +195,7 @@ func TestSubscribeAttachesBearerToken(t *testing.T) {
 		Credential: session.Credential{Kind: session.KindBearer, Token: []byte("s3cr3t")},
 	})
 
-	_, errCh, readyCh := h.Subscribe(ctx, &FlowStreamFilter{})
+	_, errCh, readyCh := h.Subscribe(ctx, &FlowStreamScope{ClusterWide: true}, &FlowStreamFilter{})
 	select {
 	case err, ok := <-errCh:
 		if ok {
@@ -197,7 +224,7 @@ func TestSubscribeReadyNeverClosesWithoutResolvedIdentity(t *testing.T) {
 	fake := &fakeFlowStreamServer{handle: func(_ int, _ string) error { return nil }}
 	h := newTestSubscriber(t, fake)
 
-	_, errCh, readyCh := h.Subscribe(t.Context(), &FlowStreamFilter{})
+	_, errCh, readyCh := h.Subscribe(t.Context(), &FlowStreamScope{ClusterWide: true}, &FlowStreamFilter{})
 	select {
 	case err, ok := <-errCh:
 		require.True(t, ok)
@@ -219,7 +246,7 @@ func TestSubscribeFailsWithoutResolvedIdentity(t *testing.T) {
 	fake := &fakeFlowStreamServer{handle: func(_ int, _ string) error { return nil }}
 	h := newTestSubscriber(t, fake)
 
-	_, errCh, _ := h.Subscribe(t.Context(), &FlowStreamFilter{})
+	_, errCh, _ := h.Subscribe(t.Context(), &FlowStreamScope{ClusterWide: true}, &FlowStreamFilter{})
 	select {
 	case err, ok := <-errCh:
 		require.True(t, ok)
@@ -248,7 +275,7 @@ func TestSubscribeDoesNotInvalidateSessionOnUnauthenticated(t *testing.T) {
 		Credential: session.Credential{Kind: session.KindBearer, Token: []byte("bad")},
 	})
 
-	_, errCh, _ := h.Subscribe(ctx, &FlowStreamFilter{})
+	_, errCh, _ := h.Subscribe(ctx, &FlowStreamScope{ClusterWide: true}, &FlowStreamFilter{})
 	select {
 	case err := <-errCh:
 		assert.Error(t, err)
@@ -275,7 +302,7 @@ func TestSubscribeReportsResourceExhaustedAsRetryable(t *testing.T) {
 		Credential: session.Credential{Kind: session.KindBearer, Token: []byte("tok")},
 	})
 
-	_, errCh, _ := h.Subscribe(ctx, &FlowStreamFilter{})
+	_, errCh, _ := h.Subscribe(ctx, &FlowStreamScope{ClusterWide: true}, &FlowStreamFilter{})
 	select {
 	case err, ok := <-errCh:
 		require.True(t, ok)
@@ -311,7 +338,7 @@ func TestSubscribeReportsOversizedMessageAsNotRetryable(t *testing.T) {
 		Credential: session.Credential{Kind: session.KindBearer, Token: []byte("tok")},
 	})
 
-	_, errCh, _ := h.Subscribe(ctx, &FlowStreamFilter{})
+	_, errCh, _ := h.Subscribe(ctx, &FlowStreamScope{ClusterWide: true}, &FlowStreamFilter{})
 	select {
 	case err, ok := <-errCh:
 		require.True(t, ok)
@@ -341,7 +368,7 @@ func TestSubscribeReportsUnknownCodeAsRetryable(t *testing.T) {
 		Credential: session.Credential{Kind: session.KindBearer, Token: []byte("tok")},
 	})
 
-	_, errCh, _ := h.Subscribe(ctx, &FlowStreamFilter{})
+	_, errCh, _ := h.Subscribe(ctx, &FlowStreamScope{ClusterWide: true}, &FlowStreamFilter{})
 	select {
 	case err, ok := <-errCh:
 		require.True(t, ok)
@@ -368,7 +395,7 @@ func TestSubscribeReportsUnauthenticatedAsNotRetryable(t *testing.T) {
 		Credential: session.Credential{Kind: session.KindBearer, Token: []byte("bad")},
 	})
 
-	_, errCh, _ := h.Subscribe(ctx, &FlowStreamFilter{})
+	_, errCh, _ := h.Subscribe(ctx, &FlowStreamScope{ClusterWide: true}, &FlowStreamFilter{})
 	select {
 	case err, ok := <-errCh:
 		require.True(t, ok)
@@ -401,7 +428,7 @@ func TestSubscribeStopsSilentlyOnDisconnectDuringFirstRecv(t *testing.T) {
 	})
 	ctx, cancel := context.WithCancel(baseCtx)
 
-	_, errCh, _ := h.Subscribe(ctx, &FlowStreamFilter{})
+	_, errCh, _ := h.Subscribe(ctx, &FlowStreamScope{ClusterWide: true}, &FlowStreamFilter{})
 	select {
 	case <-reached:
 	case <-time.After(2 * time.Second):
@@ -429,7 +456,7 @@ func TestSubscribeFailsForImpersonateWithoutAdminTokenSource(t *testing.T) {
 		Credential: session.Credential{Kind: session.KindImpersonate, UserName: "antrea-ui-admin"},
 	})
 
-	_, errCh, _ := h.Subscribe(ctx, &FlowStreamFilter{})
+	_, errCh, _ := h.Subscribe(ctx, &FlowStreamScope{ClusterWide: true}, &FlowStreamFilter{})
 	select {
 	case err, ok := <-errCh:
 		require.True(t, ok)
@@ -456,7 +483,7 @@ func TestSubscribeReportsAdminTokenMintFailureAsRetryable(t *testing.T) {
 		Credential: session.Credential{Kind: session.KindImpersonate, UserName: "antrea-ui-admin"},
 	})
 
-	_, errCh, _ := h.Subscribe(ctx, &FlowStreamFilter{})
+	_, errCh, _ := h.Subscribe(ctx, &FlowStreamScope{ClusterWide: true}, &FlowStreamFilter{})
 	select {
 	case err, ok := <-errCh:
 		require.True(t, ok)
@@ -485,7 +512,7 @@ func TestSubscribeReportsForbiddenAdminTokenMintAsNotRetryable(t *testing.T) {
 		Credential: session.Credential{Kind: session.KindImpersonate, UserName: "antrea-ui-admin"},
 	})
 
-	_, errCh, _ := h.Subscribe(ctx, &FlowStreamFilter{})
+	_, errCh, _ := h.Subscribe(ctx, &FlowStreamScope{ClusterWide: true}, &FlowStreamFilter{})
 	select {
 	case err, ok := <-errCh:
 		require.True(t, ok)
@@ -529,7 +556,7 @@ func TestSubscribeUsesClientCertForKindCert(t *testing.T) {
 		},
 	})
 
-	_, errCh, _ := h.Subscribe(ctx, &FlowStreamFilter{})
+	_, errCh, _ := h.Subscribe(ctx, &FlowStreamScope{ClusterWide: true}, &FlowStreamFilter{})
 	select {
 	case err, ok := <-errCh:
 		if ok {
@@ -578,7 +605,7 @@ func TestSubscribeStopsSilentlyWhenSessionEndsDuringKindCertStream(t *testing.T)
 		},
 	})
 
-	_, errCh, _ := h.Subscribe(ctx, &FlowStreamFilter{})
+	_, errCh, _ := h.Subscribe(ctx, &FlowStreamScope{ClusterWide: true}, &FlowStreamFilter{})
 	select {
 	case <-reached:
 	case <-time.After(2 * time.Second):

@@ -18,7 +18,12 @@ import { getApiBase } from './api.js';
 export type FlowFilterDirection = 'both' | 'from' | 'to';
 export type FlowTypeName = 'intra-node' | 'inter-node' | 'to-external' | 'from-external';
 
-export interface FlowStreamFilter {
+/** Peer filters. These narrow the stream; they do not authorize it, and e.g. a namespace outside
+ * the stream's scope is legal here — it is how a flow is selected by its far end, not its own.
+ * No scope of its own: a caller building one of these has to add a FlowStreamScope to get a
+ * FlowStreamFilter the backend will accept, which is the point - see withTemporaryClusterWideScope
+ * in antrea-flow-visibility-page.ts, the one place that does it today. */
+export interface FlowPeerFilter {
     namespaces?: string[];
     pods?: string[];
     podLabelSelector?: string;
@@ -28,6 +33,16 @@ export interface FlowStreamFilter {
     direction?: FlowFilterDirection;
 }
 
+/** What a flow stream is authorized against: the Flow Aggregator checks RBAC against this and
+ * resolves each endpoint's disclosure tier relative to it. Modeled as a discriminated union,
+ * rather than two optional fields, so a filter missing a scope - or naming both - is a compile
+ * error instead of a request the backend always answers 400 to. */
+export type FlowStreamScope =
+    | { observedNamespace: string; clusterWide?: never }
+    | { observedNamespace?: never; clusterWide: true };
+
+export type FlowStreamFilter = FlowPeerFilter & FlowStreamScope;
+
 export function streamFilterKey(f: FlowStreamFilter): string {
     const namespaces = [...(f.namespaces ?? [])].sort();
     const pods = [...(f.pods ?? [])].sort();
@@ -35,7 +50,20 @@ export function streamFilterKey(f: FlowStreamFilter): string {
     const flowTypes = [...(f.flowTypes ?? [])].sort();
     const ips = [...(f.ips ?? [])].sort();
     const direction = f.direction && f.direction !== 'both' ? f.direction : 'both';
-    return JSON.stringify({ namespaces, pods, podLabelSelector: f.podLabelSelector ?? '', services, flowTypes, ips, direction });
+    // The scope must be part of the key. This is the reconnect predicate, so a scope change that
+    // did not alter the key would leave the old stream running while the UI claimed to be showing
+    // a different namespace — the one way this feature can silently show wrong data.
+    return JSON.stringify({
+        namespaces,
+        pods,
+        podLabelSelector: f.podLabelSelector ?? '',
+        services,
+        flowTypes,
+        ips,
+        direction,
+        observedNamespace: f.observedNamespace ?? '',
+        clusterWide: f.clusterWide ?? false,
+    });
 }
 
 export interface FlowStreamCallbacks {
@@ -75,6 +103,8 @@ function buildStreamURL(filter: FlowStreamFilter): string {
     if (filter.flowTypes?.length) params.set('flowTypes', filter.flowTypes.join(','));
     if (filter.ips?.length) params.set('ips', filter.ips.join(','));
     if (filter.direction && filter.direction !== 'both') params.set('direction', filter.direction);
+    if (filter.observedNamespace) params.set('observedNamespace', filter.observedNamespace);
+    if (filter.clusterWide) params.set('clusterWide', 'true');
     return `${getApiBase()}/api/v1/flows/stream?${params.toString()}`;
 }
 

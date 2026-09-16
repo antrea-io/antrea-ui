@@ -35,6 +35,25 @@ const (
 	NetworkPolicyTypeACNP        NetworkPolicyType = 3
 )
 
+// EndpointDisclosure records how much of one endpoint of a flow this user was authorized to see.
+// Set by the Flow Aggregator's FlowStreamService only. Zero is Full, not "unspecified": a record
+// nothing redacted reads as fully disclosed, which is every record on a cluster-wide stream.
+type EndpointDisclosure int32
+
+const (
+	// EndpointDisclosureFull means everything the record carries for the endpoint, including
+	// its Node placement and the Egress applied to it.
+	EndpointDisclosureFull EndpointDisclosure = 0
+	// EndpointDisclosureIdentity means the endpoint's Namespace, Pod and Service identity and
+	// the identity of the network policy evaluated on its side, but not its Node placement or
+	// its Egress.
+	EndpointDisclosureIdentity EndpointDisclosure = 1
+	// EndpointDisclosureFlow means only what the flow itself shows - addresses, ports,
+	// protocol, statistics, and the type and action of the policies evaluated on the
+	// endpoint's side - plus the endpoint's Namespace if the connection was allowed.
+	EndpointDisclosureFlow EndpointDisclosure = 2
+)
+
 type NetworkPolicyRuleAction int32
 
 const (
@@ -90,6 +109,20 @@ type FlowIP struct {
 
 type FlowKubernetes struct {
 	FlowType FlowType `json:"flowType"`
+
+	// SourceDisclosure and DestinationDisclosure report the tier each endpoint was disclosed
+	// at, so a withheld field is distinguishable from a field the Flow Aggregator never had.
+	//
+	// Deliberately no omitempty on either: Full is the zero value, so omitempty would drop
+	// exactly the case a client most needs to read as Full. Keeping them always present makes
+	// the wire format say what it means. A client should still default a missing value to Full,
+	// for records from a backend that predates these fields.
+	//
+	// Note that the marker describes an endpoint, not a per-field guarantee: an endpoint can
+	// lack a field while still reporting Full, because the Flow Aggregator may simply never
+	// have had it.
+	SourceDisclosure      EndpointDisclosure `json:"sourceDisclosure"`
+	DestinationDisclosure EndpointDisclosure `json:"destinationDisclosure"`
 
 	SourcePodNamespace string            `json:"sourcePodNamespace"`
 	SourcePodName      string            `json:"sourcePodName"`
