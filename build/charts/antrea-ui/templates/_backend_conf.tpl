@@ -28,7 +28,7 @@ session:
 logVerbosity: {{ .Values.backend.logVerbosity }}
 plugins:
   labelSelector: {{ .Values.plugins.labelSelector | quote }}
-  namespace: {{ .Values.plugins.namespace | default .Release.Namespace | quote }}
+  namespace: {{ .Values.plugins.namespace | quote }}
   directory: {{ .Values.plugins.directory | quote }}
   maxConfigMapPlugins: {{ .Values.plugins.maxConfigMapPlugins }}
   maxDirectoryPlugins: {{ .Values.plugins.maxDirectoryPlugins }}

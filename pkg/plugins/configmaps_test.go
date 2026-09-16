@@ -27,11 +27,27 @@ import (
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/workqueue"
 
 	apisv1 "antrea.io/antrea-ui/apis/v1"
 )
+
+// TestRunConfigMapWatchNoopWhenNamespaceEmpty pins the guard against a future refactor moving the
+// empty-namespace check to the caller: informers.WithNamespace("") means "all namespaces", not
+// "none", so RunConfigMapWatch itself must return before ever touching the clientset.
+func TestRunConfigMapWatchNoopWhenNamespaceEmpty(t *testing.T) {
+	clientset := fake.NewSimpleClientset()
+	r := NewRegistry(Options{Logger: testr.New(t), Clientset: clientset, Namespace: "", LabelSelector: "ui.antrea.io/plugin=true"})
+	t.Cleanup(r.Close)
+
+	stopCh := make(chan struct{})
+	close(stopCh)
+	r.RunConfigMapWatch(stopCh)
+
+	assert.Empty(t, clientset.Actions(), "empty namespace must not result in any List/Watch calls")
+}
 
 func TestRegistryUpsertAndIndex(t *testing.T) {
 	r := newTestRegistry(t)

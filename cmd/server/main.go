@@ -140,10 +140,6 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("failed to create K8s clientset: %w", err)
 	}
-	pluginsNamespace := config.Plugins.Namespace
-	if pluginsNamespace == "" {
-		pluginsNamespace = env.GetNamespace()
-	}
 	// Left empty when no trusted key is configured, which is what disables signature enforcement
 	// in the registry (see requireSignature). NewSignatureVerifier never returns a verifier that
 	// trusts no key, so a configured trusted key always means enforcement is genuinely on.
@@ -163,9 +159,11 @@ func run() error {
 		logger.Info("Plugin signature verification enabled", "trustedKeys", len(signatureVerifiers))
 	}
 	pluginRegistry := pluginregistry.NewRegistry(pluginregistry.Options{
-		Logger:              logger,
-		Clientset:           k8sClientset,
-		Namespace:           pluginsNamespace,
+		Logger:    logger,
+		Clientset: k8sClientset,
+		// An empty namespace disables the ConfigMap plugin source entirely, mirroring how an
+		// empty config.Plugins.Directory disables the disk source below.
+		Namespace:           config.Plugins.Namespace,
 		LabelSelector:       config.Plugins.LabelSelector,
 		MaxConfigMapPlugins: config.Plugins.MaxConfigMapPlugins,
 		MaxDirectoryPlugins: config.Plugins.MaxDirectoryPlugins,
@@ -318,6 +316,9 @@ func run() error {
 	go pluginRegistry.RunConfigMapWatch(stopCh)
 	if config.Plugins.Directory != "" {
 		go pluginRegistry.RunDirectoryWatch(config.Plugins.Directory, stopCh)
+	}
+	if config.Plugins.Namespace == "" && config.Plugins.Directory == "" {
+		logger.Info("No plugin source configured, plugins are disabled")
 	}
 	go accessResolver.Run(stopCh)
 

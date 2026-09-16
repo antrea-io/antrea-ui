@@ -31,12 +31,23 @@ import (
 
 // RunConfigMapWatch watches ConfigMaps matching the registry's namespace and label
 // selector until stopCh is closed. It blocks and should be called from a
-// goroutine.
+// goroutine. A no-op returning immediately when the registry has no namespace configured: an
+// empty namespace means the ConfigMap plugin source is disabled, and informers.WithNamespace("")
+// means "all namespaces" rather than "none", so this guard has to live here rather than relying
+// on callers to skip invoking it.
 func (r *Registry) RunConfigMapWatch(stopCh <-chan struct{}) {
+	if r.namespace == "" {
+		r.logger.Info("ConfigMap plugin source disabled, no namespace configured")
+		return
+	}
 	factory := informers.NewSharedInformerFactoryWithOptions(
 		r.clientset,
 		0,
 		informers.WithNamespace(r.namespace),
+		// Server-side filtering: the selector goes into ListOptions, so the API server only ever
+		// sends us labeled ConfigMaps and the informer cache holds nothing else. It is not a
+		// security boundary though - RBAC has no label dimension, so the ServiceAccount's grant
+		// necessarily covers every ConfigMap in r.namespace (see plugins-rbac.yaml).
 		informers.WithTweakListOptions(func(opts *metav1.ListOptions) {
 			opts.LabelSelector = r.labelSelector
 		}),
