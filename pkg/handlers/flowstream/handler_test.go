@@ -120,7 +120,7 @@ type stubFlowStreamSubscriber struct {
 	delay time.Duration
 }
 
-func (s *stubFlowStreamSubscriber) Subscribe(_ context.Context, _ *FlowStreamFilter) (<-chan apisv1.FlowStreamEvent, <-chan error, <-chan struct{}) {
+func (s *stubFlowStreamSubscriber) Subscribe(_ context.Context, _ *FlowStreamScope, _ *FlowStreamFilter) (<-chan apisv1.FlowStreamEvent, <-chan error, <-chan struct{}) {
 	flowsCh := make(chan apisv1.FlowStreamEvent, len(s.events)+1)
 	errCh := make(chan error, 1)
 	ready := make(chan struct{})
@@ -187,7 +187,7 @@ func TestStreamFlowsHappyPath(t *testing.T) {
 	ts := httptest.NewServer(newTestRouter(sseHandler))
 	defer ts.Close()
 
-	resp, err := http.Get(ts.URL + "/api/v1/flows/stream")
+	resp, err := http.Get(ts.URL + "/api/v1/flows/stream?clusterWide=true")
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
@@ -226,7 +226,7 @@ func TestStreamFlowsErrorPath(t *testing.T) {
 	ts := httptest.NewServer(newTestRouter(sseHandler))
 	defer ts.Close()
 
-	resp, err := http.Get(ts.URL + "/api/v1/flows/stream")
+	resp, err := http.Get(ts.URL + "/api/v1/flows/stream?clusterWide=true")
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
@@ -248,7 +248,7 @@ func TestStreamFlowsErrorPathClassifiedStatus(t *testing.T) {
 	ts := httptest.NewServer(newTestRouter(sseHandler))
 	defer ts.Close()
 
-	resp, err := http.Get(ts.URL + "/api/v1/flows/stream")
+	resp, err := http.Get(ts.URL + "/api/v1/flows/stream?clusterWide=true")
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
@@ -258,6 +258,32 @@ func TestStreamFlowsErrorPathClassifiedStatus(t *testing.T) {
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&evt))
 	assert.Equal(t, StreamErrorCodeResourceExhausted, evt.Code)
 	assert.True(t, evt.Retryable, "the client reconnects off this flag, so it has to reach the client")
+}
+
+// StreamErrorCodeForbidden must map to a real 403: FlowStreamClient checks response.status === 403
+// specifically to render the missing-flows-grant panel instead of a generic error, the same way it
+// already does for the 403 pkg/server/api's own RBAC gate used to return before authorization moved
+// to the Flow Aggregator.
+func TestStreamFlowsForbiddenIsA403(t *testing.T) {
+	logger := testr.New(t)
+	stub := &stubFlowStreamSubscriber{
+		err: &StreamError{msg: "not allowed to watch flows cluster-wide", Code: StreamErrorCodeForbidden, Retryable: false},
+	}
+
+	sseHandler := NewSSEHandler(logger, stub)
+	ts := httptest.NewServer(newTestRouter(sseHandler))
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/api/v1/flows/stream?clusterWide=true")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+
+	var evt apisv1.FlowStreamErrorEvent
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&evt))
+	assert.Equal(t, StreamErrorCodeForbidden, evt.Code)
+	assert.False(t, evt.Retryable)
 }
 
 // A credential the Flow Aggregator rejects must never come back as a 401. A 401 from any
@@ -276,7 +302,7 @@ func TestStreamFlowsUnauthenticatedIsNotA401(t *testing.T) {
 	ts := httptest.NewServer(newTestRouter(sseHandler))
 	defer ts.Close()
 
-	resp, err := http.Get(ts.URL + "/api/v1/flows/stream")
+	resp, err := http.Get(ts.URL + "/api/v1/flows/stream?clusterWide=true")
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
@@ -314,7 +340,7 @@ func TestStreamFlowsErrorSurvivesFlowsChRace(t *testing.T) {
 		sseHandler.initialResponseTimeout = time.Millisecond
 		ts := httptest.NewServer(newTestRouter(sseHandler))
 
-		resp, err := http.Get(ts.URL + "/api/v1/flows/stream")
+		resp, err := http.Get(ts.URL + "/api/v1/flows/stream?clusterWide=true")
 		require.NoError(t, err)
 
 		scanner := bufio.NewScanner(resp.Body)
@@ -344,5 +370,112 @@ func TestStreamFlowsBadFilter(t *testing.T) {
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+// A stream's scope is what the Flow Aggregator authorizes it against, so every way of failing to
+// name exactly one scope has to be a local 400 rather than something the Flow Aggregator is asked
+// to adjudicate. Upstream would reject all of these with INVALID_ARGUMENT anyway; answering here
+// names the query parameter at fault and costs no connection.
+func TestParseFlowStreamScope(t *testing.T) {
+	tests := []struct {
+		name        string
+		query       string
+		expected    *FlowStreamScope
+		expectError bool
+	}{
+		{
+			name:     "a single observed namespace",
+			query:    "observedNamespace=ns-a",
+			expected: &FlowStreamScope{ObservedNamespace: "ns-a"},
+		},
+		{
+			name:     "cluster-wide",
+			query:    "clusterWide=true",
+			expected: &FlowStreamScope{ClusterWide: true},
+		},
+		{
+			name:     "surrounding whitespace is trimmed",
+			query:    "observedNamespace=%20ns-a%20",
+			expected: &FlowStreamScope{ObservedNamespace: "ns-a"},
+		},
+		{
+			name:     "clusterWide=false alongside a namespace is not a conflict",
+			query:    "observedNamespace=ns-a&clusterWide=false",
+			expected: &FlowStreamScope{ObservedNamespace: "ns-a"},
+		},
+		{
+			name: "filter namespaces are not a scope",
+			// The peer filter must not be mistaken for the scope: the two are separate
+			// fields on the wire and a filter Namespace is legal outside the scope.
+			query:       "namespaces=ns-a",
+			expectError: true,
+		},
+		{
+			name:        "neither set",
+			query:       "",
+			expectError: true,
+		},
+		{
+			name:        "both set",
+			query:       "observedNamespace=ns-a&clusterWide=true",
+			expectError: true,
+		},
+		{
+			name:        "blank observed namespace",
+			query:       "observedNamespace=%20",
+			expectError: true,
+		},
+		{
+			name: "a comma-separated list is rejected, not truncated",
+			// Truncating would leave the client believing it observes both.
+			query:       "observedNamespace=ns-a,ns-b",
+			expectError: true,
+		},
+		{
+			name:        "a repeated parameter is rejected, not truncated",
+			query:       "observedNamespace=ns-a&observedNamespace=ns-b",
+			expectError: true,
+		},
+		{
+			name:        "clusterWide with a non-boolean value",
+			query:       "clusterWide=yes-please",
+			expectError: true,
+		},
+		{
+			name:        "a repeated clusterWide parameter is rejected, not silently the first value",
+			query:       "clusterWide=true&clusterWide=false",
+			expectError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+			c.Request = httptest.NewRequest(http.MethodGet, "/api/v1/flows/stream?"+tt.query, nil)
+
+			scope, err := parseFlowStreamScope(c)
+			if tt.expectError {
+				assert.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.expected, scope)
+		})
+	}
+}
+
+// StreamFlows must reject a scope-less request itself, before Subscribe, so a request that cannot
+// be authorized never costs a connection to the Flow Aggregator.
+func TestStreamFlowsRejectsMissingScope(t *testing.T) {
+	stub := &stubFlowStreamSubscriber{}
+	handler := NewSSEHandler(testr.New(t), stub)
+	ts := httptest.NewServer(newTestRouter(handler))
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/api/v1/flows/stream")
+	require.NoError(t, err)
+	defer resp.Body.Close()
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }

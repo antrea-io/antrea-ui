@@ -33,6 +33,7 @@ import {
 import {
     FlowStreamClient,
     FlowStreamFilter,
+    FlowPeerFilter,
     FlowFilterDirection,
     FlowTypeName,
     streamFilterKey,
@@ -76,9 +77,27 @@ export interface FlowTableColumn {
 export type FlowTableColumnsProcessor = (columns: FlowTableColumn[]) => FlowTableColumn[];
 
 const FLOW_VISIBILITY_FORBIDDEN_MESSAGE =
-    'Flow visibility is restricted to administrators. Flow data has no per-user authorization ' +
-    'yet, so it is limited to the built-in admin and to Kubernetes cluster admins (see ' +
-    'antrea-ui/docs/authentication.md).';
+    'You are not authorized to observe flows in this scope. The Flow Aggregator authorizes each ' +
+    'flow stream with Kubernetes RBAC, against the "flows" resource in API group ' +
+    'observability.antrea.io (see antrea-ui/docs/authentication.md).';
+
+/**
+ * TEMPORARY, until an observed-namespace selector exists: every stream asks for cluster scope.
+ *
+ * The Flow Aggregator now requires each stream to name its scope — exactly one of a single
+ * observed namespace or cluster-wide — and rejects a request that names neither. There is no UI
+ * to pick a namespace yet, so hardcoding cluster scope is what keeps flow visibility working in a
+ * browser in the meantime. It is not the intended default: cluster scope requires the flows grant
+ * cluster-wide, so a user who holds it only in their own namespace gets a permission error here
+ * where the selector would have offered them their namespace.
+ *
+ * The selector should replace this with real scope state (`_observedNs` / `_clusterWide`),
+ * sourced from the user's own namespace options, and a page that opens no stream at all until a
+ * scope is chosen.
+ */
+function withTemporaryClusterWideScope(filter: FlowPeerFilter): FlowStreamFilter {
+    return { ...filter, clusterWide: true };
+}
 
 const FLOW_VISIBILITY_DISABLED_MESSAGE =
     'Flow visibility is disabled on this Antrea UI server. Install or upgrade the chart with ' +
@@ -450,15 +469,23 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
     @state() private _entries: FlowEntry[] = [];
     @state() private _connected = false;
     @state() private _error: string | null = null;
-    // Set on 501 (integration off) or 403 (this user may not view flow data). Both are terminal
-    // for the session, and both must keep _startStream from re-opening the stream on the next
-    // filter change; the error message says which one it was.
-    private _flowVisibilityDisabled = false;
+    // Set on 501: Flow Aggregator integration is off for this deployment, a fixed fact about the
+    // server that no filter or scope change on this page can affect. Terminal for the session,
+    // and must keep _startStream from re-opening the stream on any later filter change.
+    private _integrationDisabled = false;
+    // Set to _filterKey on 403: FA refused this user the scope that request asked for. Unlike
+    // _integrationDisabled this is not terminal - authorization is per-scope, so it only needs to
+    // block _startStream from retrying the exact same request that was just refused, not every
+    // request forever. _applyFilter changing _filterKey (a peer-filter edit, or eventually a
+    // different scope once the observed-namespace selector exists) clears it implicitly, since
+    // the comparison in _startStream stops matching.
+    private _forbiddenFilterKey: string | null = null;
     @state() private _droppedCount = 0;
     @state() private _evictionWarning = false;
 
-    // Filters (applied)
-    @state() private _filter: FlowStreamFilter = {};
+    // Filters (applied). The scope is folded in by _applyFilter, so this is initialized through
+    // the same helper rather than as a bare {} — a scope-less filter would be rejected with 400.
+    @state() private _filter: FlowStreamFilter = withTemporaryClusterWideScope({});
 
     // Filter UI state
     @state() private _pendingNs: string[] = [];
@@ -493,7 +520,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
     private _store = new FlowStore();
     private _client: FlowStreamClient | null = null;
     private _simulation: d3.Simulation<D3Node, D3Link> | null = null;
-    private _filterKey = streamFilterKey({});
+    private _filterKey = streamFilterKey(withTemporaryClusterWideScope({}));
     private _refreshTimer: ReturnType<typeof setInterval> | null = null;
     private _ro: ResizeObserver | null = null;
     private _graphRef: GraphData = { nodes: [], edges: [], edgeMap: new Map() };
@@ -576,7 +603,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
     // ── Stream management ─────────────────────────────────────────────────────
 
     private _startStream() {
-        if (this._paused || this._flowVisibilityDisabled) return;
+        if (this._paused || this._integrationDisabled || this._filterKey === this._forbiddenFilterKey) return;
         this._client?.stop();
         this._client = new FlowStreamClient(this._filter, {
             onFlows: flows => {
@@ -596,16 +623,18 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
             onDisabled: () => {
                 // A 501 means Flow Aggregator integration is off for this deployment. The
                 // client has already stopped itself; there is nothing to retry.
-                this._flowVisibilityDisabled = true;
+                this._integrationDisabled = true;
                 this._client = null;
                 this._connected = false;
                 this._error = FLOW_VISIBILITY_DISABLED_MESSAGE;
             },
             onForbidden: () => {
-                // A 403 means this user may not view flow data. Terminal for the session, and
-                // handled the same way as 501: the client has already stopped itself.
-                // Defence in depth — the route guard should keep them off this page entirely.
-                this._flowVisibilityDisabled = true;
+                // A 403 means FA refused this user the scope _filter asked for. The client has
+                // already stopped itself; record which request was refused so _startStream does
+                // not retry it, without blocking a later request for a different scope (there is
+                // no route guard upstream of this page - authorization is entirely FA's, so this
+                // is the only place that can react to it).
+                this._forbiddenFilterKey = this._filterKey;
                 this._client = null;
                 this._connected = false;
                 this._error = FLOW_VISIBILITY_FORBIDDEN_MESSAGE;
@@ -620,11 +649,14 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         this._connected = false;
     }
 
-    private _applyFilter(filter: FlowStreamFilter) {
-        const newKey = streamFilterKey(filter);
+    private _applyFilter(filter: FlowPeerFilter) {
+        // Single chokepoint for the scope: callers only ever build peer filters, which
+        // FlowStreamFilter's own type cannot express without one - this is where it gets added.
+        const scoped = withTemporaryClusterWideScope(filter);
+        const newKey = streamFilterKey(scoped);
         if (newKey === this._filterKey) return;
         this._filterKey = newKey;
-        this._filter = filter;
+        this._filter = scoped;
         this._store.clear();
         this._entries = [];
         this._evictionWarning = false;
@@ -641,7 +673,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
 
     private _onApplyFilters() {
         this._nsOpen = false; this._podOpen = false; this._svcOpen = false;
-        const filter: FlowStreamFilter = {};
+        const filter: FlowPeerFilter = {};
         if (this._pendingNs.length) filter.namespaces = this._pendingNs;
         if (this._pendingPods.length) filter.pods = this._pendingPods;
         if (this._pendingPodLabel.trim()) filter.podLabelSelector = this._pendingPodLabel.trim();

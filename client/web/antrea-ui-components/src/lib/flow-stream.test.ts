@@ -34,6 +34,37 @@ describe('streamFilterKey', () => {
         const withNs: FlowStreamFilter = { namespaces: ['default'] };
         expect(streamFilterKey(empty)).not.toBe(streamFilterKey(withNs));
     });
+
+    // The scope is what the Flow Aggregator authorizes the stream against and redacts relative
+    // to, and this key is the reconnect predicate. A scope change that did not alter the key
+    // would leave the old stream running while the UI claimed to be showing a different
+    // namespace — the one way this feature can silently show wrong data, so it is asserted
+    // explicitly rather than left to fall out of the JSON.stringify.
+    it('changes when the observed namespace changes', () => {
+        expect(streamFilterKey({ observedNamespace: 'ns-a' }))
+            .not.toBe(streamFilterKey({ observedNamespace: 'ns-b' }));
+    });
+
+    it('changes when a scope is added', () => {
+        expect(streamFilterKey({})).not.toBe(streamFilterKey({ observedNamespace: 'ns-a' }));
+        expect(streamFilterKey({})).not.toBe(streamFilterKey({ clusterWide: true }));
+    });
+
+    it('distinguishes cluster scope from a single observed namespace', () => {
+        expect(streamFilterKey({ clusterWide: true }))
+            .not.toBe(streamFilterKey({ observedNamespace: 'ns-a' }));
+    });
+
+    // The peer filter and the scope are different fields with different meanings, so naming the
+    // same namespace in each must not collapse to the same stream.
+    it('distinguishes an observed namespace from the same namespace as a peer filter', () => {
+        expect(streamFilterKey({ observedNamespace: 'ns-a' }))
+            .not.toBe(streamFilterKey({ namespaces: ['ns-a'] }));
+    });
+
+    it('treats an absent scope and an explicitly empty one as the same stream', () => {
+        expect(streamFilterKey({})).toBe(streamFilterKey({ observedNamespace: '', clusterWide: false }));
+    });
 });
 
 describe('FlowStreamClient', () => {
@@ -143,6 +174,45 @@ describe('FlowStreamClient', () => {
 
         const [url] = fetchMock.mock.calls[0];
         expect(url).toBe('http://localhost:8080/api/v1/flows/stream?');
+
+        client.stop();
+    });
+
+    // The scope travels in the query string, because SSE is a GET and there is no body to put it
+    // in. Worth noting for operators: this means nginx access logs record which namespaces each
+    // user observed — not a leak, since the user is authorized for them, but an audit surface
+    // that did not exist when the parameter was a mere filter.
+    test('puts the scope in the stream URL query string', async () => {
+        stubFetch(async () => sseResponse([]));
+        const cb = makeCallbacks();
+        const client = new FlowStreamClient({ observedNamespace: 'ns-a', namespaces: ['ns-c'] }, cb);
+
+        client.start();
+        await vi.advanceTimersByTimeAsync(0);
+
+        const [url] = fetchMock.mock.calls[0];
+        const params = new URL(url as string, 'http://example.test').searchParams;
+        expect(params.get('observedNamespace')).toBe('ns-a');
+        expect(params.get('clusterWide')).toBeNull();
+        // The peer filter is a separate parameter and keeps its own value, which upstream allows
+        // to name a namespace outside the scope.
+        expect(params.get('namespaces')).toBe('ns-c');
+
+        client.stop();
+    });
+
+    test('requests cluster scope as clusterWide=true', async () => {
+        stubFetch(async () => sseResponse([]));
+        const cb = makeCallbacks();
+        const client = new FlowStreamClient({ clusterWide: true }, cb);
+
+        client.start();
+        await vi.advanceTimersByTimeAsync(0);
+
+        const [url] = fetchMock.mock.calls[0];
+        const params = new URL(url as string, 'http://example.test').searchParams;
+        expect(params.get('clusterWide')).toBe('true');
+        expect(params.get('observedNamespace')).toBeNull();
 
         client.stop();
     });

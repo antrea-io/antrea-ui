@@ -2,9 +2,9 @@
 
 Antrea UI supports four ways of logging in. Except for the admin password, all
 of them make the backend act as *your own* Kubernetes identity: what you can see
-and do in the UI is whatever your Kubernetes RBAC allows — with one exception,
-the flow visibility data, described in [Flow data is not yet
-per-user](#flow-data-is-not-yet-per-user).
+and do in the UI is whatever your Kubernetes RBAC allows, including flow
+visibility data, described in [Flow data is
+per-user](#flow-data-is-per-user).
 
 The browser never holds a Kubernetes credential and never talks to the
 kube-apiserver directly. Every API request goes to the Antrea UI backend, which
@@ -171,79 +171,67 @@ every binding to it. Bind it to a user or group only if you mean "this user
 gets whatever the UI and its plugins can ever do, including what a plugin
 installed next month adds".
 
-### Flow data is not yet per-user
+### Flow data is per-user
 
-The flow visibility stream (`GET /api/v1/flows/stream`) is the one part of the
-UI that per-user RBAC does **not** cover, even though the connection to the
-Flow Aggregator is now authenticated per caller: for most login modes, the
-backend presents the signed-in user's own credential (their bearer token, or
-their client certificate on the connection) to the Flow Aggregator's
-FlowStreamService, which rejects a call that presents neither. The one
-exception is the admin-password login mode: it normally reaches the
-kube-apiserver by impersonating the `antrea-ui-admin` ServiceAccount, but FA
-accepts no impersonation header, so the backend instead mints a short-lived,
-real token for that same ServiceAccount (via the TokenRequest API) and
-presents that — the one case where the credential FA sees is not literally the
-signed-in user's own.
+The flow visibility stream (`GET /api/v1/flows/stream`) is authenticated and
+authorized per caller: for most login modes, the backend presents the
+signed-in user's own credential (their bearer token, or their client
+certificate on the connection) to the Flow Aggregator's FlowStreamService,
+which rejects a call that presents neither. The one exception is the
+admin-password login mode: it normally reaches the kube-apiserver by
+impersonating the `antrea-ui-admin` ServiceAccount, but FA accepts no
+impersonation header, so the backend instead mints a short-lived, real token
+for that same ServiceAccount (via the TokenRequest API) and presents that —
+the one case where the credential FA sees is not literally the signed-in
+user's own.
 
-But FA's own authorization stops at "did this request authenticate at all" —
-it does not consult the caller's Kubernetes permissions to decide which flows
-they may see, so every caller who reaches the endpoint still sees every flow
-the Flow Aggregator exports. The interim restriction below narrows *who reaches
-it*, using a coarse cluster-admin check; it does not make the data per-user.
+Every request also names a **scope**: either `clusterWide=true` or a single
+`observedNamespace`, never both. FA authorizes the stream against that scope
+with the caller's Kubernetes RBAC on the virtual `flows.observability.antrea.io`
+resource — `watch` for the SSE stream, since it always follows — and resolves
+every endpoint of every record to a disclosure tier (full identity, identity
+only, or no identity at all) relative to what the caller may see there. A
+request naming no scope, or both, is rejected before it ever reaches FA. The
+frontend currently only ever requests `clusterWide=true`; the observed-Namespace
+selector that would let a caller ask for their own Namespace instead has not
+been built yet, so a caller holding the `flows` grant only in one Namespace
+gets a 403 today rather than a scoped stream.
 
-**Interim restriction.** Because there is no per-user answer to fall back on,
-the endpoint is currently limited to two kinds of caller:
+Antrea UI performs no RBAC decision of its own here and must not: a wrong
+answer on antrea-ui's side would either hide flow data a caller is entitled to
+or expose data they are not, and FA is the only party positioned to tell the
+two apart. A `403` from the stream (`StreamErrorCodeForbidden`) means FA
+authenticated the credential but refused the scope, and the frontend renders a
+panel naming the restriction. FA revalidates a stream's authorization
+periodically while it is open, so a grant revoked mid-stream ends the stream
+too, not just at open time - but arriving mid-stream, it is one more SSE
+`error` event rather than a fresh HTTP status, so it reaches only the generic
+error banner today, with FA's own message text, not the dedicated panel a
+403 at open time gets.
 
-- whoever logged in with the built-in admin password, and
-- a Kubernetes cluster admin, meaning an identity holding a cluster-wide
-  wildcard grant (`verb: *`, `apiGroup: *`, `resource: *`).
+A Flow Aggregator that predates this authorization model ignores the scope
+fields entirely and streams every flow it has, unredacted, with no disclosure
+markers — which a client correctly reads as full disclosure, since that is the
+zero value. That would silently show a Namespace-scoped caller the whole
+cluster at full identity. antrea-ui probes for this before ever sending a real
+request (see `pkg/handlers/flowstream/version.go`) and refuses to stream
+against an old Flow Aggregator rather than degrade quietly; the resulting
+error names the address to upgrade.
 
-Everyone else gets a 403. A review the API server could not answer is not an
-allow either: a rejected credential becomes a 401 that also ends the session,
-and anything else becomes a 5xx, or the API server's own status if it refused
-the review itself. Of those, only a 403 and the 401 are terminal on the page;
-the rest are retried a bounded number of times before it gives up. Note that a
-review the API server *forbade* therefore arrives as a 403 and is
-indistinguishable on the page from an ordinary denial — it renders the same
-"restricted to administrators" panel, which in that case names the wrong
-reason. That needs a cluster where the caller cannot create
-SelfSubjectAccessReviews at all, which the default `system:basic-user` binding
-grants everyone.
+Nothing on the frontend gates access to the Flow Visibility page or its
+navigation entry anymore: authorization is entirely FA's, so the page always
+renders and a caller without the `flows` grant in the scope they request
+meets the 403 above instead of being hidden pre-emptively.
 
-The Flow Visibility entry does not appear in the UI's navigation for a denied
-caller, with one deliberate exception described under [What the frontend knows
-about your permissions](#what-the-frontend-knows-about-your-permissions): when
-the frontend has no permission answer at all, it shows the entry and lets the
-403 explain, rather than hiding the page on a failure the backend never saw.
+To turn the integration off entirely, deploy with `flowAggregator.enabled=false`
+(the chart default). The endpoint then returns 501 for every user, including
+admins.
 
-This narrows who is exposed; it does not make flow data per-user. Within that
-set, every caller still sees every flow. FA also authenticates a stream once,
-at open time, and holds that identity for as long as the stream stays open:
-revoking a token or deleting a ServiceAccount stops *new* streams, not ones
-already running, and a client certificate's revocation is never checked at
-all.
-
-The check runs when the stream is opened, not continuously. A caller whose
-cluster-admin binding is removed keeps the stream they already have until it
-reconnects — on a filter change, an unpause, a network blip, or the session's
-absolute lifetime cap (12h by default), whichever comes first.
-
-This is temporary. Authorization for `FlowStreamService` is being implemented
-upstream in
-[antrea-io/antrea#8221](https://github.com/antrea-io/antrea/pull/8221); once it
-lands, the per-caller credential this backend already presents can be checked
-against the caller's Kubernetes RBAC, and both the interim restriction and
-this section go away — flow data becomes per-user like everything else.
-
-To turn the integration off entirely rather than restrict it, deploy with
-`flowAggregator.enabled=false` (the chart default). The endpoint then returns
-501 for every user, including admins.
-
-Note that this restriction is Antrea UI's alone. Enabling `FlowStreamService`
-in the Flow Aggregator means anyone with network access to it, and holding a
-credential FA accepts, can read flow data directly, regardless of what Antrea
-UI allows.
+Note that FA's authorization is Antrea UI's only line of defense here.
+Enabling `FlowStreamService` in the Flow Aggregator means anyone with network
+access to it, and holding a credential FA accepts, can read flow data
+directly (subject to FA's own RBAC check), regardless of what Antrea UI's
+frontend shows or hides.
 
 ### The plugin trade-off
 
@@ -298,16 +286,6 @@ The response looks like:
 request the UI makes is still authorized by the API server exactly as before;
 a wrong answer here costs a spurious 403 (or a spuriously hidden button) and
 nothing more.
-
-`clusterAdmin` currently drives one such hint that hides a whole page rather
-than a button: Flow Visibility does not render for a caller who is neither the
-built-in admin (per the session, not this endpoint) nor a cluster admin (per
-this field), mirroring the interim restriction described in [Flow data is not
-yet per-user](#flow-data-is-not-yet-per-user). The authorization decision is
-still the backend's — it rejects the stream itself — and the hint follows the
-rule above, showing the page whenever the frontend lacks a definite answer:
-no summary arrived, or the session probe that says whether this is the built-in
-admin did not. That mirroring goes away with the restriction.
 
 There is no partial answer. A `200` means every field is authoritative;
 anything else means the frontend shows everything, exactly as it did before
