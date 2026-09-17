@@ -305,11 +305,11 @@ func (h *GRPCFlowStreamSubscriber) Subscribe(ctx context.Context, scope *FlowStr
 		}
 		// The first Recv succeeded (or hit an immediate EOF, which startStream treats as
 		// success too): the call cleared authentication and authorization and FA committed to
-		// the stream. That is true whether firstResp is FA's post-authz ack (an empty
-		// GetFlowsResponse, sent as soon as the stream is live - see forwardResp, which drops
-		// it as carrying nothing new) or, against an older FA with no such ack, the first
-		// batch of actual flows. Either way, closing ready here is the real signal StreamFlows
-		// needs to stop guessing and commit to a response.
+		// the stream. checkFlowAggregatorVersion above already confirmed this Flow Aggregator
+		// sends the post-authz ack, so firstResp here is that ack (an empty GetFlowsResponse,
+		// sent as soon as the stream is live - see forwardResp, which drops it as carrying
+		// nothing new), not a real flow. Closing ready here is the real signal StreamFlows needs
+		// to stop guessing and commit to a response.
 		close(ready)
 
 		// lastDroppedCount tracks the cumulative absolute dropped-flow count from the server.

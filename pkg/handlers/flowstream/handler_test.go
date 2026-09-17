@@ -23,7 +23,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -115,8 +117,8 @@ type stubFlowStreamSubscriber struct {
 	closeFlowsChOnErr bool
 	// delay, if set, buffers err into errCh (and closes flowsCh, if closeFlowsChOnErr) from a
 	// goroutine after delay instead of before Subscribe returns. Used to place the error after
-	// StreamFlows's initial synchronous wait (see initialResponseTimeout) so a test can still
-	// exercise the flowsCh/errCh race inside the later c.Stream loop.
+	// StreamFlows's initial synchronous wait so a test can still exercise the flowsCh/errCh race
+	// inside the later c.Stream loop.
 	delay time.Duration
 }
 
@@ -318,43 +320,127 @@ func TestStreamFlowsUnauthenticatedIsNotA401(t *testing.T) {
 	assert.Contains(t, evt.Message, "rejected the credential")
 }
 
-// When Subscribe's error paths buffer an error into errCh and then close both channels (the real
-// GRPCFlowStreamSubscriber shape - see closeFlowsChOnErr), the closed flowsCh and the buffered
-// errCh value become two independently-ready select cases at once. Go's select picks uniformly
-// among ready cases, so without draining errCh in the flowsCh branch, roughly half of all calls
-// would take the closed-flowsCh path and silently drop the error. Run enough iterations that a
-// regression would very likely produce at least one miss.
+// closeNotifyRecorder adapts httptest.ResponseRecorder to gin's ResponseWriter, whose Stream
+// method type-asserts the underlying http.ResponseWriter to http.CloseNotifier (see gin's
+// (*responseWriter).CloseNotify) - httptest.ResponseRecorder alone does not implement it, so
+// calling c.Stream against a bare recorder panics. closec is never closed: nothing in these
+// tests simulates a client disconnect.
+type closeNotifyRecorder struct {
+	*httptest.ResponseRecorder
+	closec chan bool
+}
+
+func newCloseNotifyRecorder() *closeNotifyRecorder {
+	return &closeNotifyRecorder{ResponseRecorder: httptest.NewRecorder(), closec: make(chan bool)}
+}
+
+func (r *closeNotifyRecorder) CloseNotify() <-chan bool { return r.closec }
+
+// writeGate blocks the first Write to the underlying recorder until told to proceed, signaling
+// started first. TestStreamFlowsErrorSurvivesFlowsChRace uses it to force the exact interleaving
+// its race needs: the c.Stream loop's select has to be busy delivering a flow event - not parked
+// in select - when the stub buffers its error and closes flowsCh, so that by the time the loop
+// returns to select, both cases are already ready simultaneously rather than one becoming ready
+// before the loop gets back around to waiting.
+type writeGate struct {
+	*closeNotifyRecorder
+	once    sync.Once
+	started chan struct{}
+	proceed chan struct{}
+}
+
+func newWriteGate() *writeGate {
+	return &writeGate{
+		closeNotifyRecorder: newCloseNotifyRecorder(),
+		started:             make(chan struct{}),
+		proceed:             make(chan struct{}),
+	}
+}
+
+func (w *writeGate) Write(p []byte) (int, error) {
+	w.once.Do(func() { close(w.started) })
+	<-w.proceed
+	return w.closeNotifyRecorder.Write(p)
+}
+
+// WriteString must funnel through Write rather than httptest.ResponseRecorder's own WriteString
+// (which would otherwise be promoted as-is): gin's ResponseWriter writes SSE payloads with
+// io.WriteString, which prefers a io.StringWriter implementation over Write when the underlying
+// writer has one - bypassing the gate above entirely and writing the event before started fires.
+func (w *writeGate) WriteString(s string) (int, error) {
+	return w.Write([]byte(s))
+}
+
+// flowsChErrChRaceSubscriber sends one flow event and then, once told the caller is busy
+// delivering it (see writeGate), fails the same way every GRPCFlowStreamSubscriber.Subscribe error
+// path does: buffer err into errCh, then close flowsCh (its deferred close(flowsCh) then
+// close(errCh) cleanup, run in that order - see grpc.go's Subscribe), and finally signals
+// delivered. The test waits on delivered - not just started - before letting the blocked Write
+// return: started and delivered are both unblocked by the same close(s.started), racing the test
+// goroutine against this one, so without waiting for delivered too, the test could let Write
+// return, and the c.Stream loop back into select, before errCh/flowsCh actually reach their final
+// state - the very thing this test exists to force.
+type flowsChErrChRaceSubscriber struct {
+	err       error
+	started   <-chan struct{}
+	delivered chan struct{}
+}
+
+func (s *flowsChErrChRaceSubscriber) Subscribe(_ context.Context, _ *FlowStreamScope, _ *FlowStreamFilter) (<-chan apisv1.FlowStreamEvent, <-chan error, <-chan struct{}) {
+	flowsCh := make(chan apisv1.FlowStreamEvent, 1)
+	errCh := make(chan error, 1)
+	ready := make(chan struct{})
+	close(ready)
+	flowsCh <- apisv1.FlowStreamEvent{Flows: []apisv1.Flow{{ID: "flow-1"}}}
+	go func() {
+		<-s.started
+		errCh <- s.err
+		close(flowsCh)
+		close(s.delivered)
+	}()
+	return flowsCh, errCh, ready
+}
+
+// When Subscribe's error paths buffer an error into errCh and then close both channels (see
+// flowsChErrChRaceSubscriber), the closed flowsCh and the buffered errCh value become two
+// independently-ready select cases at once. Go's select picks uniformly among ready cases, so
+// without draining errCh in the flowsCh branch, roughly half of all calls would take the
+// closed-flowsCh path and silently drop the error. Run enough iterations that a regression would
+// very likely produce at least one miss.
+//
+// Runs under synctest with the handler driven directly (via httptest.ResponseRecorder, see
+// closeNotifyRecorder) rather than against a real httptest.NewServer/http.Get pair: an
+// httptest.NewServer response body blocks on a real socket, which synctest does not consider
+// durably blocked, and the writeGate synchronization below relies on synctest recognizing the
+// StreamFlows goroutine as durably blocked in Write so this goroutine's <-w.started only proceeds
+// once it truly is - a real server makes both goroutines' progress a matter of OS scheduling
+// instead, which is exactly the kind of real-time dependency this rewrite removes.
 func TestStreamFlowsErrorSurvivesFlowsChRace(t *testing.T) {
 	logger := testr.New(t)
 
 	for i := 0; i < 50; i++ {
-		stub := &stubFlowStreamSubscriber{
-			err:               fmt.Errorf("at capacity"),
-			closeFlowsChOnErr: true,
-			// Past initialResponseTimeout below, so the error lands after StreamFlows has
-			// already committed to a 200 and is running the c.Stream loop this test
-			// means to exercise, instead of being caught by the earlier peek.
-			delay: 5 * time.Millisecond,
-		}
-		sseHandler := NewSSEHandler(logger, stub)
-		sseHandler.initialResponseTimeout = time.Millisecond
-		ts := httptest.NewServer(newTestRouter(sseHandler))
+		synctest.Test(t, func(t *testing.T) {
+			w := newWriteGate()
+			stub := &flowsChErrChRaceSubscriber{err: fmt.Errorf("at capacity"), started: w.started, delivered: make(chan struct{})}
+			sseHandler := NewSSEHandler(logger, stub)
 
-		resp, err := http.Get(ts.URL + "/api/v1/flows/stream?clusterWide=true")
-		require.NoError(t, err)
+			c, _ := gin.CreateTestContext(w)
+			c.Request = httptest.NewRequest(http.MethodGet, "/api/v1/flows/stream?clusterWide=true", nil)
 
-		scanner := bufio.NewScanner(resp.Body)
-		var body strings.Builder
-		for scanner.Scan() {
-			body.WriteString(scanner.Text())
-			body.WriteString("\n")
-		}
-		require.NoError(t, scanner.Err())
-		resp.Body.Close()
-		ts.Close()
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				sseHandler.StreamFlows(c)
+			}()
 
-		assert.Contains(t, body.String(), "event:error", "iteration %d: error event must survive the flowsCh/errCh race", i)
-		assert.Contains(t, body.String(), "at capacity", "iteration %d", i)
+			<-stub.delivered
+			close(w.proceed)
+			<-done
+
+			body := w.Body.String()
+			assert.Contains(t, body, "event:error", "iteration %d: error event must survive the flowsCh/errCh race", i)
+			assert.Contains(t, body, "at capacity", "iteration %d", i)
+		})
 	}
 }
 

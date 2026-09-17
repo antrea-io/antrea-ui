@@ -32,16 +32,19 @@ import (
 	"antrea.io/antrea-ui/pkg/auth/session"
 )
 
-// silentSubscriber never sends anything, which is the interesting case here: only the keepalive
-// ticker runs, and that is where the session is re-checked. It also never closes ready, matching
-// a Flow Aggregator that accepts the call and then never responds - initialResponseTimeout is
-// what StreamFlows falls back on in every test below.
+// silentSubscriber closes ready immediately and then never sends anything else, which is the
+// interesting case here: only the keepalive ticker runs, and that is where the session is
+// re-checked. It commits to the stream the way a live-but-quiet Flow Aggregator would (a narrow
+// filter matching nothing), as opposed to the initialResponseTimeout fallback, which is for a
+// Flow Aggregator that accepts the call and then never responds at all - a different case, and
+// not what any test below is exercising.
 type silentSubscriber struct{}
 
 func (s *silentSubscriber) Subscribe(ctx context.Context, _ *FlowStreamScope, _ *FlowStreamFilter) (<-chan apisv1.FlowStreamEvent, <-chan error, <-chan struct{}) {
 	flowsCh := make(chan apisv1.FlowStreamEvent)
 	errCh := make(chan error)
 	ready := make(chan struct{})
+	close(ready)
 	go func() {
 		<-ctx.Done()
 		close(flowsCh)
@@ -84,7 +87,6 @@ func TestStreamKeepsSessionAlive(t *testing.T) {
 
 	handler := NewSSEHandler(testr.New(t), &silentSubscriber{})
 	handler.keepAliveInterval = 20 * time.Millisecond
-	handler.initialResponseTimeout = time.Millisecond
 	ts := httptest.NewServer(sessionRouter(handler, store, sess.ID()))
 	defer ts.Close()
 
@@ -129,7 +131,6 @@ func TestStreamStopsWhenSessionEnds(t *testing.T) {
 
 	handler := NewSSEHandler(testr.New(t), &silentSubscriber{})
 	handler.keepAliveInterval = 20 * time.Millisecond
-	handler.initialResponseTimeout = time.Millisecond
 	ts := httptest.NewServer(sessionRouter(handler, store, sess.ID()))
 	defer ts.Close()
 
@@ -166,7 +167,6 @@ func TestStreamStopsWhenSessionEnds(t *testing.T) {
 func TestStreamStopsWithoutResolvedIdentity(t *testing.T) {
 	handler := NewSSEHandler(testr.New(t), &silentSubscriber{})
 	handler.keepAliveInterval = 20 * time.Millisecond
-	handler.initialResponseTimeout = time.Millisecond
 
 	// Deliberately no session.WithRequestAuth on the request context.
 	router := gin.New()
@@ -216,7 +216,6 @@ func TestStreamStopsWhenBearerCredentialExpires(t *testing.T) {
 		t.Helper()
 		handler := NewSSEHandler(testr.New(t), &silentSubscriber{})
 		handler.keepAliveInterval = 20 * time.Millisecond
-		handler.initialResponseTimeout = time.Millisecond
 		ts := httptest.NewServer(ephemeralRouter(handler, cred))
 		defer ts.Close()
 

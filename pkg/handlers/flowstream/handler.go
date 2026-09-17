@@ -74,17 +74,25 @@ type FlowStreamScope struct {
 const defaultKeepAliveInterval = 5 * time.Second
 
 // defaultInitialResponseTimeout bounds how long StreamFlows waits for Subscribe to confirm the
-// stream is live (or fail) before committing to a 200 response anyway. See the comment where it
-// is used: against a Flow Aggregator that sends its post-authz ack (antrea-io/antrea#8420), this
-// almost never fires - it exists for the case FA accepts the call and then never responds at all.
-const defaultInitialResponseTimeout = 15 * time.Second
+// stream is live (or fail) before reporting a retryable timeout. See the comment where it is
+// used: against a Flow Aggregator that sends its post-authz ack (antrea-io/antrea#8420), this
+// only fires when FA accepts the call and then never responds at all, so it has to clear the
+// worst-case time for a valid open rather than the common case - up to 10s for the admin-token
+// mint (see AdminTokenSource), FA's own 30s tokenAuthenticationTimeout, then the
+// SubjectAccessReview - while staying under the 60s read timeout common in external proxies
+// (ingress-nginx, AWS ALB), which would otherwise cut the response off before this fires.
+const defaultInitialResponseTimeout = 50 * time.Second
 
 // streamErrorEvent describes streamErr for a client, carrying classifyStreamErr's code and
 // retryable flag when it has them so the client does not have to parse Message. It is the body of
 // both the SSE "error" event and the pre-200 HTTP error response, so the frontend parses one
 // shape either way.
 func streamErrorEvent(streamErr error) apisv1.FlowStreamErrorEvent {
-	evt := apisv1.FlowStreamErrorEvent{Message: streamErr.Error()}
+	// Retryable defaults to true, matching classifyStreamErr's own retryable default and the
+	// frontend's policy of retrying on an error body it cannot parse: an error that is not a
+	// *StreamError has not been classified as permanent by anything on this path, so treating it
+	// as such here would halt the client's reconnect loop for good on what may well be transient.
+	evt := apisv1.FlowStreamErrorEvent{Message: streamErr.Error(), Retryable: true}
 	var se *StreamError
 	if errors.As(streamErr, &se) {
 		evt.Code = se.Code
@@ -128,6 +136,12 @@ func statusForStreamErr(err error) int {
 // errUnauthenticatedStream means the handler was reached without the authentication middleware
 // having resolved an identity, which is a wiring bug rather than anything a client can cause.
 var errUnauthenticatedStream = errors.New("flow stream request carries no resolved identity")
+
+// errInitialResponseTimeout means Subscribe neither confirmed the stream was live nor reported a
+// failure within initialResponseTimeout: the Flow Aggregator accepted the call and then never
+// responded at all. Retryable, since nothing about the request itself is at fault - unlike the
+// hang it reports, a fresh attempt is not expected to hang the same way.
+var errInitialResponseTimeout = retryableInternalStreamError(errors.New("timed out waiting for the flow stream to become ready"))
 
 // SSEHandler handles the SSE endpoint for flow streaming.
 //
@@ -307,7 +321,15 @@ func (h *SSEHandler) StreamFlows(c *gin.Context) {
 	case <-readyCh:
 		// The stream is confirmed live: proceed as an ordinary 200 SSE stream.
 	case <-time.After(h.initialResponseTimeout):
-		// No answer either way: proceed as an ordinary 200 SSE stream.
+		// Subscribe never answered either way. Against a Flow Aggregator that sends the
+		// post-authz ack this only means FA hung after accepting the call, not a valid open
+		// still in flight - initialResponseTimeout is sized above the worst case for that - so
+		// committing to a 200 here would show "Connected" on an empty page with no error and no
+		// retry. Report it as a retryable failure instead, the same shape as the other pre-200
+		// failures, so the client can reconnect.
+		h.logger.Error(errInitialResponseTimeout, "Flow stream did not respond before the initial response timeout")
+		c.JSON(statusForStreamErr(errInitialResponseTimeout), streamErrorEvent(errInitialResponseTimeout))
+		return
 	}
 
 	// Set headers required for Server-Sent Events (SSE).
