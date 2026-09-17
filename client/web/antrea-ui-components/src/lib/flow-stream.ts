@@ -86,6 +86,10 @@ function buildStreamURL(filter: FlowStreamFilter): string {
  * the session ends. On HTTP 401 the session is gone for good: onAuthError() fires and the stream
  * stops for good too. On HTTP 501, Flow Aggregator integration is disabled for this deployment:
  * onDisabled() fires and the stream stops for good, the same way.
+ *
+ * A retryable failure (see scheduleReconnect) is retried indefinitely with a backoff that caps at
+ * 30s, never given up on outright. A reconnect due while the tab is hidden is deferred until it
+ * becomes visible again (see dueForReconnect) instead of firing in the background.
  */
 export class FlowStreamClient {
     private abortController: AbortController | null = null;
@@ -102,19 +106,19 @@ export class FlowStreamClient {
     private filter: FlowStreamFilter;
     private callbacks: FlowStreamCallbacks;
     private batchIntervalMs: number;
-    private maxReconnectAttempts: number;
     private running = false;
+    // Set while a reconnect is due but the tab is hidden; cleared, and acted on, by
+    // onVisibilityChange. See dueForReconnect for why a due reconnect does not just fire.
+    private reconnectPendingVisibility = false;
 
     constructor(
         filter: FlowStreamFilter,
         callbacks: FlowStreamCallbacks,
         batchIntervalMs = 1000,
-        maxReconnectAttempts = 10,
     ) {
         this.filter = filter;
         this.callbacks = callbacks;
         this.batchIntervalMs = batchIntervalMs;
-        this.maxReconnectAttempts = maxReconnectAttempts;
     }
 
     start(): void {
@@ -122,6 +126,7 @@ export class FlowStreamClient {
         this.running = true;
         this.reconnectAttempts = 0;
         this.startBatchTimer();
+        document.addEventListener('visibilitychange', this.onVisibilityChange);
         this.connect();
     }
 
@@ -131,6 +136,8 @@ export class FlowStreamClient {
         this.abortController = null;
         this.stopBatchTimer();
         if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
+        this.reconnectPendingVisibility = false;
+        document.removeEventListener('visibilitychange', this.onVisibilityChange);
         this.flushBatch();
         this.callbacks.onDisconnected?.();
     }
@@ -171,6 +178,8 @@ export class FlowStreamClient {
         this.running = false;
         this.stopBatchTimer();
         if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
+        this.reconnectPendingVisibility = false;
+        document.removeEventListener('visibilitychange', this.onVisibilityChange);
         this.flushBatch();
     }
 
@@ -187,6 +196,13 @@ export class FlowStreamClient {
 
     private async connect(): Promise<void> {
         if (!this.running) return;
+        // Any call here starts a fresh attempt, so a deferred reconnect waiting on
+        // onVisibilityChange (see dueForReconnect) is moot - most importantly when this call
+        // came from updateFilter() rather than from that deferral itself: without clearing it,
+        // the tab later becoming visible would fire a second, concurrent connect() on top of
+        // this one, orphaning it (stop() can only abort the abortController this call is about
+        // to overwrite).
+        this.reconnectPendingVisibility = false;
         this.abortController = new AbortController();
         this.streamErrorIsPermanent = false;
         const url = buildStreamURL(this.filter);
@@ -226,10 +242,10 @@ export class FlowStreamClient {
                 // SSE "error" event mostly arrive here instead - with the same code/retryable
                 // classification in the body. Honour it: without this, a permanent failure (the
                 // Flow Aggregator rejecting the credential, a credential this deployment cannot
-                // mint) would be retried the full maxReconnectAttempts times purely because it
-                // was reported early enough to be an HTTP status rather than late enough to be an
-                // event. A body we cannot parse falls through to the retry path, which is the
-                // safer default for an unrecognized failure.
+                // mint) would be retried forever purely because it was reported early enough to
+                // be an HTTP status rather than late enough to be an event. A body we cannot
+                // parse falls through to the retry path, which is the safer default for an
+                // unrecognized failure.
                 const payload = await FlowStreamClient.readErrorPayload(response);
                 const message = payload?.message ?? `Flow stream: ${response.status} ${response.statusText}`;
                 if (payload?.retryable === false) {
@@ -291,10 +307,9 @@ export class FlowStreamClient {
             if (data) events.push({ type: eventType, data });
             // The backend's keepalive comment (": keepalive\n\n") carries no data: line, so it
             // would otherwise be silently dropped here. Surface it as its own event so
-            // handleSSEEvent can treat it as proof the connection is alive - a filter that
-            // matches nothing can otherwise go a full maxReconnectAttempts cycles without ever
-            // resetting reconnectAttempts, tripping "Max reconnect attempts reached" on a
-            // connection that never actually failed.
+            // handleSSEEvent can treat it as proof the connection is alive - without it, a filter
+            // that matches nothing would leave reconnectAttempts never reset, so a connection
+            // that later drops backs off at the full 30s delay despite never having failed.
             else if (isComment) events.push({ type: 'comment', data: '' });
         }
         return { parsed: events, remaining };
@@ -329,14 +344,36 @@ export class FlowStreamClient {
         } catch (err) { console.error('Failed to parse SSE event', event, err); }
     }
 
+    // Retries a retryable failure indefinitely, the same way Gmail's own connection handling
+    // does: there is no failure count here to give up after, only a delay that grows on each
+    // attempt and caps at 30s, so a Flow Aggregator restart or a network blip that outlasts a
+    // few attempts is still there to reconnect to whenever it recovers. A failure worth giving
+    // up on outright (a rejected credential, FA disabled) never reaches this method - it goes
+    // through haltPermanently instead.
     private scheduleReconnect(): void {
-        if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-            this.callbacks.onError(new Error('Max reconnect attempts reached'));
-            this.stop();
-            return;
-        }
         const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 30000);
         this.reconnectAttempts++;
-        this.reconnectTimer = setTimeout(() => this.connect(), delay);
+        this.reconnectTimer = setTimeout(() => this.dueForReconnect(), delay);
     }
+
+    // A reconnect due while the tab is hidden does not fire: retrying here would open a new
+    // stream - and with it a new session-keepalive call (see RequestAuth.KeepAlive) - purely to
+    // serve a page nobody is looking at. That is different from an already-open stream, which is
+    // deliberately allowed to keep the session alive in the background; this is about not
+    // *initiating* one. onVisibilityChange fires the reconnect immediately once the tab is
+    // visible again instead of waiting for whatever the backoff delay happened to be.
+    private dueForReconnect(): void {
+        if (document.visibilityState === 'hidden') {
+            this.reconnectPendingVisibility = true;
+            return;
+        }
+        this.connect();
+    }
+
+    private onVisibilityChange = (): void => {
+        if (this.reconnectPendingVisibility && document.visibilityState === 'visible') {
+            this.reconnectPendingVisibility = false;
+            this.connect();
+        }
+    };
 }
