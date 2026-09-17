@@ -293,25 +293,87 @@ describe('FlowStreamClient', () => {
         expect(fetchMock).toHaveBeenCalledTimes(1);
     });
 
-    test('exponential backoff reconnects after a network error, then gives up after maxReconnectAttempts', async () => {
+    // A retryable failure has no attempt limit - the backoff delay grows and then caps at 30s,
+    // but the client keeps reconnecting into it indefinitely, the same way Gmail's own connection
+    // handling does, rather than giving up and leaving the page to be manually reloaded.
+    test('exponential backoff caps at 30s and keeps retrying indefinitely after a network error', async () => {
         stubFetch(async () => { throw new Error('network down'); });
         const cb = makeCallbacks();
-        const client = new FlowStreamClient({}, cb, 10, 3);
+        const client = new FlowStreamClient({}, cb, 10);
         client.start();
         await vi.advanceTimersByTimeAsync(0);
         expect(fetchMock).toHaveBeenCalledTimes(1);
 
-        // Backoff: 1000ms, 2000ms, 4000ms for attempts 1..3, then give up.
+        // Backoff: 1000ms, 2000ms, 4000ms, ..., capping at 30000ms.
         await vi.advanceTimersByTimeAsync(1000);
         expect(fetchMock).toHaveBeenCalledTimes(2);
         await vi.advanceTimersByTimeAsync(2000);
         expect(fetchMock).toHaveBeenCalledTimes(3);
         await vi.advanceTimersByTimeAsync(4000);
         expect(fetchMock).toHaveBeenCalledTimes(4);
+        await vi.advanceTimersByTimeAsync(8000);
+        expect(fetchMock).toHaveBeenCalledTimes(5);
+        await vi.advanceTimersByTimeAsync(16000);
+        expect(fetchMock).toHaveBeenCalledTimes(6);
+        // 32000ms would be next uncapped; the delay caps at 30000ms instead.
+        await vi.advanceTimersByTimeAsync(30000);
+        expect(fetchMock).toHaveBeenCalledTimes(7);
+        await vi.advanceTimersByTimeAsync(30000);
+        expect(fetchMock).toHaveBeenCalledTimes(8);
 
-        expect(cb.errors.at(-1)?.message).toBe('Max reconnect attempts reached');
+        expect(cb.errors.every(e => e.message === 'network down')).toBe(true);
+    });
+
+    // Reconnecting while the tab is hidden would open a new stream - and with it a new
+    // session-keepalive call - purely to serve a page nobody is looking at, so a due reconnect
+    // waits for the tab to become visible again instead of firing on its own timer.
+    test('does not reconnect while the tab is hidden, then reconnects as soon as it is visible again', async () => {
+        stubFetch(async () => { throw new Error('network down'); });
+        const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
+        const cb = makeCallbacks();
+        const client = new FlowStreamClient({}, cb, 10);
+        client.start();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+
+        // The reconnect comes due at 1000ms but must not fire while hidden, however long the
+        // hidden tab sits there.
         await vi.advanceTimersByTimeAsync(60_000);
-        expect(fetchMock).toHaveBeenCalledTimes(4);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+
+        visibility.mockReturnValue('visible');
+        document.dispatchEvent(new Event('visibilitychange'));
+        await vi.advanceTimersByTimeAsync(0);
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    // updateFilter() calls connect() directly, bypassing dueForReconnect(). If a reconnect was
+    // deferred waiting for the tab to become visible when updateFilter() runs, that deferral must
+    // not also fire once the tab does become visible - otherwise it opens a second, concurrent
+    // connect() on top of the one updateFilter() just started, which stop() can no longer reach.
+    test('updateFilter while a reconnect is deferred for visibility does not double-connect once visible', async () => {
+        stubFetch(async () => { throw new Error('network down'); });
+        const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
+        const cb = makeCallbacks();
+        const client = new FlowStreamClient({}, cb, 10);
+        client.start();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+
+        // Reconnect comes due while hidden and is deferred.
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+
+        // A filter change reconnects immediately regardless of visibility.
+        client.updateFilter({ namespaces: ['default'] });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+
+        // The tab becoming visible now must not trigger a second, independent reconnect.
+        visibility.mockReturnValue('visible');
+        document.dispatchEvent(new Event('visibilitychange'));
+        await vi.advanceTimersByTimeAsync(0);
+        expect(fetchMock).toHaveBeenCalledTimes(2);
     });
 
     // A stream "error" event with retryable:false (e.g. FA rejected the credential) is a
@@ -346,11 +408,11 @@ describe('FlowStreamClient', () => {
         expect(vi.getTimerCount()).toBe(0);
     });
 
-    // The backend peeks for a synchronous failure before committing to a 200 (see StreamFlows's
-    // errorPeekTimeout), so the failures that would otherwise arrive as an SSE "error" event
-    // mostly arrive as an HTTP error status carrying the same code/retryable body. A permanent one
-    // must be just as terminal on that path - otherwise a rejected credential gets retried the
-    // full maxReconnectAttempts times purely because it was reported early rather than late.
+    // The backend waits for Subscribe to confirm the stream is live (or fail) before committing
+    // to a 200 (see StreamFlows), so the failures that would otherwise arrive as an SSE "error"
+    // event mostly arrive as an HTTP error status carrying the same code/retryable body. A
+    // permanent one must be just as terminal on that path - otherwise a rejected credential gets
+    // retried forever purely because it was reported early rather than late.
     test('a non-retryable pre-200 error body stops the client without reconnecting', async () => {
         stubFetch(async () => new Response(
             JSON.stringify({ message: 'FlowAggregator rejected the credential', code: 'unauthenticated', retryable: false }),
