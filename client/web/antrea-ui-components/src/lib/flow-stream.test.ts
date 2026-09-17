@@ -545,6 +545,27 @@ describe('FlowStreamClient', () => {
         client.stop();
     });
 
+    // A 400 means this client built a request the backend will never accept - a filter value
+    // parseFlowStreamFilter rejects, for instance - so no retry can ever succeed. That must hold
+    // even when the body cannot be parsed into the usual code/retryable shape (a plain
+    // {"error": "..."} body, or a proxy's own error page), the same way a 403 is always terminal
+    // regardless of its body.
+    test('a 400 with an unparseable body stops the client without reconnecting', async () => {
+        stubFetch(async () => new Response(
+            JSON.stringify({ error: 'invalid flowType value "bogus"' }),
+            { status: 400, headers: { 'Content-Type': 'application/json' } },
+        ));
+        const cb = makeCallbacks();
+        const client = new FlowStreamClient({}, cb, 10);
+        client.start();
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(cb.errors).toHaveLength(1);
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        expect(vi.getTimerCount()).toBe(0);
+    });
+
     // A stream "error" event with retryable:true (e.g. FA at capacity) must still reconnect with
     // the normal exponential backoff.
     test('a retryable stream error event still reconnects', async () => {

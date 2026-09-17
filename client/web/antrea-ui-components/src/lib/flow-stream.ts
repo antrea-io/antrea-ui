@@ -267,18 +267,20 @@ export class FlowStreamClient {
             }
 
             if (!response.ok) {
-                // The backend gives Subscribe a brief window to report a synchronous failure
-                // before it commits to a 200, so the failures that would otherwise arrive as an
-                // SSE "error" event mostly arrive here instead - with the same code/retryable
-                // classification in the body. Honour it: without this, a permanent failure (the
-                // Flow Aggregator rejecting the credential, a credential this deployment cannot
-                // mint) would be retried forever purely because it was reported early enough to
-                // be an HTTP status rather than late enough to be an event. A body we cannot
-                // parse falls through to the retry path, which is the safer default for an
-                // unrecognized failure.
+                // The backend waits for Subscribe to confirm the stream is live (or fail) before
+                // committing to a response, so a failure at stream open arrives here as an HTTP
+                // status - with the same code/retryable classification in the body - unless the
+                // backend's own initial-response timeout fires first, in which case it arrives
+                // later as an SSE "error" event instead. Honour the classification here: without
+                // this, a permanent failure (the Flow Aggregator rejecting the credential, a
+                // credential this deployment cannot mint) would be retried forever purely because
+                // it was reported early enough to be an HTTP status rather than late enough to be
+                // an event. A body we cannot parse falls through to the retry path, which is the
+                // safer default for an unrecognized failure - except a 400, which (like 403) means
+                // this client built a request the backend will never accept, so no retry can help.
                 const payload = await FlowStreamClient.readErrorPayload(response);
                 const message = payload?.message ?? `Flow stream: ${response.status} ${response.statusText}`;
-                if (payload?.retryable === false) {
+                if (payload?.retryable === false || response.status === 400) {
                     this.haltPermanently();
                     this.callbacks.onError(new Error(message));
                     this.callbacks.onDisconnected?.();
