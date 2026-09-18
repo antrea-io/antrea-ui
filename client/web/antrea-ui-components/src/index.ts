@@ -43,11 +43,10 @@ export {
     canNonResource,
     accessibleNamespaces,
     canViewSummary,
+    canViewFlows,
     GATE_TRACEFLOW_CREATE,
     GATE_AGENT_INFO_LIST,
     GATE_CONTROLLER_INFO_GET,
     GATE_FEATUREGATES,
     GATE_FLOWS_WATCH,
-    GATE_FLOWS_LIST,
-    hasFlowPermissions,
 } from './lib/access-api.js';

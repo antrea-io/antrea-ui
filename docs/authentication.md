@@ -151,6 +151,10 @@ else:
 - `get`/`list`/`watch`/`create`/`delete` on `traceflows` and
   `traceflows/status`
 - `get` on the `/featuregates` non-resource URL
+- `list` on `namespaces`
+- `list` and `watch` on `flows.observability.antrea.io`, the virtual resource
+  the Flow Aggregator authorizes flow streams against (see [Flow data is
+  per-user](#flow-data-is-per-user))
 
 Its rule list is static: it only ever changes when you upgrade the chart, and
 you can read exactly what it grants in
@@ -225,7 +229,10 @@ an older deployment.
 The Flow Visibility navigation entry and page are gated on the `flows`
 `watch` grant above, the same RBAC FA itself checks — a rendering hint, not
 an authorization decision, so it can only ever hide the page from a caller FA
-would refuse, never show it to one FA would allow that this check missed.
+would refuse, never show it to one FA would allow that this check missed. The
+grant has to be cluster-wide: the UI has no observed-Namespace selector yet, so
+`clusterWide=true` is the only scope it can request, and a grant that covers
+only one Namespace authorizes nothing it would ask for.
 
 To turn the integration off entirely, deploy with `flowAggregator.enabled=false`
 (the chart default). The endpoint then returns 501 for every user, including

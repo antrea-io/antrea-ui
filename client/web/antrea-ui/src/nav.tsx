@@ -18,9 +18,9 @@ import React from 'react';
 import { useLocation } from 'react-router';
 import { Link } from 'react-router';
 import '@antrea/ui-components';
-import { can, canViewSummary, GATE_TRACEFLOW_CREATE, GATE_FLOWS_WATCH } from '@antrea/ui-components';
+import { can, canViewSummary, canViewFlows, GATE_TRACEFLOW_CREATE } from '@antrea/ui-components';
 import type { PluginSidebarEntry } from './plugins';
-import { useAccess, useIsAdmin } from './access';
+import { useAccess } from './access';
 
 function DashboardIcon() {
     return (
@@ -107,14 +107,12 @@ function renderPluginNavItem(entry: PluginSidebarEntry, pathname: string) {
 export default function NavTab({ pluginSidebarEntries }: { pluginSidebarEntries: PluginSidebarEntry[] }) {
     const { pathname } = useLocation();
     const { summary, loaded } = useAccess();
-    const isAdmin = useIsAdmin();
 
     // While the access summary hasn't loaded yet, render no core items: entries popping in once
     // loaded reads better than entries vanishing if the answer turns out to restrict something.
     const showSummary = loaded && canViewSummary(summary);
     const showTraceflow = loaded && can(summary, GATE_TRACEFLOW_CREATE);
-    // isAdmin, not just the RBAC gate: see useIsAdmin's own doc comment.
-    const showFlows = loaded && isAdmin && can(summary, GATE_FLOWS_WATCH);
+    const showFlows = loaded && canViewFlows(summary);
 
     // Plugin entries with a parentPath (already resolved/normalized by plugins.ts's
     // resolveParentPaths — always a leading-slash-stripped path, whether that path belongs to a

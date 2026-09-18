@@ -243,8 +243,8 @@ func TestFlowStreamAuthorizationIsTheFlowAggregators(t *testing.T) {
 		defer resp.Body.Close()
 		require.Equal(t, http.StatusOK, resp.StatusCode)
 		// The built-in admin presents a minted antrea-ui-admin token to the Flow Aggregator,
-		// which honours only Kubernetes RBAC - hence the antrea-ui-admin-flows ClusterRole
-		// this change adds to the chart.
+		// which honours only Kubernetes RBAC - hence the flows rule this change adds to the
+		// antrea-ui-admin-core ClusterRole in the chart.
 		assert.True(t, receivesFlow(t, resp), "the built-in admin should receive flow data")
 	})
 
