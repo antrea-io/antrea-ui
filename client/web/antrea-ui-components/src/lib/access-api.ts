@@ -164,6 +164,21 @@ export const GATE_FEATUREGATES = { verb: 'get', url: '/featuregates' };
 // this can only ever hide the entry for a user who would be refused anyway - never show it to one
 // who wouldn't.
 export const GATE_FLOWS_WATCH = { group: 'observability.antrea.io', resource: 'flows', verb: 'watch' };
+export const GATE_FLOWS_LIST = { group: 'observability.antrea.io', resource: 'flows', verb: 'list' };
+
+// Whether s shows list and watch on flows both granted cluster-wide, on its own - independent of
+// clusterAdmin (a */*/* rule) or the built-in admin (which holds neither).
+//
+// Requires s.namespace to be unset (cluster scope): a namespace-scoped summary can show a
+// namespaced Role's grant here too, which authorizes nothing cluster-wide, so trusting can()
+// alone would read a caller's own-Namespace grant as if it were cluster-wide. Checked here
+// rather than left to the caller, since a summary is cluster-scoped by default (accessSummary()
+// takes no namespace) and this is exactly the check that would silently do the wrong thing the
+// one time that stops being true.
+export function hasFlowPermissions(s: AccessSummary | null): boolean {
+    if (s?.namespace) return false;
+    return can(s, GATE_FLOWS_LIST) && can(s, GATE_FLOWS_WATCH);
+}
 
 export function canViewSummary(s: AccessSummary | null): boolean {
     return can(s, GATE_AGENT_INFO_LIST) || can(s, GATE_CONTROLLER_INFO_GET) || canNonResource(s, GATE_FEATUREGATES);
