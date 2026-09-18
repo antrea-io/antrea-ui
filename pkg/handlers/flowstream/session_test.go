@@ -32,19 +32,25 @@ import (
 	"antrea.io/antrea-ui/pkg/auth/session"
 )
 
-// silentSubscriber never sends anything, which is the interesting case here: only the keepalive
-// ticker runs, and that is where the session is re-checked.
+// silentSubscriber closes ready immediately and then never sends anything else, which is the
+// interesting case here: only the keepalive ticker runs, and that is where the session is
+// re-checked. It commits to the stream the way a live-but-quiet Flow Aggregator would (a narrow
+// filter matching nothing), as opposed to the initialResponseTimeout fallback, which is for a
+// Flow Aggregator that accepts the call and then never responds at all - a different case, and
+// not what any test below is exercising.
 type silentSubscriber struct{}
 
-func (s *silentSubscriber) Subscribe(ctx context.Context, _ *FlowStreamFilter) (<-chan apisv1.FlowStreamEvent, <-chan error) {
+func (s *silentSubscriber) Subscribe(ctx context.Context, _ *FlowStreamScope, _ *FlowStreamFilter) (<-chan apisv1.FlowStreamEvent, <-chan error, <-chan struct{}) {
 	flowsCh := make(chan apisv1.FlowStreamEvent)
 	errCh := make(chan error)
+	ready := make(chan struct{})
+	close(ready)
 	go func() {
 		<-ctx.Done()
 		close(flowsCh)
 		close(errCh)
 	}()
-	return flowsCh, errCh
+	return flowsCh, errCh, ready
 }
 
 // sessionRouter serves the SSE endpoint behind a session, the way the real API server does.
@@ -86,7 +92,7 @@ func TestStreamKeepsSessionAlive(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, "GET", ts.URL+"/api/v1/flows/stream", nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", ts.URL+"/api/v1/flows/stream?clusterWide=true", nil)
 	require.NoError(t, err)
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
@@ -130,7 +136,7 @@ func TestStreamStopsWhenSessionEnds(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, "GET", ts.URL+"/api/v1/flows/stream", nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", ts.URL+"/api/v1/flows/stream?clusterWide=true", nil)
 	require.NoError(t, err)
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
@@ -170,7 +176,7 @@ func TestStreamStopsWithoutResolvedIdentity(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, "GET", ts.URL+"/api/v1/flows/stream", nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", ts.URL+"/api/v1/flows/stream?clusterWide=true", nil)
 	require.NoError(t, err)
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
@@ -215,7 +221,7 @@ func TestStreamStopsWhenBearerCredentialExpires(t *testing.T) {
 
 		ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
 		defer cancel()
-		req, err := http.NewRequestWithContext(ctx, "GET", ts.URL+"/api/v1/flows/stream", nil)
+		req, err := http.NewRequestWithContext(ctx, "GET", ts.URL+"/api/v1/flows/stream?clusterWide=true", nil)
 		require.NoError(t, err)
 		resp, err := http.DefaultClient.Do(req)
 		require.NoError(t, err)

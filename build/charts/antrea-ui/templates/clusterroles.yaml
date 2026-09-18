@@ -107,3 +107,18 @@ rules:
       - namespaces
     verbs:
       - list
+  # Flow visibility. Granted here rather than gated behind a values key: with the admin-only
+  # flow-stream gate gone, this role is the model for binding a user's own Kubernetes identity to
+  # (see the comment above), and authorization is entirely the Flow Aggregator's decision from
+  # here - it checks this RBAC against the scope each stream names and redacts accordingly, so
+  # granting it costs nothing when no Flow Aggregator is deployed and denies nothing on its own
+  # when one is.
+  - apiGroups:
+      - observability.antrea.io
+    resources:
+      - flows
+    # watch, not just list: the SSE stream always sets Follow, and upstream grants list alone as
+    # history-only access.
+    verbs:
+      - list
+      - watch

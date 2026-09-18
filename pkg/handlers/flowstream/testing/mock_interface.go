@@ -52,16 +52,17 @@ func (m *MockFlowStreamSubscriber) EXPECT() *MockFlowStreamSubscriberMockRecorde
 }
 
 // Subscribe mocks base method.
-func (m *MockFlowStreamSubscriber) Subscribe(ctx context.Context, filter *flowstream.FlowStreamFilter) (<-chan v1.FlowStreamEvent, <-chan error) {
+func (m *MockFlowStreamSubscriber) Subscribe(ctx context.Context, scope *flowstream.FlowStreamScope, filter *flowstream.FlowStreamFilter) (<-chan v1.FlowStreamEvent, <-chan error, <-chan struct{}) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Subscribe", ctx, filter)
+	ret := m.ctrl.Call(m, "Subscribe", ctx, scope, filter)
 	ret0, _ := ret[0].(<-chan v1.FlowStreamEvent)
 	ret1, _ := ret[1].(<-chan error)
-	return ret0, ret1
+	ret2, _ := ret[2].(<-chan struct{})
+	return ret0, ret1, ret2
 }
 
 // Subscribe indicates an expected call of Subscribe.
-func (mr *MockFlowStreamSubscriberMockRecorder) Subscribe(ctx, filter interface{}) *gomock.Call {
+func (mr *MockFlowStreamSubscriberMockRecorder) Subscribe(ctx, scope, filter interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Subscribe", reflect.TypeOf((*MockFlowStreamSubscriber)(nil).Subscribe), ctx, filter)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Subscribe", reflect.TypeOf((*MockFlowStreamSubscriber)(nil).Subscribe), ctx, scope, filter)
 }

@@ -16,38 +16,35 @@
 
 import React, { useRef, useCallback } from 'react';
 import '@antrea/ui-components';
-import { can, canViewSummary, GATE_TRACEFLOW_CREATE } from '@antrea/ui-components';
+import { can, canViewSummary, canViewFlows, GATE_TRACEFLOW_CREATE } from '@antrea/ui-components';
 import { Navigate } from 'react-router';
 import { useLogout } from './logout';
 import { getEdgeExtraRenderers, getFlowTableColumnsProcessors } from './plugins';
-import { useAccess, useCanViewFlows } from './access';
+import { useAccess } from './access';
 
 // Picks the first route the user is actually permitted to see, so a partially-authorized user
 // doesn't land on a Summary page that's just going to show the permission panel. While the
 // access summary hasn't loaded yet, renders nothing.
 export function HomeRedirect() {
     const { summary, loaded } = useAccess();
-    // useCanViewFlows' own `loaded` is dropped because it is this same one today. If that hook
-    // ever gates loading on something else (a second fetch, say), take it and conjoin it with the
-    // check below, or this redirects on a half-loaded answer. Same coupling nav.tsx notes.
-    const { allowed: canViewFlows } = useCanViewFlows();
     if (!loaded) return null;
     if (canViewSummary(summary)) return <Navigate to="/summary" replace />;
     if (can(summary, GATE_TRACEFLOW_CREATE)) return <Navigate to="/traceflow" replace />;
-    // Flow Visibility goes straight to its default sub-page (Flow List) rather than "/flows",
-    // which only exists to redirect there itself. It is no longer the floor: it is restricted to
-    // admins for now (see useCanViewFlows), so a user permitted none of the three lands on
-    // Settings, which the nav always shows and which needs no permission.
-    if (canViewFlows) return <Navigate to="/flows/list" replace />;
+    // canViewFlows is a rendering hint fed by the same RBAC the Flow Aggregator itself checks
+    // (see access-api.ts), not a stand-in for its authorization decision - it can only ever
+    // agree with FA's own answer or be more conservative, never grant a stream FA would refuse.
+    if (canViewFlows(summary)) return <Navigate to="/flows/list" replace />;
+    // A user permitted none of Summary, Traceflow or Flows lands on Settings, which needs no
+    // permission at all - the floor everyone can reach.
     return <Navigate to="/settings" replace />;
 }
 
 // Wraps a page element so it only renders when `allowed` is true, matching the rule the nav uses
 // to decide whether to show the tab in the first place — one rule per page, so the nav entry and
 // the route guard cannot drift apart. The rule is evaluated by the caller rather than passed in as
-// a predicate over the access summary, so that a gate needing more than the summary (Flow
-// Visibility also needs the session mode) can reuse the same wrapper. While the answer hasn't
-// loaded yet, renders nothing rather than either the page or the permission panel.
+// a predicate over the access summary, so that a gate needing more than the summary to answer can
+// reuse the same wrapper. While the answer hasn't loaded yet, renders nothing rather than either
+// the page or the permission panel.
 function RequirePermission({ allowed, loaded, children }: { allowed: boolean, loaded: boolean, children: React.ReactNode }) {
     if (!loaded) return null;
     if (!allowed) {
@@ -116,9 +113,9 @@ export function TraceflowPage() {
 // sidebar (nav.tsx) concern.
 export function FlowVisibilityPage({ view }: { view: 'list' | 'map' }) {
     const { ref } = useLitPage();
-    const { allowed, loaded } = useCanViewFlows();
+    const { summary, loaded } = useAccess();
     return (
-        <RequirePermission allowed={allowed} loaded={loaded}>
+        <RequirePermission allowed={canViewFlows(summary)} loaded={loaded}>
             <antrea-flow-visibility-page
                 ref={ref}
                 viewMode={view}

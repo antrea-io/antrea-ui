@@ -34,6 +34,37 @@ describe('streamFilterKey', () => {
         const withNs: FlowStreamFilter = { namespaces: ['default'] };
         expect(streamFilterKey(empty)).not.toBe(streamFilterKey(withNs));
     });
+
+    // The scope is what the Flow Aggregator authorizes the stream against and redacts relative
+    // to, and this key is the reconnect predicate. A scope change that did not alter the key
+    // would leave the old stream running while the UI claimed to be showing a different
+    // namespace — the one way this feature can silently show wrong data, so it is asserted
+    // explicitly rather than left to fall out of the JSON.stringify.
+    it('changes when the observed namespace changes', () => {
+        expect(streamFilterKey({ observedNamespace: 'ns-a' }))
+            .not.toBe(streamFilterKey({ observedNamespace: 'ns-b' }));
+    });
+
+    it('changes when a scope is added', () => {
+        expect(streamFilterKey({})).not.toBe(streamFilterKey({ observedNamespace: 'ns-a' }));
+        expect(streamFilterKey({})).not.toBe(streamFilterKey({ clusterWide: true }));
+    });
+
+    it('distinguishes cluster scope from a single observed namespace', () => {
+        expect(streamFilterKey({ clusterWide: true }))
+            .not.toBe(streamFilterKey({ observedNamespace: 'ns-a' }));
+    });
+
+    // The peer filter and the scope are different fields with different meanings, so naming the
+    // same namespace in each must not collapse to the same stream.
+    it('distinguishes an observed namespace from the same namespace as a peer filter', () => {
+        expect(streamFilterKey({ observedNamespace: 'ns-a' }))
+            .not.toBe(streamFilterKey({ namespaces: ['ns-a'] }));
+    });
+
+    it('treats an absent scope and an explicitly empty one as the same stream', () => {
+        expect(streamFilterKey({})).toBe(streamFilterKey({ observedNamespace: '', clusterWide: false }));
+    });
 });
 
 describe('FlowStreamClient', () => {
@@ -45,6 +76,20 @@ describe('FlowStreamClient', () => {
                 // Leave the stream open (SSE connections don't close on their own) unless the
                 // caller wants a specific "done" test, which closes it itself via a trailing
                 // marker chunk of ''.
+            },
+        });
+        return new Response(stream, { status });
+    }
+
+    // Unlike sseResponse, closes the stream after all chunks: needed for tests that check what
+    // happens once a connection attempt ends (reconnect scheduling), since a stream left open
+    // never lets connect()'s read loop finish.
+    function closingSseResponse(chunks: string[], status = 200): Response {
+        const encoder = new TextEncoder();
+        const stream = new ReadableStream<Uint8Array>({
+            start(controller) {
+                for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
+                controller.close();
             },
         });
         return new Response(stream, { status });
@@ -129,6 +174,45 @@ describe('FlowStreamClient', () => {
 
         const [url] = fetchMock.mock.calls[0];
         expect(url).toBe('http://localhost:8080/api/v1/flows/stream?');
+
+        client.stop();
+    });
+
+    // The scope travels in the query string, because SSE is a GET and there is no body to put it
+    // in. Worth noting for operators: this means nginx access logs record which namespaces each
+    // user observed — not a leak, since the user is authorized for them, but an audit surface
+    // that did not exist when the parameter was a mere filter.
+    test('puts the scope in the stream URL query string', async () => {
+        stubFetch(async () => sseResponse([]));
+        const cb = makeCallbacks();
+        const client = new FlowStreamClient({ observedNamespace: 'ns-a', namespaces: ['ns-c'] }, cb);
+
+        client.start();
+        await vi.advanceTimersByTimeAsync(0);
+
+        const [url] = fetchMock.mock.calls[0];
+        const params = new URL(url as string, 'http://example.test').searchParams;
+        expect(params.get('observedNamespace')).toBe('ns-a');
+        expect(params.get('clusterWide')).toBeNull();
+        // The peer filter is a separate parameter and keeps its own value, which upstream allows
+        // to name a namespace outside the scope.
+        expect(params.get('namespaces')).toBe('ns-c');
+
+        client.stop();
+    });
+
+    test('requests cluster scope as clusterWide=true', async () => {
+        stubFetch(async () => sseResponse([]));
+        const cb = makeCallbacks();
+        const client = new FlowStreamClient({ clusterWide: true }, cb);
+
+        client.start();
+        await vi.advanceTimersByTimeAsync(0);
+
+        const [url] = fetchMock.mock.calls[0];
+        const params = new URL(url as string, 'http://example.test').searchParams;
+        expect(params.get('clusterWide')).toBe('true');
+        expect(params.get('observedNamespace')).toBeNull();
 
         client.stop();
     });
@@ -279,25 +363,259 @@ describe('FlowStreamClient', () => {
         expect(fetchMock).toHaveBeenCalledTimes(1);
     });
 
-    test('exponential backoff reconnects after a network error, then gives up after maxReconnectAttempts', async () => {
+    // A retryable failure has no attempt limit - the backoff delay grows and then caps at 30s,
+    // but the client keeps reconnecting into it indefinitely, the same way Gmail's own connection
+    // handling does, rather than giving up and leaving the page to be manually reloaded.
+    test('exponential backoff caps at 30s and keeps retrying indefinitely after a network error', async () => {
         stubFetch(async () => { throw new Error('network down'); });
         const cb = makeCallbacks();
-        const client = new FlowStreamClient({}, cb, 10, 3);
+        const client = new FlowStreamClient({}, cb, 10);
         client.start();
         await vi.advanceTimersByTimeAsync(0);
         expect(fetchMock).toHaveBeenCalledTimes(1);
 
-        // Backoff: 1000ms, 2000ms, 4000ms for attempts 1..3, then give up.
+        // Backoff: 1000ms, 2000ms, 4000ms, ..., capping at 30000ms.
         await vi.advanceTimersByTimeAsync(1000);
         expect(fetchMock).toHaveBeenCalledTimes(2);
         await vi.advanceTimersByTimeAsync(2000);
         expect(fetchMock).toHaveBeenCalledTimes(3);
         await vi.advanceTimersByTimeAsync(4000);
         expect(fetchMock).toHaveBeenCalledTimes(4);
+        await vi.advanceTimersByTimeAsync(8000);
+        expect(fetchMock).toHaveBeenCalledTimes(5);
+        await vi.advanceTimersByTimeAsync(16000);
+        expect(fetchMock).toHaveBeenCalledTimes(6);
+        // 32000ms would be next uncapped; the delay caps at 30000ms instead.
+        await vi.advanceTimersByTimeAsync(30000);
+        expect(fetchMock).toHaveBeenCalledTimes(7);
+        await vi.advanceTimersByTimeAsync(30000);
+        expect(fetchMock).toHaveBeenCalledTimes(8);
 
-        expect(cb.errors.at(-1)?.message).toBe('Max reconnect attempts reached');
+        expect(cb.errors.every(e => e.message === 'network down')).toBe(true);
+    });
+
+    // Reconnecting while the tab is hidden would open a new stream - and with it a new
+    // session-keepalive call - purely to serve a page nobody is looking at, so a due reconnect
+    // waits for the tab to become visible again instead of firing on its own timer.
+    test('does not reconnect while the tab is hidden, then reconnects as soon as it is visible again', async () => {
+        stubFetch(async () => { throw new Error('network down'); });
+        const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
+        const cb = makeCallbacks();
+        const client = new FlowStreamClient({}, cb, 10);
+        client.start();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+
+        // The reconnect comes due at 1000ms but must not fire while hidden, however long the
+        // hidden tab sits there.
         await vi.advanceTimersByTimeAsync(60_000);
-        expect(fetchMock).toHaveBeenCalledTimes(4);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+
+        visibility.mockReturnValue('visible');
+        document.dispatchEvent(new Event('visibilitychange'));
+        await vi.advanceTimersByTimeAsync(0);
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    // updateFilter() calls connect() directly, bypassing dueForReconnect(). If a reconnect was
+    // deferred waiting for the tab to become visible when updateFilter() runs, that deferral must
+    // not also fire once the tab does become visible - otherwise it opens a second, concurrent
+    // connect() on top of the one updateFilter() just started, which stop() can no longer reach.
+    test('updateFilter while a reconnect is deferred for visibility does not double-connect once visible', async () => {
+        stubFetch(async () => { throw new Error('network down'); });
+        const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
+        const cb = makeCallbacks();
+        const client = new FlowStreamClient({}, cb, 10);
+        client.start();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+
+        // Reconnect comes due while hidden and is deferred.
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+
+        // A filter change reconnects immediately regardless of visibility.
+        client.updateFilter({ namespaces: ['default'] });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+
+        // The tab becoming visible now must not trigger a second, independent reconnect.
+        visibility.mockReturnValue('visible');
+        document.dispatchEvent(new Event('visibilitychange'));
+        await vi.advanceTimersByTimeAsync(0);
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    // A stream "error" event with retryable:false (e.g. FA rejected the credential) is a
+    // permanent answer for this connection, not a transient failure: the client must not keep
+    // reconnecting into the same rejection every reconnectDelay forever.
+    test('a non-retryable stream error event stops the client without reconnecting', async () => {
+        stubFetch(async () => closingSseResponse([
+            'event: error\ndata: {"message":"rejected","code":"unauthenticated","retryable":false}\n\n',
+        ]));
+        const cb = makeCallbacks();
+        const client = new FlowStreamClient({}, cb, 10);
+        client.start();
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(cb.errors.map(e => e.message)).toEqual(['rejected']);
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    // The batch timer is an interval, so a terminal path that only clears `running` leaves it
+    // firing for the life of the page. Nothing else observes it, which is exactly why it is
+    // asserted here: after a permanent stop, no timer of ours may be left pending.
+    test('a non-retryable stream error event leaves no timer behind', async () => {
+        stubFetch(async () => closingSseResponse([
+            'event: error\ndata: {"message":"rejected","code":"unauthenticated","retryable":false}\n\n',
+        ]));
+        const cb = makeCallbacks();
+        const client = new FlowStreamClient({}, cb, 10);
+        client.start();
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(vi.getTimerCount()).toBe(0);
+    });
+
+    // The backend waits for Subscribe to confirm the stream is live (or fail) before committing
+    // to a 200 (see StreamFlows), so the failures that would otherwise arrive as an SSE "error"
+    // event mostly arrive as an HTTP error status carrying the same code/retryable body. A
+    // permanent one must be just as terminal on that path - otherwise a rejected credential gets
+    // retried forever purely because it was reported early rather than late.
+    test('a non-retryable pre-200 error body stops the client without reconnecting', async () => {
+        stubFetch(async () => new Response(
+            JSON.stringify({ message: 'FlowAggregator rejected the credential', code: 'unauthenticated', retryable: false }),
+            { status: 502, headers: { 'Content-Type': 'application/json' } },
+        ));
+        const cb = makeCallbacks();
+        const client = new FlowStreamClient({}, cb, 10);
+        client.start();
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(cb.errors.map(e => e.message)).toEqual(['FlowAggregator rejected the credential']);
+        // Emphatically not onAuthError: FA rejecting the credential says nothing about the
+        // antrea-ui session, and the host logs the user out when that fires.
+        expect(cb.authErrors).toBe(0);
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        expect(vi.getTimerCount()).toBe(0);
+    });
+
+    // The retryable half of the same path: FA at capacity before the 200 is a 503, and capacity is
+    // expected to free up, so this one goes back through the normal backoff.
+    test('a retryable pre-200 error body reconnects with backoff', async () => {
+        let calls = 0;
+        stubFetch(async () => {
+            calls++;
+            return new Response(
+                JSON.stringify({ message: 'at capacity', code: 'resource_exhausted', retryable: true }),
+                { status: 503, headers: { 'Content-Type': 'application/json' } },
+            );
+        });
+        const cb = makeCallbacks();
+        const client = new FlowStreamClient({}, cb, 10);
+        client.start();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(calls).toBe(1);
+        expect(cb.errors.map(e => e.message)).toEqual(['at capacity']);
+
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(calls).toBe(2);
+        client.stop();
+    });
+
+    // An error status whose body is not ours at all - an nginx HTML error page, a body that never
+    // arrived - must fall through to the retry path rather than being read as permanent, and the
+    // reported message has to fall back to the status line so the user sees something.
+    test('an unparseable error body falls back to the status line and reconnects', async () => {
+        let calls = 0;
+        stubFetch(async () => {
+            calls++;
+            return new Response('<html>502 Bad Gateway</html>', { status: 502 });
+        });
+        const cb = makeCallbacks();
+        const client = new FlowStreamClient({}, cb, 10);
+        client.start();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(cb.errors[0].message).toContain('502');
+
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(calls).toBe(2);
+        client.stop();
+    });
+
+    // A 400 means this client built a request the backend will never accept - a filter value
+    // parseFlowStreamFilter rejects, for instance - so no retry can ever succeed. That must hold
+    // even when the body cannot be parsed into the usual code/retryable shape (a plain
+    // {"error": "..."} body, or a proxy's own error page), the same way a 403 is always terminal
+    // regardless of its body.
+    test('a 400 with an unparseable body stops the client without reconnecting', async () => {
+        stubFetch(async () => new Response(
+            JSON.stringify({ error: 'invalid flowType value "bogus"' }),
+            { status: 400, headers: { 'Content-Type': 'application/json' } },
+        ));
+        const cb = makeCallbacks();
+        const client = new FlowStreamClient({}, cb, 10);
+        client.start();
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(cb.errors).toHaveLength(1);
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        expect(vi.getTimerCount()).toBe(0);
+    });
+
+    // A stream "error" event with retryable:true (e.g. FA at capacity) must still reconnect with
+    // the normal exponential backoff.
+    test('a retryable stream error event still reconnects', async () => {
+        let calls = 0;
+        stubFetch(async () => {
+            calls++;
+            return closingSseResponse([
+                'event: error\ndata: {"message":"at capacity","code":"resource_exhausted","retryable":true}\n\n',
+            ]);
+        });
+        const cb = makeCallbacks();
+        const client = new FlowStreamClient({}, cb, 10);
+        client.start();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(calls).toBe(1);
+
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(calls).toBe(2);
+        client.stop();
+    });
+
+    // reconnectAttempts must reset on actual data flowing, not on the HTTP 200 that opens the
+    // connection: the backend can return 200 and then fail immediately via an "error" event, so
+    // resetting on the 200 alone would keep every retry at the flat first backoff step forever
+    // instead of growing it.
+    test('reconnectAttempts resets on a flow event, not on the 200 that opens the connection', async () => {
+        let call = 0;
+        stubFetch(async () => {
+            call++;
+            // Every connection attempt returns 200 and then an immediate retryable error, with
+            // no flow data ever received.
+            return closingSseResponse([
+                'event: error\ndata: {"message":"at capacity","code":"resource_exhausted","retryable":true}\n\n',
+            ]);
+        });
+        const cb = makeCallbacks();
+        const client = new FlowStreamClient({}, cb, 10);
+        client.start();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(call).toBe(1);
+
+        // If reconnectAttempts were reset on the 200, this would still be a 1000ms backoff
+        // instead of growing to 2000ms.
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(call).toBe(2);
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(call).toBe(2); // Not yet: backoff grew to 2000ms.
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(call).toBe(3);
+        client.stop();
     });
 
     test('stop() aborts the in-flight fetch', async () => {

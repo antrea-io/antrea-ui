@@ -79,8 +79,31 @@ export interface IP {
 // Pod labels are serialized as a flat map[string]string by the backend.
 export type Labels = Record<string, string>;
 
+// How much of one endpoint of a flow this user was authorized to see. Set by the Flow
+// Aggregator's FlowStreamService only. Zero is Full, not "unspecified": a record nothing redacted
+// reads as fully disclosed, which is every record on a cluster-wide stream. The backend never
+// omits this field, but a record from a backend that predates it should still be read as Full.
+export enum EndpointDisclosure {
+    // Everything the record carries for the endpoint, including its Node placement and the
+    // Egress applied to it.
+    Full = 0,
+    // The endpoint's Namespace, Pod and Service identity and the identity of the network policy
+    // evaluated on its side, but not its Node placement or its Egress.
+    Identity = 1,
+    // Only what the flow itself shows - addresses, ports, protocol, statistics, and the type and
+    // action of the policies evaluated on the endpoint's side - plus the endpoint's Namespace if
+    // the connection was allowed.
+    Flow = 2,
+}
+
 export interface Kubernetes {
     flowType: FlowType;
+
+    // See EndpointDisclosure. Describes the endpoint, not a per-field guarantee: an endpoint can
+    // lack a field below while still reporting Full, because the Flow Aggregator may simply
+    // never have had it.
+    sourceDisclosure: EndpointDisclosure;
+    destinationDisclosure: EndpointDisclosure;
 
     sourcePodNamespace: string;
     sourcePodName: string;
