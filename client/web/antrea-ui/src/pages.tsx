@@ -16,7 +16,7 @@
 
 import React, { useRef, useCallback } from 'react';
 import '@antrea/ui-components';
-import { can, canViewSummary, GATE_TRACEFLOW_CREATE } from '@antrea/ui-components';
+import { can, canViewSummary, GATE_TRACEFLOW_CREATE, GATE_FLOWS_WATCH } from '@antrea/ui-components';
 import { Navigate } from 'react-router';
 import { useLogout } from './logout';
 import { getEdgeExtraRenderers, getFlowTableColumnsProcessors } from './plugins';
@@ -30,11 +30,13 @@ export function HomeRedirect() {
     if (!loaded) return null;
     if (canViewSummary(summary)) return <Navigate to="/summary" replace />;
     if (can(summary, GATE_TRACEFLOW_CREATE)) return <Navigate to="/traceflow" replace />;
-    // Flow Visibility's authorization is entirely FA's (see docs/authentication.md), so the
-    // access summary has no answer for whether this user can view flows - landing them there
-    // unconditionally would send a user permitted neither Summary nor Traceflow, and holding no
-    // flows grant either, straight to a 403 instead of a page that needs no permission at all.
-    // Settings is that floor.
+    // GATE_FLOWS_WATCH is a rendering hint fed by the same RBAC the Flow Aggregator itself
+    // checks (see access-api.ts), not a stand-in for its authorization decision - it can only
+    // ever agree with FA's own answer or be more conservative, never grant a stream FA would
+    // refuse.
+    if (can(summary, GATE_FLOWS_WATCH)) return <Navigate to="/flows/list" replace />;
+    // A user permitted none of Summary, Traceflow or Flows lands on Settings, which needs no
+    // permission at all - the floor everyone can reach.
     return <Navigate to="/settings" replace />;
 }
 
@@ -112,13 +114,16 @@ export function TraceflowPage() {
 // sidebar (nav.tsx) concern.
 export function FlowVisibilityPage({ view }: { view: 'list' | 'map' }) {
     const { ref } = useLitPage();
+    const { summary, loaded } = useAccess();
     return (
-        <antrea-flow-visibility-page
-            ref={ref}
-            viewMode={view}
-            edgeExtraRenderers={getEdgeExtraRenderers()}
-            flowTableColumnsProcessors={getFlowTableColumnsProcessors()}
-        />
+        <RequirePermission allowed={can(summary, GATE_FLOWS_WATCH)} loaded={loaded}>
+            <antrea-flow-visibility-page
+                ref={ref}
+                viewMode={view}
+                edgeExtraRenderers={getEdgeExtraRenderers()}
+                flowTableColumnsProcessors={getFlowTableColumnsProcessors()}
+            />
+        </RequirePermission>
     );
 }
 

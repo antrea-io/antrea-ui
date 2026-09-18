@@ -18,7 +18,7 @@ import React from 'react';
 import { useLocation } from 'react-router';
 import { Link } from 'react-router';
 import '@antrea/ui-components';
-import { can, canViewSummary, GATE_TRACEFLOW_CREATE } from '@antrea/ui-components';
+import { can, canViewSummary, GATE_TRACEFLOW_CREATE, GATE_FLOWS_WATCH } from '@antrea/ui-components';
 import type { PluginSidebarEntry } from './plugins';
 import { useAccess } from './access';
 
@@ -112,6 +112,7 @@ export default function NavTab({ pluginSidebarEntries }: { pluginSidebarEntries:
     // loaded reads better than entries vanishing if the answer turns out to restrict something.
     const showSummary = loaded && canViewSummary(summary);
     const showTraceflow = loaded && can(summary, GATE_TRACEFLOW_CREATE);
+    const showFlows = loaded && can(summary, GATE_FLOWS_WATCH);
 
     // Plugin entries with a parentPath (already resolved/normalized by plugins.ts's
     // resolveParentPaths — always a leading-slash-stripped path, whether that path belongs to a
@@ -132,19 +133,19 @@ export default function NavTab({ pluginSidebarEntries }: { pluginSidebarEntries:
     // the same nested-nav treatment for free. Returns `item` unchanged when nothing nests under it.
     //
     // `show` is false when `path`'s own page isn't rendered at all — gated off by RBAC (Summary,
-    // Traceflow), or the access summary hasn't loaded yet. plugins.ts's resolveParentPaths accepts
-    // a gated built-in page as a valid parent unconditionally (it has no way to know it's gated
-    // for a given user), so a nested child would otherwise have no render site.
+    // Traceflow, Flows), or the access summary hasn't loaded yet. plugins.ts's resolveParentPaths
+    // accepts a gated built-in page as a valid parent unconditionally (it has no way to know it's
+    // gated for a given user), so a nested child would otherwise have no render site.
     //
     // Those two `!show` causes are deliberately not treated alike (closing over `loaded` directly,
     // rather than taking it as a parameter — every caller either passes `show: true`, for which it
-    // is never consulted, or is Summary/Traceflow, for which it is `loaded` itself): "the parent is
-    // definitely gated off for this user" (`loaded`) promotes its children to top level, so they
-    // don't silently disappear, while "we don't know yet" (`!loaded`) hides them too, consistent
-    // with the `showSummary`/`showTraceflow` comment above ("entries popping in once loaded reads
-    // better than entries vanishing") — a promoted child would otherwise pop in immediately and
-    // then jump into the group once loaded resolves, a reflow that comment argues against for the
-    // parent item itself.
+    // is never consulted, or is Summary/Traceflow/Flows, for which it is `loaded` itself): "the
+    // parent is definitely gated off for this user" (`loaded`) promotes its children to top level,
+    // so they don't silently disappear, while "we don't know yet" (`!loaded`) hides them too,
+    // consistent with the `showSummary`/`showTraceflow`/`showFlows` comment above ("entries popping
+    // in once loaded reads better than entries vanishing") — a promoted child would otherwise pop
+    // in immediately and then jump into the group once loaded resolves, a reflow that comment
+    // argues against for the parent item itself.
     function withNestedChildren(
         path: string,
         show: boolean,
@@ -156,11 +157,9 @@ export default function NavTab({ pluginSidebarEntries }: { pluginSidebarEntries:
 
         if (!show) {
             if (!loaded) return null;
-            // builtinChildren is never non-empty here in practice: the only caller that passes
-            // any (flows, for Flow List / Service Map) always passes show: true, since nothing
-            // gates Flow Visibility on the frontend anymore. Promoting only the plugin children
-            // is still correct if that ever changes back - a gated page's own sub-pages are
-            // links to pages this user cannot open, unlike a plugin's, which has no such tie.
+            // A gated page's own sub-pages (flows' Flow List / Service Map) are links to pages
+            // this user cannot open, unlike a plugin's, which has no such tie - so only the
+            // plugin children get promoted to top level here.
             return renderedPluginChildren;
         }
         if (builtinChildren.length === 0 && pluginChildren.length === 0) return item;
@@ -194,7 +193,7 @@ export default function NavTab({ pluginSidebarEntries }: { pluginSidebarEntries:
                     </Link>
                 </antrea-nav-item>
             ))}
-            {withNestedChildren('flows', true, (
+            {withNestedChildren('flows', showFlows, (
                 <antrea-nav-item {...(pathStartsWith(pathname, '/flows') ? { active: true } : {})}>
                     <Link to="/flows/list">
                         <EyeIcon />

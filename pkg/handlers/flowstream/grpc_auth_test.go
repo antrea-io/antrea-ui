@@ -49,18 +49,8 @@ import (
 // bearer token (if any) each call was made with.
 type fakeFlowStreamServer struct {
 	flowpb.UnimplementedFlowStreamServiceServer
-	// handle is called for every GetFlows call that is not the version probe; it decides what
-	// the call returns.
+	// handle decides what a GetFlows call returns.
 	handle func(callNum int, bearer string) error
-	// probeHandle, when set, answers the version probe instead of the default
-	// "modern Flow Aggregator" reply. It is handed the stream so a test can imitate an old
-	// Flow Aggregator answering with a historical record. version_test.go is the only user;
-	// every other test relies on the default so that its own assertions are about the real
-	// stream.
-	probeHandle func(probeNum int, stream grpc.ServerStreamingServer[flowpb.GetFlowsResponse]) error
-	// probeCalls counts version probes, separately from calls, so the probe never disturbs a
-	// test asserting how many real GetFlows calls were made.
-	probeCalls atomic.Int32
 	// send, when set, is called before handle and can put messages on the stream. Only the
 	// oversized-response test uses it.
 	send  func(stream grpc.ServerStreamingServer[flowpb.GetFlowsResponse]) error
@@ -70,29 +60,12 @@ type fakeFlowStreamServer struct {
 	peerDNSNames atomic.Value
 }
 
-// isVersionProbe reports whether req is probeFlowAggregatorVersion's request rather than a real
-// stream: it is the one request that sets both cluster_wide and namespaces, which a real one never
-// does because the two are mutually exclusive.
-func isVersionProbe(req *flowpb.GetFlowsRequest) bool {
-	return req.GetClusterWide() && len(req.GetNamespaces()) > 0
-}
-
 func (f *fakeFlowStreamServer) GetFlows(req *flowpb.GetFlowsRequest, stream grpc.ServerStreamingServer[flowpb.GetFlowsResponse]) error {
 	bearer := ""
 	if md, ok := metadata.FromIncomingContext(stream.Context()); ok {
 		if vals := md.Get("authorization"); len(vals) > 0 {
 			bearer = vals[0]
 		}
-	}
-	if isVersionProbe(req) {
-		probeNum := int(f.probeCalls.Add(1))
-		if f.probeHandle != nil {
-			return f.probeHandle(probeNum, stream)
-		}
-		// Default: behave like a Flow Aggregator that knows the fields and enforces their
-		// mutual exclusion, which is what every test other than version_test.go needs so
-		// that Subscribe gets as far as the real request.
-		return status.Error(codes.InvalidArgument, "namespaces and cluster_wide are mutually exclusive")
 	}
 	callNum := int(f.calls.Add(1))
 	if p, ok := peer.FromContext(stream.Context()); ok {
@@ -350,6 +323,43 @@ func TestSubscribeReportsOversizedMessageAsNotRetryable(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for error")
 	}
+}
+
+// A Flow Aggregator that predates per-user flow authorization never sends the post-authz ack, so
+// its first response to a real request carries an actual (unredacted) flow record instead of an
+// empty one. Subscribe must read that as "too old" and refuse the stream rather than pass the
+// record on: forwarding it would show the caller cluster-wide, full-identity data regardless of
+// the scope it asked for.
+func TestSubscribeReportsPreAckFlowAsFlowAggregatorTooOld(t *testing.T) {
+	fake := &fakeFlowStreamServer{handle: func(_ int, _ string) error {
+		return nil
+	}}
+	fake.send = func(stream grpc.ServerStreamingServer[flowpb.GetFlowsResponse]) error {
+		return stream.Send(&flowpb.GetFlowsResponse{Flows: []*flowpb.Flow{{Id: "flow-1"}}})
+	}
+	h := newTestSubscriber(t, fake)
+
+	store := newTestStore(t)
+	ctx, _ := ctxWithSessionAuth(t, store, &session.Spec{
+		Mode:       session.ModeToken,
+		Credential: session.Credential{Kind: session.KindBearer, Token: []byte("tok")},
+	})
+
+	flowsCh, errCh, readyCh := h.Subscribe(ctx, &FlowStreamScope{ClusterWide: true}, &FlowStreamFilter{})
+	select {
+	case err, ok := <-errCh:
+		require.True(t, ok)
+		var streamErr *StreamError
+		require.ErrorAs(t, err, &streamErr)
+		assert.Equal(t, StreamErrorCodeFlowAggregatorTooOld, streamErr.Code)
+		assert.False(t, streamErr.Retryable)
+	case <-readyCh:
+		t.Fatal("must not signal ready for a Flow Aggregator that never sent the post-authz ack")
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for error")
+	}
+	_, ok := <-flowsCh
+	assert.False(t, ok, "the pre-ack flow record must not be forwarded to the caller")
 }
 
 // codes.Unavailable, and any other gRPC code with no case of its own in classifyStreamErr, is what

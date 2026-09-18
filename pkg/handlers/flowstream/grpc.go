@@ -79,7 +79,7 @@ const (
 	// upgraded. The frontend has no dedicated panel for this code yet, unlike onDisabled's 501
 	// or onForbidden's 403 - it falls through to the generic permanent-error banner via onError,
 	// whose message (see flowAggregatorTooOldErr) at least names the address to upgrade. See
-	// version.go.
+	// Subscribe's check on the stream's first response.
 	StreamErrorCodeFlowAggregatorTooOld = "flow_aggregator_too_old"
 	// StreamErrorCodeInternal covers everything else: a dial failure, a credential this backend
 	// could not resolve or mint, or any other error. Retryable or not depends on which
@@ -100,6 +100,19 @@ func internalStreamError(err error) *StreamError {
 // rather than a fixed local or configuration problem.
 func retryableInternalStreamError(err error) *StreamError {
 	return &StreamError{msg: err.Error(), Code: StreamErrorCodeInternal, Retryable: true}
+}
+
+// flowAggregatorTooOldErr builds the error a caller gets when the Flow Aggregator predates
+// per-user flow authorization. It names the address, because the operator's next question is
+// which component to upgrade.
+func flowAggregatorTooOldErr(address string) *StreamError {
+	return &StreamError{
+		msg: fmt.Sprintf("the Flow Aggregator at %s does not support per-user flow authorization; "+
+			"flow visibility requires a Flow Aggregator built with that support "+
+			"(see antrea-io/antrea#8221)", address),
+		Code:      StreamErrorCodeFlowAggregatorTooOld,
+		Retryable: false,
+	}
 }
 
 // isMessageSizeErr reports whether a ResourceExhausted error is grpc-go's own "message too large
@@ -132,9 +145,6 @@ type GRPCFlowStreamSubscriber struct {
 	// adminTokenSource mints the bearer token used for admin-password (KindImpersonate)
 	// sessions. Nil disables flow streaming for that login mode.
 	adminTokenSource *AdminTokenSource
-	// versionProbe caches whether the Flow Aggregator supports per-user flow authorization.
-	// See version.go; Subscribe consults it before sending any real request.
-	versionProbe versionProbe
 }
 
 // GRPCConfig holds the connection parameters for the FlowAggregator gRPC server.
@@ -272,20 +282,6 @@ func (h *GRPCFlowStreamSubscriber) Subscribe(ctx context.Context, scope *FlowStr
 			return
 		}
 
-		// Probe before the real request, never after: a Flow Aggregator that predates
-		// per-user flow authorization would silently ignore this request's scope and stream
-		// the whole cluster unredacted, and nothing in the response would say so. See
-		// checkFlowAggregatorVersion.
-		if err := h.checkFlowAggregatorVersion(ctx, client, callCtx); err != nil {
-			if errors.Is(err, errProbeCanceled) {
-				// The request this probe was made for went away. An ordinary client
-				// disconnect, nothing to report.
-				return
-			}
-			errCh <- err
-			return
-		}
-
 		req := filterToGetFlowsRequest(scope, filter)
 		// startStream has to read the first response too, not just call GetFlows: for a
 		// server-streaming RPC, an error the server returns before sending anything (FA's
@@ -305,11 +301,17 @@ func (h *GRPCFlowStreamSubscriber) Subscribe(ctx context.Context, scope *FlowStr
 		}
 		// The first Recv succeeded (or hit an immediate EOF, which startStream treats as
 		// success too): the call cleared authentication and authorization and FA committed to
-		// the stream. checkFlowAggregatorVersion above already confirmed this Flow Aggregator
-		// sends the post-authz ack, so firstResp here is that ack (an empty GetFlowsResponse,
-		// sent as soon as the stream is live - see forwardResp, which drops it as carrying
-		// nothing new), not a real flow. Closing ready here is the real signal StreamFlows needs
-		// to stop guessing and commit to a response.
+		// the stream. A first response carrying real flow data, rather than FA's empty
+		// post-authz ack, means no ack was ever sent: this Flow Aggregator predates per-user
+		// flow authorization, parsed cluster_wide/namespaces into unknown fields, and ignored
+		// them - see flowAggregatorTooOldErr. Checked per stream rather than once and cached:
+		// a cached "supported" verdict would let a rollback, or a rolling update briefly
+		// routing to an old replica, stream unredacted data with no error for as long as the
+		// verdict stayed trusted.
+		if firstResp != nil && len(firstResp.Flows) > 0 {
+			errCh <- flowAggregatorTooOldErr(h.address)
+			return
+		}
 		close(ready)
 
 		// lastDroppedCount tracks the cumulative absolute dropped-flow count from the server.
@@ -427,7 +429,7 @@ func (h *GRPCFlowStreamSubscriber) forwardResp(ctx context.Context, resp *flowpb
 //     grant ends a running stream on the next revalidation interval rather than immediately.
 //   - InvalidArgument: FA rejected the request itself. A client bug; parseFlowStreamScope's local
 //     400s should make it unreachable, but it is classified anyway so it surfaces as a bug rather
-//     than a retry storm. It also invalidates the version-probe cache - see the case body.
+//     than a retry storm.
 //   - ResourceExhausted: FA is at capacity (its stream limiter or its token-auth semaphore).
 //     Retryable - except for the one ResourceExhausted grpc-go raises locally, see
 //     isMessageSizeErr.
@@ -451,13 +453,6 @@ func (h *GRPCFlowStreamSubscriber) classifyStreamErr(err error) *StreamError {
 			Retryable: false,
 		}
 	case codes.InvalidArgument:
-		// Only a real stream reaches here: the version probe deliberately provokes an
-		// InvalidArgument and reads it as its own answer, in version.go, without going
-		// through this function. So an InvalidArgument here means a request this client
-		// built was rejected, which a cached "too old" verdict would explain - the Flow
-		// Aggregator has been upgraded and is now enforcing fields it used to ignore. Drop
-		// the verdict so the next open re-probes instead of waiting out the TTL.
-		h.versionProbe.invalidate()
 		return &StreamError{
 			msg:       fmt.Errorf("FlowAggregator rejected the flow stream request: %w", err).Error(),
 			Code:      StreamErrorCodeInvalidRequest,

@@ -107,36 +107,18 @@ rules:
       - namespaces
     verbs:
       - list
-{{- if and .Values.flowAggregator.enabled .Values.auth.basic.enable }}
----
-# Flow visibility for admin-password sessions. The Flow Aggregator's FlowStreamService authorizes
-# with Kubernetes RBAC against a virtual resource and does not support impersonation, so antrea-ui
-# mints a real antrea-ui-admin token for it (see role.yaml's serviceaccounts/token rule) — meaning
-# the ServiceAccount itself, not the impersonating caller, must hold these rules.
-#
-# Granted cluster-wide, deliberately: the built-in admin is the break-glass operator account, and
-# cluster_wide is the only FlowStreamService scope in which nothing is redacted. A cluster-wide
-# grant also covers a named-Namespace scope, so an admin who selects a single Namespace still gets
-# every endpoint at the Full tier rather than seeing their own peers redacted.
-#
-# These rules duplicate the flow-aggregator chart's antrea-flow-viewer and
-# antrea-flow-identity-viewer rather than binding to them: those are gated behind
-# flowStreamService.installClusterRoles (default false) and may not exist, and their aggregation
-# labels cannot be extended from here. Keep them in sync with upstream.
-kind: ClusterRole
-apiVersion: rbac.authorization.k8s.io/v1
-metadata:
-  name: antrea-ui-admin-flows
-  labels:
-    app: antrea-ui
-    rbac.ui.antrea.io/aggregate-to-antrea-ui-admin: "true"
-rules:
-  - apiGroups: ["observability.antrea.io"]
-    resources: ["flows"]
+  # Flow visibility. Granted here rather than gated behind a values key: with the admin-only
+  # flow-stream gate gone, this role is the model for binding a user's own Kubernetes identity to
+  # (see the comment above), and authorization is entirely the Flow Aggregator's decision from
+  # here - it checks this RBAC against the scope each stream names and redacts accordingly, so
+  # granting it costs nothing when no Flow Aggregator is deployed and denies nothing on its own
+  # when one is.
+  - apiGroups:
+      - observability.antrea.io
+    resources:
+      - flows
     # watch, not just list: the SSE stream always sets Follow, and upstream grants list alone as
     # history-only access.
-    verbs: ["list", "watch"]
-  - apiGroups: ["observability.antrea.io"]
-    resources: ["flows/identity"]
-    verbs: ["get"]
-{{- end }}
+    verbs:
+      - list
+      - watch
