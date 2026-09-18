@@ -182,24 +182,23 @@ describe('HomeRedirect', () => {
         await waitFor(() => expect(document.querySelector('[data-testid="landed"]')?.textContent).toBe('settings'));
     });
 
-    test('lands on /flows/list for a cluster admin holding the flows watch grant', async () => {
+    test('lands on /flows/list for a caller holding the flows watch grant', async () => {
         renderAt(summaryWith({
-            clusterAdmin: true,
             rules: { resourceRules: [{ apiGroups: ['observability.antrea.io'], resources: ['flows'], verbs: ['watch'] }], nonResourceRules: [], incomplete: false },
         }));
         await waitFor(() => expect(document.querySelector('[data-testid="landed"]')?.textContent).toBe('flows'));
     });
 
-    // isAdmin is layered on top of the RBAC gate (see useIsAdmin's own doc comment): a
-    // non-admin holding the flows grant only in their own Namespace - not cluster-wide, which
-    // hasFlowPermissions would itself count as admin for - still does not land there. The
-    // namespace field here stands in for what a namespace-scoped summary would report; it is
-    // hasFlowPermissions's own namespace check that must reject it, not the fixture.
-    test('does not land on /flows/list for a non-admin holding only a namespaced flows grant', async () => {
+    // The grant has to be cluster-wide (see canViewFlows's own doc comment): a caller holding
+    // flows only in their own Namespace does not land there, because clusterWide=true is the
+    // only scope the page can request today. The namespace field here stands in for what a
+    // namespace-scoped summary would report; it is canViewFlows's own namespace check that must
+    // reject it, not the fixture.
+    test('does not land on /flows/list for a caller holding only a namespaced flows grant', async () => {
         renderAt(summaryWith({
             namespace: 'default',
             rules: {
-                resourceRules: [{ apiGroups: ['observability.antrea.io'], resources: ['flows'], verbs: ['list', 'watch'] }],
+                resourceRules: [{ apiGroups: ['observability.antrea.io'], resources: ['flows'], verbs: ['watch'] }],
                 nonResourceRules: [],
                 incomplete: false,
             },

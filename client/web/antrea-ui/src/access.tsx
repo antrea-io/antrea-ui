@@ -15,7 +15,7 @@
  */
 
 import React, { useState, useContext, useEffect } from 'react';
-import { accessSummary, hasFlowPermissions } from '@antrea/ui-components';
+import { accessSummary } from '@antrea/ui-components';
 import type { AccessSummary } from '@antrea/ui-components';
 import { useSelector } from 'react-redux';
 import type { RootState } from './store';
@@ -66,25 +66,4 @@ export function AccessProvider(props: React.PropsWithChildren) {
 // eslint-disable-next-line react-refresh/only-export-components
 export function useAccess(): AccessContextType {
     return useContext(AccessContext);
-}
-
-// Whether the caller is the built-in admin, a Kubernetes cluster admin, or otherwise already
-// holds flows cluster-wide on their own. TEMPORARY: mirrors the admin-only condition
-// requireFlowVisibility used to enforce on the backend, reinstated here as a frontend-only
-// rendering hint while the observed-Namespace selector doesn't exist yet - without it,
-// clusterWide=true is the only scope Flow Visibility can ever request, so anyone else's stream is
-// either fully disclosed (if they hold flows cluster-wide, the third check below) or a 403 (if
-// they don't) - see StreamAuthorization.clusterWide upstream. Remove once the selector lands and
-// a non-admin can request their own Namespace's scope instead.
-//
-// clusterAdmin alone is not enough: the built-in admin-password session impersonates the
-// antrea-ui-admin ServiceAccount, which holds no */*/* rule, so it reports clusterAdmin: false.
-//
-// useAccess()'s summary is always evaluated at cluster scope (accessSummary() passes no
-// namespace), which is what makes hasFlowPermissions meaningful here - see its own doc comment.
-// eslint-disable-next-line react-refresh/only-export-components
-export function useIsAdmin(): boolean {
-    const mode = useSelector((state: RootState) => state.sessionInfo?.mode);
-    const { summary } = useAccess();
-    return mode === 'admin' || summary?.clusterAdmin === true || hasFlowPermissions(summary);
 }
