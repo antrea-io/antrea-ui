@@ -20,21 +20,22 @@ import { can, canViewSummary, GATE_TRACEFLOW_CREATE, GATE_FLOWS_WATCH } from '@a
 import { Navigate } from 'react-router';
 import { useLogout } from './logout';
 import { getEdgeExtraRenderers, getFlowTableColumnsProcessors } from './plugins';
-import { useAccess } from './access';
+import { useAccess, useIsAdmin } from './access';
 
 // Picks the first route the user is actually permitted to see, so a partially-authorized user
 // doesn't land on a Summary page that's just going to show the permission panel. While the
 // access summary hasn't loaded yet, renders nothing.
 export function HomeRedirect() {
     const { summary, loaded } = useAccess();
+    const isAdmin = useIsAdmin();
     if (!loaded) return null;
     if (canViewSummary(summary)) return <Navigate to="/summary" replace />;
     if (can(summary, GATE_TRACEFLOW_CREATE)) return <Navigate to="/traceflow" replace />;
     // GATE_FLOWS_WATCH is a rendering hint fed by the same RBAC the Flow Aggregator itself
     // checks (see access-api.ts), not a stand-in for its authorization decision - it can only
     // ever agree with FA's own answer or be more conservative, never grant a stream FA would
-    // refuse.
-    if (can(summary, GATE_FLOWS_WATCH)) return <Navigate to="/flows/list" replace />;
+    // refuse. isAdmin is layered on top of it - see useIsAdmin's own doc comment.
+    if (isAdmin && can(summary, GATE_FLOWS_WATCH)) return <Navigate to="/flows/list" replace />;
     // A user permitted none of Summary, Traceflow or Flows lands on Settings, which needs no
     // permission at all - the floor everyone can reach.
     return <Navigate to="/settings" replace />;
@@ -115,8 +116,9 @@ export function TraceflowPage() {
 export function FlowVisibilityPage({ view }: { view: 'list' | 'map' }) {
     const { ref } = useLitPage();
     const { summary, loaded } = useAccess();
+    const isAdmin = useIsAdmin();
     return (
-        <RequirePermission allowed={can(summary, GATE_FLOWS_WATCH)} loaded={loaded}>
+        <RequirePermission allowed={isAdmin && can(summary, GATE_FLOWS_WATCH)} loaded={loaded}>
             <antrea-flow-visibility-page
                 ref={ref}
                 viewMode={view}

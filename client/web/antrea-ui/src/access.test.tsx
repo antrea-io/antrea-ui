@@ -175,11 +175,35 @@ describe('HomeRedirect', () => {
         await waitFor(() => expect(document.querySelector('[data-testid="landed"]')?.textContent).toBe('traceflow'));
     });
 
-    test('falls back to /settings when neither Summary nor Traceflow is granted', async () => {
-        // Flow Visibility is not a candidate here: its authorization is entirely FA's, so there
-        // is no access-summary answer for whether this user could view it. Settings needs no
-        // permission at all, so it is the floor now instead of a guess that could land on a 403.
+    test('falls back to /settings when neither Summary, Traceflow nor Flows is granted', async () => {
+        // Settings needs no permission at all, so it is the floor here instead of a guess that
+        // could land on a 403.
         renderAt(summaryWith());
+        await waitFor(() => expect(document.querySelector('[data-testid="landed"]')?.textContent).toBe('settings'));
+    });
+
+    test('lands on /flows/list for a cluster admin holding the flows watch grant', async () => {
+        renderAt(summaryWith({
+            clusterAdmin: true,
+            rules: { resourceRules: [{ apiGroups: ['observability.antrea.io'], resources: ['flows'], verbs: ['watch'] }], nonResourceRules: [], incomplete: false },
+        }));
+        await waitFor(() => expect(document.querySelector('[data-testid="landed"]')?.textContent).toBe('flows'));
+    });
+
+    // isAdmin is layered on top of the RBAC gate (see useIsAdmin's own doc comment): a
+    // non-admin holding the flows grant only in their own Namespace - not cluster-wide, which
+    // hasFlowPermissions would itself count as admin for - still does not land there. The
+    // namespace field here stands in for what a namespace-scoped summary would report; it is
+    // hasFlowPermissions's own namespace check that must reject it, not the fixture.
+    test('does not land on /flows/list for a non-admin holding only a namespaced flows grant', async () => {
+        renderAt(summaryWith({
+            namespace: 'default',
+            rules: {
+                resourceRules: [{ apiGroups: ['observability.antrea.io'], resources: ['flows'], verbs: ['list', 'watch'] }],
+                nonResourceRules: [],
+                incomplete: false,
+            },
+        }));
         await waitFor(() => expect(document.querySelector('[data-testid="landed"]')?.textContent).toBe('settings'));
     });
 

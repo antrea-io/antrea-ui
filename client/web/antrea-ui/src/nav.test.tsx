@@ -19,10 +19,18 @@ import { MemoryRouter } from 'react-router';
 import NavTab from './nav';
 import type { PluginSidebarEntry } from './plugins';
 import type { AccessSummary } from '@antrea/ui-components';
-import { useAccess } from './access';
+import { useAccess, useIsAdmin } from './access';
 
-vi.mock('./access', () => ({ useAccess: vi.fn() }));
+vi.mock('./access', () => ({ useAccess: vi.fn(), useIsAdmin: vi.fn() }));
 const mockUseAccess = vi.mocked(useAccess);
+const mockUseIsAdmin = vi.mocked(useIsAdmin);
+
+// Default every test to admin, so existing cases (written before Flows had an admin-only overlay
+// on top of the RBAC gate) keep exercising just the RBAC half unless they override this
+// themselves - see the dedicated "Flows admin gating" describe block below for the isAdmin half.
+beforeEach(() => {
+    mockUseIsAdmin.mockReturnValue(true);
+});
 
 const podCounterEntry: PluginSidebarEntry = { label: 'Pod Counter', path: '/plugin/pod-counter' };
 
@@ -287,5 +295,32 @@ describe('NavTab — permission gating', () => {
         render(<NavTab pluginSidebarEntries={[]} />, { wrapper: MemoryRouter });
 
         expect(document.querySelector('a[href="/summary"]')).toBeNull();
+    });
+});
+
+// TEMPORARY: Flows is gated on useIsAdmin() in addition to the RBAC check above - see its own
+// doc comment for why - so a non-admin never sees the entry even while holding the flows grant.
+describe('NavTab — Flows admin gating', () => {
+    beforeEach(() => {
+        mockUseAccess.mockReturnValue({
+            summary: summaryAllowing({
+                resourceRules: [{ apiGroups: ['observability.antrea.io'], resources: ['flows'], verbs: ['watch'] }],
+            }),
+            loaded: true,
+        });
+    });
+
+    test('Flows is hidden for a non-admin even with the flows watch grant', () => {
+        mockUseIsAdmin.mockReturnValue(false);
+        render(<NavTab pluginSidebarEntries={[]} />, { wrapper: MemoryRouter });
+
+        expect(document.querySelector('a[href="/flows/list"]')).toBeNull();
+    });
+
+    test('Flows shows for an admin holding the flows watch grant', () => {
+        mockUseIsAdmin.mockReturnValue(true);
+        render(<NavTab pluginSidebarEntries={[]} />, { wrapper: MemoryRouter });
+
+        expect(document.querySelector('a[href="/flows/list"]')).not.toBeNull();
     });
 });
