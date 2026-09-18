@@ -213,15 +213,19 @@ A Flow Aggregator that predates this authorization model ignores the scope
 fields entirely and streams every flow it has, unredacted, with no disclosure
 markers — which a client correctly reads as full disclosure, since that is the
 zero value. That would silently show a Namespace-scoped caller the whole
-cluster at full identity. antrea-ui probes for this before ever sending a real
-request (see `pkg/handlers/flowstream/version.go`) and refuses to stream
-against an old Flow Aggregator rather than degrade quietly; the resulting
-error names the address to upgrade.
+cluster at full identity. antrea-ui detects this from the stream itself: a
+Flow Aggregator that supports this model always sends an empty post-authz
+acknowledgement as its first response before any real flow, so a first
+response carrying an actual flow record means no such acknowledgement was
+sent, and antrea-ui refuses the stream (`StreamErrorCodeFlowAggregatorTooOld`)
+instead of forwarding unredacted data. Antrea UI v1.0.0 requires Antrea and
+the Flow Aggregator at v2.8 or later; flow visibility is unavailable against
+an older deployment.
 
-Nothing on the frontend gates access to the Flow Visibility page or its
-navigation entry anymore: authorization is entirely FA's, so the page always
-renders and a caller without the `flows` grant in the scope they request
-meets the 403 above instead of being hidden pre-emptively.
+The Flow Visibility navigation entry and page are gated on the `flows`
+`watch` grant above, the same RBAC FA itself checks — a rendering hint, not
+an authorization decision, so it can only ever hide the page from a caller FA
+would refuse, never show it to one FA would allow that this check missed.
 
 To turn the integration off entirely, deploy with `flowAggregator.enabled=false`
 (the chart default). The endpoint then returns 501 for every user, including

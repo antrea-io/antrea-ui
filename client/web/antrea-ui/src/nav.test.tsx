@@ -88,7 +88,7 @@ describe('NavTab — Flow Visibility built-in nesting', () => {
         mockUseAccess.mockReturnValue({ summary: null, loaded: true });
     });
 
-    test('Flow List and Service Map render nested under Flow Visibility, unconditionally', () => {
+    test('Flow List and Service Map render nested under Flow Visibility', () => {
         render(<NavTab pluginSidebarEntries={[]} />, { wrapper: MemoryRouter });
 
         // Both the Flow Visibility header itself and the nested Flow List item link to
@@ -230,17 +230,19 @@ describe('NavTab — permission gating', () => {
 
         expect(document.querySelector('a[href="/summary"]')).toBeNull();
         expect(document.querySelector('a[href="/traceflow"]')).toBeNull();
-        // Flow Visibility and Settings have no per-user RBAC, so they are not gated on load.
-        expect(document.querySelector('a[href="/flows/list"]')).not.toBeNull();
+        // Flows is gated the same way as Summary/Traceflow now, so it is also hidden on load.
+        expect(document.querySelector('a[href="/flows/list"]')).toBeNull();
+        // Settings has no per-user RBAC, so it is not gated on load.
         expect(document.querySelector('a[href="/settings"]')).not.toBeNull();
     });
 
-    test('a null summary (fetch failed) fails open: both core tabs show', () => {
+    test('a null summary (fetch failed) fails open: all core tabs show', () => {
         mockUseAccess.mockReturnValue({ summary: null, loaded: true });
         render(<NavTab pluginSidebarEntries={[]} />, { wrapper: MemoryRouter });
 
         expect(document.querySelector('a[href="/summary"]')).not.toBeNull();
         expect(document.querySelector('a[href="/traceflow"]')).not.toBeNull();
+        expect(document.querySelector('a[href="/flows/list"]')).not.toBeNull();
     });
 
     test('Traceflow is hidden without create permission, Summary still shows', () => {
@@ -254,6 +256,30 @@ describe('NavTab — permission gating', () => {
 
         expect(document.querySelector('a[href="/summary"]')).not.toBeNull();
         expect(document.querySelector('a[href="/traceflow"]')).toBeNull();
+    });
+
+    test('Flows is hidden without the flows watch grant', () => {
+        mockUseAccess.mockReturnValue({
+            summary: summaryAllowing({
+                resourceRules: [{ apiGroups: ['crd.antrea.io'], resources: ['antreaagentinfos'], verbs: ['list'] }],
+            }),
+            loaded: true,
+        });
+        render(<NavTab pluginSidebarEntries={[]} />, { wrapper: MemoryRouter });
+
+        expect(document.querySelector('a[href="/flows/list"]')).toBeNull();
+    });
+
+    test('Flows shows with the flows watch grant', () => {
+        mockUseAccess.mockReturnValue({
+            summary: summaryAllowing({
+                resourceRules: [{ apiGroups: ['observability.antrea.io'], resources: ['flows'], verbs: ['watch'] }],
+            }),
+            loaded: true,
+        });
+        render(<NavTab pluginSidebarEntries={[]} />, { wrapper: MemoryRouter });
+
+        expect(document.querySelector('a[href="/flows/list"]')).not.toBeNull();
     });
 
     test('Summary is hidden when none of its three gates is granted', () => {

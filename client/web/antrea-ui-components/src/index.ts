@@ -47,4 +47,5 @@ export {
     GATE_AGENT_INFO_LIST,
     GATE_CONTROLLER_INFO_GET,
     GATE_FEATUREGATES,
+    GATE_FLOWS_WATCH,
 } from './lib/access-api.js';
