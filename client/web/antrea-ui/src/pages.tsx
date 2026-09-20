@@ -16,8 +16,9 @@
 
 import React, { useRef, useCallback } from 'react';
 import '@antrea/ui-components';
-import { can, canViewSummary, canViewFlows, GATE_TRACEFLOW_CREATE } from '@antrea/ui-components';
-import { Navigate } from 'react-router';
+import { can, canViewSummary, canViewFlows, GATE_TRACEFLOW_CREATE, SCOPE_CHANGE_EVENT } from '@antrea/ui-components';
+import type { ScopeChangeDetail } from '@antrea/ui-components';
+import { Navigate, useSearchParams } from 'react-router';
 import { useLogout } from './logout';
 import { getEdgeExtraRenderers, getFlowTableColumnsProcessors } from './plugins';
 import { useAccess } from './access';
@@ -26,14 +27,14 @@ import { useAccess } from './access';
 // doesn't land on a Summary page that's just going to show the permission panel. While the
 // access summary hasn't loaded yet, renders nothing.
 export function HomeRedirect() {
-    const { summary, loaded } = useAccess();
+    const { summary, flowAccess, loaded } = useAccess();
     if (!loaded) return null;
     if (canViewSummary(summary)) return <Navigate to="/summary" replace />;
     if (can(summary, GATE_TRACEFLOW_CREATE)) return <Navigate to="/traceflow" replace />;
-    // canViewFlows is a rendering hint fed by the same RBAC the Flow Aggregator itself checks
-    // (see access-api.ts), not a stand-in for its authorization decision - it can only ever
-    // agree with FA's own answer or be more conservative, never grant a stream FA would refuse.
-    if (canViewFlows(summary)) return <Navigate to="/flows/list" replace />;
+    // canViewFlows (flow-access.ts) is a rendering hint drawn from the access summaries, not a
+    // stand-in for the Flow Aggregator's authorization decision - it fails open, so it can only
+    // hide the page from a caller FA would refuse, never grant a stream FA would refuse.
+    if (canViewFlows(flowAccess)) return <Navigate to="/flows/list" replace />;
     // A user permitted none of Summary, Traceflow or Flows lands on Settings, which needs no
     // permission at all - the floor everyone can reach.
     return <Navigate to="/settings" replace />;
@@ -111,11 +112,30 @@ export function TraceflowPage() {
 // source of truth for which one is showing, flowing one-way into the Lit element's viewMode
 // property. There is no in-page control that could disagree with it: switching is entirely a
 // sidebar (nav.tsx) concern.
+//
+// The page keeps its observed namespace in the query string, and rewrites it with
+// history.replaceState, which the router is not told about. It says so with SCOPE_CHANGE_EVENT
+// instead, and the router adopts the location here, so the sidebar's links (which carry the query
+// string between the two sub-pages) never go stale.
 export function FlowVisibilityPage({ view }: { view: 'list' | 'map' }) {
-    const { ref } = useLitPage();
-    const { summary, loaded } = useAccess();
+    const { ref: litRef } = useLitPage();
+    const { flowAccess, loaded } = useAccess();
+    const [, setSearchParams] = useSearchParams();
+    const attachedTo = useRef<HTMLElement | null>(null);
+    const onScopeChange = useCallback((e: Event) => {
+        const { search } = (e as CustomEvent<ScopeChangeDetail>).detail;
+        setSearchParams(new URLSearchParams(search), { replace: true });
+    }, [setSearchParams]);
+    // A callback ref for the same reason as useLitPage's: the element mounts once the permission
+    // check resolves, which does not re-render a hook declared here to notice it.
+    const ref = useCallback((el: HTMLElement | null) => {
+        litRef(el);
+        attachedTo.current?.removeEventListener(SCOPE_CHANGE_EVENT, onScopeChange);
+        attachedTo.current = el;
+        el?.addEventListener(SCOPE_CHANGE_EVENT, onScopeChange);
+    }, [litRef, onScopeChange]);
     return (
-        <RequirePermission allowed={canViewFlows(summary)} loaded={loaded}>
+        <RequirePermission allowed={canViewFlows(flowAccess)} loaded={loaded}>
             <antrea-flow-visibility-page
                 ref={ref}
                 viewMode={view}

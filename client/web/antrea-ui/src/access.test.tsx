@@ -18,7 +18,7 @@ import { act, render, waitFor } from '@testing-library/react';
 import { MemoryRouter, Routes, Route } from 'react-router';
 import { Provider } from 'react-redux';
 import { resetAccessSummary } from '@antrea/ui-components';
-import type { AccessSummary } from '@antrea/ui-components';
+import type { AccessSummary, FlowAccess } from '@antrea/ui-components';
 import { setupStore, setSession, setAuthenticated } from './store';
 import { AccessProvider, useAccess } from './access';
 import { HomeRedirect } from './pages';
@@ -26,6 +26,14 @@ import { HomeRedirect } from './pages';
 function jsonResponse(body: unknown, status = 200): Response {
     return new Response(JSON.stringify(body), { status });
 }
+
+// AccessProvider fetches the access summary and, for flow access, the per-namespace summaries, so
+// a raw call count says nothing useful. Count the one being asserted about instead.
+function callsTo(fetchMock: { mock: { calls: unknown[][] } }, path: string): number {
+    return fetchMock.mock.calls.filter(c => new URL(String(c[0]), 'http://example.test').pathname.endsWith(path)).length;
+}
+
+const WATCH_FLOWS = { verbs: ['watch'], apiGroups: ['observability.antrea.io'], resources: ['flows'] };
 
 function summaryWith(overrides: Partial<AccessSummary> = {}): AccessSummary {
     return {
@@ -50,7 +58,12 @@ afterEach(() => {
 
 describe('AccessProvider', () => {
     test('fetches accessSummary once the session is authenticated', async () => {
-        const fetchMock = vi.fn().mockResolvedValue(jsonResponse(summaryWith()));
+        const fetchMock = vi.fn().mockImplementation((url: string) => {
+            const u = new URL(String(url), 'http://example.test');
+            return Promise.resolve(jsonResponse(u.pathname.endsWith('/access-summary/namespaces')
+                ? { items: [] }
+                : summaryWith({ namespaces: ['ns-a'] })));
+        });
         vi.stubGlobal('fetch', fetchMock);
         const store = setupStore({ session: 'authenticated' });
 
@@ -62,8 +75,31 @@ describe('AccessProvider', () => {
 
         await waitFor(() => expect(document.querySelector('[data-testid="probe"]')?.textContent)
             .toContain('"loaded":true'));
-        expect(fetchMock).toHaveBeenCalledTimes(1);
+        expect(callsTo(fetchMock, '/access-summary')).toBe(1);
+        // Fetched after it, and by the same effect: the nav gates Flow Visibility on this, so it
+        // has to resolve before `loaded` flips or the entry would pop in late.
+        expect(callsTo(fetchMock, '/access-summary/namespaces')).toBe(1);
         expect(document.querySelector('[data-testid="probe"]')?.textContent).toContain('alice');
+    });
+
+    // The grant holds in every namespace, so the backend is not asked to review each one: that is
+    // up to ten requests to the API server at every login, for an answer already known.
+    test('does not fetch the per-namespace summaries for a cluster-wide flows holder', async () => {
+        const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse(summaryWith({
+            rules: { resourceRules: [WATCH_FLOWS], nonResourceRules: [], incomplete: false },
+        }))));
+        vi.stubGlobal('fetch', fetchMock);
+        const store = setupStore({ session: 'authenticated' });
+
+        render(
+            <Provider store={store}>
+                <AccessProvider><Probe /></AccessProvider>
+            </Provider>,
+        );
+
+        await waitFor(() => expect(document.querySelector('[data-testid="probe"]')?.textContent)
+            .toContain('"loaded":true'));
+        expect(callsTo(fetchMock, '/access-summary/namespaces')).toBe(0);
     });
 
     test('does not fetch while the session is not authenticated', () => {
@@ -106,7 +142,7 @@ describe('AccessProvider', () => {
                 <AccessProvider><Probe /></AccessProvider>
             </Provider>,
         );
-        await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+        await waitFor(() => expect(callsTo(fetchMock, '/access-summary')).toBe(1));
 
         // Simulate the logout->login cycle: useLogout() and the re-auth listener in App.tsx
         // both call resetAccessSummary() before flipping the session state.
@@ -114,7 +150,7 @@ describe('AccessProvider', () => {
         act(() => { store.dispatch(setSession('anonymous')); });
         act(() => { store.dispatch(setAuthenticated(null)); });
 
-        await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+        await waitFor(() => expect(callsTo(fetchMock, '/access-summary')).toBe(2));
     });
 
     test('leaving the authenticated session clears the previous summary', async () => {
@@ -141,8 +177,50 @@ describe('AccessProvider', () => {
 });
 
 describe('HomeRedirect', () => {
-    function renderAt(summary: AccessSummary | null) {
-        vi.stubGlobal('fetch', vi.fn().mockResolvedValue(summary ? jsonResponse(summary) : new Response('', { status: 500 })));
+    // Routes by URL and builds a fresh Response per call: AccessProvider makes two requests, and
+    // a Response body can only be read once, so handing both the same object made the second
+    // reject and the gate fail open - which is not what any of these tests mean to exercise.
+    //
+    // `flowAccess` says where the caller may observe flows, in the terms the tests think in, and
+    // is turned into the two summaries that FlowAccess is derived from: a cluster-wide grant is a
+    // rule in the cluster-scoped summary, and a namespace's verdict is that of its own rules.
+    function renderAt(summary: AccessSummary | null, flowAccess: FlowAccess | null = null) {
+        const access = flowAccess ?? { namespaces: [], clusterWide: false, incomplete: false };
+        // The summary names the namespaces the per-namespace summaries are asked about, and an
+        // incomplete answer is one with more of them than a request asks about.
+        const filler = access.incomplete ? Array.from({ length: 11 }, (_, i) => `zz-filler-${i}`) : [];
+        const clusterSummary = summary
+            ? {
+                ...summary,
+                namespaces: [...access.namespaces.map(n => n.namespace), ...filler],
+                rules: {
+                    ...summary.rules,
+                    resourceRules: access.clusterWide
+                        ? [...summary.rules.resourceRules, WATCH_FLOWS]
+                        : summary.rules.resourceRules,
+                },
+            }
+            : summary;
+        const listFor = (asked: string[]) => ({
+            items: asked.map(namespace => {
+                const n = access.namespaces.find(x => x.namespace === namespace);
+                return {
+                    namespace,
+                    rules: {
+                        resourceRules: n?.verdict === 'allowed' ? [WATCH_FLOWS] : [],
+                        nonResourceRules: [],
+                        incomplete: n?.verdict === 'unknown',
+                    },
+                };
+            }),
+        });
+        vi.stubGlobal('fetch', vi.fn().mockImplementation((url: string) => {
+            const u = new URL(String(url), 'http://example.test');
+            if (u.pathname.endsWith('/access-summary/namespaces')) {
+                return Promise.resolve(jsonResponse(listFor(u.searchParams.getAll('namespace'))));
+            }
+            return Promise.resolve(clusterSummary ? jsonResponse(clusterSummary) : new Response('', { status: 500 }));
+        }));
         const store = setupStore({ session: 'authenticated' });
         return render(
             <Provider store={store}>
@@ -182,28 +260,19 @@ describe('HomeRedirect', () => {
         await waitFor(() => expect(document.querySelector('[data-testid="landed"]')?.textContent).toBe('settings'));
     });
 
-    test('lands on /flows/list for a caller holding the flows watch grant', async () => {
-        renderAt(summaryWith({
-            rules: { resourceRules: [{ apiGroups: ['observability.antrea.io'], resources: ['flows'], verbs: ['watch'] }], nonResourceRules: [], incomplete: false },
-        }));
+    test('lands on /flows/list for a caller who may observe a namespace', async () => {
+        renderAt(summaryWith(), { namespaces: [{ namespace: 'flow-a', verdict: 'allowed' }], clusterWide: false, incomplete: false });
         await waitFor(() => expect(document.querySelector('[data-testid="landed"]')?.textContent).toBe('flows'));
     });
 
-    // The grant has to be cluster-wide (see canViewFlows's own doc comment): a caller holding
-    // flows only in their own Namespace does not land there, because clusterWide=true is the
-    // only scope the page can request today. The namespace field here stands in for what a
-    // namespace-scoped summary would report; it is canViewFlows's own namespace check that must
-    // reject it, not the fixture.
-    test('does not land on /flows/list for a caller holding only a namespaced flows grant', async () => {
-        renderAt(summaryWith({
-            namespace: 'default',
-            rules: {
-                resourceRules: [{ apiGroups: ['observability.antrea.io'], resources: ['flows'], verbs: ['watch'] }],
-                nonResourceRules: [],
-                incomplete: false,
-            },
-        }));
-        await waitFor(() => expect(document.querySelector('[data-testid="landed"]')?.textContent).toBe('settings'));
+    // Replaces a test asserting the opposite. A namespaced grant used to land on /settings,
+    // because cluster-wide was the only scope the page could request; with the selector it is
+    // exactly the caller the page serves. Note the summary here grants flows nothing: landing is
+    // decided by the enumerated namespaces alone now.
+    test('lands on /flows/list for a namespace-scoped caller', async () => {
+        renderAt(summaryWith({ namespace: 'default' }),
+            { namespaces: [{ namespace: 'default', verdict: 'allowed' }], clusterWide: false, incomplete: false });
+        await waitFor(() => expect(document.querySelector('[data-testid="landed"]')?.textContent).toBe('flows'));
     });
 
     test('fails open to /summary when the fetch fails', async () => {
