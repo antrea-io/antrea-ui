@@ -153,7 +153,8 @@ else:
 - `get` on the `/featuregates` non-resource URL
 - `list` on `namespaces`
 - `list` and `watch` on `flows.observability.antrea.io`, the virtual resource
-  the Flow Aggregator authorizes flow streams against (see [Flow data is
+  the Flow Aggregator authorizes flow streams against, and `get` on its
+  `flows/identity` subresource (see [Flow data is
   per-user](#flow-data-is-per-user))
 
 Its rule list is static: it only ever changes when you upgrade the chart, and
@@ -196,10 +197,10 @@ resource — `watch` for the SSE stream, since it always follows — and resolve
 every endpoint of every record to a disclosure tier (full identity, identity
 only, or no identity at all) relative to what the caller may see there. A
 request naming no scope, or both, is rejected before it ever reaches FA. The
-frontend currently only ever requests `clusterWide=true`; the observed-Namespace
-selector that would let a caller ask for their own Namespace instead has not
-been built yet, so a caller holding the `flows` grant only in one Namespace
-gets a 403 today rather than a scoped stream.
+frontend picks the scope from an observed-Namespace selector, which offers the
+cluster-wide option only to a caller who holds it, and opens no stream at all
+until one is chosen — defaulting to cluster-wide would ask for a grant most
+callers do not have.
 
 Antrea UI performs no RBAC decision of its own here and must not: a wrong
 answer on antrea-ui's side would either hide flow data a caller is entitled to
@@ -226,13 +227,20 @@ instead of forwarding unredacted data. Antrea UI v1.0.0 requires Antrea and
 the Flow Aggregator at v2.8 or later; flow visibility is unavailable against
 an older deployment.
 
-The Flow Visibility navigation entry and page are gated on the `flows`
-`watch` grant above, the same RBAC FA itself checks — a rendering hint, not
-an authorization decision, so it can only ever hide the page from a caller FA
-would refuse, never show it to one FA would allow that this check missed. The
-grant has to be cluster-wide: the UI has no observed-Namespace selector yet, so
-`clusterWide=true` is the only scope it can request, and a grant that covers
-only one Namespace authorizes nothing it would ask for.
+The Flow Visibility navigation entry and page are gated on whether the caller
+has any scope to ask for at all — a rendering hint, not an authorization
+decision, so it can only ever hide the page from a caller FA would refuse,
+never show it to one FA would allow that this check missed. It fails open: a
+gate that could not be evaluated shows the page and lets FA answer.
+
+That question is `GET /api/v1/flows/namespaces`, which reports the Namespaces
+this caller may observe flows in, whether they may observe cluster-wide, and
+whether the list is complete. Kubernetes cannot be asked which Namespaces a
+subject may access, so antrea-ui takes the candidates it knows about and
+reviews each one with a `SelfSubjectAccessReview` for `watch` on `flows` — the
+same RBAC FA itself checks. The list can therefore under-report, which is what
+the `incomplete` flag says; the selector lets a caller name a Namespace
+directly in that case, and FA authorizes it either way.
 
 To turn the integration off entirely, deploy with `flowAggregator.enabled=false`
 (the chart default). The endpoint then returns 501 for every user, including

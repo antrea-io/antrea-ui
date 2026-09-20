@@ -26,6 +26,10 @@ import {
     formatEndpoint,
     formatPolicyInfo,
     destinationK8sServiceFilterKey,
+    EndpointDisclosure,
+    endpointRedacted,
+    endpointView,
+    destinationServiceView,
 } from './flow-types';
 
 function makeFlow(overrides: {
@@ -230,9 +234,38 @@ describe('destinationK8sServiceFilterKey', () => {
     });
 });
 
+// Keyed on the action, not the name. At the Flow tier the policy name is cleared and the rule
+// action is not, so a formatter that rendered nothing without a name would show a dropped flow to
+// an undisclosed peer as a bare '-' - indistinguishable from a flow no policy ever matched, and
+// throwing away the field redaction deliberately preserved.
 describe('formatPolicyInfo', () => {
-    test('empty name returns empty string', () => {
-        expect(formatPolicyInfo('', NetworkPolicyRuleAction.Allow)).toBe('');
+    test('an empty name at the Flow tier renders the action as withheld', () => {
+        const flow = EndpointDisclosure.Flow;
+        expect(formatPolicyInfo('', NetworkPolicyRuleAction.Drop, flow)).toBe('Dropped (policy hidden)');
+        expect(formatPolicyInfo('', NetworkPolicyRuleAction.Reject, flow)).toBe('Rejected (policy hidden)');
+        // One tense across the three, so they read as one set rather than three phrasings.
+        expect(formatPolicyInfo('', NetworkPolicyRuleAction.Allow, flow)).toBe('Allowed (policy hidden)');
+    });
+
+    // Above the Flow tier nothing was withheld, so an empty name means the Flow Aggregator never
+    // had one - its proto warns an endpoint can lack a field while still reporting full
+    // disclosure. Calling that "hidden" would blame redaction for a gap it did not cause.
+    test('an empty name above the Flow tier renders the action without claiming redaction', () => {
+        expect(formatPolicyInfo('', NetworkPolicyRuleAction.Drop, EndpointDisclosure.Full)).toBe('Dropped');
+        expect(formatPolicyInfo('', NetworkPolicyRuleAction.Drop, EndpointDisclosure.Identity)).toBe('Dropped');
+    });
+
+    // A caller that cannot say assumes withheld, which is the conservative reading.
+    test('an omitted tier assumes the name was withheld', () => {
+        expect(formatPolicyInfo('', NetworkPolicyRuleAction.Drop)).toBe('Dropped (policy hidden)');
+    });
+
+    // The genuinely absent policy, which is not a redaction artefact and must not be marked as
+    // one: a policy that matched always carries an action, so this was already empty before
+    // redaction ran.
+    test('an empty name with no action renders nothing, at any tier', () => {
+        expect(formatPolicyInfo('', NetworkPolicyRuleAction.NoAction)).toBe('');
+        expect(formatPolicyInfo('', NetworkPolicyRuleAction.NoAction, EndpointDisclosure.Flow)).toBe('');
     });
 
     test('name with Allow action', () => {
@@ -249,5 +282,121 @@ describe('formatPolicyInfo', () => {
 
     test('name with NoAction returns name only', () => {
         expect(formatPolicyInfo('my-policy', NetworkPolicyRuleAction.NoAction)).toBe('my-policy');
+    });
+});
+
+describe('endpointRedacted', () => {
+    // Full is the enum's zero value, and the entire Full-over-Identity delta is fields this UI
+    // does not render, so Identity is deliberately indistinguishable from Full here.
+    test('only the Flow tier counts as withheld', () => {
+        expect(endpointRedacted(EndpointDisclosure.Full)).toBe(false);
+        expect(endpointRedacted(EndpointDisclosure.Identity)).toBe(false);
+        expect(endpointRedacted(EndpointDisclosure.Flow)).toBe(true);
+    });
+
+    test('a missing marker reads as Full, for a record from an older backend', () => {
+        expect(endpointRedacted(undefined)).toBe(false);
+    });
+});
+
+describe('endpointView', () => {
+    test('an identified endpoint is named, unmarked, and shows its address', () => {
+        expect(endpointView(EndpointDisclosure.Identity, 'ns-b', 'db-abc12', '10.0.0.5'))
+            .toEqual({ text: 'ns-b/db-abc12', detail: '10.0.0.5', redacted: false });
+    });
+
+    // The Flow tier on an allowed connection: the namespace survives, the workload does not, and
+    // the tooltip can name the grant that would disclose it.
+    test('a withheld workload keeps its namespace and gets an actionable tooltip', () => {
+        const view = endpointView(EndpointDisclosure.Flow, 'ns-c', '', '10.0.0.7');
+        expect(view.text).toBe('ns-c/\u27e8hidden\u27e9');
+        expect(view.redacted).toBe(true);
+        expect(view.tooltip).toContain('get flows/identity on ns-c');
+    });
+
+    // The denied-connection case: redactFlow clears the namespace too, to close a Pod-CIDR
+    // enumeration oracle. There is no namespace to name, so there is nothing actionable to say.
+    test('a withheld endpoint with no namespace falls back to the address, with no tooltip', () => {
+        const view = endpointView(EndpointDisclosure.Flow, '', '', '10.0.0.9');
+        expect(view).toEqual({ text: '10.0.0.9', redacted: true });
+    });
+});
+
+describe('destinationServiceView', () => {
+    test('a disclosed service renders its name, unmarked', () => {
+        expect(destinationServiceView(EndpointDisclosure.Full, 'ns-b/frontend:http'))
+            .toEqual({ text: 'ns-b/frontend', redacted: false });
+    });
+
+    // Its own string rather than the peer's: with a lock already in the Destination cell, a
+    // second unexplained one reads as a duplicate rather than as a separate withheld field.
+    test('a withheld service is marked and explained', () => {
+        const view = destinationServiceView(EndpointDisclosure.Flow, '');
+        expect(view.redacted).toBe(true);
+        expect(view.tooltip).toContain("destination's namespace");
+    });
+
+    test('an identified destination with no service is simply empty', () => {
+        expect(destinationServiceView(EndpointDisclosure.Full, ''))
+            .toEqual({ text: '-', redacted: false });
+    });
+});
+
+describe('external endpoints are not marked as redacted', () => {
+    // An out-of-cluster endpoint reaches the Flow tier because tierFor resolves an endpoint with
+    // no namespace that way, but nothing was withheld from it. Upstream's documented way to tell
+    // the two apart is the flow type, which is never redacted.
+    it('renders an external endpoint plainly at the Flow tier', () => {
+        const v = endpointView(EndpointDisclosure.Flow, '', '', '10.89.0.2', true);
+        expect(v.redacted).toBe(false);
+        expect(v.text).toBe('10.89.0.2');
+        expect(v.tooltip).toBeUndefined();
+    });
+
+    it('still marks an in-cluster endpoint at the Flow tier', () => {
+        const v = endpointView(EndpointDisclosure.Flow, '', '', '10.1.9.21', false);
+        expect(v.redacted).toBe(true);
+    });
+
+    it('leaves an external destination service genuinely empty', () => {
+        const v = destinationServiceView(EndpointDisclosure.Flow, '', true);
+        expect(v.redacted).toBe(false);
+        expect(v.text).toBe('-');
+    });
+
+    it('still marks a withheld in-cluster destination service', () => {
+        const v = destinationServiceView(EndpointDisclosure.Flow, '', false);
+        expect(v.redacted).toBe(true);
+    });
+});
+
+describe('a withheld workload still shows its address', () => {
+    // Without it the cell reads "ns/<hidden>" and identifies nothing: two peers in the same
+    // namespace become indistinguishable, which is most of what the row was for.
+    it('carries the address as detail when the namespace survived', () => {
+        const v = endpointView(EndpointDisclosure.Flow, 'flow-c', '', '10.244.1.14');
+        expect(v.text).toBe('flow-c/⟨hidden⟩');
+        expect(v.detail).toBe('10.244.1.14');
+        expect(v.redacted).toBe(true);
+    });
+
+    it('needs no detail when the address is already the text', () => {
+        // The denied case: the namespace went too, so the address is the label itself.
+        const v = endpointView(EndpointDisclosure.Flow, '', '', '10.244.1.20');
+        expect(v.text).toBe('10.244.1.20');
+        expect(v.detail).toBeUndefined();
+    });
+
+    it('shows it under an unredacted endpoint too, so rows keep one shape', () => {
+        const v = endpointView(EndpointDisclosure.Identity, 'flow-b', 'server-abc', '10.244.2.5');
+        expect(v.text).toBe('flow-b/server-abc');
+        expect(v.detail).toBe('10.244.2.5');
+        expect(v.redacted).toBe(false);
+    });
+
+    it('does not repeat an address that is already the label', () => {
+        // formatEndpoint falls back to the address when there is no name to show.
+        expect(endpointView(EndpointDisclosure.Full, '', '', '10.244.3.9').detail).toBeUndefined();
+        expect(endpointView(EndpointDisclosure.Flow, '', '', '10.89.0.2', true).detail).toBeUndefined();
     });
 });

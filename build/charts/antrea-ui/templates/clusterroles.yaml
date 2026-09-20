@@ -122,3 +122,18 @@ rules:
     verbs:
       - list
       - watch
+  # flows/identity is a subresource, so the rule above does not cover it: RBAC never implies a
+  # subresource from its parent. Without this, a stream scoped to one Namespace resolves every
+  # peer outside that Namespace to the Flow tier, because the Flow Aggregator answers "may this
+  # client identify endpoints here?" with a SubjectAccessReview on flows/identity. The subject
+  # would then see more by asking for the whole cluster - where nothing is redacted - than by
+  # naming a single Namespace, which is the wrong way round.
+  #
+  # Only the disclosure tier of peers outside the requested scope depends on this. It grants no
+  # additional stream: opening one is still authorized by the flows rule above.
+  - apiGroups:
+      - observability.antrea.io
+    resources:
+      - flows/identity
+    verbs:
+      - get

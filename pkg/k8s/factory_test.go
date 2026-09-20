@@ -29,6 +29,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/transport"
 
@@ -160,4 +161,31 @@ func TestDynamicClient(t *testing.T) {
 	client, err := f.DynamicClient(rt)
 	require.NoError(t, err)
 	assert.NotNil(t, client)
+}
+
+// The throttled and unthrottled clients differ only in client-go's client-side rate limiter, so
+// the test for it is a timing one: the default limiter (5 QPS, burst 10) cannot make this many
+// calls anywhere near this fast, and no limiter makes them all at once.
+func TestKubernetesClientForRequestUnthrottled(t *testing.T) {
+	const calls = 40
+	ts := newRecordingServer(t, false)
+	f, err := NewClientFactory(&rest.Config{
+		Host:          ts.URL,
+		ContentConfig: rest.ContentConfig{ContentType: "application/json"},
+	}, http.DefaultTransport, session.TransportKeyK8s)
+	require.NoError(t, err)
+	ctx := session.WithRequestAuth(t.Context(), session.NewEphemeralAuth(
+		session.Credential{Kind: session.KindBearer, Token: []byte("user-token")}, "alice"))
+
+	clientset, err := f.KubernetesClientForRequestUnthrottled(ctx)
+	require.NoError(t, err)
+
+	start := time.Now()
+	for range calls {
+		// The response body is not a Namespace list, so the call fails to decode; what is
+		// being measured is that it went out at all, without waiting on a token.
+		_, _ = clientset.CoreV1().Namespaces().List(ctx, metav1.ListOptions{})
+	}
+	// The default limiter would need (40-10)/5 = 6 seconds for these.
+	assert.Less(t, time.Since(start), 3*time.Second)
 }

@@ -21,8 +21,8 @@ export type FlowTypeName = 'intra-node' | 'inter-node' | 'to-external' | 'from-e
 /** Peer filters. These narrow the stream; they do not authorize it, and e.g. a namespace outside
  * the stream's scope is legal here — it is how a flow is selected by its far end, not its own.
  * No scope of its own: a caller building one of these has to add a FlowStreamScope to get a
- * FlowStreamFilter the backend will accept, which is the point - see withTemporaryClusterWideScope
- * in antrea-flow-visibility-page.ts, the one place that does it today. */
+ * FlowStreamFilter the backend will accept, which is the point - see _composeFilter in
+ * antrea-flow-visibility-page.ts, the one place that does it. */
 export interface FlowPeerFilter {
     namespaces?: string[];
     pods?: string[];

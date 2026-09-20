@@ -21,12 +21,16 @@ import (
 	"net/http/httptest"
 	"net/http/httputil"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	authorizationv1 "k8s.io/api/authorization/v1"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/rest"
 
 	"antrea.io/antrea-ui/pkg/auth/session"
@@ -49,6 +53,38 @@ type fakeAccessK8sAPIServer struct {
 	// lastRulesNamespace records the namespace the SelfSubjectRulesReview was evaluated
 	// against, for assertions.
 	lastRulesNamespace string
+
+	// flowsAllowed maps a namespace to whether watch on flows.observability.antrea.io is
+	// allowed there. The empty key is the cluster-scoped review.
+	flowsAllowed map[string]bool
+	// flowsReviewError names namespaces whose flow review fails instead of answering. The
+	// empty key is the cluster-scoped review.
+	flowsReviewError map[string]bool
+	// flowsReviewDelay is applied to the cluster-scoped flow review, which is the first call
+	// an evaluation makes, so a test can hold a single flight open.
+	flowsReviewDelay time.Duration
+	// namespaceList is what a namespace list returns.
+	namespaceList []string
+
+	// mutex guards the counters below, which concurrent flow reviews write to.
+	mutex sync.Mutex
+	// flowReviews counts flow reviews by namespace, and lastFlowReview records the resource
+	// attributes of the most recent one.
+	flowReviews     map[string]int
+	lastFlowReview  authorizationv1.ResourceAttributes
+	namespaceLists  int
+	selfSubjectRevs int
+}
+
+// flowReviewCount reports how many flow reviews were made in total.
+func (f *fakeAccessK8sAPIServer) flowReviewCount() int {
+	f.mutex.Lock()
+	defer f.mutex.Unlock()
+	total := 0
+	for _, n := range f.flowReviews {
+		total += n
+	}
+	return total
 }
 
 func newFakeAccessK8sAPIServer(t *testing.T) *fakeAccessK8sAPIServer {
@@ -57,6 +93,9 @@ func newFakeAccessK8sAPIServer(t *testing.T) *fakeAccessK8sAPIServer {
 		groups:                []string{"system:authenticated"},
 		listNamespacesAllowed: false,
 		statusOverride:        map[string]int{},
+		flowsAllowed:          map[string]bool{},
+		flowsReviewError:      map[string]bool{},
+		flowReviews:           map[string]int{},
 	}
 	f.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		for substr, code := range f.statusOverride {
@@ -68,6 +107,9 @@ func newFakeAccessK8sAPIServer(t *testing.T) *fakeAccessK8sAPIServer {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case strings.Contains(r.URL.Path, "selfsubjectreviews"):
+			f.mutex.Lock()
+			f.selfSubjectRevs++
+			f.mutex.Unlock()
 			w.WriteHeader(http.StatusCreated)
 			resp := map[string]interface{}{
 				"apiVersion": "authentication.k8s.io/v1",
@@ -93,8 +135,21 @@ func newFakeAccessK8sAPIServer(t *testing.T) *fakeAccessK8sAPIServer {
 			var review authorizationv1.SelfSubjectAccessReview
 			_ = json.Unmarshal(body, &review)
 			allowed := false
-			if review.Spec.ResourceAttributes != nil {
-				switch review.Spec.ResourceAttributes.Resource {
+			if attrs := review.Spec.ResourceAttributes; attrs != nil {
+				switch attrs.Resource {
+				case "flows":
+					f.mutex.Lock()
+					f.flowReviews[attrs.Namespace]++
+					f.lastFlowReview = *attrs
+					f.mutex.Unlock()
+					if attrs.Namespace == "" && f.flowsReviewDelay > 0 {
+						time.Sleep(f.flowsReviewDelay)
+					}
+					if f.flowsReviewError[attrs.Namespace] {
+						w.WriteHeader(http.StatusInternalServerError)
+						return
+					}
+					allowed = f.flowsAllowed[attrs.Namespace]
 				case "namespaces":
 					allowed = f.listNamespacesAllowed
 				case "*":
@@ -104,6 +159,16 @@ func newFakeAccessK8sAPIServer(t *testing.T) *fakeAccessK8sAPIServer {
 			w.WriteHeader(http.StatusCreated)
 			resp := authorizationv1.SelfSubjectAccessReview{Status: authorizationv1.SubjectAccessReviewStatus{Allowed: allowed}}
 			_ = json.NewEncoder(w).Encode(resp)
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/api/v1/namespaces"):
+			f.mutex.Lock()
+			f.namespaceLists++
+			f.mutex.Unlock()
+			list := corev1.NamespaceList{}
+			for _, ns := range f.namespaceList {
+				list.Items = append(list.Items, corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}})
+			}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(list)
 		default:
 			b, _ := httputil.DumpRequest(r, true)
 			t.Logf("unexpected request to fake K8s API server: %s", b)

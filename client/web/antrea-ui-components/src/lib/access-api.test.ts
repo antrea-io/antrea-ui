@@ -20,7 +20,6 @@ import {
     canNonResource,
     accessibleNamespaces,
     canViewSummary,
-    canViewFlows,
     GATE_CONTROLLER_INFO_GET,
     type AccessSummary,
     type SubjectRules,
@@ -293,26 +292,3 @@ describe('canViewSummary', () => {
     });
 });
 
-describe('canViewFlows', () => {
-    const flowsWatch = rules({ resourceRules: [{ apiGroups: ['observability.antrea.io'], resources: ['flows'], verbs: ['watch'] }] });
-
-    test('true on a cluster-wide watch grant', () => {
-        expect(canViewFlows(summary({ rules: flowsWatch }))).toBe(true);
-    });
-
-    test('false without the watch verb', () => {
-        const listOnly = rules({ resourceRules: [{ apiGroups: ['observability.antrea.io'], resources: ['flows'], verbs: ['list'] }] });
-        expect(canViewFlows(summary({ rules: listOnly }))).toBe(false);
-        expect(canViewFlows(summary())).toBe(false);
-    });
-
-    test('false on a namespace-scoped summary, however it answers', () => {
-        // The same grant that passes cluster-wide authorizes nothing the page can ask for when
-        // it comes from a namespaced Role, so the scope of the summary decides on its own.
-        expect(canViewFlows(summary({ rules: flowsWatch, namespace: 'ns-a' }))).toBe(false);
-    });
-
-    test('fails open on a null summary, like the can() gates', () => {
-        expect(canViewFlows(null)).toBe(true);
-    });
-});

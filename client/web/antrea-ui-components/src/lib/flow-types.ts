@@ -186,10 +186,52 @@ export function getProtocolName(protocolNumber: number): string {
     return protocolLabel[protocolNumber] ?? `Proto(${protocolNumber})`;
 }
 
-export function formatPolicyInfo(name: string, action: NetworkPolicyRuleAction): string {
-    if (!name) return "";
+// How a rule action reads when the policy that carried it was withheld. The action itself is
+// disclosed at every tier - only the policy's identity needs Identity - so this is the whole of
+// what survives, and it is the most useful part: "my traffic to something I cannot see was
+// dropped" stays answerable.
+const hiddenPolicyActionLabel: Record<NetworkPolicyRuleAction, string> = {
+    [NetworkPolicyRuleAction.NoAction]: "",
+    [NetworkPolicyRuleAction.Allow]: "Allowed",
+    [NetworkPolicyRuleAction.Drop]: "Dropped",
+    [NetworkPolicyRuleAction.Reject]: "Rejected",
+};
+
+/**
+ * Renders one of the two policy columns, keyed on the rule *action* rather than on the policy
+ * name.
+ *
+ * | Name  | Action       | Tier | Means                             | Renders as                |
+ * | ----- | ------------ | ---- | --------------------------------- | ------------------------- |
+ * | set   | any          | any  | nothing withheld                  | `my-policy (Drop)`        |
+ * | empty | not NoAction | Flow | withheld, but its effect is known | `Dropped (policy hidden)` |
+ * | empty | not NoAction | else | never recorded, not withheld      | `Dropped`                 |
+ * | empty | NoAction     | any  | no policy matched at all          | `` (the caller renders -) |
+ *
+ * `disclosure` is the tier of the endpoint this policy was evaluated on - the destination for an
+ * ingress policy, the source for an egress one. Omitting it assumes the name was withheld, which
+ * is the conservative reading for a caller that cannot say.
+ *
+ * The last row is not a redaction artefact and must not be marked as one: a policy that matched
+ * always carries an action, so an empty name with NoAction was already empty before redaction
+ * ran. A policy cell therefore never needs a bare lock - either the action is known and is
+ * rendered, or there was no policy.
+ */
+export function formatPolicyInfo(
+    name: string,
+    action: NetworkPolicyRuleAction,
+    disclosure?: EndpointDisclosure,
+): string {
     const actionStr = networkPolicyRuleActionLabel[action];
-    return actionStr ? `${name} (${actionStr})` : name;
+    if (name) return actionStr ? `${name} (${actionStr})` : name;
+    // An empty name is only evidence of redaction at the Flow tier. Above it the Flow Aggregator
+    // may simply never have had the name - its own proto warns that an endpoint can lack a field
+    // while still reporting full disclosure - and calling that "hidden" would blame redaction
+    // for a gap it did not cause. The action is still worth showing either way.
+    const withheld = disclosure === undefined || endpointRedacted(disclosure);
+    const hidden = hiddenPolicyActionLabel[action];
+    if (!hidden) return "";
+    return withheld ? `${hidden} (policy hidden)` : hidden;
 }
 
 export function formatEndpoint(namespace: string, podName: string, ip: string): string {
@@ -197,6 +239,97 @@ export function formatEndpoint(namespace: string, podName: string, ip: string): 
         return `${namespace}/${podName}`;
     }
     return ip || "unknown";
+}
+
+/** Whether the Flow Aggregator withheld this endpoint's Kubernetes identity. Only the Flow tier
+ * withholds anything this UI renders: the entire Full-over-Identity difference is Node placement
+ * and the Antrea Egress, neither of which appears anywhere in the list, the map or the edge
+ * details. So there are two visual states, not three - revisit only if a Node or Egress field is
+ * ever surfaced. An absent marker reads as Full, which is the enum's zero value. */
+export function endpointRedacted(disclosure: EndpointDisclosure | undefined): boolean {
+    return disclosure === EndpointDisclosure.Flow;
+}
+
+/** Stands in for the workload name of an endpoint whose namespace survived redaction but whose
+ * identity did not. */
+export const HIDDEN_WORKLOAD_LABEL = "\u27e8hidden\u27e9";
+
+/** One endpoint as a cell: the text to show, whether to mark it as withheld, and a tooltip if
+ * there is an actionable one to give. */
+export interface EndpointView {
+    text: string;
+    /** The peer's address, shown under `text`. formatEndpoint renders a name or an address and
+     * never both, which left a withheld workload as "ns/<hidden>" and nothing else - a cell that
+     * identifies nothing, since two peers in the same namespace then look identical. The address
+     * is not redacted at any tier, so it is always available to fall back on. Carried on every
+     * endpoint rather than only the withheld ones, so that a row does not change shape depending
+     * on how much of it was disclosed. Unset where the address is already the text. */
+    detail?: string;
+    redacted: boolean;
+    /** Set only where it is actionable, i.e. where there is a namespace to name. */
+    tooltip?: string;
+}
+
+/**
+ * How to render one endpoint of a flow.
+ *
+ * At the Flow tier the namespace survives only for an allowed connection: redactFlow clears it
+ * as well when the connection was denied, to close a Pod-CIDR enumeration oracle. Those are the
+ * two withheld forms, and both are marked, so a cell does not read as missing data and get filed
+ * as a bug. The address is never redacted at any tier - redactFlow rewrites only the Kubernetes
+ * sub-message - so there is always a label to fall back to.
+ */
+export function endpointView(
+    disclosure: EndpointDisclosure | undefined,
+    namespace: string,
+    podName: string,
+    ip: string,
+    external = false,
+): EndpointView {
+    // An endpoint outside the cluster reaches the Flow tier too, because tierFor resolves an
+    // endpoint with no namespace that way, but nothing was withheld from it: it never had a
+    // Kubernetes identity to withhold. Upstream's fix for telling the two apart is the flow
+    // type, which is never redacted. Marking it would claim something is hidden that is not.
+    if (external || !endpointRedacted(disclosure)) {
+        const text = formatEndpoint(namespace, podName, ip);
+        // Only when the name is what is shown: formatEndpoint falls back to the address, and
+        // repeating it under itself would be noise.
+        return { text, detail: text === ip ? undefined : ip || undefined, redacted: false };
+    }
+    if (namespace) {
+        return {
+            text: `${namespace}/${HIDDEN_WORKLOAD_LABEL}`,
+            detail: ip,
+            redacted: true,
+            tooltip: `Workload not shown. Seeing it requires get flows/identity on ${namespace}.`,
+        };
+    }
+    // Nothing to name, so nothing actionable to say: no tooltip, just the address and the mark.
+    return { text: ip || "unknown", redacted: true };
+}
+
+/** How to render the Dest Service cell. The destination Service fields follow the destination
+ * endpoint's tier, so they are gone at the Flow tier - and an unexplained empty cell is exactly
+ * the "looks like missing data" failure the mark exists to prevent. Its tooltip is its own rather
+ * than the peer's: with a lock already in the Destination cell, a second unexplained one reads as
+ * a duplicate rather than as a separately withheld field. */
+export function destinationServiceView(
+    disclosure: EndpointDisclosure | undefined,
+    destinationServicePortName: string,
+    external = false,
+): EndpointView {
+    const name = destinationK8sServiceFilterKey(destinationServicePortName) || destinationServicePortName;
+    if (name) return { text: name, redacted: false };
+    // See endpointView: an out-of-cluster destination is at the Flow tier but had no Service to
+    // withhold, so its empty cell is genuinely empty rather than redacted.
+    if (!external && endpointRedacted(disclosure)) {
+        return {
+            text: "",
+            redacted: true,
+            tooltip: "Service not shown. It belongs to the destination's namespace.",
+        };
+    }
+    return { text: "-", redacted: false };
 }
 
 
