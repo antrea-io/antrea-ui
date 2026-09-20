@@ -209,12 +209,22 @@ Every request also names a **scope**: either `clusterWide=true` or a single
 with the caller's Kubernetes RBAC on the virtual `flows.observability.antrea.io`
 resource — `watch` for the SSE stream, since it always follows — and resolves
 every endpoint of every record to a disclosure tier (full identity, identity
-only, or no identity at all) relative to what the caller may see there. A
-request naming no scope, or both, is rejected before it ever reaches FA. The
-frontend currently only ever requests `clusterWide=true`; the observed-Namespace
-selector that would let a caller ask for their own Namespace instead has not
-been built yet, so a caller holding the `flows` grant only in one Namespace
-gets a 403 today rather than a scoped stream.
+only, or no identity at all) relative to what the caller may see there. An
+endpoint is disclosed in full when its Namespace is in the requested scope, or
+when the caller holds the stream's own verb (`watch`) on `flows` in that
+Namespace; a caller holding only `get` on the `flows/identity` subresource there
+sees it at the identity tier, and one holding neither sees no identity at all.
+So a caller with `flows` cluster-wide sees the same peers in full whether it
+asks for the whole cluster or for a single Namespace, and the `flows` rule alone
+is enough — `flows/identity` is only for being recognizable in records the
+caller receives through some other Namespace. A request naming no scope, or
+both, is rejected before it ever reaches FA. The frontend picks the scope from
+an observed-Namespace selector, which offers the cluster-wide option only to a
+caller who holds it. It defaults to cluster-wide where the caller holds it,
+since that is the only scope in which nothing is redacted, and otherwise to the
+first Namespace the caller may observe. It opens no stream at all only where
+there is nothing to observe, and never without a scope. The scope is kept in the
+page's URL, so a reload or a shared link keeps it.
 
 Antrea UI performs no RBAC decision of its own here and must not: a wrong
 answer on antrea-ui's side would either hide flow data a caller is entitled to
@@ -241,13 +251,60 @@ stream ends before sending one, antrea-ui refuses the stream
 data. Antrea UI v1.0.0 requires Antrea and the Flow Aggregator at v2.8 or
 later; flow visibility is unavailable against an older deployment.
 
-The Flow Visibility navigation entry and page are gated on the `flows`
-`watch` grant above, the same RBAC FA itself checks — a rendering hint, not
-an authorization decision, so it can only ever hide the page from a caller FA
-would refuse, never show it to one FA would allow that this check missed. The
-grant has to be cluster-wide: the UI has no observed-Namespace selector yet, so
-`clusterWide=true` is the only scope it can request, and a grant that covers
-only one Namespace authorizes nothing it would ask for.
+The Flow Visibility navigation entry and page are gated on whether the caller
+has any scope to ask for at all — a rendering hint, not an authorization
+decision. It fails open: a gate that could not be evaluated shows the page and
+lets FA answer, and so does a list reported `incomplete`, since a list known to
+be short cannot show that the caller holds nothing.
+
+Where the cluster's authorization is RBAC, it can therefore only hide the page
+from a caller FA would refuse, never show it to one FA would allow that this
+check missed. A grant from a different authorizer — a webhook, say — is the
+exception, and is not discoverable: the candidates come from RoleBindings, so a
+Namespace granted only by a webhook is never reviewed, and the gate hides the
+page from a caller FA would have served. Antrea UI does not flag this, because
+it cannot detect it; reporting every derived list as incomplete to cover it
+would make the flag meaningless and stop the gate ever closing for the caller
+it exists for — one holding no `flows` grant at all, who belongs on Settings.
+
+That question is answered from the access summaries described in [What the
+frontend knows about your permissions](#what-the-frontend-knows-about-your-permissions),
+with nothing flow-specific on the backend. The cluster-scoped summary says
+whether the caller holds `watch` on `flows` cluster-wide. If not, the
+per-namespace summaries (`GET /api/v1/access-summary/namespaces`) give the
+rules the caller has in the namespaces the frontend names, and the frontend
+asks of each whether it grants `watch` on `flows`, the same RBAC FA itself
+checks. Kubernetes cannot be asked which namespaces a subject may access, so
+the frontend names the ones antrea-ui already knows: those the access summary
+derived from RoleBindings naming the caller or their groups, at most 10 of
+them, since each is a review against the API server.
+
+The selector does not review its candidates. It offers each of them, whether
+or not the caller may observe flows there, and says nothing about access in the
+list. A namespace the caller may not observe is refused by FA with a 403 when
+they open it, and the page shows that error. The page defaults to the
+cluster-wide scope where the caller holds `flows` cluster-wide, which their
+cluster-scoped summary answers, and otherwise to the first candidate.
+
+The per-namespace summary (`access-summary/namespaces`) is still read at login,
+by the navigation gate alone, which gives each namespace one of three answers:
+*allowed* when a rule grants it, *denied* when none does in a rule list the API
+server says is exhaustive, and *unknown* when none does but the API server could
+not enumerate its rules, as with a webhook authorizer, or antrea-ui could not get
+the review for that namespace at all (`evaluationFailed`). A failed review is not
+kept, so the next request asks again. A caller who holds `flows` cluster-wide
+does not cost the backend a review per namespace at login, since their
+cluster-scoped summary already answers it, and neither does a deployment with
+Flow Aggregator integration off.
+
+A caller who may list namespaces has none named in the access summary (it says
+`"*"`), so the page lists them itself through the Kubernetes API proxy, with the
+caller's own credentials. The selector is a combobox that offers at most 10
+candidates at a time and matches what is typed against namespace names by prefix.
+
+When the candidates themselves are not known, because the summary could not be
+fetched or a caller who may list namespaces could not list them, the selector
+lets a caller name a Namespace directly instead, and FA authorizes it either way.
 
 To turn the integration off entirely, deploy with `flowAggregator.enabled=false`
 (the chart default). The endpoint then returns 501 for every user, including

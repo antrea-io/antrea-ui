@@ -22,7 +22,14 @@ export { AntreaOverviewPage } from './pages/antrea-overview-page.js';
 export { AntreaSettingsPage } from './pages/antrea-settings-page.js';
 export { AntreaTraceflowPage } from './pages/antrea-traceflow-page.js';
 export { AntreaFlowVisibilityPage } from './pages/antrea-flow-visibility-page.js';
-export type { EdgeSelection, EdgeExtraRenderer, FlowTableColumn, FlowTableColumnsProcessor } from './pages/antrea-flow-visibility-page.js';
+export type {
+    EdgeSelection,
+    EdgeExtraRenderer,
+    FlowTableColumn,
+    FlowTableColumnsProcessor,
+    ScopeChangeDetail,
+} from './pages/antrea-flow-visibility-page.js';
+export { SCOPE_CHANGE_EVENT } from './pages/antrea-flow-visibility-page.js';
 export type { FlowEntry } from './lib/flow-store.js';
 export { AntreaLoginPage } from './pages/antrea-login-page.js';
 export { SessionAwarePage } from './lib/session-aware-page.js';
@@ -58,7 +65,6 @@ export {
     canNonResource,
     accessibleNamespaces,
     canViewSummary,
-    canViewFlows,
     canViewOverview,
     holdsOverviewResources,
     GATE_TRACEFLOW_CREATE,
@@ -77,3 +83,11 @@ export {
     GATE_ANTREA_NETWORKPOLICIES_LIST,
     GATE_EVENTS_LIST,
 } from './lib/access-api.js';
+export type { FlowAccess, FlowNamespaceAccess } from './lib/flow-access.js';
+export {
+    flowAccess,
+    flowAccessForGate,
+    flowAccessFrom,
+    observableNamespaces,
+    canViewFlows,
+} from './lib/flow-access.js';

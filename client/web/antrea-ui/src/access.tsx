@@ -15,21 +15,28 @@
  */
 
 import React, { useState, useContext, useEffect } from 'react';
-import { accessSummary } from '@antrea/ui-components';
-import type { AccessSummary } from '@antrea/ui-components';
+import { accessSummary, flowAccessForGate } from '@antrea/ui-components';
+import type { AccessSummary, FlowAccess } from '@antrea/ui-components';
 import { useSelector } from 'react-redux';
 import type { RootState } from './store';
 
 interface AccessContextType {
     summary: AccessSummary | null
+    /** Where this caller may observe flows, or null while unknown. Separate from the access
+     * summary because it needs the per-namespace summaries too: Kubernetes offers no reverse
+     * lookup from a subject to the namespaces it may access, so a cluster-scoped summary alone
+     * cannot say whether the caller holds the grant in some namespace. Null means "not known
+     * yet", which canViewFlows treats as allow. */
+    flowAccess: FlowAccess | null
     loaded: boolean
 }
 
-const AccessContext = React.createContext<AccessContextType>({ summary: null, loaded: false });
+const AccessContext = React.createContext<AccessContextType>({ summary: null, flowAccess: null, loaded: false });
 
 export function AccessProvider(props: React.PropsWithChildren) {
     const session = useSelector((state: RootState) => state.session);
     const [summary, setSummary] = useState<AccessSummary | null>(null);
+    const [flowAccess, setFlowAccess] = useState<FlowAccess | null>(null);
     const [loaded, setLoaded] = useState(false);
 
     // Drop what we hold whenever the session changes, rather than leaving it in place until the
@@ -42,22 +49,30 @@ export function AccessProvider(props: React.PropsWithChildren) {
     if (sessionForSummary !== session) {
         setSessionForSummary(session);
         setSummary(null);
+        setFlowAccess(null);
         setLoaded(false);
     }
 
     useEffect(() => {
         if (session !== 'authenticated') return;
         let cancelled = false;
-        accessSummary()
-            .then((s) => { if (!cancelled) { setSummary(s); setLoaded(true); } })
-            // Fetch failure fails open: summary stays null, and callers treat a null summary as
-            // "allow everything" — exactly today's pre-access-summary behaviour.
-            .catch(() => { if (!cancelled) { setSummary(null); setLoaded(true); } });
+        // Both fail open, and `loaded` waits for both: an entry appearing once the answers are
+        // in reads better than one vanishing when a restriction turns out to apply. Flow access
+        // is derived here rather than left to the page so the nav can gate on the same answer the
+        // page will act on; the summaries are memoized, so the page deriving it again costs
+        // nothing. A caller who holds the grant cluster-wide costs no per-namespace review.
+        Promise.allSettled([accessSummary(), flowAccessForGate()])
+            .then(([s, f]) => {
+                if (cancelled) return;
+                setSummary(s.status === 'fulfilled' ? s.value : null);
+                setFlowAccess(f.status === 'fulfilled' ? f.value : null);
+                setLoaded(true);
+            });
         return () => { cancelled = true; };
     }, [session]);
 
     return (
-        <AccessContext.Provider value={{ summary, loaded }}>
+        <AccessContext.Provider value={{ summary, flowAccess, loaded }}>
             {props.children}
         </AccessContext.Provider>
     );
