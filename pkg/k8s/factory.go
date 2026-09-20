@@ -128,6 +128,28 @@ func (f *ClientFactory) KubernetesClientForRequest(ctx context.Context) (kuberne
 	return kubernetes.NewForConfigAndClient(f.config, f.HTTPClient(rt))
 }
 
+// KubernetesClientForRequestUnthrottled is KubernetesClientForRequest without client-go's
+// client-side rate limiter, for a handler that makes a bounded burst of cheap calls and bounds it
+// itself.
+//
+// client-go defaults to 5 QPS with a burst of 10, and builds a fresh token bucket for every client
+// - so a handler that makes, say, a hundred SelfSubjectAccessReviews to answer one request does not
+// hit a shared budget, it simply takes twenty seconds. That is the wrong trade for a request a user
+// is waiting on: the calls are answered from the API server's in-memory authorization state, and
+// what has to be bounded is how many of them one request makes and how many are in flight at once,
+// which only the caller can know. A caller using this must impose both of those bounds.
+func (f *ClientFactory) KubernetesClientForRequestUnthrottled(ctx context.Context) (kubernetes.Interface, error) {
+	rt, err := f.TransportForRequest(ctx)
+	if err != nil {
+		return nil, err
+	}
+	// A negative QPS is how client-go is told to apply no client-side limit at all; zero
+	// would mean "use the default".
+	config := rest.CopyConfig(f.config)
+	config.QPS = -1
+	return kubernetes.NewForConfigAndClient(config, f.HTTPClient(rt))
+}
+
 // HTTPClient wraps rt in an http.Client with the factory's configured timeout.
 func (f *ClientFactory) HTTPClient(rt http.RoundTripper) *http.Client {
 	return &http.Client{Transport: rt, Timeout: f.config.Timeout}
