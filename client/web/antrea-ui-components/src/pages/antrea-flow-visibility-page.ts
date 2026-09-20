@@ -13,12 +13,11 @@
 // limitations under the License.
 
 import { html, css, nothing } from 'lit';
+import type { TemplateResult } from 'lit';
 import { state, query, property } from 'lit/decorators.js';
 import * as d3 from 'd3';
 import { pageStyles } from '../lib/styles.js';
 import { SessionAwarePage } from '../lib/session-aware-page.js';
-import { accessSummary, accessibleNamespaces } from '../lib/access-api.js';
-import type { AccessSummary } from '../lib/access-api.js';
 import { FlowStore, FlowEntry, entryBitRate } from '../lib/flow-store.js';
 import {
     FlowType,
@@ -29,14 +28,23 @@ import {
     formatPolicyInfo,
     formatBytes,
     destinationK8sServiceFilterKey,
+    endpointView,
+    destinationServiceView,
+    endpointRedacted,
 } from '../lib/flow-types.js';
+import type { Flow } from '../lib/flow-types.js';
+import type { EndpointView } from '../lib/flow-types.js';
 import {
     FlowStreamClient,
     FlowStreamFilter,
+    FlowPeerFilter,
+    FlowStreamScope,
     FlowFilterDirection,
     FlowTypeName,
     streamFilterKey,
 } from '../lib/flow-stream.js';
+import { flowNamespaces, observableNamespaces } from '../lib/flow-namespaces-api.js';
+import type { FlowNamespacesResponse } from '../lib/flow-namespaces-api.js';
 import '../antrea-button';
 import '../antrea-alert';
 
@@ -63,11 +71,13 @@ export interface EdgeSelection {
  * this selection. */
 export type EdgeExtraRenderer = (selection: EdgeSelection) => Node | null;
 
-/** A single column of the flow list table. */
+/** A single column of the flow list table. `render` may return a Lit template as well as a
+ * string — the built-in endpoint columns do, to mark a withheld cell — so a plugin returning a
+ * plain string keeps working unchanged. */
 export interface FlowTableColumn {
     key: string;
     label: string;
-    render(entry: FlowEntry): string;
+    render(entry: FlowEntry): string | TemplateResult;
 }
 
 /** A function a plugin registers (via `@antrea/ui-plugin-sdk`'s
@@ -76,9 +86,66 @@ export interface FlowTableColumn {
 export type FlowTableColumnsProcessor = (columns: FlowTableColumn[]) => FlowTableColumn[];
 
 const FLOW_VISIBILITY_FORBIDDEN_MESSAGE =
-    'Flow visibility is restricted to administrators. Flow data has no per-user authorization ' +
-    'yet, so it is limited to the built-in admin and to Kubernetes cluster admins (see ' +
-    'antrea-ui/docs/authentication.md).';
+    'You are not authorized to observe flows in this scope. The Flow Aggregator authorizes each ' +
+    'flow stream with Kubernetes RBAC, against the "flows" resource in API group ' +
+    'observability.antrea.io (see antrea-ui/docs/authentication.md).';
+
+// The observed-namespace selector's value for cluster scope. Not a namespace name, so it cannot
+// collide with one: a namespace may not contain an underscore.
+const SCOPE_CLUSTER_WIDE = '__cluster_wide__';
+
+// Query parameters the scope travels in, so a refresh or a shared link keeps it. They are named
+// after the backend's own stream parameters deliberately — the same two names, with the same
+// meaning, on the page URL and on the SSE request.
+const OBSERVED_NS_PARAM = 'observedNamespace';
+const CLUSTER_WIDE_PARAM = 'clusterWide';
+
+// Shown when no scope is selected. The page opens no stream at all in that state: the Flow
+// Aggregator requires every stream to name exactly one scope, and defaulting to cluster-wide
+// would ask for a grant most users do not hold.
+const SELECT_SCOPE_MESSAGE =
+    'Select a namespace to observe. Flows are authorized per namespace, so a stream has to name ' +
+    'the one namespace — or the whole cluster — it observes.';
+
+// Shown once the namespace list has resolved and turned out to be empty: a real answer, not a
+// failure, so it is an explanation rather than an error toast.
+const NO_OBSERVABLE_NAMESPACES_MESSAGE =
+    'You are not authorized to observe flows in any namespace. Flow visibility needs "watch" on ' +
+    'the "flows" resource in API group observability.antrea.io, in the namespace you want to ' +
+    'observe (see antrea-ui/docs/authentication.md).';
+
+// Shown when the backend could not enumerate every candidate namespace, in which case a
+// namespace's absence from the list is not proof the user cannot observe flows in it.
+//
+// Says why, and says what to do about it. Kubernetes cannot be asked which namespaces a subject
+// may access, so the list is built by finding role bindings that name the user - which misses a
+// grant held through a group, and any namespace the user cannot list. The escape hatch is real:
+// _restoreScopeFromURL honours a namespace from the URL whether or not it is listed, because the
+// Flow Aggregator authorizes the stream either way.
+const INCOMPLETE_NAMESPACES_NOTE =
+    'This list may be missing namespaces you can observe: Kubernetes cannot report which ' +
+    'namespaces a user may access, so the list is built from the role bindings that name you. ' +
+    'Use the "Namespace not listed" box to name one directly.';
+
+const FLOW_NAMESPACES_ERROR_MESSAGE =
+    'Could not load the namespaces you may observe flows in. Reload the page to try again.';
+
+// A pseudo-option in the peer-namespace menu, filtered client-side. It contains a space, so it
+// cannot collide with a namespace name. A server-side filter could not express it: upstream runs
+// its authorization before applying filters, so a filter only ever matches fields that survived
+// redaction, and the peers this selects are exactly the ones whose names did not. It is the only
+// way to ask how much of a namespace's traffic goes somewhere the user cannot see.
+const UNIDENTIFIED_PEERS_OPTION = 'Unidentified peers';
+
+// Said on the two controls that match on an identity the Flow tier clears. Not a limitation to
+// engineer around: filters run on the redacted record, which is also what stops them being an
+// existence oracle - guessing a hidden workload's name returns the same empty result as guessing
+// wrong.
+const IDENTIFIED_ONLY_HINT = 'Matches identified endpoints only.';
+
+// Said in the peer-namespace menu, which is built from the flows received so far rather than
+// from a cluster-wide list, so it fills in as they arrive.
+const PEER_NAMESPACE_HINT = 'Peer namespaces seen in current flows.';
 
 const FLOW_VISIBILITY_DISABLED_MESSAGE =
     'Flow visibility is disabled on this Antrea UI server. Install or upgrade the chart with ' +
@@ -96,7 +163,44 @@ function getWorkloadName(ns: string, pod: string, labels?: Record<string, string
 }
 function workloadShortName(id: string): string { return id.split('/').pop() ?? id; }
 
-interface WorkloadNode { id: string; shortName: string; namespace: string; isExternal: boolean; }
+/**
+ * What a node stands for. A boolean `isExternal` could not express the two collapsed forms, and
+ * everything that branches on this has to handle all four: `nodeHalfSize`, `nodeBoundary`,
+ * `nodeCollideRadius`, the node-rendering branch and the three hull-membership filters. Missing
+ * one is a layout bug, not a visual nit.
+ *
+ * - `workload`          — a workload in this cluster, identified.
+ * - `external`          — an aggregate of peers outside the cluster. Nothing about it was
+ *                         withheld: there was never a Kubernetes identity to withhold.
+ * - `undisclosedNamespace` — a namespace whose name survived redaction but whose contents did
+ *                         not. Rendered as an empty namespace hull, because in this map's
+ *                         grammar a dashed outline is a namespace and a rounded rect is a
+ *                         workload, so a box labelled `ns-c` would read as a workload called
+ *                         `ns-c`.
+ * - `undisclosed`       — a peer inside the cluster whose namespace was cleared too, which
+ *                         happens only on a denied connection. One per identified counterpart
+ *                         workload, never one shared node: a shared node would assert that every
+ *                         denied flow reaching it went to the same place, which is false and
+ *                         unknowable, and a force layout would pull the one thing nobody can see
+ *                         into the centre of the graph.
+ */
+type NodeKind = 'workload' | 'external' | 'undisclosedNamespace' | 'undisclosed';
+
+interface WorkloadNode {
+    id: string;
+    shortName: string;
+    namespace: string;
+    kind: NodeKind;
+    /** The second line of the label. The namespace for a workload, and for a collapsed form the
+     * distinct peer addresses behind it - a count that leaks nothing, since those addresses are
+     * already in the records the client holds (redactFlow never touches Flow.IP). */
+    detail: string;
+    /** Distinct peer addresses collapsed into this node, which `detail` is derived from once the
+     * graph is complete. Deliberately not a workload or Pod count: it is a lower bound, it
+     * over-counts a Pod that restarted with a new address, and for a host-network Pod it is a
+     * Node address. */
+    addresses?: Set<string>;
+}
 interface WorkloadEdge {
     source: string; target: string;
     connectionCount: number; totalBytesForward: number; totalBytesReverse: number; bitRate: number;
@@ -107,6 +211,8 @@ interface WorkloadEdge {
     ingressPolicyNames: Set<string>; egressPolicyNames: Set<string>;
     ingressActions: Set<NetworkPolicyRuleAction>; egressActions: Set<NetworkPolicyRuleAction>;
     flowTypes: Set<FlowType>;
+    /** The distinct flows behind this edge, which connectionCount is derived from. */
+    flowIds: Set<string>;
 }
 interface EdgeDetails {
     source: string; target: string;
@@ -114,7 +220,94 @@ interface EdgeDetails {
     destPortsStr: string;
     ingressPolicies: string[]; egressPolicies: string[]; flowTypes: string[];
 }
-interface GraphData { nodes: WorkloadNode[]; edges: WorkloadEdge[]; edgeMap: Map<string, WorkloadEdge>; }
+interface GraphData { nodes: WorkloadNode[]; edges: WorkloadEdge[]; edgeMap: Map<string, WorkloadEdge>; nodeMap: Map<string, WorkloadNode>; }
+
+/** One end of a flow, before it is turned into a node: a collapsed end's node id can depend on
+ * the other end's, so the two have to be described before either is resolved. */
+type EndpointDesc =
+    | { kind: 'external' }
+    | { kind: 'workload'; id: string; namespace: string; shortName: string }
+    | { kind: 'undisclosedNamespace'; namespace: string; address: string }
+    | { kind: 'undisclosed'; address: string };
+
+function describeEndpoint(flow: Flow, side: 'source' | 'destination'): EndpointDesc {
+    const k8s = flow.k8s;
+    const isSource = side === 'source';
+    const flowType = k8s.flowType as FlowType;
+    if (isSource ? flowType === FlowType.FromExternal : flowType === FlowType.ToExternal) {
+        return { kind: 'external' };
+    }
+    const disclosure = isSource ? k8s.sourceDisclosure : k8s.destinationDisclosure;
+    const namespace = isSource ? k8s.sourcePodNamespace : k8s.destinationPodNamespace;
+    const address = isSource ? flow.ip.source : flow.ip.destination;
+    if (endpointRedacted(disclosure)) {
+        // The namespace survives only for an allowed connection: redactFlow clears it as well
+        // when the connection was denied, which is what splits the two collapsed forms. One real
+        // namespace can therefore appear twice in a graph - under its name for its allowed
+        // flows, among the anonymous nodes for its denied ones - and must not be merged back by
+        // correlating addresses, which would reconstruct the IP-to-namespace map redaction
+        // exists to prevent.
+        return namespace
+            ? { kind: 'undisclosedNamespace', namespace, address }
+            : { kind: 'undisclosed', address };
+    }
+    const podName = isSource ? k8s.sourcePodName : k8s.destinationPodName;
+    const labels = isSource ? k8s.sourcePodLabels : k8s.destinationPodLabels;
+    const svcKey = !isSource && k8s.destinationServicePortName
+        ? destinationK8sServiceFilterKey(k8s.destinationServicePortName) : '';
+    const workloadId = svcKey || getWorkloadName(namespace, podName, labels);
+    const shortName = workloadShortName(workloadId);
+    if (shortName) return { kind: 'workload', id: workloadId, namespace, shortName };
+    // No workload name to show: getWorkloadName returns "ns/" for an endpoint with no Pod name
+    // and no labels, which used to give a node an empty label sized by textWidth("") - a
+    // malformed sliver. The address is always there to fall back on, at every tier.
+    return {
+        kind: 'workload',
+        id: namespace ? `${namespace}/${address}` : address,
+        namespace,
+        shortName: address || 'unknown',
+    };
+}
+
+/** The node id of an end that is identified, or null for one that is collapsed and so has to be
+ * keyed on its counterpart. */
+function identifiedNodeId(desc: EndpointDesc): string | null {
+    if (desc.kind === 'external') return 'external';
+    if (desc.kind === 'workload') return desc.id;
+    return null;
+}
+
+// ':' cannot appear in a workload node id, which is always "namespace/name", so neither prefix
+// can collide with a real workload.
+function collapsedNodeId(desc: EndpointDesc, counterpartId: string | null): string {
+    if (desc.kind === 'undisclosedNamespace') return `undisclosed-namespace:${desc.namespace}`;
+    // Keyed on the identified counterpart, which the caller holds at Full or Identity, so the
+    // key itself discloses nothing about the far end. A record only ever reaches the client
+    // because one of its ends is in scope, so the fallback is for a record that should not
+    // exist rather than a case with a sensible grouping.
+    return `undisclosed-peer:${counterpartId ?? (desc.kind === 'undisclosed' ? desc.address : '')}`;
+}
+
+function nodeFor(desc: EndpointDesc, id: string): WorkloadNode {
+    switch (desc.kind) {
+        case 'external':
+            return { id, shortName: 'External', namespace: '', kind: 'external', detail: '' };
+        case 'workload':
+            return { id, shortName: desc.shortName, namespace: desc.namespace, kind: 'workload', detail: desc.namespace };
+        case 'undisclosedNamespace':
+            return { id, shortName: desc.namespace, namespace: desc.namespace, kind: 'undisclosedNamespace', detail: '', addresses: new Set() };
+        case 'undisclosed':
+            return { id, shortName: 'undisclosed', namespace: '', kind: 'undisclosed', detail: '', addresses: new Set() };
+    }
+}
+
+/** The second line of a collapsed node's label: the number of distinct peer addresses behind it.
+ * "addresses" deliberately, not "endpoints" - Endpoints is a Kubernetes resource and upstream
+ * uses "endpoint" for one end of a flow, so either reading of that word would be wrong here. */
+function addressesLabel(addresses: Set<string>): string {
+    if (addresses.size === 1) return Array.from(addresses)[0];
+    return `${addresses.size} addresses`;
+}
 
 function buildGraph(entries: FlowEntry[]): GraphData {
     const nodeMap = new Map<string, WorkloadNode>();
@@ -122,50 +315,66 @@ function buildGraph(entries: FlowEntry[]): GraphData {
     for (const entry of entries) {
         const { flow } = entry;
         const flowType = flow.k8s.flowType as FlowType;
-        let srcId: string;
-        let dstId: string;
-        if (flowType === FlowType.FromExternal) {
-            srcId = 'external';
-            if (!nodeMap.has(srcId)) nodeMap.set(srcId, { id: srcId, shortName: 'External', namespace: '', isExternal: true });
-        } else {
-            srcId = getWorkloadName(flow.k8s.sourcePodNamespace, flow.k8s.sourcePodName, flow.k8s.sourcePodLabels);
-            if (!nodeMap.has(srcId)) nodeMap.set(srcId, { id: srcId, shortName: workloadShortName(srcId), namespace: flow.k8s.sourcePodNamespace, isExternal: false });
-        }
-        if (flowType === FlowType.ToExternal) {
-            dstId = 'external';
-            if (!nodeMap.has(dstId)) nodeMap.set(dstId, { id: dstId, shortName: 'External', namespace: '', isExternal: true });
-        } else {
-            const svcKey = flow.k8s.destinationServicePortName ? destinationK8sServiceFilterKey(flow.k8s.destinationServicePortName) : '';
-            dstId = svcKey || getWorkloadName(flow.k8s.destinationPodNamespace, flow.k8s.destinationPodName, flow.k8s.destinationPodLabels);
-            if (!nodeMap.has(dstId)) nodeMap.set(dstId, { id: dstId, shortName: workloadShortName(dstId), namespace: flow.k8s.destinationPodNamespace, isExternal: false });
+        const srcDesc = describeEndpoint(flow, 'source');
+        const dstDesc = describeEndpoint(flow, 'destination');
+        // Only the unidentified side collapses. A flow from an in-scope workload to a peer the
+        // caller may not identify keeps its source at workload granularity: collapsing both ends
+        // would destroy the one thing the caller is entitled to see, which of their own
+        // workloads is talking outward.
+        const srcIdentified = identifiedNodeId(srcDesc);
+        const dstIdentified = identifiedNodeId(dstDesc);
+        const srcId = srcIdentified ?? collapsedNodeId(srcDesc, dstIdentified);
+        const dstId = dstIdentified ?? collapsedNodeId(dstDesc, srcIdentified);
+        for (const [id, desc] of [[srcId, srcDesc], [dstId, dstDesc]] as [string, EndpointDesc][]) {
+            let node = nodeMap.get(id);
+            if (!node) { node = nodeFor(desc, id); nodeMap.set(id, node); }
+            if (node.addresses) {
+                const address = desc.kind === 'undisclosedNamespace' || desc.kind === 'undisclosed' ? desc.address : '';
+                if (address) node.addresses.add(address);
+            }
         }
         if (srcId === dstId) continue;
         const edgeKey = `${srcId}|${dstId}`;
         let edge = edgeMap.get(edgeKey);
         if (!edge) {
-            edge = { source: srcId, target: dstId, connectionCount: 0, totalBytesForward: 0, totalBytesReverse: 0, bitRate: 0, protoPorts: new Map(), ingressPolicies: new Set(), egressPolicies: new Set(), ingressPolicyNames: new Set(), egressPolicyNames: new Set(), ingressActions: new Set(), egressActions: new Set(), flowTypes: new Set() };
+            edge = { source: srcId, target: dstId, flowIds: new Set(), connectionCount: 0, totalBytesForward: 0, totalBytesReverse: 0, bitRate: 0, protoPorts: new Map(), ingressPolicies: new Set(), egressPolicies: new Set(), ingressPolicyNames: new Set(), egressPolicyNames: new Set(), ingressActions: new Set(), egressActions: new Set(), flowTypes: new Set() };
             edgeMap.set(edgeKey, edge);
         }
-        edge.connectionCount++;
+        // Distinct flow IDs, not records: several records can describe the same flow, and a
+        // collapsed node aggregates whatever number of peers happens to sit behind it.
+        edge.flowIds.add(flow.id);
         edge.totalBytesForward += flow.stats.octetTotalCount;
         edge.totalBytesReverse += flow.reverseStats.octetTotalCount;
         edge.bitRate += entryBitRate(entry);
         let protoSet = edge.protoPorts.get(flow.transport.protocolNumber);
         if (!protoSet) { protoSet = new Set(); edge.protoPorts.set(flow.transport.protocolNumber, protoSet); }
         if (flow.transport.destinationPort) protoSet.add(flow.transport.destinationPort);
-        if (flow.k8s.ingressNetworkPolicyName) {
-            edge.ingressPolicies.add(formatPolicyInfo(flow.k8s.ingressNetworkPolicyName, flow.k8s.ingressNetworkPolicyRuleAction));
-            edge.ingressPolicyNames.add(flow.k8s.ingressNetworkPolicyName);
+        // Keyed on what formatPolicyInfo makes of the pair rather than on the name alone: at the
+        // Flow tier the name is cleared but the action survives, and dropping the edge's policy
+        // information because the name went missing would lose the one field redaction
+        // deliberately preserved - including the colour edgeRole gives the edge. The raw-name
+        // sets stay keyed on the name, since there is no name to link to.
+        // Each policy's identity follows its own side's tier: the ingress policy is evaluated on
+        // the destination, the egress policy on the source.
+        const ingressInfo = formatPolicyInfo(flow.k8s.ingressNetworkPolicyName, flow.k8s.ingressNetworkPolicyRuleAction, flow.k8s.destinationDisclosure);
+        if (ingressInfo) {
+            edge.ingressPolicies.add(ingressInfo);
+            if (flow.k8s.ingressNetworkPolicyName) edge.ingressPolicyNames.add(flow.k8s.ingressNetworkPolicyName);
             edge.ingressActions.add(flow.k8s.ingressNetworkPolicyRuleAction);
         }
-        if (flow.k8s.egressNetworkPolicyName) {
-            edge.egressPolicies.add(formatPolicyInfo(flow.k8s.egressNetworkPolicyName, flow.k8s.egressNetworkPolicyRuleAction));
-            edge.egressPolicyNames.add(flow.k8s.egressNetworkPolicyName);
+        const egressInfo = formatPolicyInfo(flow.k8s.egressNetworkPolicyName, flow.k8s.egressNetworkPolicyRuleAction, flow.k8s.sourceDisclosure);
+        if (egressInfo) {
+            edge.egressPolicies.add(egressInfo);
+            if (flow.k8s.egressNetworkPolicyName) edge.egressPolicyNames.add(flow.k8s.egressNetworkPolicyName);
             edge.egressActions.add(flow.k8s.egressNetworkPolicyRuleAction);
         }
         edge.flowTypes.add(flowType);
     }
-    return { nodes: Array.from(nodeMap.values()), edges: Array.from(edgeMap.values()), edgeMap };
+    for (const edge of edgeMap.values()) edge.connectionCount = edge.flowIds.size;
+    for (const node of nodeMap.values()) {
+        if (node.addresses) node.detail = addressesLabel(node.addresses);
+    }
+    return { nodes: Array.from(nodeMap.values()), edges: Array.from(edgeMap.values()), edgeMap, nodeMap };
 }
 
 function formatBitRate(bps: number): string {
@@ -173,6 +382,15 @@ function formatBitRate(bps: number): string {
     const units = ['bps', 'Kbps', 'Mbps', 'Gbps'];
     const i = Math.min(Math.floor(Math.log(bps) / Math.log(1000)), units.length - 1);
     return `${(bps / Math.pow(1000, i)).toFixed(i > 0 ? 1 : 0)} ${units[i]}`;
+}
+
+/** How an edge's endpoint reads in the details card and the edge tooltip. Node ids are internal
+ * (a collapsed node's is prefixed to keep it from colliding with a workload's), so the node's own
+ * label is what to show; the ids themselves stay on EdgeSelection, which is a plugin contract. */
+function nodeLabel(graph: GraphData, id: string): string {
+    const node = graph.nodeMap.get(id);
+    if (!node) return workloadShortName(id);
+    return node.detail && node.kind !== 'workload' ? `${node.shortName} (${node.detail})` : node.shortName;
 }
 
 function edgeToDetails(edge: WorkloadEdge): EdgeDetails {
@@ -226,6 +444,10 @@ const MAP_COLOR_VAR = {
     nodeStroke: 'var(--antrea-color-map-node-stroke, #6a9fb5)',
     nodeText: 'var(--antrea-color-map-node-text, #e0e8ec)',
     nodeNamespaceText: 'var(--antrea-color-map-node-namespace-text, rgba(106,159,181,0.7))',
+    // A colour of its own for the fully anonymous peer: it reuses External's diamond because the
+    // two are structurally the same, but they must not read as the same thing.
+    undisclosedFill: 'var(--antrea-color-map-undisclosed-fill, #33283d)',
+    undisclosedStroke: 'var(--antrea-color-map-undisclosed-stroke, #a98bc4)',
 } as const;
 
 function edgeRole(edge: WorkloadEdge): EdgeRole {
@@ -247,7 +469,23 @@ function edgeLabel(edge: WorkloadEdge): string {
 
 // ── D3 node geometry ─────────────────────────────────────────────────────────
 
-interface D3Node extends d3.SimulationNodeDatum { id: string; shortName: string; namespace: string; isExternal: boolean; }
+interface D3Node extends d3.SimulationNodeDatum { id: string; shortName: string; namespace: string; kind: NodeKind; detail: string; }
+
+/** Whether this node is drawn as a diamond: an aggregate of unbounded cardinality with no
+ * namespace, excluded from the hulls and not drillable. `undisclosed` reuses External's shape
+ * because it is structurally the same object - in a different colour, because External means
+ * outside the cluster and this means inside it and withheld. */
+function isDiamond(d: { kind: NodeKind }): boolean {
+    return d.kind === 'external' || d.kind === 'undisclosed';
+}
+
+/** Whether this node belongs to a namespace hull. A real hull is a d3.polygonHull over its
+ * members' positions, so the collapsed namespace - which by definition has no members - is not
+ * one of them: it is a fixed-size simulation node rendered in the hull's style, so that the
+ * layout places it and edges terminate on it. */
+function inNamespaceHull(d: { kind: NodeKind; namespace: string }): boolean {
+    return d.kind === 'workload' && !!d.namespace;
+}
 interface D3Link extends d3.SimulationLinkDatum<D3Node> { edgeKey: string; connectionCount: number; role: EdgeRole; label: string; curveOffset: number; }
 
 const HEIGHT = 900;
@@ -256,12 +494,21 @@ const NODE_PADDING_X = 14;
 const NODE_PADDING_Y = 8;
 const EXTERNAL_SIZE = 20;
 const CURVE_OFFSET = 30;
+// The collapsed namespace is a fixed-size node, not a hull over members it does not have, so it
+// needs a size of its own: wide and shallow enough to read as a small, empty namespace outline
+// rather than as an oversized workload.
+const COLLAPSED_NS_MIN_WIDTH = 150;
+const COLLAPSED_NS_HEIGHT = 56;
+const LOCK_SIZE = 11;
 
 function textWidth(text: string, size: number): number { return text.length * size * 0.6; }
 
 function nodeHalfSize(d: D3Node): { hw: number; hh: number } {
-    if (d.isExternal) return { hw: EXTERNAL_SIZE, hh: EXTERNAL_SIZE };
-    const w = Math.max(textWidth(d.shortName, 12), textWidth(d.namespace, 9)) + NODE_PADDING_X * 2;
+    if (isDiamond(d)) return { hw: EXTERNAL_SIZE, hh: EXTERNAL_SIZE };
+    const w = Math.max(textWidth(d.shortName, 12), textWidth(d.detail, 9)) + NODE_PADDING_X * 2 + (d.kind === 'undisclosedNamespace' ? LOCK_SIZE + 6 : 0);
+    if (d.kind === 'undisclosedNamespace') {
+        return { hw: Math.max(w, COLLAPSED_NS_MIN_WIDTH) / 2, hh: (COLLAPSED_NS_HEIGHT + NODE_PADDING_Y) / 2 };
+    }
     return { hw: w / 2, hh: (38 + NODE_PADDING_Y) / 2 };
 }
 
@@ -272,7 +519,7 @@ function nodeBoundary(d: D3Node, tx: number, ty: number, gap: number): [number, 
     const ux = dx / len; const uy = dy / len;
     const { hw, hh } = nodeHalfSize(d);
     let scale: number;
-    if (d.isExternal) scale = hw / (Math.abs(ux) + Math.abs(uy));
+    if (isDiamond(d)) scale = hw / (Math.abs(ux) + Math.abs(uy));
     else if (Math.abs(ux) * hh > Math.abs(uy) * hw) scale = hw / Math.abs(ux);
     else scale = hh / Math.abs(uy);
     return [cx + ux * (scale + gap), cy + uy * (scale + gap)];
@@ -292,8 +539,9 @@ function quadMidpoint(sx: number, sy: number, tx: number, ty: number, offset: nu
 }
 
 function nodeCollideRadius(d: D3Node): number {
-    if (d.isExternal) return EXTERNAL_SIZE + 4;
-    return Math.max(textWidth(d.shortName, 12), textWidth(d.namespace, 9)) / 2 + NODE_PADDING_X + 4;
+    if (isDiamond(d)) return EXTERNAL_SIZE + 4;
+    const { hw } = nodeHalfSize(d);
+    return hw + 4;
 }
 
 // ── Sort / filter helpers (flow list) ────────────────────────────────────────
@@ -332,19 +580,53 @@ function matchesText(entry: FlowEntry, text: string): boolean {
     ].some(s => s.toLowerCase().includes(lower));
 }
 
+// A padlock, drawn rather than set as a character: the codebase's own affordances are drawn or
+// are plain glyphs, and the Unicode lock is an emoji in most fonts.
+const LOCK_PATH = 'M5 7.2V5.4a3 3 0 0 1 6 0v1.8h.4c.6 0 1.1.5 1.1 1.1v4.6c0 .6-.5 1.1-1.1 1.1H4.6c-.6 0-1.1-.5-1.1-1.1V8.3c0-.6.5-1.1 1.1-1.1H5zm1.4 0h3.2V5.4a1.6 1.6 0 0 0-3.2 0v1.8z';
+
+/** Draws the same padlock into an SVG node group, at (x, y) in the group's own coordinates. */
+function appendLock(g: d3.Selection<SVGGElement, unknown, null, undefined>, x: number, y: number, color: string) {
+    g.append('path').attr('d', LOCK_PATH)
+        .attr('transform', `translate(${x},${y}) scale(${LOCK_SIZE / 16})`)
+        .style('fill', color);
+}
+
+/** The one definition of what a collapsed namespace's tooltip says, so the visible tooltip and
+ * the accessible name cannot drift apart. Actionable on purpose: it names the grant that would
+ * disclose the namespace, which is the whole reason this node gets a tooltip and the fully
+ * anonymous one does not. */
+function collapsedNamespaceTooltip(namespace: string): string {
+    return `Workloads in ${namespace} are not shown. Seeing them requires get flows/identity on ${namespace}.`;
+}
+
+/** Renders one cell of the list that redaction may have emptied. The mark goes in the cell and
+ * not on the row: a row-level marker cannot say *which* field was withheld, and it leaves a
+ * withheld Dest Service cell looking simply empty. A tooltip is attached only where the view
+ * carries one, i.e. only where it is actionable. */
+function renderRedactable(view: EndpointView): string | TemplateResult {
+    const addr = view.detail ? html`<div class="endpoint-addr">${view.detail}</div>` : nothing;
+    if (!view.redacted) return view.detail ? html`${view.text}${addr}` : view.text;
+    const label = view.tooltip ?? 'Withheld: you are not authorized to identify this endpoint.';
+    const mark = html`<span class="redacted" title=${label}
+        >${view.text}<svg class="lock" viewBox="0 0 16 16" width="11" height="11" role="img" aria-label=${label}
+            ><path d=${LOCK_PATH} fill="currentColor"></path></svg
+    ></span>`;
+    return html`${mark}${addr}`;
+}
+
 // `field` marks a column as sortable via the existing SortField/sortValue() machinery — columns
 // a FlowTableColumnsProcessor inserts don't have one, so they render but aren't sortable.
 const BASE_COLUMNS: (FlowTableColumn & { field?: SortField })[] = [
     { key: 'lastSeen', field: 'lastSeen', label: 'Last Seen', render: e => new Date(e.flow.endTs).toLocaleTimeString() },
-    { key: 'source', field: 'source', label: 'Source', render: e => formatEndpoint(e.flow.k8s.sourcePodNamespace, e.flow.k8s.sourcePodName, e.flow.ip.source) },
-    { key: 'destination', field: 'destination', label: 'Destination', render: e => formatEndpoint(e.flow.k8s.destinationPodNamespace, e.flow.k8s.destinationPodName, e.flow.ip.destination) },
-    { key: 'destinationService', field: 'destinationService', label: 'Dest Service', render: e => destinationK8sServiceFilterKey(e.flow.k8s.destinationServicePortName) || e.flow.k8s.destinationServicePortName || '-' },
+    { key: 'source', field: 'source', label: 'Source', render: e => renderRedactable(endpointView(e.flow.k8s.sourceDisclosure, e.flow.k8s.sourcePodNamespace, e.flow.k8s.sourcePodName, e.flow.ip.source, e.flow.k8s.flowType as FlowType === FlowType.FromExternal)) },
+    { key: 'destination', field: 'destination', label: 'Destination', render: e => renderRedactable(endpointView(e.flow.k8s.destinationDisclosure, e.flow.k8s.destinationPodNamespace, e.flow.k8s.destinationPodName, e.flow.ip.destination, e.flow.k8s.flowType as FlowType === FlowType.ToExternal)) },
+    { key: 'destinationService', field: 'destinationService', label: 'Dest Service', render: e => renderRedactable(destinationServiceView(e.flow.k8s.destinationDisclosure, e.flow.k8s.destinationServicePortName, e.flow.k8s.flowType as FlowType === FlowType.ToExternal)) },
     { key: 'protocol', field: 'protocol', label: 'Protocol', render: e => getProtocolName(e.flow.transport.protocolNumber) },
     { key: 'destPort', field: 'destPort', label: 'Dest Port', render: e => String(e.flow.transport.destinationPort) },
     { key: 'bytesFwd', field: 'bytesFwd', label: 'Bytes (Fwd)', render: e => formatBytes(e.flow.stats.octetTotalCount) },
     { key: 'bytesRev', field: 'bytesRev', label: 'Bytes (Rev)', render: e => formatBytes(e.flow.reverseStats.octetTotalCount) },
-    { key: 'ingressPolicy', field: 'ingressPolicy', label: 'Ingress Policy', render: e => formatPolicyInfo(e.flow.k8s.ingressNetworkPolicyName, e.flow.k8s.ingressNetworkPolicyRuleAction) || '-' },
-    { key: 'egressPolicy', field: 'egressPolicy', label: 'Egress Policy', render: e => formatPolicyInfo(e.flow.k8s.egressNetworkPolicyName, e.flow.k8s.egressNetworkPolicyRuleAction) || '-' },
+    { key: 'ingressPolicy', field: 'ingressPolicy', label: 'Ingress Policy', render: e => formatPolicyInfo(e.flow.k8s.ingressNetworkPolicyName, e.flow.k8s.ingressNetworkPolicyRuleAction, e.flow.k8s.destinationDisclosure) || '-' },
+    { key: 'egressPolicy', field: 'egressPolicy', label: 'Egress Policy', render: e => formatPolicyInfo(e.flow.k8s.egressNetworkPolicyName, e.flow.k8s.egressNetworkPolicyRuleAction, e.flow.k8s.sourceDisclosure) || '-' },
     { key: 'flowType', field: 'flowType', label: 'Flow Type', render: e => flowTypeLabel[e.flow.k8s.flowType as FlowType] ?? 'Unknown' },
 ];
 
@@ -383,6 +665,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
             color: var(--antrea-color-text, #e9ecef);
         }
         .multiselect-option.selected { background: var(--antrea-color-bg-hover, #2e3f4d); }
+        .multiselect-hint { padding: 5px 10px; font-size: 11px; color: var(--antrea-color-text-muted, #adbbc4); }
 
         .flow-list-header { display: flex; align-items: center; gap: 1rem; }
         .flow-list-scroll { max-height: 70vh; overflow-x: auto; overflow-y: auto; }
@@ -433,6 +716,12 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         .edge-details-rows { display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.8125rem; }
         .edge-extra { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--antrea-color-border, #314351); }
         .warn { color: var(--antrea-color-warning, #f5a623); }
+        .redacted { display: inline-flex; align-items: center; gap: 4px; color: var(--antrea-color-text-muted, #adbbc4); }
+        .redacted .lock { flex-shrink: 0; opacity: 0.8; }
+        .endpoint-addr {
+            font-family: var(--antrea-font-mono, ui-monospace, Menlo, monospace);
+            font-size: 0.6875rem; color: var(--antrea-color-text-disabled, #6a7f8e);
+        }
     `];
 
     // View. A property, not @state: Flow List and Service Map are second-level pages under Flow
@@ -441,27 +730,47 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
     @property() viewMode: 'list' | 'map' = 'list';
     @state() private _paused = false;
 
-    // Namespace filter menu is intersected with this once loaded, so users only see namespaces
-    // both present in the current flows and accessible to them. Null (not loaded, fetch failed,
-    // or ["*"]) means no restriction.
-    @state() private _accessSummary: AccessSummary | null = null;
+    // Scope: which namespace this page observes flows in, or the whole cluster. Exactly one of
+    // these is ever set, and neither being set is the initial state - see _scope.
+    @state() private _observedNs = '';
+    @state() private _clusterWide = false;
+    // The selector's options (GET /api/v1/flows/namespaces). Null until it resolves, which is
+    // what _flowNamespacesLoaded distinguishes from a failure.
+    @state() private _flowNamespaces: FlowNamespacesResponse | null = null;
+    @state() private _flowNamespacesLoaded = false;
 
     // Stream
     @state() private _entries: FlowEntry[] = [];
     @state() private _connected = false;
     @state() private _error: string | null = null;
-    // Set on 501 (integration off) or 403 (this user may not view flow data). Both are terminal
-    // for the session, and both must keep _startStream from re-opening the stream on the next
-    // filter change; the error message says which one it was.
-    private _flowVisibilityDisabled = false;
+    // Set on 501: Flow Aggregator integration is off for this deployment, a fixed fact about the
+    // server that no filter or scope change on this page can affect. Terminal for the session,
+    // and must keep _startStream from re-opening the stream on any later filter change.
+    private _integrationDisabled = false;
+    // Set to _filterKey on 403: FA refused this user the scope that request asked for. Unlike
+    // _integrationDisabled this is not terminal - authorization is per-scope, so it only needs to
+    // block _startStream from retrying the exact same request that was just refused, not every
+    // request forever. _applyFilter changing _filterKey (a peer-filter edit, or eventually a
+    // different scope once the observed-namespace selector exists) clears it implicitly, since
+    // the comparison in _startStream stops matching.
+    private _forbiddenFilterKey: string | null = null;
     @state() private _droppedCount = 0;
     @state() private _evictionWarning = false;
 
-    // Filters (applied)
-    @state() private _filter: FlowStreamFilter = {};
+    // The applied peer filters, without a scope. The scope lives in _observedNs/_clusterWide and
+    // is folded in by _composeFilter, which is the only thing that can build a FlowStreamFilter -
+    // the type cannot express one without a scope, and the backend answers a scope-less request
+    // with a 400.
+    private _peerFilter: FlowPeerFilter = {};
+    // The filter the open stream was built from, or null when no scope is selected and so no
+    // stream is open. Not reactive: nothing renders it.
+    private _filter: FlowStreamFilter | null = null;
 
     // Filter UI state
     @state() private _pendingNs: string[] = [];
+    // The applied half of the "Unidentified peers" pseudo-option. Client-side, so unlike the
+    // real filters it changes nothing about the open stream.
+    @state() private _unidentifiedPeersOnly = false;
     @state() private _pendingPods: string[] = [];
     @state() private _pendingServices: string[] = [];
     @state() private _pendingFlowType: FlowTypeName | '' = '';
@@ -493,10 +802,12 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
     private _store = new FlowStore();
     private _client: FlowStreamClient | null = null;
     private _simulation: d3.Simulation<D3Node, D3Link> | null = null;
-    private _filterKey = streamFilterKey({});
+    // The key of the request the open stream was built from, or '' when there is none. Compared
+    // against itself to decide whether a change actually needs a reconnect.
+    private _filterKey = '';
     private _refreshTimer: ReturnType<typeof setInterval> | null = null;
     private _ro: ResizeObserver | null = null;
-    private _graphRef: GraphData = { nodes: [], edges: [], edgeMap: new Map() };
+    private _graphRef: GraphData = { nodes: [], edges: [], edgeMap: new Map(), nodeMap: new Map() };
     private _prevTopologyKey = '';
 
     private _handleDocClick = (e: PointerEvent) => {
@@ -517,14 +828,106 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
     }
 
     protected override onSessionReady() {
-        // No credential to wait for: the browser attaches the session cookie to the SSE fetch
-        // itself, so the stream can open as soon as the element is in the DOM.
-        this._startStream();
-        // The flow stream itself is not filtered by this (see accessSummary()'s doc): this only
-        // narrows the namespace filter menu, and fails open on failure.
-        accessSummary()
-            .then(s => { this._accessSummary = s; })
-            .catch(() => { this._accessSummary = null; });
+        // The namespace list is fetched first and the stream opens only afterwards, which is the
+        // reverse of the order this page used when the namespace menu merely narrowed a filter:
+        // a stream now has to name its scope, so no stream can open before the scope does. There
+        // is no credential to wait for beyond the session cookie, which the browser attaches to
+        // both fetches itself.
+        void this._loadFlowNamespaces();
+    }
+
+    /** Loads the selector's options, then restores the scope from the URL and opens the stream if
+     * that leaves one selected. A failure is an error - unlike an empty list, which is a real
+     * answer this user is entitled to (see _renderScopeEmptyState). */
+    private async _loadFlowNamespaces() {
+        try {
+            this._flowNamespaces = await flowNamespaces();
+        } catch {
+            this._flowNamespaces = null;
+            this._error = FLOW_NAMESPACES_ERROR_MESSAGE;
+        }
+        this._flowNamespacesLoaded = true;
+        this._restoreScopeFromURL();
+        this._refreshStream();
+    }
+
+    /** Restores the scope a refresh or a shared link carries. A namespace is honoured even when
+     * it is not in the list, since the list can be incomplete and the Flow Aggregator authorizes
+     * the stream anyway; cluster scope is honoured only when the backend says this user has it,
+     * because unlike a namespace there is nothing to show in the selector otherwise. */
+    private _restoreScopeFromURL() {
+        const params = new URLSearchParams(window.location.search);
+        if (params.get(CLUSTER_WIDE_PARAM) === 'true') {
+            if (this._flowNamespaces?.clusterWide) this._clusterWide = true;
+            return;
+        }
+        const ns = params.get(OBSERVED_NS_PARAM)?.trim();
+        if (ns) this._observedNs = ns;
+    }
+
+    /** Writes the current scope back to the URL, in place: this is page state a refresh should
+     * keep, not a navigation worth a history entry. */
+    private _writeScopeToURL() {
+        const url = new URL(window.location.href);
+        url.searchParams.delete(OBSERVED_NS_PARAM);
+        url.searchParams.delete(CLUSTER_WIDE_PARAM);
+        if (this._clusterWide) url.searchParams.set(CLUSTER_WIDE_PARAM, 'true');
+        else if (this._observedNs) url.searchParams.set(OBSERVED_NS_PARAM, this._observedNs);
+        if (url.toString() === window.location.href) return;
+        window.history.replaceState(window.history.state, '', url.toString());
+        // replaceState mutates the URL without telling anyone. A router that reads the location
+        // through its own abstraction - react-router's useLocation(), in this repo's host - goes
+        // on serving the value it last saw, so links it builds from the query string carry a
+        // stale scope, or none at all on a fresh load. Both host routers already resync on
+        // popstate, which is exactly "the URL changed underneath you"; dispatching it is
+        // host-agnostic, where a custom event would need every host to opt in and would fail
+        // silently in the one that had not.
+        window.dispatchEvent(new PopStateEvent('popstate', { state: window.history.state }));
+    }
+
+    /** The selected scope, or null when none is: the state in which this page deliberately opens
+     * no stream at all rather than falling back to observing everything. */
+    private get _scope(): FlowStreamScope | null {
+        if (this._clusterWide) return { clusterWide: true };
+        if (this._observedNs) return { observedNamespace: this._observedNs };
+        return null;
+    }
+
+    private _composeFilter(): FlowStreamFilter | null {
+        const scope = this._scope;
+        return scope ? { ...this._peerFilter, ...scope } : null;
+    }
+
+    /** The namespaces the selector offers. The URL may name one the backend did not list (see
+     * _restoreScopeFromURL), and it has to appear here or the <select> would show no selection
+     * for a scope that is nevertheless in force. */
+    private get _observableNs(): string[] {
+        const ns = new Set(observableNamespaces(this._flowNamespaces));
+        if (this._observedNs) ns.add(this._observedNs);
+        return Array.from(ns).sort();
+    }
+
+    /** Candidates the backend reported this user cannot observe. Offered as disabled options
+     * rather than omitted, so a namespace the user expected to find is visibly refused rather
+     * than silently missing. */
+    private get _unobservableNs(): string[] {
+        return (this._flowNamespaces?.namespaces ?? [])
+            .filter(n => !n.canObserve && n.namespace !== this._observedNs)
+            .map(n => n.namespace)
+            .sort();
+    }
+
+    private _onScopeChange(value: string) {
+        const clusterWide = value === SCOPE_CLUSTER_WIDE;
+        const observedNs = clusterWide ? '' : value;
+        if (clusterWide === this._clusterWide && observedNs === this._observedNs) return;
+        this._clusterWide = clusterWide;
+        this._observedNs = observedNs;
+        // The scope is not its own peer, so a peer-namespace filter naming it is dropped here
+        // rather than left selected against an option that no longer exists (see _availableNs).
+        if (observedNs) this._pendingNs = this._pendingNs.filter(n => n !== observedNs);
+        this._writeScopeToURL();
+        this._refreshStream();
     }
 
     override disconnectedCallback() {
@@ -559,7 +962,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
             this._ro = null;
         }
         // Rebuild map when entries or SVG width change
-        if ((changed.has('_entries') || changed.has('_svgWidth')) && this.viewMode === 'map') {
+        if ((changed.has('_entries') || changed.has('_svgWidth') || changed.has('_unidentifiedPeersOnly')) && this.viewMode === 'map') {
             this._buildServiceMap();
         }
         if (changed.has('_selectedEdgeKey')) {
@@ -576,7 +979,12 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
     // ── Stream management ─────────────────────────────────────────────────────
 
     private _startStream() {
-        if (this._paused || this._flowVisibilityDisabled) return;
+        // Fail closed on no scope: an unscoped stream is not "everything", it is a request the
+        // backend rejects, and defaulting to cluster-wide would silently ask for a grant this
+        // user probably does not hold. The page shows an empty state instead - see
+        // _renderScopeEmptyState.
+        if (!this._filter) return;
+        if (this._paused || this._integrationDisabled || this._filterKey === this._forbiddenFilterKey) return;
         this._client?.stop();
         this._client = new FlowStreamClient(this._filter, {
             onFlows: flows => {
@@ -596,16 +1004,18 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
             onDisabled: () => {
                 // A 501 means Flow Aggregator integration is off for this deployment. The
                 // client has already stopped itself; there is nothing to retry.
-                this._flowVisibilityDisabled = true;
+                this._integrationDisabled = true;
                 this._client = null;
                 this._connected = false;
                 this._error = FLOW_VISIBILITY_DISABLED_MESSAGE;
             },
             onForbidden: () => {
-                // A 403 means this user may not view flow data. Terminal for the session, and
-                // handled the same way as 501: the client has already stopped itself.
-                // Defence in depth — the route guard should keep them off this page entirely.
-                this._flowVisibilityDisabled = true;
+                // A 403 means FA refused this user the scope _filter asked for. The client has
+                // already stopped itself; record which request was refused so _startStream does
+                // not retry it, without blocking a later request for a different scope (there is
+                // no route guard upstream of this page - authorization is entirely FA's, so this
+                // is the only place that can react to it).
+                this._forbiddenFilterKey = this._filterKey;
                 this._client = null;
                 this._connected = false;
                 this._error = FLOW_VISIBILITY_FORBIDDEN_MESSAGE;
@@ -620,8 +1030,18 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         this._connected = false;
     }
 
-    private _applyFilter(filter: FlowStreamFilter) {
-        const newKey = streamFilterKey(filter);
+    private _applyFilter(filter: FlowPeerFilter) {
+        this._peerFilter = filter;
+        this._refreshStream();
+    }
+
+    /** Reopens the stream if the request the scope and the peer filters now describe differs from
+     * the one that is open. The single chokepoint for both, since either can change it: callers
+     * only ever build peer filters, which FlowStreamFilter's own type cannot express without a
+     * scope, and the scope is state of the page rather than of any filter. */
+    private _refreshStream() {
+        const filter = this._composeFilter();
+        const newKey = filter ? streamFilterKey(filter) : '';
         if (newKey === this._filterKey) return;
         this._filterKey = newKey;
         this._filter = filter;
@@ -630,19 +1050,21 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         this._evictionWarning = false;
         this._droppedCount = 0;
         this._selectedEdgeKey = null;
-        if (!this._paused) {
-            this._client?.stop();
-            this._client = null;
-            this._startStream();
-        }
+        this._client?.stop();
+        this._client = null;
+        if (!this._paused) this._startStream();
     }
 
     // ── Filter actions ────────────────────────────────────────────────────────
 
     private _onApplyFilters() {
         this._nsOpen = false; this._podOpen = false; this._svcOpen = false;
-        const filter: FlowStreamFilter = {};
-        if (this._pendingNs.length) filter.namespaces = this._pendingNs;
+        const filter: FlowPeerFilter = {};
+        // Stripped out here rather than sent: it is not a namespace, and the backend would
+        // reject it as one (or, worse, match nothing and look like an empty result).
+        this._unidentifiedPeersOnly = this._pendingNs.includes(UNIDENTIFIED_PEERS_OPTION);
+        const peerNs = this._pendingNs.filter(n => n !== UNIDENTIFIED_PEERS_OPTION);
+        if (peerNs.length) filter.namespaces = peerNs;
         if (this._pendingPods.length) filter.pods = this._pendingPods;
         if (this._pendingPodLabel.trim()) filter.podLabelSelector = this._pendingPodLabel.trim();
         if (this._pendingServices.length) {
@@ -659,6 +1081,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
     private _onResetFilters() {
         this._nsOpen = false; this._podOpen = false; this._svcOpen = false;
         this._pendingNs = []; this._pendingPods = []; this._pendingServices = [];
+        this._unidentifiedPeersOnly = false;
         this._pendingFlowType = ''; this._pendingDirection = 'both';
         this._pendingIps = ''; this._pendingPodLabel = '';
         this._applyFilter({});
@@ -680,20 +1103,38 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
 
     // ── Available filter options (derived from current entries) ───────────────
 
+    /**
+     * The peer-namespace menu's options: the namespaces seen at the far end of the flows this
+     * stream has delivered so far, which is why the menu fills in as they arrive.
+     *
+     * Deliberately not intersected with the namespaces this user may read Kubernetes objects in,
+     * the way it was while this control doubled as a scope. Those are a different grant from
+     * flows/identity, and after per-user redaction the data is itself the authorization
+     * boundary: a namespace can only appear on a record at all if the Flow Aggregator already
+     * decided this user may identify it, so re-checking could only wrongly hide a legitimate
+     * option.
+     */
     private get _availableNs(): string[] {
         const ns = new Set<string>();
         for (const e of this._entries) {
             if (e.flow.k8s.sourcePodNamespace) ns.add(e.flow.k8s.sourcePodNamespace);
             if (e.flow.k8s.destinationPodNamespace) ns.add(e.flow.k8s.destinationPodNamespace);
         }
-        const accessible = accessibleNamespaces(this._accessSummary);
-        if (accessible !== null) {
-            const accessibleSet = new Set(accessible);
-            for (const n of ns) {
-                if (!accessibleSet.has(n)) ns.delete(n);
-            }
-        }
-        return Array.from(ns).sort();
+        // The scope is not its own peer.
+        if (this._observedNs) ns.delete(this._observedNs);
+        // A selection stays in the menu even once its traffic goes quiet, so that it does not
+        // vanish from under the user while still being applied.
+        for (const selected of this._pendingNs) if (selected !== UNIDENTIFIED_PEERS_OPTION) ns.add(selected);
+        return [UNIDENTIFIED_PEERS_OPTION, ...Array.from(ns).sort()];
+    }
+
+    /** The entries the list and the map show. Everything but the "Unidentified peers"
+     * pseudo-filter is applied by the Flow Aggregator; that one cannot be, because it selects
+     * records by what was withheld from them. */
+    private get _visibleEntries(): FlowEntry[] {
+        if (!this._unidentifiedPeersOnly) return this._entries;
+        return this._entries.filter(e =>
+            endpointRedacted(e.flow.k8s.sourceDisclosure) || endpointRedacted(e.flow.k8s.destinationDisclosure));
     }
 
     private get _availablePods(): string[] {
@@ -732,7 +1173,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         const svg = this._svgEl;
         if (!svg) return;
 
-        const graph = buildGraph(this._entries);
+        const graph = buildGraph(this._visibleEntries);
         this._graphRef = graph;
 
         // If a topology rebuild drops the currently-selected edge, clear the selection so
@@ -808,7 +1249,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         // Namespace hulls
         const nsMap = new Map<string, D3Node[]>();
         for (const n of d3Nodes) {
-            if (n.isExternal || !n.namespace) continue;
+            if (!inNamespaceHull(n)) continue;
             let arr = nsMap.get(n.namespace);
             if (!arr) { arr = []; nsMap.set(n.namespace, arr); }
             arr.push(n);
@@ -874,20 +1315,69 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
                 d.fx = null; d.fy = null;
                 simulation.alphaTarget(0.3).restart();
                 setTimeout(() => simulation.alphaTarget(0), 1500);
+            })
+            // Only the collapsed namespace has anything actionable to say. The anonymous peer
+            // has no namespace to name a grant in, so it gets no tooltip at all - see
+            // describeEndpoint - and a workload node is fully disclosed and needs none.
+            .on('mouseenter', (event, d) => {
+                if (d.kind !== 'undisclosedNamespace') return;
+                this._showNodeTooltip(event, d.shortName, collapsedNamespaceTooltip(d.shortName));
+            })
+            .on('mousemove', (event, d) => {
+                if (d.kind !== 'undisclosedNamespace' || !this._tooltipEl) return;
+                this._tooltipEl.style.left = `${event.pageX + 12}px`;
+                this._tooltipEl.style.top = `${event.pageY + 12}px`;
+            })
+            .on('mouseleave', (_event, d) => {
+                if (d.kind !== 'undisclosedNamespace') return;
+                this._hideTooltip();
             });
 
         nodeGroup.each(function (this: SVGGElement, d: D3Node) {
             const g = d3.select(this);
-            if (d.isExternal) {
+            if (d.kind === 'external' || d.kind === 'undisclosed') {
                 const s = EXTERNAL_SIZE;
-                g.append('polygon').attr('points', `0,${-s} ${s},0 0,${s} ${-s},0`).style('fill', MAP_COLOR_VAR.externalFill).style('stroke', MAP_COLOR_VAR.externalStroke).attr('stroke-width', 2);
-                g.append('text').text(d.shortName).attr('dy', s + 14).attr('text-anchor', 'middle').style('fill', MAP_COLOR_VAR.externalStroke).attr('font-size', '11px').attr('font-weight', '600');
-            } else {
-                const { hw, hh } = nodeHalfSize(d);
-                g.append('rect').attr('x', -hw).attr('y', -hh).attr('width', hw * 2).attr('height', hh * 2).attr('rx', NODE_RX).attr('ry', NODE_RX).style('fill', MAP_COLOR_VAR.nodeFill).style('stroke', MAP_COLOR_VAR.nodeStroke).attr('stroke-width', 1.5);
-                g.append('text').text(d.shortName).attr('dy', -3).attr('text-anchor', 'middle').style('fill', MAP_COLOR_VAR.nodeText).attr('font-size', '12px').attr('font-weight', '600');
-                g.append('text').text(d.namespace).attr('dy', 13).attr('text-anchor', 'middle').style('fill', MAP_COLOR_VAR.nodeNamespaceText).attr('font-size', '9px');
+                const stroke = d.kind === 'external' ? MAP_COLOR_VAR.externalStroke : MAP_COLOR_VAR.undisclosedStroke;
+                const fill = d.kind === 'external' ? MAP_COLOR_VAR.externalFill : MAP_COLOR_VAR.undisclosedFill;
+                g.append('polygon').attr('points', `0,${-s} ${s},0 0,${s} ${-s},0`).style('fill', fill).style('stroke', stroke).attr('stroke-width', 2);
+                const label = g.append('text').attr('dy', s + 14).attr('text-anchor', 'middle').style('fill', stroke).attr('font-size', '11px').attr('font-weight', '600');
+                if (d.kind === 'undisclosed') {
+                    // A static marker only: there is no namespace to name, so there is nothing
+                    // actionable to say and no tooltip behind it. The label already carries the
+                    // meaning.
+                    appendLock(g, -6, -s - 20, stroke);
+                    label.text(d.shortName);
+                    g.append('text').text(d.detail).attr('dy', s + 27).attr('text-anchor', 'middle').style('fill', stroke).attr('font-size', '9px');
+                } else {
+                    label.text(d.shortName);
+                }
+                return;
             }
+            const { hw, hh } = nodeHalfSize(d);
+            if (d.kind === 'undisclosedNamespace') {
+                // Drawn in the namespace hull's style rather than the workload's: what this
+                // stands for is a namespace whose contents are hidden, and a rounded rect in
+                // this map's grammar is a workload. It is a tidy rectangle where a real hull is
+                // an irregular polygon, because there are no members to hull.
+                g.append('rect').attr('x', -hw).attr('y', -hh).attr('width', hw * 2).attr('height', hh * 2)
+                    .attr('rx', NODE_RX).attr('ry', NODE_RX)
+                    .style('fill', MAP_COLOR_VAR.nsHullFill).style('stroke', MAP_COLOR_VAR.nsHullStroke)
+                    .attr('stroke-width', 1).attr('stroke-dasharray', '4,2');
+                g.append('text').text(d.shortName).attr('dy', -3).attr('x', LOCK_SIZE / 2 + 3).attr('text-anchor', 'middle')
+                    .style('fill', MAP_COLOR_VAR.nsLabel).attr('font-size', '11px').attr('font-weight', '600');
+                appendLock(g, -textWidth(d.shortName, 11) / 2 - LOCK_SIZE / 2 + 3, -13, MAP_COLOR_VAR.nsLabel);
+                g.append('text').text(d.detail).attr('dy', 15).attr('text-anchor', 'middle')
+                    .style('fill', MAP_COLOR_VAR.nodeNamespaceText).attr('font-size', '9px');
+                // Worth a tooltip because it is actionable: it can name the grant that would
+                // disclose this namespace. aria-label rather than an SVG <title> - the hover
+                // handler below draws the visible one in the same panel the edge tooltip uses,
+                // and a <title> would stack the browser's own on top of it.
+                g.attr('role', 'img').attr('aria-label', collapsedNamespaceTooltip(d.shortName));
+                return;
+            }
+            g.append('rect').attr('x', -hw).attr('y', -hh).attr('width', hw * 2).attr('height', hh * 2).attr('rx', NODE_RX).attr('ry', NODE_RX).style('fill', MAP_COLOR_VAR.nodeFill).style('stroke', MAP_COLOR_VAR.nodeStroke).attr('stroke-width', 1.5);
+            g.append('text').text(d.shortName).attr('dy', -3).attr('text-anchor', 'middle').style('fill', MAP_COLOR_VAR.nodeText).attr('font-size', '12px').attr('font-weight', '600');
+            g.append('text').text(d.detail).attr('dy', 13).attr('text-anchor', 'middle').style('fill', MAP_COLOR_VAR.nodeNamespaceText).attr('font-size', '9px');
         });
 
         const HULL_PADDING = 50;
@@ -916,14 +1406,14 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         function clusterForce(alpha: number) {
             const centroids = new Map<string, { x: number; y: number; count: number }>();
             for (const n of d3Nodes) {
-                if (!n.namespace || n.isExternal) continue;
+                if (!inNamespaceHull(n)) continue;
                 const c = centroids.get(n.namespace);
                 if (c) { c.x += n.x!; c.y += n.y!; c.count++; }
                 else centroids.set(n.namespace, { x: n.x!, y: n.y!, count: 1 });
             }
             const strength = 0.15 * alpha;
             for (const n of d3Nodes) {
-                if (!n.namespace || n.isExternal) continue;
+                if (!inNamespaceHull(n)) continue;
                 const c = centroids.get(n.namespace)!;
                 c.x /= c.count; c.y /= c.count;
                 n.vx! += (c.x - n.x!) * strength;
@@ -991,7 +1481,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         };
 
         tip.replaceChildren();
-        const header = div(`${workloadShortName(edge.source)} → ${workloadShortName(edge.target)}`);
+        const header = div(`${nodeLabel(this._graphRef, edge.source)} → ${nodeLabel(this._graphRef, edge.target)}`);
         header.style.fontWeight = '600';
         header.style.marginBottom = '4px';
         tip.append(header);
@@ -1012,6 +1502,32 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         tip.style.opacity = '1';
     }
 
+    /**
+     * The collapsed-node tooltip, in the same panel the edge tooltip uses.
+     *
+     * Not an SVG <title>, which is what this was first built with: the browser's native tooltip
+     * looks nothing like the edge panel a few pixels away, and it takes about a second to appear.
+     * The accessible name it provided comes from aria-label on the node group instead - using
+     * both would pop a native tooltip on top of this one.
+     */
+    private _showNodeTooltip(event: MouseEvent, heading: string, body: string) {
+        const tip = this._tooltipEl;
+        if (!tip) return;
+        // textContent, not innerHTML: a namespace name is server-supplied data, not markup.
+        tip.replaceChildren();
+        const header = document.createElement('div');
+        header.textContent = heading;
+        header.style.fontWeight = '600';
+        header.style.marginBottom = '4px';
+        const text = document.createElement('div');
+        text.textContent = body;
+        text.style.maxWidth = '260px';
+        tip.append(header, text);
+        tip.style.left = `${event.pageX + 12}px`;
+        tip.style.top = `${event.pageY + 12}px`;
+        tip.style.opacity = '1';
+    }
+
     private _hideTooltip() {
         if (this._tooltipEl) this._tooltipEl.style.opacity = '0';
     }
@@ -1025,17 +1541,19 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         open: boolean,
         onToggleOpen: () => void,
         onToggle: (v: string) => void,
+        hint?: string,
     ) {
         const displayText = selected.length === 0 ? 'All' : selected.length <= 2 ? selected.join(', ') : `${selected.slice(0, 2).join(', ')} +${selected.length - 2}`;
         return html`
             <div class="multiselect" @pointerdown=${(e: Event) => e.stopPropagation()}>
                 <span class="multiselect-label">${label}</span>
-                <button type="button" class="multiselect-btn" @click=${onToggleOpen}>
+                <button type="button" class="multiselect-btn" title=${hint ?? nothing} @click=${onToggleOpen}>
                     ${displayText}
                     <span class="multiselect-chevron">&#9662;</span>
                 </button>
-                ${open && options.length > 0 ? html`
+                ${open ? html`
                     <div class="multiselect-dropdown">
+                        ${hint ? html`<div class="multiselect-hint">${hint}</div>` : nothing}
                         ${options.map(opt => html`
                             <label class="multiselect-option ${selected.includes(opt) ? 'selected' : ''}">
                                 <input type="checkbox" .checked=${selected.includes(opt)} @change=${() => onToggle(opt)} style="accent-color: var(--antrea-color-primary, #0079b8)" />
@@ -1052,14 +1570,88 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         return current.includes(value) ? current.filter(v => v !== value) : [...current, value];
     }
 
+    /** The observed-namespace selector: required, single-select, and the same control in both
+     * views so the two cannot disagree about what is being observed. Cluster scope is offered
+     * only when the backend says this user holds it, and is labelled as the one scope in which
+     * nothing is redacted - a real property of it, and not one anybody would guess. */
+    private _renderScopeSelect() {
+        // Selection is marked on each option rather than bound to the <select>'s own .value: Lit
+        // commits an element's bindings before rendering its children, so a .value naming an
+        // option that does not exist yet is silently dropped on first render.
+        const value = this._clusterWide ? SCOPE_CLUSTER_WIDE : this._observedNs;
+        return html`
+            <div class="field-group scope-select" style="min-width:220px">
+                <label class="field-label" for="observed-ns">Observed namespace</label>
+                <select id="observed-ns" class="field-select"
+                    @change=${(e: Event) => this._onScopeChange((e.target as HTMLSelectElement).value)}>
+                    <option value="" .selected=${value === ''}>Select a namespace…</option>
+                    ${this._flowNamespaces?.clusterWide ? html`
+                        <option value=${SCOPE_CLUSTER_WIDE} .selected=${value === SCOPE_CLUSTER_WIDE}>All namespaces</option>
+                    ` : nothing}
+                    ${this._observableNs.map(ns => html`<option value=${ns} .selected=${value === ns}>${ns}</option>`)}
+                    ${this._unobservableNs.map(ns => html`<option value=${ns} disabled>${ns} (not authorized)</option>`)}
+                </select>
+            </div>
+            ${this._flowNamespaces?.incomplete ? this._renderScopeByName() : nothing}
+        `;
+    }
+
+    /**
+     * A free-text way to name a namespace the list does not offer.
+     *
+     * Only rendered when the backend reports the list as incomplete, and that condition is the
+     * point rather than tidiness: when the list is exhaustive, a namespace absent from it is one
+     * this user cannot observe, so a text box could only invite a request the Flow Aggregator
+     * will refuse. It replaces telling people to hand-edit ?observedNamespace= into the URL,
+     * which worked but is not an instruction to put in front of a user.
+     *
+     * Nothing is validated here. Authorization is the Flow Aggregator's, and it already answers a
+     * namespace this user may not observe with a terminal, non-retryable error the page renders.
+     */
+    private _renderScopeByName() {
+        const submit = (e: Event) => {
+            const input = e.target as HTMLInputElement;
+            const ns = input.value.trim();
+            if (!ns) return;
+            input.value = '';
+            this._onScopeChange(ns);
+        };
+        return html`
+            <div class="field-group" style="min-width:200px">
+                <label class="field-label" for="observed-ns-by-name">Namespace not listed</label>
+                <input id="observed-ns-by-name" class="field-input" type="text" placeholder="Type a name, then Enter"
+                    @keydown=${(e: KeyboardEvent) => { if (e.key === 'Enter') submit(e); }}>
+            </div>
+        `;
+    }
+
+    /** What the page shows in place of the flow list or the map while no scope is selected: an
+     * explanation, including for the user who may observe no namespace at all, whose empty list
+     * is a real answer rather than a failure. */
+    private _renderScopeEmptyState() {
+        if (!this._flowNamespacesLoaded) {
+            return html`<p class="text-muted">Loading the namespaces you may observe flows in…</p>`;
+        }
+        // Only when the backend actually answered. A rejected fetch also leaves _flowNamespaces
+        // null, and asserting "you are not authorized" underneath the failure banner would tell
+        // a user their grants are missing when the request merely failed.
+        const none = this._flowNamespaces !== null
+            && this._observableNs.length === 0 && !this._flowNamespaces.clusterWide;
+        return html`
+            <p class="text-muted">${none ? NO_OBSERVABLE_NAMESPACES_MESSAGE : SELECT_SCOPE_MESSAGE}</p>
+            ${this._flowNamespaces?.incomplete ? html`<p class="text-muted">${INCOMPLETE_NAMESPACES_NOTE}</p>` : nothing}
+        `;
+    }
+
     private _renderFilters() {
         const statusColor = this._connected ? 'var(--antrea-color-success, #60b515)' : 'var(--antrea-color-danger, #f54f47)';
         const statusText = this._connected ? 'Connected' : (this._paused ? 'Paused' : 'Disconnected');
         return html`
             <div class="filter-bar">
                 <div class="filter-row">
-                    ${this._renderMultiSelect('Namespaces', this._availableNs, this._pendingNs, this._nsOpen, () => { this._nsOpen = !this._nsOpen; this._podOpen = false; this._svcOpen = false; }, v => { this._pendingNs = this._toggleSelection(this._pendingNs, v); })}
-                    ${this._renderMultiSelect('Pod Names', this._availablePods, this._pendingPods, this._podOpen, () => { this._podOpen = !this._podOpen; this._nsOpen = false; this._svcOpen = false; }, v => { this._pendingPods = this._toggleSelection(this._pendingPods, v); })}
+                    ${this._renderScopeSelect()}
+                    ${this._renderMultiSelect('Peer namespace', this._availableNs, this._pendingNs, this._nsOpen, () => { this._nsOpen = !this._nsOpen; this._podOpen = false; this._svcOpen = false; }, v => { this._pendingNs = this._toggleSelection(this._pendingNs, v); }, PEER_NAMESPACE_HINT)}
+                    ${this._renderMultiSelect('Pod Names', this._availablePods, this._pendingPods, this._podOpen, () => { this._podOpen = !this._podOpen; this._nsOpen = false; this._svcOpen = false; }, v => { this._pendingPods = this._toggleSelection(this._pendingPods, v); }, IDENTIFIED_ONLY_HINT)}
                     ${this._renderMultiSelect('Service Names', this._availableServices, this._pendingServices, this._svcOpen, () => { this._svcOpen = !this._svcOpen; this._nsOpen = false; this._podOpen = false; }, v => { this._pendingServices = this._toggleSelection(this._pendingServices, v); })}
 
                     <div class="field-group" style="min-width:140px">
@@ -1085,7 +1677,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
                         <input class="field-input" type="text" .value=${this._pendingIps} placeholder="10.0.0.1, 10.0.0.0/24" @input=${(e: Event) => { this._pendingIps = (e.target as HTMLInputElement).value; }} />
                     </div>
                     <div class="field-group" style="min-width:180px">
-                        <label class="field-label">Pod Label Selector</label>
+                        <label class="field-label" title=${IDENTIFIED_ONLY_HINT}>Pod Label Selector</label>
                         <input class="field-input" type="text" .value=${this._pendingPodLabel} placeholder="app=frontend,version!=v2" @input=${(e: Event) => { this._pendingPodLabel = (e.target as HTMLInputElement).value; }} />
                     </div>
 
@@ -1110,7 +1702,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
     }
 
     private _renderFlowList() {
-        let filtered = this._entries;
+        let filtered = this._visibleEntries;
         if (this._textFilter) filtered = filtered.filter(e => matchesText(e, this._textFilter));
         const sorted = [...filtered].sort((a, b) => {
             const aVal = sortValue(a, this._sortField);
@@ -1182,8 +1774,8 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
                 <button class="edge-details-close" @click=${() => { this._selectedEdgeKey = null; }}>✕</button>
                 <div class="edge-details-section-label">Connection Stats</div>
                 <div class="edge-details-rows">
-                    <div><strong>Source:</strong> ${workloadShortName(d.source)}</div>
-                    <div><strong>Target:</strong> ${workloadShortName(d.target)}</div>
+                    <div><strong>Source:</strong> ${nodeLabel(this._graphRef, d.source)}</div>
+                    <div><strong>Target:</strong> ${nodeLabel(this._graphRef, d.target)}</div>
                     <div><strong>Connections:</strong> ${d.connectionCount}</div>
                     <div><strong>Bytes (Fwd):</strong> ${formatBytes(d.totalBytesForward)}</div>
                     <div><strong>Bytes (Rev):</strong> ${formatBytes(d.totalBytesReverse)}</div>
@@ -1227,7 +1819,9 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
 
                     ${this._error ? html`<antrea-alert status="danger">${this._error}</antrea-alert>` : nothing}
 
-                    ${this.viewMode === 'list' ? this._renderFlowList() : this._renderServiceMap()}
+                    ${!this._scope
+                        ? this._renderScopeEmptyState()
+                        : this.viewMode === 'list' ? this._renderFlowList() : this._renderServiceMap()}
                 </div>
             </main>
         `;

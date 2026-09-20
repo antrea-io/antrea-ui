@@ -18,9 +18,9 @@ import React from 'react';
 import { useLocation } from 'react-router';
 import { Link } from 'react-router';
 import '@antrea/ui-components';
-import { can, canViewSummary, GATE_TRACEFLOW_CREATE } from '@antrea/ui-components';
+import { can, canViewSummary, canViewFlows, GATE_TRACEFLOW_CREATE } from '@antrea/ui-components';
 import type { PluginSidebarEntry } from './plugins';
-import { useAccess, useCanViewFlows } from './access';
+import { useAccess } from './access';
 
 function DashboardIcon() {
     return (
@@ -105,17 +105,14 @@ function renderPluginNavItem(entry: PluginSidebarEntry, pathname: string) {
 }
 
 export default function NavTab({ pluginSidebarEntries }: { pluginSidebarEntries: PluginSidebarEntry[] }) {
-    const { pathname } = useLocation();
-    const { summary, loaded } = useAccess();
+    const { pathname, search } = useLocation();
+    const { summary, flowNs, loaded } = useAccess();
 
     // While the access summary hasn't loaded yet, render no core items: entries popping in once
     // loaded reads better than entries vanishing if the answer turns out to restrict something.
     const showSummary = loaded && canViewSummary(summary);
     const showTraceflow = loaded && can(summary, GATE_TRACEFLOW_CREATE);
-    // Flow Visibility is gated on a rule of its own (useCanViewFlows), not on the access summary
-    // alone, but it hides on the same "wait for loaded" terms as the two above.
-    const { allowed: canViewFlows, loaded: flowsLoaded } = useCanViewFlows();
-    const showFlows = flowsLoaded && canViewFlows;
+    const showFlows = loaded && canViewFlows(flowNs);
 
     // Plugin entries with a parentPath (already resolved/normalized by plugins.ts's
     // resolveParentPaths — always a leading-slash-stripped path, whether that path belongs to a
@@ -136,22 +133,19 @@ export default function NavTab({ pluginSidebarEntries }: { pluginSidebarEntries:
     // the same nested-nav treatment for free. Returns `item` unchanged when nothing nests under it.
     //
     // `show` is false when `path`'s own page isn't rendered at all — gated off by RBAC (Summary,
-    // Traceflow) or by the interim admin-only rule (Flow Visibility), or the access summary hasn't
-    // loaded yet. plugins.ts's resolveParentPaths accepts a gated built-in page as a valid parent
-    // unconditionally (it has no way to know it's gated for a given user), so a nested *plugin*
-    // child would otherwise have no render site.
+    // Traceflow, Flows), or the access summary hasn't loaded yet. plugins.ts's resolveParentPaths
+    // accepts a gated built-in page as a valid parent unconditionally (it has no way to know it's
+    // gated for a given user), so a nested child would otherwise have no render site.
     //
     // Those two `!show` causes are deliberately not treated alike (closing over `loaded` directly,
-    // rather than taking it as a parameter — every gated caller's own `show` is conjoined with this
-    // same `loaded`, Flow Visibility's by way of useCanViewFlows re-exporting it unchanged, so if
-    // that hook ever gates its `loaded` on more, this closure has to take it as a parameter):
-    // "the parent is definitely gated off for this user"
-    // (`loaded`) promotes its plugin children to top level, so they don't silently disappear,
-    // while "we don't know yet" (`!loaded`) hides them too, consistent
-    // with the `showSummary`/`showTraceflow` comment above ("entries popping in once loaded reads
-    // better than entries vanishing") — a promoted child would otherwise pop in immediately and
-    // then jump into the group once loaded resolves, a reflow that comment argues against for the
-    // parent item itself.
+    // rather than taking it as a parameter — every caller either passes `show: true`, for which it
+    // is never consulted, or is Summary/Traceflow/Flows, for which it is `loaded` itself): "the
+    // parent is definitely gated off for this user" (`loaded`) promotes its children to top level,
+    // so they don't silently disappear, while "we don't know yet" (`!loaded`) hides them too,
+    // consistent with the `showSummary`/`showTraceflow`/`showFlows` comment above ("entries popping
+    // in once loaded reads better than entries vanishing") — a promoted child would otherwise pop
+    // in immediately and then jump into the group once loaded resolves, a reflow that comment
+    // argues against for the parent item itself.
     function withNestedChildren(
         path: string,
         show: boolean,
@@ -163,9 +157,9 @@ export default function NavTab({ pluginSidebarEntries }: { pluginSidebarEntries:
 
         if (!show) {
             if (!loaded) return null;
-            // Only the plugin children are promoted. `builtinChildren` are sub-pages of `path`'s
-            // own page (Flow List / Service Map), gated off by the very same decision, so keeping
-            // them would render links to pages this user cannot open.
+            // A gated page's own sub-pages (flows' Flow List / Service Map) are links to pages
+            // this user cannot open, unlike a plugin's, which has no such tie - so only the
+            // plugin children get promoted to top level here.
             return renderedPluginChildren;
         }
         if (builtinChildren.length === 0 && pluginChildren.length === 0) return item;
@@ -180,6 +174,8 @@ export default function NavTab({ pluginSidebarEntries }: { pluginSidebarEntries:
             </antrea-nav-group>
         );
     }
+
+    const flowsSearch = pathStartsWith(pathname, '/flows') ? search : '';
 
     return (
         <antrea-nav>
@@ -199,9 +195,14 @@ export default function NavTab({ pluginSidebarEntries }: { pluginSidebarEntries:
                     </Link>
                 </antrea-nav-item>
             ))}
+            {/* The two flow sub-pages keep the current query string, which is where the flow
+                page's observed namespace lives: switching between Flow List and Service Map
+                remounts the page, so dropping the query string would silently reset the scope
+                and leave the two views disagreeing about what is being observed. Only carried
+                while already under /flows, so an unrelated page's query string is not. */}
             {withNestedChildren('flows', showFlows, (
                 <antrea-nav-item {...(pathStartsWith(pathname, '/flows') ? { active: true } : {})}>
-                    <Link to="/flows/list">
+                    <Link to={`/flows/list${flowsSearch}`}>
                         <EyeIcon />
                         <span className="nav-label">Flow Visibility</span>
                     </Link>
@@ -211,7 +212,7 @@ export default function NavTab({ pluginSidebarEntries }: { pluginSidebarEntries:
                     path: '/flows/list',
                     node: (
                         <antrea-nav-item key="/flows/list" {...(pathEquals(pathname, '/flows/list') ? { active: true } : {})}>
-                            <Link to="/flows/list">
+                            <Link to={`/flows/list${flowsSearch}`}>
                                 <span className="nav-label">Flow List</span>
                             </Link>
                         </antrea-nav-item>
@@ -221,7 +222,7 @@ export default function NavTab({ pluginSidebarEntries }: { pluginSidebarEntries:
                     path: '/flows/map',
                     node: (
                         <antrea-nav-item key="/flows/map" {...(pathEquals(pathname, '/flows/map') ? { active: true } : {})}>
-                            <Link to="/flows/map">
+                            <Link to={`/flows/map${flowsSearch}`}>
                                 <span className="nav-label">Service Map</span>
                             </Link>
                         </antrea-nav-item>

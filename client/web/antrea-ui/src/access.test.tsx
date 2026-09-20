@@ -18,14 +18,19 @@ import { act, render, waitFor } from '@testing-library/react';
 import { MemoryRouter, Routes, Route } from 'react-router';
 import { Provider } from 'react-redux';
 import { resetAccessSummary } from '@antrea/ui-components';
-import type { AccessSummary } from '@antrea/ui-components';
+import type { AccessSummary, FlowNamespacesResponse } from '@antrea/ui-components';
 import { setupStore, setSession, setAuthenticated } from './store';
-import type { RootState } from './store';
-import { AccessProvider, useAccess, useCanViewFlows } from './access';
+import { AccessProvider, useAccess } from './access';
 import { HomeRedirect } from './pages';
 
 function jsonResponse(body: unknown, status = 200): Response {
     return new Response(JSON.stringify(body), { status });
+}
+
+// AccessProvider fetches the access summary and the observable flow namespaces together, so a
+// raw call count says nothing useful. Count the one being asserted about instead.
+function callsTo(fetchMock: { mock: { calls: unknown[][] } }, path: string): number {
+    return fetchMock.mock.calls.filter(c => String(c[0]).includes(path)).length;
 }
 
 function summaryWith(overrides: Partial<AccessSummary> = {}): AccessSummary {
@@ -63,7 +68,10 @@ describe('AccessProvider', () => {
 
         await waitFor(() => expect(document.querySelector('[data-testid="probe"]')?.textContent)
             .toContain('"loaded":true'));
-        expect(fetchMock).toHaveBeenCalledTimes(1);
+        expect(callsTo(fetchMock, 'access-summary')).toBe(1);
+        // Fetched alongside it, and by the same effect: the nav gates Flow Visibility on this,
+        // so it has to resolve before `loaded` flips or the entry would pop in late.
+        expect(callsTo(fetchMock, 'flows/namespaces')).toBe(1);
         expect(document.querySelector('[data-testid="probe"]')?.textContent).toContain('alice');
     });
 
@@ -107,7 +115,7 @@ describe('AccessProvider', () => {
                 <AccessProvider><Probe /></AccessProvider>
             </Provider>,
         );
-        await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+        await waitFor(() => expect(callsTo(fetchMock, 'access-summary')).toBe(1));
 
         // Simulate the logout->login cycle: useLogout() and the re-auth listener in App.tsx
         // both call resetAccessSummary() before flipping the session state.
@@ -115,7 +123,7 @@ describe('AccessProvider', () => {
         act(() => { store.dispatch(setSession('anonymous')); });
         act(() => { store.dispatch(setAuthenticated(null)); });
 
-        await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+        await waitFor(() => expect(callsTo(fetchMock, 'access-summary')).toBe(2));
     });
 
     test('leaving the authenticated session clears the previous summary', async () => {
@@ -141,68 +149,17 @@ describe('AccessProvider', () => {
     });
 });
 
-// useCanViewFlows is the interim admin-only rule for flow data: the built-in admin, or a
-// Kubernetes cluster admin. It mirrors requireFlowVisibility() in pkg/server/api/flowstream.go,
-// which is the authorization decision and fails closed on its own, so like the can() gates this
-// only decides what to render and fails open on a summary that never arrived.
-describe('useCanViewFlows', () => {
-    function FlowProbe() {
-        const { allowed, loaded } = useCanViewFlows();
-        return <div data-testid="probe">{JSON.stringify({ allowed, loaded })}</div>;
-    }
-
-    async function renderProbe(summary: AccessSummary | null, sessionInfo: RootState['sessionInfo']) {
-        vi.stubGlobal('fetch', vi.fn().mockResolvedValue(summary ? jsonResponse(summary) : new Response('', { status: 500 })));
-        const store = setupStore({ session: 'authenticated', sessionInfo });
-        render(
-            <Provider store={store}>
-                <AccessProvider><FlowProbe /></AccessProvider>
-            </Provider>,
-        );
-        await waitFor(() => expect(document.querySelector('[data-testid="probe"]')?.textContent)
-            .toContain('"loaded":true'));
-        return document.querySelector('[data-testid="probe"]')!.textContent!;
-    }
-
-    const adminSession = { authenticated: true, mode: 'admin' as const, username: 'admin' };
-    const tokenSession = { authenticated: true, mode: 'token' as const, username: 'alice' };
-
-    test('the built-in admin is allowed even though clusterAdmin is false', async () => {
-        // Not redundant with the clusterAdmin term: the static-admin session impersonates the
-        // antrea-ui-admin ServiceAccount, whose aggregated ClusterRole holds no */*/* rule, so
-        // the wildcard review genuinely answers false for it.
-        expect(await renderProbe(summaryWith({ clusterAdmin: false }), adminSession)).toContain('"allowed":true');
-    });
-
-    test('a cluster admin is allowed', async () => {
-        expect(await renderProbe(summaryWith({ clusterAdmin: true }), tokenSession)).toContain('"allowed":true');
-    });
-
-    test('an ordinary user is denied', async () => {
-        expect(await renderProbe(summaryWith({ clusterAdmin: false }), tokenSession)).toContain('"allowed":false');
-    });
-
-    test('a null summary (fetch failed) is allowed, deferring to the backend 403', async () => {
-        // Not an authorization hole: requireFlowVisibility still denies, and its 403 names the
-        // actual restriction instead of the generic permission panel. Denying here would instead
-        // strand a cluster admin for the rest of the page lifetime after one transient failure.
-        expect(await renderProbe(null, tokenSession)).toContain('"allowed":true');
-    });
-
-    test('a null sessionInfo is allowed, even against a definite clusterAdmin false', async () => {
-        // The case the backend resolves in the user's favour: sessionInfo is null when the login
-        // page's own GET /auth/session failed, which the built-in admin can hit while still
-        // logging in successfully, and their summary reports clusterAdmin false correctly. So
-        // this is the mode-unknown branch, not the ordinary-user one, and denying it would hide
-        // the page from exactly the caller requireFlowVisibility short-circuits to an allow.
-        expect(await renderProbe(summaryWith({ clusterAdmin: false }), null)).toContain('"allowed":true');
-    });
-});
-
 describe('HomeRedirect', () => {
-    function renderAt(summary: AccessSummary | null, sessionInfo: RootState['sessionInfo'] = null) {
-        vi.stubGlobal('fetch', vi.fn().mockResolvedValue(summary ? jsonResponse(summary) : new Response('', { status: 500 })));
-        const store = setupStore({ session: 'authenticated', sessionInfo });
+    // Routes by URL and builds a fresh Response per call: AccessProvider now makes two requests,
+    // and a Response body can only be read once, so handing both the same object made the second
+    // reject and the gate fail open - which is not what any of these tests mean to exercise.
+    function renderAt(summary: AccessSummary | null, flowNs: FlowNamespacesResponse | null = null) {
+        const body = flowNs ?? { namespaces: [], clusterWide: false, incomplete: false };
+        vi.stubGlobal('fetch', vi.fn().mockImplementation((url: string) => {
+            if (String(url).includes('flows/namespaces')) return Promise.resolve(jsonResponse(body));
+            return Promise.resolve(summary ? jsonResponse(summary) : new Response('', { status: 500 }));
+        }));
+        const store = setupStore({ session: 'authenticated' });
         return render(
             <Provider store={store}>
                 <AccessProvider>
@@ -234,17 +191,26 @@ describe('HomeRedirect', () => {
         await waitFor(() => expect(document.querySelector('[data-testid="landed"]')?.textContent).toBe('traceflow'));
     });
 
-    test('lands on /flows/list when only flow visibility is permitted', async () => {
-        renderAt(summaryWith({ clusterAdmin: true }), { authenticated: true, mode: 'token', username: 'alice' });
+    test('falls back to /settings when neither Summary, Traceflow nor Flows is granted', async () => {
+        // Settings needs no permission at all, so it is the floor here instead of a guess that
+        // could land on a 403.
+        renderAt(summaryWith());
+        await waitFor(() => expect(document.querySelector('[data-testid="landed"]')?.textContent).toBe('settings'));
+    });
+
+    test('lands on /flows/list for a caller who may observe a namespace', async () => {
+        renderAt(summaryWith(), { namespaces: [{ namespace: 'flow-a', canObserve: true }], clusterWide: false, incomplete: false });
         await waitFor(() => expect(document.querySelector('[data-testid="landed"]')?.textContent).toBe('flows'));
     });
 
-    test('falls back to /settings when nothing else is permitted', async () => {
-        // Flow Visibility is no longer the floor: it is gated too, so a user permitted none of
-        // the three lands on Settings, which needs no permission. Needs a definite session: a
-        // null one is mode-unknown, which useCanViewFlows allows.
-        renderAt(summaryWith(), { authenticated: true, mode: 'token', username: 'alice' });
-        await waitFor(() => expect(document.querySelector('[data-testid="landed"]')?.textContent).toBe('settings'));
+    // Replaces a test asserting the opposite. A namespaced grant used to land on /settings,
+    // because cluster-wide was the only scope the page could request; with the selector it is
+    // exactly the caller the page serves. Note the summary here grants flows nothing: landing is
+    // decided by the enumerated namespaces alone now.
+    test('lands on /flows/list for a namespace-scoped caller', async () => {
+        renderAt(summaryWith({ namespace: 'default' }),
+            { namespaces: [{ namespace: 'default', canObserve: true }], clusterWide: false, incomplete: false });
+        await waitFor(() => expect(document.querySelector('[data-testid="landed"]')?.textContent).toBe('flows'));
     });
 
     test('fails open to /summary when the fetch fails', async () => {

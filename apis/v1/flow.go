@@ -35,6 +35,25 @@ const (
 	NetworkPolicyTypeACNP        NetworkPolicyType = 3
 )
 
+// EndpointDisclosure records how much of one endpoint of a flow this user was authorized to see.
+// Set by the Flow Aggregator's FlowStreamService only. Zero is Full, not "unspecified": a record
+// nothing redacted reads as fully disclosed, which is every record on a cluster-wide stream.
+type EndpointDisclosure int32
+
+const (
+	// EndpointDisclosureFull means everything the record carries for the endpoint, including
+	// its Node placement and the Egress applied to it.
+	EndpointDisclosureFull EndpointDisclosure = 0
+	// EndpointDisclosureIdentity means the endpoint's Namespace, Pod and Service identity and
+	// the identity of the network policy evaluated on its side, but not its Node placement or
+	// its Egress.
+	EndpointDisclosureIdentity EndpointDisclosure = 1
+	// EndpointDisclosureFlow means only what the flow itself shows - addresses, ports,
+	// protocol, statistics, and the type and action of the policies evaluated on the
+	// endpoint's side - plus the endpoint's Namespace if the connection was allowed.
+	EndpointDisclosureFlow EndpointDisclosure = 2
+)
+
 type NetworkPolicyRuleAction int32
 
 const (
@@ -90,6 +109,20 @@ type FlowIP struct {
 
 type FlowKubernetes struct {
 	FlowType FlowType `json:"flowType"`
+
+	// SourceDisclosure and DestinationDisclosure report the tier each endpoint was disclosed
+	// at, so a withheld field is distinguishable from a field the Flow Aggregator never had.
+	//
+	// Deliberately no omitempty on either: Full is the zero value, so omitempty would drop
+	// exactly the case a client most needs to read as Full. Keeping them always present makes
+	// the wire format say what it means. A client should still default a missing value to Full,
+	// for records from a backend that predates these fields.
+	//
+	// Note that the marker describes an endpoint, not a per-field guarantee: an endpoint can
+	// lack a field while still reporting Full, because the Flow Aggregator may simply never
+	// have had it.
+	SourceDisclosure      EndpointDisclosure `json:"sourceDisclosure"`
+	DestinationDisclosure EndpointDisclosure `json:"destinationDisclosure"`
 
 	SourcePodNamespace string            `json:"sourcePodNamespace"`
 	SourcePodName      string            `json:"sourcePodName"`
@@ -161,4 +194,47 @@ type FlowStreamDroppedEvent struct {
 // FlowStreamErrorEvent is the JSON payload for an SSE "error" event.
 type FlowStreamErrorEvent struct {
 	Message string `json:"message"`
+	// Code is a stable, machine-readable identifier for the failure kind (see
+	// pkg/handlers/flowstream.StreamError), so a client can decide how to react without parsing
+	// Message. Empty for an error this backend could not classify.
+	Code string `json:"code,omitempty"`
+	// Retryable reports whether the same request is expected to succeed if retried. The
+	// frontend uses this to decide whether to keep reconnecting or to stop and show Message.
+	Retryable bool `json:"retryable"`
+}
+
+// FlowNamespaceAccess is one candidate Namespace and whether the user may observe flows in it.
+//
+// Both observable and non-observable candidates are reported, so the selector can show a
+// Namespace it knows about as unavailable rather than silently omitting it — the difference
+// between "you cannot observe flows there" and "that Namespace does not exist" is the one a user
+// asks about.
+type FlowNamespaceAccess struct {
+	Namespace string `json:"namespace"`
+	// CanObserve is the verdict of a SelfSubjectAccessReview for watch on
+	// flows.observability.antrea.io in this Namespace. watch, not list: the flow stream always
+	// follows, and the Flow Aggregator grants list alone as history-only access, so a
+	// list-only Namespace would be offered here and then fail to stream.
+	CanObserve bool `json:"canObserve"`
+}
+
+// FlowNamespacesResponse answers "which Namespaces may I observe flows in", which Kubernetes has
+// no reverse lookup for: the Flow Aggregator requires every stream to name its scope, so the
+// options have to be enumerated. Like AccessSummary this is a rendering hint — the Flow
+// Aggregator authorizes every stream itself.
+type FlowNamespacesResponse struct {
+	// Namespaces is the candidate list with a verdict for each, sorted by name. Never null. An
+	// empty list is a real answer: this user is a subject of no RoleBinding that would put a
+	// Namespace within reach.
+	Namespaces []FlowNamespaceAccess `json:"namespaces"`
+	// ClusterWide is the verdict of one cluster-scoped review. It drives whether the selector
+	// offers the cluster-wide option, which is the only scope in which nothing is redacted.
+	ClusterWide bool `json:"clusterWide"`
+	// Incomplete mirrors SubjectRulesReviewStatus.Incomplete: the candidate list is not
+	// exhaustive, so a Namespace's absence from it does not mean the user cannot observe
+	// flows there. It is set whenever the candidates were derived from RoleBinding subjects
+	// rather than enumerated, and when the candidate list had to be truncated. Discovering
+	// Namespaces a user may observe but may not list is not answerable; this is how they are
+	// told.
+	Incomplete bool `json:"incomplete"`
 }

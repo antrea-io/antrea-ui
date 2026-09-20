@@ -48,3 +48,5 @@ export {
     GATE_CONTROLLER_INFO_GET,
     GATE_FEATUREGATES,
 } from './lib/access-api.js';
+export type { FlowNamespaceAccess, FlowNamespacesResponse } from './lib/flow-namespaces-api.js';
+export { flowNamespaces, observableNamespaces, canViewFlows } from './lib/flow-namespaces-api.js';

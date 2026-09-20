@@ -15,12 +15,16 @@
 package flowstream
 
 import (
+	"encoding/json"
 	"net"
 	"testing"
 	"time"
 
+	"github.com/go-logr/logr/testr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	apisv1 "antrea.io/antrea-ui/apis/v1"
@@ -142,7 +146,7 @@ func TestFilterToGetFlowsRequest(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			req := filterToGetFlowsRequest(tt.filter)
+			req := filterToGetFlowsRequest(&FlowStreamScope{ClusterWide: true}, tt.filter)
 			require.NotNil(t, req)
 			require.Len(t, req.Filters, 1)
 
@@ -446,4 +450,118 @@ func TestProtoFlowToAPI_FullFlow(t *testing.T) {
 	assert.Equal(t, "10.96.1.1", got.K8s.DestinationClusterIp)
 	assert.Equal(t, uint64(200), got.Stats.PacketTotalCount)
 	assert.Equal(t, uint64(150), got.ReverseStats.PacketTotalCount)
+}
+
+// ---------------------------------------------------------------------------
+// filterToGetFlowsRequest: scope vs filter
+// ---------------------------------------------------------------------------
+
+// Scope lands on GetFlowsRequest and filters land on FlowFilter, and the two never mix. This is
+// the whole point of keeping FlowStreamScope a separate type, and the conversion is the only place
+// the scalar observed Namespace becomes the repeated protobuf field.
+func TestFilterToGetFlowsRequestScope(t *testing.T) {
+	t.Run("an observed namespace becomes a one-element request-level list", func(t *testing.T) {
+		req := filterToGetFlowsRequest(&FlowStreamScope{ObservedNamespace: "ns-a"}, &FlowStreamFilter{})
+		assert.Equal(t, []string{"ns-a"}, req.Namespaces)
+		assert.False(t, req.ClusterWide)
+	})
+
+	t.Run("cluster-wide sets no request-level namespaces", func(t *testing.T) {
+		// The two are mutually exclusive upstream, so sending both would be rejected with
+		// INVALID_ARGUMENT - which is exactly what the version probe relies on.
+		req := filterToGetFlowsRequest(&FlowStreamScope{ClusterWide: true}, &FlowStreamFilter{})
+		assert.True(t, req.ClusterWide)
+		assert.Empty(t, req.Namespaces)
+	})
+
+	t.Run("an out-of-scope namespace in the filter survives", func(t *testing.T) {
+		// Upstream's service.proto is explicit that a Namespace outside the scope is legal in
+		// the filter, and is how a flow is selected by its peer rather than by its own end.
+		// Collapsing the two would throw that away, so this asserts that ns-c reaches the
+		// filter untouched while the scope stays ns-a alone.
+		req := filterToGetFlowsRequest(
+			&FlowStreamScope{ObservedNamespace: "ns-a"},
+			&FlowStreamFilter{Namespaces: []string{"ns-c"}},
+		)
+		assert.Equal(t, []string{"ns-a"}, req.Namespaces)
+		require.Len(t, req.Filters, 1)
+		assert.Equal(t, []string{"ns-c"}, req.Filters[0].Namespaces)
+	})
+
+	t.Run("the scope is never copied into the filter", func(t *testing.T) {
+		req := filterToGetFlowsRequest(&FlowStreamScope{ObservedNamespace: "ns-a"}, &FlowStreamFilter{})
+		require.Len(t, req.Filters, 1)
+		assert.Empty(t, req.Filters[0].Namespaces, "the scope must not double as a filter")
+	})
+}
+
+// ---------------------------------------------------------------------------
+// protoFlowToAPI: disclosure markers
+// ---------------------------------------------------------------------------
+
+// The disclosure markers are what let a client tell a withheld field apart from a field the Flow
+// Aggregator never had, so they have to survive the conversion. Full is the enum's zero value,
+// deliberately, which is the case worth pinning: it must stay on the wire rather than being
+// dropped as empty.
+func TestProtoFlowToAPIDisclosure(t *testing.T) {
+	t.Run("both tiers are carried through", func(t *testing.T) {
+		pb := &flowpb.Flow{
+			Id: "flow-disclosure",
+			K8S: &flowpb.Kubernetes{
+				SourceDisclosure:      flowpb.EndpointDisclosure_ENDPOINT_DISCLOSURE_IDENTITY,
+				DestinationDisclosure: flowpb.EndpointDisclosure_ENDPOINT_DISCLOSURE_FLOW,
+			},
+		}
+		got := protoFlowToAPI(pb)
+		assert.Equal(t, apisv1.EndpointDisclosureIdentity, got.K8s.SourceDisclosure)
+		assert.Equal(t, apisv1.EndpointDisclosureFlow, got.K8s.DestinationDisclosure)
+	})
+
+	t.Run("an unset marker is Full, not unspecified", func(t *testing.T) {
+		// Every record on a cluster-wide stream looks like this, as does every record from a
+		// producer that never touched the field.
+		got := protoFlowToAPI(&flowpb.Flow{Id: "flow-untouched", K8S: &flowpb.Kubernetes{}})
+		assert.Equal(t, apisv1.EndpointDisclosureFull, got.K8s.SourceDisclosure)
+		assert.Equal(t, apisv1.EndpointDisclosureFull, got.K8s.DestinationDisclosure)
+	})
+
+	t.Run("the zero value round-trips as Full through JSON", func(t *testing.T) {
+		// No omitempty on either field, deliberately: omitempty would drop exactly the case
+		// the frontend most needs to read as Full. This asserts the encoded form, not just
+		// the Go value, because the tag is what decides it.
+		got := protoFlowToAPI(&flowpb.Flow{Id: "flow-untouched", K8S: &flowpb.Kubernetes{}})
+		data, err := json.Marshal(got)
+		require.NoError(t, err)
+		assert.Contains(t, string(data), `"sourceDisclosure":0`)
+		assert.Contains(t, string(data), `"destinationDisclosure":0`)
+
+		var back apisv1.Flow
+		require.NoError(t, json.Unmarshal(data, &back))
+		assert.Equal(t, apisv1.EndpointDisclosureFull, back.K8s.SourceDisclosure)
+		assert.Equal(t, apisv1.EndpointDisclosureFull, back.K8s.DestinationDisclosure)
+	})
+}
+
+// ---------------------------------------------------------------------------
+// classifyStreamErr: the authorization-era codes
+// ---------------------------------------------------------------------------
+
+// Both of these are permanent for the request as sent, so both must be non-retryable: a 403 or a
+// malformed request retried in the frontend's reconnect loop is a retry storm against an answer
+// that will not change.
+func TestClassifyStreamErrAuthorizationCodes(t *testing.T) {
+	t.Run("PermissionDenied is a non-retryable forbidden", func(t *testing.T) {
+		h := &GRPCFlowStreamSubscriber{logger: testr.New(t)}
+		streamErr := h.classifyStreamErr(status.Error(codes.PermissionDenied, "watch access to flows in ns-a was revoked"))
+		assert.Equal(t, StreamErrorCodeForbidden, streamErr.Code)
+		assert.False(t, streamErr.Retryable)
+		assert.Contains(t, streamErr.Error(), "was revoked")
+	})
+
+	t.Run("InvalidArgument is a non-retryable invalid request", func(t *testing.T) {
+		h := &GRPCFlowStreamSubscriber{logger: testr.New(t)}
+		streamErr := h.classifyStreamErr(status.Error(codes.InvalidArgument, "name the namespaces to observe flows in"))
+		assert.Equal(t, StreamErrorCodeInvalidRequest, streamErr.Code)
+		assert.False(t, streamErr.Retryable)
+	})
 }

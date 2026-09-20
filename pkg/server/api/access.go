@@ -16,6 +16,7 @@ package api
 
 import (
 	"context"
+	goerrors "errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -121,39 +122,12 @@ func (s *Server) GetAccessSummary(c *gin.Context) {
 		}
 		result.ClusterAdmin = clusterAdmin
 
-		// Step 4: namespaces. Static admin is answered without consulting the resolver at all,
-		// so that a resolver failure cannot fail the one session an operator uses to fix a
-		// cluster whose RBAC is broken.
-		//
-		// This is a fallback, not what makes static admin work: the impersonated
-		// antrea-ui-admin ServiceAccount can list namespaces (antrea-ui-admin-core grants it),
-		// so the SelfSubjectAccessReview below would answer ["*"] for it anyway — the same
-		// answer, by the same path, as for a user bound to that role with their own identity.
-		// Those two are meant to have the same permissions, so they must not diverge here.
-		if ra, ok := authn.RequestAuthFromGin(c); ok && ra.Mode == session.ModeAdmin {
-			result.Namespaces = []string{"*"}
-		} else {
-			review, err := clientset.AuthorizationV1().SelfSubjectAccessReviews().Create(ctx, &authorizationv1.SelfSubjectAccessReview{
-				Spec: authorizationv1.SelfSubjectAccessReviewSpec{
-					ResourceAttributes: &authorizationv1.ResourceAttributes{
-						Verb:     "list",
-						Resource: "namespaces",
-					},
-				},
-			}, metav1.CreateOptions{})
-			if err != nil {
-				return s.k8sError(c, err, "error when evaluating access summary")
-			}
-			if review.Status.Allowed {
-				result.Namespaces = []string{"*"}
-			} else {
-				namespaces, sErr := s.namespacesFor(result.Username, result.Groups)
-				if sErr != nil {
-					return sErr
-				}
-				result.Namespaces = namespaces
-			}
+		// Step 4: namespaces.
+		namespaces, err := s.accessibleNamespaces(ctx, clientset, staticAdminRequest(c), result.Username, result.Groups)
+		if err != nil {
+			return s.namespacesError(c, err)
 		}
+		result.Namespaces = namespaces
 
 		summary = result
 		return nil
@@ -163,6 +137,66 @@ func (s *Server) GetAccessSummary(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, summary)
+}
+
+// staticAdminRequest reports whether this request authenticated as the built-in admin, which is
+// served by impersonating the antrea-ui-admin ServiceAccount.
+func staticAdminRequest(c *gin.Context) bool {
+	ra, ok := authn.RequestAuthFromGin(c)
+	return ok && ra.Mode == session.ModeAdmin
+}
+
+// accessibleNamespaces resolves AccessSummary.Namespaces: the namespaces the caller may access, or
+// ["*"] when the caller can list namespaces cluster-wide.
+//
+// It returns raw errors rather than a *errors.ServerError so that every caller maps them against
+// its own request — mapping a 401 has side effects on the response (the session is invalidated and
+// the cookie cleared), which must land on the request that made the call.
+func (s *Server) accessibleNamespaces(ctx context.Context, clientset kubernetes.Interface, staticAdmin bool, username string, groups []string) ([]string, error) {
+	// Static admin is answered without consulting the resolver at all, so that a resolver
+	// failure cannot fail the one session an operator uses to fix a cluster whose RBAC is
+	// broken.
+	//
+	// This is a fallback, not what makes static admin work: the impersonated antrea-ui-admin
+	// ServiceAccount can list namespaces (antrea-ui-admin-core grants it), so the
+	// SelfSubjectAccessReview below would answer ["*"] for it anyway — the same answer, by the
+	// same path, as for a user bound to that role with their own identity. Those two are meant
+	// to have the same permissions, so they must not diverge here.
+	if staticAdmin {
+		return []string{"*"}, nil
+	}
+	review, err := clientset.AuthorizationV1().SelfSubjectAccessReviews().Create(ctx, &authorizationv1.SelfSubjectAccessReview{
+		Spec: authorizationv1.SelfSubjectAccessReviewSpec{
+			ResourceAttributes: &authorizationv1.ResourceAttributes{
+				Verb:     "list",
+				Resource: "namespaces",
+			},
+		},
+	}, metav1.CreateOptions{})
+	if err != nil {
+		return nil, err
+	}
+	if review.Status.Allowed {
+		return []string{"*"}, nil
+	}
+	return s.namespacesFor(username, groups)
+}
+
+// errNamespaceDiscoveryUnavailable is what accessibleNamespaces returns when the RoleBinding-based
+// resolver cannot answer, so that callers can map it to a 503 rather than to the 500 an
+// unrecognized error gets.
+var errNamespaceDiscoveryUnavailable = goerrors.New("namespace discovery is not ready")
+
+// namespacesError maps an error from accessibleNamespaces to a response.
+func (s *Server) namespacesError(c *gin.Context, err error) *errors.ServerError {
+	if goerrors.Is(err, errNamespaceDiscoveryUnavailable) {
+		return &errors.ServerError{
+			Code:    http.StatusServiceUnavailable,
+			Err:     err,
+			Message: "namespace discovery is not ready",
+		}
+	}
+	return s.k8sError(c, err, "error when resolving accessible namespaces")
 }
 
 // namespacesFor resolves the namespaces the caller may access from RoleBinding subjects, for a
@@ -176,14 +210,10 @@ func (s *Server) GetAccessSummary(c *gin.Context) {
 // retry on its next call — the failure modes here (informer cache not yet synced, or the chart's
 // rolebindings grant not applied) are exactly the ones that resolve themselves or need an operator
 // to notice.
-func (s *Server) namespacesFor(username string, groups []string) ([]string, *errors.ServerError) {
+func (s *Server) namespacesFor(username string, groups []string) ([]string, error) {
 	namespaces, err := s.accessResolver.NamespacesFor(username, groups)
 	if err != nil {
-		return nil, &errors.ServerError{
-			Code:    http.StatusServiceUnavailable,
-			Err:     fmt.Errorf("failed to resolve accessible namespaces: %w", err),
-			Message: "namespace discovery is not ready",
-		}
+		return nil, fmt.Errorf("%w: failed to resolve accessible namespaces: %w", errNamespaceDiscoveryUnavailable, err)
 	}
 	// Never null: the frontend indexes into this field directly. Owning the guarantee here keeps
 	// it next to the failure case it has to be distinguishable from.

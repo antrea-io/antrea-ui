@@ -29,3 +29,19 @@ rules:
       - "antrea-ui-admin"
     verbs:
       - "impersonate"
+{{- if and .Values.flowAggregator.enabled .Values.auth.basic.enable }}
+  # Lets antrea-ui mint a real, short-lived token for antrea-ui-admin and present it to the Flow
+  # Aggregator's FlowStreamService, which does not support impersonation (see
+  # serviceaccounts.yaml). Only admin-password sessions (session.KindImpersonate) need this: they
+  # are the one login mode with no bearer token or client cert of their own to present to FA.
+  # Gated on auth.basic.enable too so the grant does not exist - and cannot be used to mint
+  # antrea-ui-admin tokens from outside the cluster - when that login mode is disabled.
+  - apiGroups:
+      - ""
+    resources:
+      - "serviceaccounts/token"
+    resourceNames:
+      - "antrea-ui-admin"
+    verbs:
+      - "create"
+{{- end }}

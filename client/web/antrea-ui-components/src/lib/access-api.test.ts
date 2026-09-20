@@ -291,3 +291,4 @@ describe('canViewSummary', () => {
         expect(canViewSummary(none)).toBe(false);
     });
 });
+

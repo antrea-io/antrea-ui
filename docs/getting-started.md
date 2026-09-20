@@ -2,7 +2,9 @@
 
 ## Prerequisites
 
-* You will need a Kubernetes cluster running Antrea.
+* You will need a Kubernetes cluster running Antrea. Antrea UI v1.0.0
+  requires Antrea (and the Flow Aggregator, if flow visibility is enabled) at
+  v2.8 or later.
 * Ensure that Helm 3 is [installed](https://helm.sh/docs/intro/install/). We
   recommend using a recent version of Helm if possible. Refer to the [Helm
   documentation](https://helm.sh/docs/topics/version_skew/) for compatibility

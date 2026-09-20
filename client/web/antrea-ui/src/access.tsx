@@ -15,21 +15,28 @@
  */
 
 import React, { useState, useContext, useEffect } from 'react';
-import { accessSummary } from '@antrea/ui-components';
-import type { AccessSummary } from '@antrea/ui-components';
+import { accessSummary, flowNamespaces } from '@antrea/ui-components';
+import type { AccessSummary, FlowNamespacesResponse } from '@antrea/ui-components';
 import { useSelector } from 'react-redux';
 import type { RootState } from './store';
 
 interface AccessContextType {
     summary: AccessSummary | null
+    /** Which namespaces this caller may observe flows in, or null while unknown. Separate from
+     * the access summary because Kubernetes offers no reverse lookup from a subject to the
+     * namespaces it may access: the backend has to enumerate candidates and review each one, so
+     * it cannot come from the summary's rules. Null means "not known yet or the fetch failed",
+     * which canViewFlows treats as allow. */
+    flowNs: FlowNamespacesResponse | null
     loaded: boolean
 }
 
-const AccessContext = React.createContext<AccessContextType>({ summary: null, loaded: false });
+const AccessContext = React.createContext<AccessContextType>({ summary: null, flowNs: null, loaded: false });
 
 export function AccessProvider(props: React.PropsWithChildren) {
     const session = useSelector((state: RootState) => state.session);
     const [summary, setSummary] = useState<AccessSummary | null>(null);
+    const [flowNs, setFlowNs] = useState<FlowNamespacesResponse | null>(null);
     const [loaded, setLoaded] = useState(false);
 
     // Drop what we hold whenever the session changes, rather than leaving it in place until the
@@ -42,22 +49,30 @@ export function AccessProvider(props: React.PropsWithChildren) {
     if (sessionForSummary !== session) {
         setSessionForSummary(session);
         setSummary(null);
+        setFlowNs(null);
         setLoaded(false);
     }
 
     useEffect(() => {
         if (session !== 'authenticated') return;
         let cancelled = false;
-        accessSummary()
-            .then((s) => { if (!cancelled) { setSummary(s); setLoaded(true); } })
-            // Fetch failure fails open: summary stays null, and callers treat a null summary as
-            // "allow everything" — exactly today's pre-access-summary behaviour.
-            .catch(() => { if (!cancelled) { setSummary(null); setLoaded(true); } });
+        // Both fail open, and `loaded` waits for both: an entry appearing once the answers are
+        // in reads better than one vanishing when a restriction turns out to apply. The flow
+        // namespaces are fetched here rather than left to the page so the nav can gate on the
+        // same answer the page will act on; the backend caches and single-flights it per
+        // session, so the page fetching it again costs nothing.
+        Promise.allSettled([accessSummary(), flowNamespaces()])
+            .then(([s, f]) => {
+                if (cancelled) return;
+                setSummary(s.status === 'fulfilled' ? s.value : null);
+                setFlowNs(f.status === 'fulfilled' ? f.value : null);
+                setLoaded(true);
+            });
         return () => { cancelled = true; };
     }, [session]);
 
     return (
-        <AccessContext.Provider value={{ summary, loaded }}>
+        <AccessContext.Provider value={{ summary, flowNs, loaded }}>
             {props.children}
         </AccessContext.Provider>
     );
@@ -66,37 +81,4 @@ export function AccessProvider(props: React.PropsWithChildren) {
 // eslint-disable-next-line react-refresh/only-export-components
 export function useAccess(): AccessContextType {
     return useContext(AccessContext);
-}
-
-// Whether the caller may view flow data: the built-in admin, or a Kubernetes cluster admin.
-//
-// TEMPORARY, mirrors requireFlowVisibility() in pkg/server/api/flowstream.go. That middleware is
-// the authorization decision and it fails closed on its own: every path that is not an allow calls
-// c.Abort(), so the backend never subscribes to the Flow Aggregator for a caller it rejected. This
-// hook only decides whether to render UI that would otherwise just 403, which is why it can fail
-// *open* on a missing answer like the can() gates in access-api.ts do.
-//
-// A definite `clusterAdmin: false` hides the page. A null summary means the access-summary fetch
-// failed (AccessProvider does not retry within a page lifetime), so the backend has not answered at
-// all, and denying here would leave a cluster admin looking at the generic permission panel for the
-// rest of the page lifetime with nothing pointing at "permissions failed to load". Allowing instead
-// defers to requireFlowVisibility, whose 403 onForbidden renders as a terminal panel naming the
-// actual restriction — a better answer either way.
-//
-// A null sessionInfo allows for the same reason, and with more force. It means the login page's
-// own GET /auth/session failed, which _submit swallows (the login itself succeeded, there is just
-// nothing to display for it), so a built-in admin can reach an authenticated app with mode
-// unknown. Their summary then reports clusterAdmin false — correctly, the antrea-ui-admin
-// ServiceAccount holds no */*/* rule — and denying on it would hide the page from precisely the
-// caller requireFlowVisibility short-circuits to an allow. Unlike a null summary, this is not even
-// an unknown answer on the backend's side: it is one the backend resolves in the user's favour.
-// The cost is the same as above, plus the initial redirect: HomeRedirect reads this hook too, so
-// such a caller lands on the flows page and meets the 403 panel there instead of Settings. Both
-// only during a failure that also broke their session probe.
-//
-// eslint-disable-next-line react-refresh/only-export-components
-export function useCanViewFlows(): { allowed: boolean, loaded: boolean } {
-    const { summary, loaded } = useAccess();
-    const info = useSelector((state: RootState) => state.sessionInfo);
-    return { allowed: info === null || info.mode === 'admin' || summary === null || summary.clusterAdmin === true, loaded };
 }

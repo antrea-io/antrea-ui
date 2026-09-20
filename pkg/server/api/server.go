@@ -73,6 +73,9 @@ type Server struct {
 	frontendSettings         *apisv1.FrontendSettings
 	pluginRegistry           *plugins.Registry
 	accessResolver           accesshandler.Resolver
+	// flowNamespaces memoizes GET /api/v1/flows/namespaces per session, which costs one
+	// SelfSubjectAccessReview per candidate namespace to answer.
+	flowNamespaces *flowNamespacesCache
 }
 
 func NewServer(o Options) *Server {
@@ -97,6 +100,7 @@ func NewServer(o Options) *Server {
 		frontendSettings:         buildFrontendSettingsFromConfig(o.Config),
 		pluginRegistry:           o.PluginRegistry,
 		accessResolver:           o.AccessResolver,
+		flowNamespaces:           newFlowNamespacesCache(),
 	}
 }
 
@@ -133,11 +137,22 @@ func (s *Server) AddRoutes(r *gin.RouterGroup) {
 func (s *Server) AddFlowStreamRoutes(r *gin.RouterGroup) {
 	flows := r.Group("/flows")
 	flows.Use(s.authenticate())
+	// Registered whether or not Flow Aggregator integration is enabled: this answers a
+	// question about the caller's Kubernetes RBAC and never talks to the Flow Aggregator, so
+	// it is answerable even when there is none to talk to. The frontend learns that flow
+	// visibility is off from /settings and from the stream's 501, not from here.
+	flows.GET("/namespaces", s.GetFlowNamespaces)
 	if s.flowStreamSSEHandler == nil {
 		flows.GET("/stream", s.flowStreamDisabled)
 		return
 	}
-	flows.GET("/stream", s.requireFlowVisibility(), s.flowStreamSSEHandler.StreamFlows)
+	// No antrea-ui-side authorization gate: the Flow Aggregator's FlowStreamService authorizes
+	// each stream with Kubernetes RBAC against the scope the request names, and redacts each
+	// endpoint to the tier the caller is entitled to. An admin-only gate here (the removed
+	// requireFlowVisibility) would make every per-Namespace grant unreachable - a Namespace
+	// administrator holding flow access in their own Namespace would be refused before the Flow
+	// Aggregator ever saw the request.
+	flows.GET("/stream", s.flowStreamSSEHandler.StreamFlows)
 }
 
 // flowStreamDisabled handles GET /api/v1/flows/stream when Flow Aggregator integration is off.

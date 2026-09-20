@@ -159,7 +159,6 @@ export const GATE_CONTROLLER_INFO_GET = { group: 'crd.antrea.io', resource: 'ant
 // A nonResourceURL because that is how antrea-ui-admin-core grants it (clusterroles.yaml), and
 // the Antrea Service delegates authorization to the same RBAC.
 export const GATE_FEATUREGATES = { verb: 'get', url: '/featuregates' };
-
 export function canViewSummary(s: AccessSummary | null): boolean {
     return can(s, GATE_AGENT_INFO_LIST) || can(s, GATE_CONTROLLER_INFO_GET) || canNonResource(s, GATE_FEATUREGATES);
 }
