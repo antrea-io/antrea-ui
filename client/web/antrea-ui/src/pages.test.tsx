@@ -16,7 +16,7 @@
 
 import { act, render, waitFor } from '@testing-library/react';
 import { Provider } from 'react-redux';
-import { navigateTo, resetAccessSummary } from '@antrea/ui-components';
+import { navigateTo, resetAccessSummary, SCOPE_CHANGE_EVENT } from '@antrea/ui-components';
 import type { AccessSummary } from '@antrea/ui-components';
 import { setAuthenticated, setupStore } from './store';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router';
@@ -95,7 +95,9 @@ describe('FlowVisibilityPage — route guard', () => {
         return render(
             <Provider store={store}>
                 <AccessProvider>
-                    <FlowVisibilityPage view="list" />
+                    <MemoryRouter>
+                        <FlowVisibilityPage view="list" />
+                    </MemoryRouter>
                 </AccessProvider>
             </Provider>,
         );
@@ -284,5 +286,48 @@ describe('OverviewPage', () => {
 
         await waitFor(() => expect(store.getState().session).toBe('anonymous'));
         expect(navigateTo).toHaveBeenCalledTimes(1);
+    });
+});
+
+// The flow page keeps its observed namespace in the query string and rewrites it itself, which no
+// router is told about. The host adopts it on the page's own event, so that what the sidebar links
+// carry between the two sub-pages is the scope in force and not the one the page loaded with.
+describe('FlowVisibilityPage — scope in the URL', () => {
+    function LocationProbe() {
+        const { pathname, search } = useLocation();
+        return <div data-testid="location">{pathname + search}</div>;
+    }
+
+    test('the router adopts the query string the page announces', async () => {
+        const store = setupStore({ session: 'authenticated' });
+        // Every fetch fails, so the access answers fail open and the page renders.
+        vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+            throw new Error(`unexpected fetch to ${url}`);
+        }));
+
+        render(
+            <Provider store={store}>
+                <AccessProvider>
+                    <MemoryRouter initialEntries={['/flows/list']}>
+                        <LocationProbe />
+                        <Routes>
+                            <Route path="/flows/list" element={<FlowVisibilityPage view="list" />} />
+                        </Routes>
+                    </MemoryRouter>
+                </AccessProvider>
+            </Provider>,
+        );
+        await waitFor(() => expect(document.querySelector('antrea-flow-visibility-page')).not.toBeNull());
+        const el = document.querySelector('antrea-flow-visibility-page')!;
+        expect(document.querySelector('[data-testid="location"]')?.textContent).toBe('/flows/list');
+
+        await act(async () => {
+            el.dispatchEvent(new CustomEvent(SCOPE_CHANGE_EVENT, {
+                detail: { search: '?observedNamespace=ns-a' }, bubbles: true, composed: true,
+            }));
+        });
+
+        await waitFor(() => expect(document.querySelector('[data-testid="location"]')?.textContent)
+            .toBe('/flows/list?observedNamespace=ns-a'));
     });
 });
