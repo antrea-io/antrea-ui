@@ -114,12 +114,12 @@ github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674 h1:JeSE6pjso5T
 github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674/go.mod h1:r4w70xmWCQKmi1ONH4KIaBptdivuRPyosB9RmPlGEwA=
 github.com/gruntwork-io/go-commons v0.8.0 h1:k/yypwrPqSeYHevLlEDmvmgQzcyTwrlZGRaxEM6G0ro=
 github.com/gruntwork-io/go-commons v0.8.0/go.mod h1:gtp0yTtIBExIZp7vyIV9I0XQkVwiQZze678hvDXof78=
-github.com/gruntwork-io/terratest/modules/core/v2 v2.0.0-beta.2 h1:vQVT41UDfD4DmxEff60RzBRFo+jRolqzcTf2D804hZo=
-github.com/gruntwork-io/terratest/modules/core/v2 v2.0.0-beta.2/go.mod h1:toDd6sojktUVEqV7nVIzncmEVXqkMgreSa2DhMBMBQk=
+github.com/gruntwork-io/terratest/modules/core/v2 v2.0.0 h1:9Wfr0hAj5axsiSxBi789TZRQfCvcRBUS47TmoHMWBag=
+github.com/gruntwork-io/terratest/modules/core/v2 v2.0.0/go.mod h1:toDd6sojktUVEqV7nVIzncmEVXqkMgreSa2DhMBMBQk=
 github.com/gruntwork-io/terratest/modules/helm/v2 v2.0.0-beta.2 h1:peH42SYaQh84E5+cAq/kSLhC9pEmHRAlErjQIF/5V2s=
 github.com/gruntwork-io/terratest/modules/helm/v2 v2.0.0-beta.2/go.mod h1:7Te4k3w1biHM238SzOwRLCYobFth8mvSQFXAB/krtjU=
-github.com/gruntwork-io/terratest/modules/httphelper/v2 v2.0.0-beta.2 h1:DamFGYZ2KM8TmgmniCu9CRTtznCfXaRGSBshHINWOF4=
-github.com/gruntwork-io/terratest/modules/httphelper/v2 v2.0.0-beta.2/go.mod h1:u2PhwK7Iz5+N4TN2EIt1/xB57MuPv7HFC3QwLaKdJhY=
+github.com/gruntwork-io/terratest/modules/httphelper/v2 v2.0.0 h1:5M7KU9ttle9PFEjrHUST2/HSnzYtDt0QVW6E8hhFWJo=
+github.com/gruntwork-io/terratest/modules/httphelper/v2 v2.0.0/go.mod h1:wsYxURUVgZx5zmbx1tLGO7cKGeUhspbnfizcnETpvpQ=
 github.com/gruntwork-io/terratest/modules/k8s/v2 v2.0.0-beta.2 h1:O2LlDBON7rtdiut/xBbNnebMuQcEy6MsT9byhhR8NVU=
 github.com/gruntwork-io/terratest/modules/k8s/v2 v2.0.0-beta.2/go.mod h1:EeVqmlHwRvECUEUUAm9voHcSrgafgSK11nOfzlgEkXE=
 github.com/hashicorp/golang-lru/v2 v2.0.7 h1:a+bsQ5rvGLjzHuww6tVxozPZFVghXaHOwFs4luLUK2k=
