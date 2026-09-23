@@ -35,7 +35,7 @@ require (
 )
 
 require (
-	github.com/ProtonMail/go-crypto v1.4.1
+	github.com/ProtonMail/go-crypto v1.5.1
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/gruntwork-io/terratest/modules/core/v2 v2.0.0-beta.2
 	github.com/gruntwork-io/terratest/modules/helm/v2 v2.0.0-beta.2
