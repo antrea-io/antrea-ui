@@ -141,8 +141,8 @@ github.com/gruntwork-io/go-commons v0.8.0 h1:k/yypwrPqSeYHevLlEDmvmgQzcyTwrlZGRa
 github.com/gruntwork-io/go-commons v0.8.0/go.mod h1:gtp0yTtIBExIZp7vyIV9I0XQkVwiQZze678hvDXof78=
 github.com/gruntwork-io/terratest/modules/core/v2 v2.0.0 h1:9Wfr0hAj5axsiSxBi789TZRQfCvcRBUS47TmoHMWBag=
 github.com/gruntwork-io/terratest/modules/core/v2 v2.0.0/go.mod h1:toDd6sojktUVEqV7nVIzncmEVXqkMgreSa2DhMBMBQk=
-github.com/gruntwork-io/terratest/modules/helm/v2 v2.0.0-beta.2 h1:peH42SYaQh84E5+cAq/kSLhC9pEmHRAlErjQIF/5V2s=
-github.com/gruntwork-io/terratest/modules/helm/v2 v2.0.0-beta.2/go.mod h1:7Te4k3w1biHM238SzOwRLCYobFth8mvSQFXAB/krtjU=
+github.com/gruntwork-io/terratest/modules/helm/v2 v2.0.0 h1:vG823CBYMFMVfukoT3fP4NR/dJRSDV6NadzFAMUKtdg=
+github.com/gruntwork-io/terratest/modules/helm/v2 v2.0.0/go.mod h1:DD3rWem7p7gq5/aQjB4Ivy3DKfvfMVmy0tXjyYN+NU8=
 github.com/gruntwork-io/terratest/modules/httphelper/v2 v2.0.0 h1:5M7KU9ttle9PFEjrHUST2/HSnzYtDt0QVW6E8hhFWJo=
 github.com/gruntwork-io/terratest/modules/httphelper/v2 v2.0.0/go.mod h1:wsYxURUVgZx5zmbx1tLGO7cKGeUhspbnfizcnETpvpQ=
 github.com/gruntwork-io/terratest/modules/k8s/v2 v2.0.0 h1:+YEDtH7xYS15XCv9FI0e/eYnUr0IoBE2Ak05p5PyYrA=
