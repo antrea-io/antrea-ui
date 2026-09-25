@@ -73,11 +73,11 @@ type bearerCacheEntry struct {
 //
 // It cannot be left to the upstream call to reject a bad token, even though for most routes it
 // would. Two route handlers resolve an identity and then never present the credential to
-// Kubernetes at all - GET /auth/session, and the flow stream, which reads from the Flow Aggregator
-// over antrea-ui's own connection. On those, "the API server will catch it" is not true, and an
-// unvalidated token is simply believed. (The flow stream's interim admin-only gate does present
-// the credential today, so it would incidentally catch a bogus token, but that gate is temporary
-// and the handler behind it is not - see requireFlowVisibility.)
+// Kubernetes at all - GET /auth/session, and the flow stream, which presents the credential to
+// the Flow Aggregator and never to the API server. On those, "the API server will catch it" is
+// not true, and an unvalidated token is simply believed. The Flow Aggregator would reject a bogus
+// token itself, but it trusts a different CA and potentially a different audience, so what it
+// accepts or refuses says nothing about whether the token is valid for antrea-ui.
 //
 // Validating here rather than in each handler also removes antrea-ui as an unauthenticated,
 // unthrottled way to test Kubernetes credentials against an API server the caller may not be able

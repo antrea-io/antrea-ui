@@ -159,6 +159,29 @@ export const GATE_CONTROLLER_INFO_GET = { group: 'crd.antrea.io', resource: 'ant
 // A nonResourceURL because that is how antrea-ui-admin-core grants it (clusterroles.yaml), and
 // the Antrea Service delegates authorization to the same RBAC.
 export const GATE_FEATUREGATES = { verb: 'get', url: '/featuregates' };
+// This is a rendering hint, not an authorization decision: the Flow Aggregator is still what
+// authorizes and redacts each stream, and can() fails open on an incomplete/unloaded summary, so
+// this can only ever hide the entry for a user who would be refused anyway - never show it to one
+// who wouldn't. watch, not list: the page only ever opens a following stream, and that is the verb
+// the Flow Aggregator checks for one.
+export const GATE_FLOWS_WATCH = { group: 'observability.antrea.io', resource: 'flows', verb: 'watch' };
+
+// Whether the caller may view flow data. TEMPORARY: while the observed-Namespace selector does
+// not exist yet, clusterWide=true is the only scope Flow Visibility can ever request, so the only
+// two outcomes reachable are a fully disclosed stream (for a caller holding flows cluster-wide)
+// or a 403. Showing the page to the first group only is exactly what a cluster-wide watch grant
+// partitions. Revisit once the selector lands and a caller can request their own Namespace's
+// scope instead, at which point a namespaced grant becomes worth rendering for.
+//
+// Hence the s.namespace guard: a namespace-scoped summary can show a namespaced Role's grant on
+// flows too, which authorizes nothing cluster-wide, so trusting can() alone would read a caller's
+// own-Namespace grant as if it were cluster-wide. Checked here rather than left to the caller,
+// since a summary is cluster-scoped by default (accessSummary() takes no namespace) and this is
+// exactly the check that would silently do the wrong thing the one time that stops being true.
+export function canViewFlows(s: AccessSummary | null): boolean {
+    if (s?.namespace) return false;
+    return can(s, GATE_FLOWS_WATCH);
+}
 
 export function canViewSummary(s: AccessSummary | null): boolean {
     return can(s, GATE_AGENT_INFO_LIST) || can(s, GATE_CONTROLLER_INFO_GET) || canNonResource(s, GATE_FEATUREGATES);

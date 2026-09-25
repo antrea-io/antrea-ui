@@ -31,6 +31,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"google.golang.org/grpc"
 )
 
 // Kind identifies how a Credential authenticates to the Kubernetes API server.
@@ -92,6 +94,15 @@ func (c Credential) String() string {
 	return fmt.Sprintf("Credential{Kind:%s,UserName:%s,Redacted}", c.Kind, c.UserName)
 }
 
+// clone returns a copy of c whose byte slices do not alias c's: safe to retain and read after the
+// original is zeroed or overwritten concurrently, at the cost of one allocation per field in use.
+func (c Credential) clone() Credential {
+	c.Token = append([]byte(nil), c.Token...)
+	c.CertPEM = append([]byte(nil), c.CertPEM...)
+	c.KeyPEM = append([]byte(nil), c.KeyPEM...)
+	return c
+}
+
 // MarshalJSON makes Credential safe to log through a structured logger (logr/zap serializes
 // unknown values by reflection, which would otherwise dump the raw bytes).
 func (c Credential) MarshalJSON() ([]byte, error) {
@@ -104,17 +115,19 @@ func (c Credential) MarshalJSON() ([]byte, error) {
 // slice, an escaped string conversion). It still bounds how long the material stays trivially
 // recoverable from the process heap after logout or expiry.
 //
-// One known, permanent exception: a KindBearer credential's cached transport
-// (pkg/k8s.ClientFactory.TransportFor) holds the token as a client-go bearerAuthRoundTripper,
-// which stores it as an immutable Go string set once at construction. That copy cannot be
-// scrubbed by this method, or by anything else — the field is private to client-go and strings
-// cannot be mutated in place. Dropping the session's reference to that transport (see
-// dropTransportsLocked) only makes the copy eligible for garbage collection; unlike every other
-// field here, it is not actively erased the instant the session ends, and Go's GC gives no
-// timing guarantee and does not zero reclaimed memory. Avoidable only by not using client-go's
-// string-based bearer round-tripper helper, which was deliberately not done here to avoid
-// drifting from client-go's own transport handling (see the cert-transport case below for the
-// same reasoning cutting the other way).
+// Two known, permanent exceptions to "actively erased the instant the session ends". First, every
+// call to Session.Credential() hands out a clone() so the caller can read it after this session's
+// own copy is zeroed or overwritten concurrently (e.g. by the flow-stream hot path); that clone is
+// untouched by this method and is erased only when Go's GC reclaims it, on no fixed schedule.
+// Second, a KindBearer credential's cached transport (pkg/k8s.ClientFactory.TransportFor) holds
+// the token as a client-go bearerAuthRoundTripper, which stores it as an immutable Go string set
+// once at construction. That copy cannot be scrubbed by this method, or by anything else — the
+// field is private to client-go and strings cannot be mutated in place. Dropping the session's
+// reference to that transport (see dropTransportsLocked) only makes the copy eligible for garbage
+// collection, same as the clone case above, and Go's GC gives no timing guarantee and does not
+// zero reclaimed memory. Avoidable only by not using client-go's string-based bearer round-tripper
+// helper, which was deliberately not done here to avoid drifting from client-go's own transport
+// handling (see the cert-transport case below for the same reasoning cutting the other way).
 func (c *Credential) Zero() {
 	zeroBytes(c.Token)
 	zeroBytes(c.CertPEM)
@@ -135,6 +148,11 @@ func zeroBytes(b []byte) {
 // cleanup, when not nil, is called once the transport is discarded (on credential refresh or
 // session eviction); it is where a transport that owns its own connection pool closes it.
 type TransportBuilder func(cred *Credential) (rt http.RoundTripper, cleanup func(), err error)
+
+// ConnBuilder builds a gRPC connection that authenticates as cred, the gRPC counterpart of
+// TransportBuilder. cleanup, when not nil, is called once the connection is discarded (on
+// credential refresh or session eviction) and is where a per-credential connection is closed.
+type ConnBuilder func(cred *Credential) (conn *grpc.ClientConn, cleanup func(), err error)
 
 // Refresher renews an expiring credential. Only OIDC sessions have one.
 type Refresher interface {
@@ -179,6 +197,11 @@ type cachedTransport struct {
 	cleanup func()
 }
 
+type cachedConn struct {
+	conn    *grpc.ClientConn
+	cleanup func()
+}
+
 // Session is one logged-in user. It is safe for concurrent use.
 type Session struct {
 	id   string
@@ -200,6 +223,10 @@ type Session struct {
 	// absolute cap) when the credential is refreshed.
 	expiresAt  time.Time
 	transports map[string]cachedTransport
+	// conns caches gRPC connections the same way transports does, for credentials whose
+	// upstream is dialed with grpc.NewClient rather than reached over http.RoundTripper (the
+	// Flow Aggregator's FlowStreamService, for a KindCert credential).
+	conns map[string]cachedConn
 
 	// refreshMutex serializes credential refreshes for this session. The summary page fires
 	// three API requests in one Promise.all; without this they would each start a refresh,
@@ -224,12 +251,13 @@ func (s *Session) LastSeen() time.Time {
 	return s.lastSeen
 }
 
-// Credential returns the current credential. The returned struct shares its byte slices with the
-// session, so callers must not modify (or retain) them: they are zeroed on eviction.
+// Credential returns a copy of the current credential, with its byte slices cloned so the result
+// is safe to read and retain even if the session's own credential is refreshed or zeroed
+// concurrently.
 func (s *Session) Credential() Credential {
 	s.mutex.RLock()
 	defer s.mutex.RUnlock()
-	return s.credential
+	return s.credential.clone()
 }
 
 // String keeps a Session from leaking credential material if it is ever logged.
@@ -277,6 +305,34 @@ func (s *Session) transportFor(key string, build TransportBuilder) (http.RoundTr
 	return rt, nil
 }
 
+// connFor returns the gRPC connection cached under key for this session's current credential,
+// building it with build on first use. It is the gRPC counterpart of transportFor: see that
+// method for why the per-key cache and the double-checked lock exist.
+func (s *Session) connFor(key string, build ConnBuilder) (*grpc.ClientConn, error) {
+	s.mutex.RLock()
+	cached, ok := s.conns[key]
+	s.mutex.RUnlock()
+	if ok {
+		return cached.conn, nil
+	}
+
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	// Another goroutine may have built it while we were upgrading the lock.
+	if cached, ok := s.conns[key]; ok {
+		return cached.conn, nil
+	}
+	conn, cleanup, err := build(&s.credential)
+	if err != nil {
+		return nil, err
+	}
+	if s.conns == nil {
+		s.conns = make(map[string]cachedConn)
+	}
+	s.conns[key] = cachedConn{conn: conn, cleanup: cleanup}
+	return conn, nil
+}
+
 // transportUpstream is the part of a transport cache key before the first "/". A key with no "/"
 // names an upstream that never supersedes anything, and reports false.
 func transportUpstream(key string) (string, bool) {
@@ -309,13 +365,20 @@ func (s *Session) dropSupersededTransportsLocked(key string) {
 	}
 }
 
-// dropTransportsLocked discards every cached transport. The caller must hold s.mutex.
+// dropTransportsLocked discards every cached transport and gRPC connection. The caller must hold
+// s.mutex.
 func (s *Session) dropTransportsLocked() {
 	for key, cached := range s.transports {
 		if cached.cleanup != nil {
 			cached.cleanup()
 		}
 		delete(s.transports, key)
+	}
+	for key, cached := range s.conns {
+		if cached.cleanup != nil {
+			cached.cleanup()
+		}
+		delete(s.conns, key)
 	}
 }
 

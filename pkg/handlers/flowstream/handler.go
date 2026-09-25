@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -41,6 +42,11 @@ const (
 
 // FlowStreamFilter represents the parsed query parameters for the flow stream endpoint.
 // All specified filters are AND-ed. Within each filter, values are OR-ed.
+//
+// These narrow a stream; they do not authorize it. See FlowStreamScope, which does, and which is
+// deliberately a separate type: Namespaces here selects flows by either end, and upstream
+// explicitly allows naming a Namespace that is outside the stream's scope, which is how a flow is
+// selected by its peer rather than by its own end.
 type FlowStreamFilter struct {
 	Namespaces       []string
 	PodNames         []string
@@ -51,35 +57,119 @@ type FlowStreamFilter struct {
 	Direction        FlowFilterDirection
 }
 
-// defaultKeepAliveInterval is how often the stream emits an SSE comment and re-checks its session.
-const defaultKeepAliveInterval = 5 * time.Second
+// FlowStreamScope is the authorization scope of a stream, distinct from the filters that narrow
+// it: the Flow Aggregator checks RBAC against this and resolves each endpoint's disclosure tier
+// relative to it. Exactly one of ObservedNamespace and ClusterWide must be set.
+//
+// Scalar, though the protobuf field is repeated: the Flow Aggregator names one Namespace per
+// stream at most (maxRequestedNamespaces), and a cap it set to match this UI's single-select is
+// not worth carrying a slice through every layer for. filterToGetFlowsRequest builds the
+// one-element slice.
+type FlowStreamScope struct {
+	ObservedNamespace string
+	ClusterWide       bool
+}
+
+// keepAliveInterval is how often the stream emits an SSE comment and re-checks its session.
+const keepAliveInterval = 5 * time.Second
+
+// initialResponseTimeout bounds how long StreamFlows waits for Subscribe to confirm the stream is
+// live (or fail) before reporting a retryable timeout. See the comment where it is used: a
+// supported Flow Aggregator sends its first response as soon as the call clears authorization (see
+// Subscribe's stream epoch check), so this only fires when FA accepts the call and then never
+// responds, either because it hung or because it predates per-user flow authorization and has no
+// flow matching the request to send. It has to clear the worst-case time for a valid open rather
+// than the common case - up to 10s for the admin-token mint (see AdminTokenSource), FA's
+// own 30s tokenAuthenticationTimeout, then the SubjectAccessReview - while staying under the 60s
+// read timeout common in external proxies (ingress-nginx, AWS ALB), which would otherwise cut the
+// response off before this fires.
+const initialResponseTimeout = 50 * time.Second
+
+// streamErrorEvent describes streamErr for a client, carrying classifyStreamErr's code and
+// retryable flag when it has them so the client does not have to parse Message. It is the body of
+// both the SSE "error" event and the pre-200 HTTP error response, so the frontend parses one
+// shape either way.
+func streamErrorEvent(streamErr error) apisv1.FlowStreamErrorEvent {
+	// Retryable defaults to true, matching classifyStreamErr's own retryable default and the
+	// frontend's policy of retrying on an error body it cannot parse: an error that is not a
+	// *StreamError has not been classified as permanent by anything on this path, so treating it
+	// as such here would halt the client's reconnect loop for good on what may well be transient.
+	evt := apisv1.FlowStreamErrorEvent{Message: streamErr.Error(), Retryable: true}
+	var se *StreamError
+	if errors.As(streamErr, &se) {
+		evt.Code = se.Code
+		evt.Retryable = se.Retryable
+	}
+	return evt
+}
+
+// statusForStreamErr maps a flow-stream failure to the HTTP status StreamFlows returns for it when
+// caught before the response is committed to a 200.
+//
+// Deliberately never 401, even for StreamErrorCodeUnauthenticated: a 401 from any antrea-ui
+// endpoint means "your antrea-ui session is over, log in again", and the frontend acts on it by
+// doing exactly that. A credential the Flow Aggregator rejects says nothing about the antrea-ui
+// session - FA is a different server, trusting a different CA and potentially a different audience
+// than the kube-apiserver (see classifyStreamErr for the full reasoning, and
+// TestSubscribeDoesNotInvalidateSessionOnUnauthenticated for the backend half of it). Returning a
+// 401 here would log the user out of every page in the UI because flow visibility alone could not
+// authenticate, on every single re-login, whenever that mismatch is simply how the deployment is
+// configured. The failure is an upstream one, so it gets an upstream status; the client tells the
+// kinds apart from the response body's code/retryable fields, not from the status.
+func statusForStreamErr(err error) int {
+	var streamErr *StreamError
+	if errors.As(err, &streamErr) {
+		switch streamErr.Code {
+		case StreamErrorCodeResourceExhausted:
+			// Capacity, not a broken upstream: the one pre-200 failure worth retrying, and
+			// 503 is the status that says so.
+			return http.StatusServiceUnavailable
+		case StreamErrorCodeForbidden:
+			// The Flow Aggregator authenticated the credential but refused the stream: a
+			// real 403, the same as any other antrea-ui endpoint's RBAC denial, and the one
+			// status FlowStreamClient checks for to render the "missing flows grant" panel
+			// instead of a generic error.
+			return http.StatusForbidden
+		}
+	}
+	return http.StatusBadGateway
+}
 
 // errUnauthenticatedStream means the handler was reached without the authentication middleware
 // having resolved an identity, which is a wiring bug rather than anything a client can cause.
 var errUnauthenticatedStream = errors.New("flow stream request carries no resolved identity")
 
+// errInitialResponseTimeout means Subscribe neither confirmed the stream was live nor reported a
+// failure within initialResponseTimeout: the Flow Aggregator accepted the call and then never
+// responded. Retryable, since nothing about the request itself is at fault: a hung Flow Aggregator
+// is not expected to hang the same way on a fresh attempt. The other cause, a Flow Aggregator too
+// old to send anything before a matching flow, cannot be told apart from a hang here. Retrying it
+// is harmless: nothing is forwarded, and an attempt during which a matching flow arrives fails
+// with StreamErrorCodeFlowAggregatorTooOld instead.
+var errInitialResponseTimeout = retryableInternalStreamError(errors.New("timed out waiting for the flow stream to become ready"))
+
 // SSEHandler handles the SSE endpoint for flow streaming.
 //
-// Known gap, deliberate for now: this endpoint is authenticated but not authorized per user. The
-// subscriber reaches the Flow Aggregator over antrea-ui's own mTLS gRPC connection, so unlike
-// every other API route, the caller's Kubernetes RBAC has no say in what they see. As an interim
-// measure the route is restricted to the built-in admin and to Kubernetes cluster admins
-// (requireFlowVisibility in pkg/server/api/flowstream.go), which narrows who is exposed but does
-// not close the gap: within that set, every caller still sees every exported flow. Authorization
-// is being implemented upstream in antrea-io/antrea#8221; see the "Flow data is not yet per-user"
-// section of docs/authentication.md.
+// This endpoint is authenticated here and authorized entirely by the Flow Aggregator. The
+// subscriber presents the caller's own credential (a bearer token or client cert; see grpc.go's
+// resolveCall), and FlowStreamService checks Kubernetes RBAC against a virtual "flows" resource
+// in the scope the request names, then resolves each endpoint of each record to the disclosure
+// tier that caller is entitled to. Records therefore arrive here already redacted.
+//
+// antrea-ui performs no redaction of its own and must not: doing so would need antrea-ui's own
+// ServiceAccount to hold unredacted cluster-wide flow access, making it a privileged component
+// and duplicating the Flow Aggregator's tier logic. All this handler does with the scope is parse
+// it and validate it locally - see parseFlowStreamScope - so a request that cannot be authorized
+// is refused without a connection.
 type SSEHandler struct {
 	logger  logr.Logger
 	handler FlowStreamSubscriber
-	// keepAliveInterval is a field so tests do not have to wait seconds for a tick.
-	keepAliveInterval time.Duration
 }
 
 func NewSSEHandler(logger logr.Logger, handler FlowStreamSubscriber) *SSEHandler {
 	return &SSEHandler{
-		logger:            logger,
-		handler:           handler,
-		keepAliveInterval: defaultKeepAliveInterval,
+		logger:  logger,
+		handler: handler,
 	}
 }
 
@@ -150,6 +240,49 @@ func parseFlowStreamFilter(c *gin.Context) (*FlowStreamFilter, error) {
 	return filter, nil
 }
 
+// parseFlowStreamScope reads the stream's authorization scope from the query string.
+//
+// Every rejection here is one the Flow Aggregator would also make, with INVALID_ARGUMENT, but
+// answering locally gives a message that names the query parameter at fault and costs no
+// connection to a server that was only going to refuse. A comma-separated list (or a repeated
+// parameter) is rejected rather than truncated to its first element, so a client can never come
+// away believing it asked for more than it got.
+func parseFlowStreamScope(c *gin.Context) (*FlowStreamScope, error) {
+	scope := &FlowStreamScope{}
+
+	if values := c.QueryArray("observedNamespace"); len(values) > 0 {
+		if len(values) > 1 {
+			return nil, fmt.Errorf("invalid observedNamespace: a stream observes a single namespace, but %d were given", len(values))
+		}
+		v := values[0]
+		if strings.Contains(v, ",") {
+			return nil, fmt.Errorf("invalid observedNamespace %q: a stream observes a single namespace, not a list", v)
+		}
+		if strings.TrimSpace(v) == "" {
+			return nil, fmt.Errorf("invalid observedNamespace: must not be empty; request cluster scope with clusterWide=true")
+		}
+		scope.ObservedNamespace = strings.TrimSpace(v)
+	}
+	if values := c.QueryArray("clusterWide"); len(values) > 0 {
+		if len(values) > 1 {
+			return nil, fmt.Errorf("invalid clusterWide: expected a single value, but %d were given", len(values))
+		}
+		v, err := strconv.ParseBool(values[0])
+		if err != nil {
+			return nil, fmt.Errorf("invalid clusterWide value %q: expected true or false", values[0])
+		}
+		scope.ClusterWide = v
+	}
+
+	switch {
+	case scope.ClusterWide && scope.ObservedNamespace != "":
+		return nil, fmt.Errorf("observedNamespace and clusterWide are mutually exclusive")
+	case !scope.ClusterWide && scope.ObservedNamespace == "":
+		return nil, fmt.Errorf("a flow stream must name its scope: set observedNamespace to a single namespace, or clusterWide=true")
+	}
+	return scope, nil
+}
+
 // StreamFlows handles GET /api/v1/flows/stream as an SSE endpoint.
 func (h *SSEHandler) StreamFlows(c *gin.Context) {
 	filter, err := parseFlowStreamFilter(c)
@@ -157,9 +290,48 @@ func (h *SSEHandler) StreamFlows(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	scope, err := parseFlowStreamScope(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 
 	ctx := c.Request.Context()
-	flowsCh, errCh := h.handler.Subscribe(ctx, filter)
+	flowsCh, errCh, readyCh := h.handler.Subscribe(ctx, scope, filter)
+
+	// Every failure this endpoint can hit today - a rejected credential, FA at capacity, a dial
+	// or credential-resolution failure - surfaces on Subscribe's first GetFlows call or its first
+	// Recv (see startStream), not partway through an established stream. Waiting for either errCh
+	// or readyCh (see Subscribe) lets a real failure reach the client as an HTTP status instead of
+	// prose inside a 200 body, and lets a real success commit to the 200 as soon as it is known
+	// rather than guessed - the timeout below is a fallback for a Flow Aggregator that accepts the
+	// call and then never responds, not the common path.
+	select {
+	case streamErr, ok := <-errCh:
+		if ok {
+			h.logger.Error(streamErr, "Flow stream failed before the response was committed")
+			c.JSON(statusForStreamErr(streamErr), streamErrorEvent(streamErr))
+			return
+		}
+		// errCh closed with nothing buffered: Subscribe ended (e.g. ctx already canceled)
+		// without an error. Disable this case for the rest of the request, same as the
+		// c.Stream loop below does for the same situation.
+		errCh = nil
+	case <-readyCh:
+		// The stream is confirmed live: proceed as an ordinary 200 SSE stream.
+	case <-time.After(initialResponseTimeout):
+		// Subscribe never answered either way. A supported Flow Aggregator sends its first
+		// response as soon as the call clears authorization, so this means FA either hung after
+		// accepting the call or predates per-user flow authorization and has no matching flow to
+		// send (see errInitialResponseTimeout), not a valid open still in flight:
+		// initialResponseTimeout is sized above the worst case for that. Committing to a 200
+		// here would show "Connected" on an empty page with no error and no retry. Report it as
+		// a retryable failure instead, the same shape as the other pre-200 failures, so the
+		// client can reconnect.
+		h.logger.Error(errInitialResponseTimeout, "Flow stream did not respond before the initial response timeout")
+		c.JSON(statusForStreamErr(errInitialResponseTimeout), streamErrorEvent(errInitialResponseTimeout))
+		return
+	}
 
 	// Set headers required for Server-Sent Events (SSE).
 	// Content-Type must be text/event-stream for browsers to process the stream.
@@ -171,31 +343,21 @@ func (h *SSEHandler) StreamFlows(c *gin.Context) {
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
 	c.Header("X-Accel-Buffering", "no")
-
-	// Emit one SSE comment and flush before blocking on the first gRPC read. Otherwise, when the
-	// Flow Aggregator ring buffer is empty, the select below blocks indefinitely with no bytes
-	// written, so HTTP response headers are never flushed and clients (fetch, curl) see a hang
-	// or "Disconnected" even though mTLS and auth succeeded.
-	preambleWritten := false
-	writePreamble := func(w io.Writer) {
-		if preambleWritten {
-			return
-		}
-		preambleWritten = true
-		if _, err := w.Write([]byte(": stream-open\n\n")); err != nil {
-			h.logger.Error(err, "Failed to write SSE preamble")
-			return
-		}
-		if fl, ok := c.Writer.(http.Flusher); ok {
-			fl.Flush()
-		}
-	}
+	// Commit and flush the status and headers now, rather than waiting for the first byte of
+	// body: readyCh above already confirmed the stream is live, but flowsCh can still go quiet
+	// for a while on a narrow filter, and c.Stream's loop only writes (and only then flushes) on
+	// a flow, a dropped-count change, or the next keepAlive tick (up to keepAliveInterval away).
+	// WriteHeaderNow alone only records the status on gin's writer - net/http still buffers the
+	// header bytes until a body write or an explicit Flush - so without the Flush here, clients
+	// (fetch, curl) would see a hang or "Disconnected" for that long even though TLS and auth
+	// succeeded, and a proxy honoring X-Accel-Buffering would hold the headers just as long.
+	c.Writer.Flush()
 
 	// The gRPC client only forwards non-empty flow batches (and dropped-count changes). When
 	// filtered streams match nothing for a long time, nothing is sent on flowsCh and this
 	// handler would block forever on the next select, stalling fetch() and freezing the UI.
 	// Periodic SSE comments keep the connection and ReadableStream alive.
-	keepAlive := time.NewTicker(h.keepAliveInterval)
+	keepAlive := time.NewTicker(keepAliveInterval)
 	defer keepAlive.Stop()
 
 	// This is a single request that can run for hours (nginx allows up to 24h for it), so the
@@ -219,8 +381,20 @@ func (h *SSEHandler) StreamFlows(c *gin.Context) {
 		return ra.KeepAlive(ctx)
 	}
 
+	// emitStreamError writes streamErr as an SSE "error" event and reports whether the caller
+	// should keep streaming (it never does: every caller treats an error as terminal).
+	emitStreamError := func(streamErr error) bool {
+		data, err := json.Marshal(streamErrorEvent(streamErr))
+		if err != nil {
+			h.logger.Error(err, "Failed to marshal error event")
+			return false
+		}
+		c.SSEvent("error", string(data))
+		h.logger.Error(streamErr, "Flow stream error")
+		return false
+	}
+
 	c.Stream(func(w io.Writer) bool {
-		writePreamble(w)
 		select {
 		case <-ctx.Done():
 			return false
@@ -238,6 +412,22 @@ func (h *SSEHandler) StreamFlows(c *gin.Context) {
 			return true
 		case event, ok := <-flowsCh:
 			if !ok {
+				// Subscribe closes flowsCh before errCh (see its own comment on why), but a
+				// final error it buffered into errCh just before closing both is a second,
+				// independently-ready case by the time this select runs - select picks
+				// uniformly among ready cases, so without this drain, roughly half the time
+				// this branch would be chosen over the errCh one and the error would never
+				// reach the client. A non-blocking receive here catches it either way: errCh
+				// already holds the value (ok), is already closed with nothing buffered
+				// (!ok, the common case), or isn't closed yet, in which case Subscribe is
+				// still running and errCh could not have been written to end this stream.
+				select {
+				case streamErr, ok := <-errCh:
+					if ok {
+						return emitStreamError(streamErr)
+					}
+				default:
+				}
 				return false
 			}
 			if event.DroppedCount > 0 {
@@ -267,15 +457,7 @@ func (h *SSEHandler) StreamFlows(c *gin.Context) {
 				errCh = nil
 				return true
 			}
-			errEvent := apisv1.FlowStreamErrorEvent{Message: streamErr.Error()}
-			data, err := json.Marshal(errEvent)
-			if err != nil {
-				h.logger.Error(err, "Failed to marshal error event")
-				return false
-			}
-			c.SSEvent("error", string(data))
-			h.logger.Error(streamErr, "Flow stream error")
-			return false
+			return emitStreamError(streamErr)
 		}
 	})
 }

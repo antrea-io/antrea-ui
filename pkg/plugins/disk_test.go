@@ -390,7 +390,7 @@ func TestRunDirectoryWatchIsNoopWhenDirectoryEmpty(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(time.Second):
-		t.Fatal("RunDirectoryWatch(\"\", ...) did not return promptly")
+		require.FailNow(t, "RunDirectoryWatch(\"\", ...) did not return promptly")
 	}
 	assert.Empty(t, r.Index())
 }
