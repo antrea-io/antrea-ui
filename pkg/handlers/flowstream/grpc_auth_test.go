@@ -179,11 +179,9 @@ func TestSubscribeAttachesBearerToken(t *testing.T) {
 	_, errCh, readyCh := h.Subscribe(ctx, &FlowStreamScope{ClusterWide: true}, &FlowStreamFilter{})
 	select {
 	case err, ok := <-errCh:
-		if ok {
-			t.Fatalf("unexpected error: %v", err)
-		}
+		require.False(t, ok, "unexpected error: %v", err)
 	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for stream to finish")
+		require.FailNow(t, "timed out waiting for stream to finish")
 	}
 	// The fake server closes the stream immediately (handle returns nil), so calls should be 1.
 	assert.Equal(t, int32(1), fake.calls.Load())
@@ -194,7 +192,7 @@ func TestSubscribeAttachesBearerToken(t *testing.T) {
 	case _, ok := <-readyCh:
 		assert.False(t, ok, "readyCh must be closed, not merely have a value")
 	default:
-		t.Fatal("readyCh was not closed for a stream that cleared authentication")
+		require.FailNow(t, "readyCh was not closed for a stream that cleared authentication")
 	}
 }
 
@@ -211,11 +209,11 @@ func TestSubscribeReadyNeverClosesWithoutResolvedIdentity(t *testing.T) {
 		require.True(t, ok)
 		assert.Error(t, err)
 	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for error")
+		require.FailNow(t, "timed out waiting for error")
 	}
 	select {
 	case <-readyCh:
-		t.Fatal("readyCh must not close on a failure that never reached FA")
+		require.FailNow(t, "readyCh must not close on a failure that never reached FA")
 	case <-time.After(50 * time.Millisecond):
 	}
 }
@@ -233,7 +231,7 @@ func TestSubscribeFailsWithoutResolvedIdentity(t *testing.T) {
 		require.True(t, ok)
 		assert.Error(t, err)
 	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for error")
+		require.FailNow(t, "timed out waiting for error")
 	}
 	assert.Zero(t, fake.calls.Load(), "must not have dialed GetFlows with no resolved identity")
 }
@@ -261,7 +259,7 @@ func TestSubscribeDoesNotInvalidateSessionOnUnauthenticated(t *testing.T) {
 	case err := <-errCh:
 		assert.Error(t, err)
 	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for error")
+		require.FailNow(t, "timed out waiting for error")
 	}
 
 	_, err := store.Get(t.Context(), ra.SessionID())
@@ -292,7 +290,7 @@ func TestSubscribeReportsResourceExhaustedAsRetryable(t *testing.T) {
 		assert.Equal(t, StreamErrorCodeResourceExhausted, streamErr.Code)
 		assert.True(t, streamErr.Retryable)
 	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for error")
+		require.FailNow(t, "timed out waiting for error")
 	}
 	assert.Equal(t, int32(1), fake.calls.Load(), "must not retry on its own")
 }
@@ -329,7 +327,7 @@ func TestSubscribeReportsOversizedMessageAsNotRetryable(t *testing.T) {
 		assert.False(t, streamErr.Retryable)
 		assert.NotContains(t, streamErr.Error(), "at capacity")
 	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for error")
+		require.FailNow(t, "timed out waiting for error")
 	}
 }
 
@@ -357,9 +355,9 @@ func TestSubscribeForwardsFlowsAfterStreamEpoch(t *testing.T) {
 	select {
 	case <-readyCh:
 	case err := <-errCh:
-		t.Fatalf("unexpected error: %v", err)
+		require.FailNow(t, "unexpected error", "%v", err)
 	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for ready")
+		require.FailNow(t, "timed out waiting for ready")
 	}
 	select {
 	case evt, ok := <-flowsCh:
@@ -367,7 +365,7 @@ func TestSubscribeForwardsFlowsAfterStreamEpoch(t *testing.T) {
 		require.Len(t, evt.Flows, 1)
 		assert.Equal(t, "flow-1", evt.Flows[0].ID)
 	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for the flow")
+		require.FailNow(t, "timed out waiting for the flow")
 	}
 	_, ok := <-flowsCh
 	assert.False(t, ok, "only the flow record must be forwarded, not the first response")
@@ -442,9 +440,9 @@ func TestSubscribeReportsMissingStreamEpochAsFlowAggregatorTooOld(t *testing.T) 
 				assert.Equal(t, StreamErrorCodeFlowAggregatorTooOld, streamErr.Code)
 				assert.False(t, streamErr.Retryable)
 			case <-readyCh:
-				t.Fatal("must not signal ready for a Flow Aggregator with no stream epoch")
+				require.FailNow(t, "must not signal ready for a Flow Aggregator with no stream epoch")
 			case <-time.After(2 * time.Second):
-				t.Fatal("timed out waiting for error")
+				require.FailNow(t, "timed out waiting for error")
 			}
 			_, ok := <-flowsCh
 			assert.False(t, ok, "no flow record must be forwarded to the caller")
@@ -477,7 +475,7 @@ func TestSubscribeReportsUnknownCodeAsRetryable(t *testing.T) {
 		assert.Equal(t, StreamErrorCodeInternal, streamErr.Code)
 		assert.True(t, streamErr.Retryable)
 	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for error")
+		require.FailNow(t, "timed out waiting for error")
 	}
 }
 
@@ -504,7 +502,7 @@ func TestSubscribeReportsUnauthenticatedAsNotRetryable(t *testing.T) {
 		assert.Equal(t, StreamErrorCodeUnauthenticated, streamErr.Code)
 		assert.False(t, streamErr.Retryable)
 	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for error")
+		require.FailNow(t, "timed out waiting for error")
 	}
 }
 
@@ -532,7 +530,7 @@ func TestSubscribeStopsSilentlyOnDisconnectDuringFirstRecv(t *testing.T) {
 	select {
 	case <-reached:
 	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for the fake server to be called")
+		require.FailNow(t, "timed out waiting for the fake server to be called")
 	}
 	cancel()
 
@@ -540,7 +538,7 @@ func TestSubscribeStopsSilentlyOnDisconnectDuringFirstRecv(t *testing.T) {
 	case _, ok := <-errCh:
 		assert.False(t, ok, "a client disconnect while waiting for the first response must not be reported as an error")
 	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for the stream to stop")
+		require.FailNow(t, "timed out waiting for the stream to stop")
 	}
 }
 
@@ -562,7 +560,7 @@ func TestSubscribeFailsForImpersonateWithoutAdminTokenSource(t *testing.T) {
 		require.True(t, ok)
 		assert.Error(t, err)
 	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for error")
+		require.FailNow(t, "timed out waiting for error")
 	}
 	assert.Zero(t, fake.calls.Load())
 }
@@ -591,7 +589,7 @@ func TestSubscribeReportsAdminTokenMintFailureAsRetryable(t *testing.T) {
 		require.ErrorAs(t, err, &streamErr)
 		assert.True(t, streamErr.Retryable)
 	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for error")
+		require.FailNow(t, "timed out waiting for error")
 	}
 	assert.Zero(t, fake.calls.Load())
 }
@@ -620,7 +618,7 @@ func TestSubscribeReportsForbiddenAdminTokenMintAsNotRetryable(t *testing.T) {
 		require.ErrorAs(t, err, &streamErr)
 		assert.False(t, streamErr.Retryable)
 	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for error")
+		require.FailNow(t, "timed out waiting for error")
 	}
 	assert.Zero(t, fake.calls.Load())
 }
@@ -659,11 +657,9 @@ func TestSubscribeUsesClientCertForKindCert(t *testing.T) {
 	_, errCh, _ := h.Subscribe(ctx, &FlowStreamScope{ClusterWide: true}, &FlowStreamFilter{})
 	select {
 	case err, ok := <-errCh:
-		if ok {
-			t.Fatalf("unexpected error: %v", err)
-		}
+		require.False(t, ok, "unexpected error: %v", err)
 	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for stream to finish")
+		require.FailNow(t, "timed out waiting for stream to finish")
 	}
 	assert.Equal(t, int32(1), fake.calls.Load())
 	names, _ := fake.peerDNSNames.Load().([]string)
@@ -709,7 +705,7 @@ func TestSubscribeStopsSilentlyWhenSessionEndsDuringKindCertStream(t *testing.T)
 	select {
 	case <-reached:
 	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for the fake server to be called")
+		require.FailNow(t, "timed out waiting for the fake server to be called")
 	}
 
 	// Simulate a normal logout: ctx stays alive, but this closes the per-session ClientConn the
@@ -720,7 +716,7 @@ func TestSubscribeStopsSilentlyWhenSessionEndsDuringKindCertStream(t *testing.T)
 	case _, ok := <-errCh:
 		assert.False(t, ok, "a session ending must not surface as a stream error, like an ordinary disconnect")
 	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for the stream to stop")
+		require.FailNow(t, "timed out waiting for the stream to stop")
 	}
 }
 

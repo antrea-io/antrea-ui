@@ -157,7 +157,7 @@ func TestStreamStopsWhenSessionEnds(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
-		t.Fatal("stream did not close after the session was deleted")
+		require.FailNow(t, "stream did not close after the session was deleted")
 	}
 }
 
@@ -192,7 +192,7 @@ func TestStreamStopsWithoutResolvedIdentity(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
-		t.Fatal("stream kept running with no resolved identity")
+		require.FailNow(t, "stream kept running with no resolved identity")
 	}
 }
 

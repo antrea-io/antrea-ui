@@ -132,7 +132,7 @@ func assertRejectedWithoutSubscribing(t *testing.T, handlerReturned <-chan struc
 	select {
 	case <-handlerReturned:
 	case <-time.After(5 * time.Second):
-		t.Fatalf("%s: the handler never returned, so it is still streaming rather than rejecting", msg)
+		require.FailNow(t, "the handler never returned, so it is still streaming rather than rejecting", msg)
 	}
 	assert.Zero(t, subscriber.subscribes.Load(), msg)
 }
