@@ -114,10 +114,11 @@ flowAggregator:
   serverName: ""
   # -- Disable TLS server certificate verification. Should only be used for development
   # or testing; never enable this in production. With this on, any server answering at
-  # `address` is trusted: the backend hands it every flow viewer's credential (a bearer
-  # token, or a client certificate on the connection) and, for admin-password sessions, a
-  # freshly minted antrea-ui-admin token - all replayable against the real Kubernetes API
-  # server by whoever controls that address.
+  # `address` is trusted: the backend hands it every flow viewer's bearer token and, for
+  # admin-password sessions, a freshly minted antrea-ui-admin token - all replayable against
+  # the real Kubernetes API server by whoever controls that address. A client certificate
+  # cannot be replayed, since its private key never leaves antrea-ui, but the server still
+  # learns the viewer's identity and can serve fake flow data.
   insecureSkipVerify: false
 
 security:

@@ -444,6 +444,37 @@ func TestStreamFlowsErrorSurvivesFlowsChRace(t *testing.T) {
 	}
 }
 
+// unresponsiveSubscriber stands in for a Flow Aggregator that accepts the call and then never
+// responds: Subscribe neither closes ready nor reports an error.
+type unresponsiveSubscriber struct{}
+
+func (unresponsiveSubscriber) Subscribe(context.Context, *FlowStreamScope, *FlowStreamFilter) (<-chan apisv1.FlowStreamEvent, <-chan error, <-chan struct{}) {
+	return make(chan apisv1.FlowStreamEvent), make(chan error), make(chan struct{})
+}
+
+// When Subscribe never answers, StreamFlows must give up after initialResponseTimeout with a
+// retryable pre-200 error, rather than commit to a 200 that would show "Connected" on an empty
+// page with no error and no retry.
+func TestStreamFlowsInitialResponseTimeout(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		sseHandler := NewSSEHandler(testr.New(t), unresponsiveSubscriber{})
+		w := newCloseNotifyRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest(http.MethodGet, "/api/v1/flows/stream?clusterWide=true", nil)
+
+		start := time.Now()
+		sseHandler.StreamFlows(c)
+		assert.Equal(t, initialResponseTimeout, time.Since(start))
+
+		assert.Equal(t, http.StatusBadGateway, w.Code)
+		assert.NotEqual(t, "text/event-stream", w.Header().Get("Content-Type"))
+		var evt apisv1.FlowStreamErrorEvent
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &evt))
+		assert.Equal(t, StreamErrorCodeInternal, evt.Code)
+		assert.True(t, evt.Retryable)
+	})
+}
+
 func TestStreamFlowsBadFilter(t *testing.T) {
 	logger := testr.New(t)
 	stub := &stubFlowStreamSubscriber{}

@@ -269,15 +269,15 @@ export class FlowStreamClient {
             if (!response.ok) {
                 // The backend waits for Subscribe to confirm the stream is live (or fail) before
                 // committing to a response, so a failure at stream open arrives here as an HTTP
-                // status - with the same code/retryable classification in the body - unless the
-                // backend's own initial-response timeout fires first, in which case it arrives
-                // later as an SSE "error" event instead. Honour the classification here: without
-                // this, a permanent failure (the Flow Aggregator rejecting the credential, a
-                // credential this deployment cannot mint) would be retried forever purely because
-                // it was reported early enough to be an HTTP status rather than late enough to be
-                // an event. A body we cannot parse falls through to the retry path, which is the
-                // safer default for an unrecognized failure - except a 400, which (like 403) means
-                // this client built a request the backend will never accept, so no retry can help.
+                // status, with the same code/retryable classification in the body. That includes
+                // the backend's own initial-response timeout, which arrives as a retryable 502.
+                // Honour the classification here: without this, a permanent failure (the Flow
+                // Aggregator rejecting the credential, a credential this deployment cannot mint)
+                // would be retried forever purely because it was reported early enough to be an
+                // HTTP status rather than late enough to be an event. A body we cannot parse falls
+                // through to the retry path, which is the safer default for an unrecognized
+                // failure, except a 400, which (like 403) means this client built a request the
+                // backend will never accept, so no retry can help.
                 const payload = await FlowStreamClient.readErrorPayload(response);
                 const message = payload?.message ?? `Flow stream: ${response.status} ${response.statusText}`;
                 if (payload?.retryable === false || response.status === 400) {

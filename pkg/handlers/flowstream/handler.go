@@ -70,19 +70,20 @@ type FlowStreamScope struct {
 	ClusterWide       bool
 }
 
-// defaultKeepAliveInterval is how often the stream emits an SSE comment and re-checks its session.
-const defaultKeepAliveInterval = 5 * time.Second
+// keepAliveInterval is how often the stream emits an SSE comment and re-checks its session.
+const keepAliveInterval = 5 * time.Second
 
-// defaultInitialResponseTimeout bounds how long StreamFlows waits for Subscribe to confirm the
-// stream is live (or fail) before reporting a retryable timeout. See the comment where it is
-// used: a supported Flow Aggregator sends its first response as soon as the call clears
-// authorization (see Subscribe's stream epoch check), so this only fires when FA accepts the call
-// and then never responds at all. It therefore has to clear the worst-case time for a valid open
-// rather than the common case - up to 10s for the admin-token mint (see AdminTokenSource), FA's
+// initialResponseTimeout bounds how long StreamFlows waits for Subscribe to confirm the stream is
+// live (or fail) before reporting a retryable timeout. See the comment where it is used: a
+// supported Flow Aggregator sends its first response as soon as the call clears authorization (see
+// Subscribe's stream epoch check), so this only fires when FA accepts the call and then never
+// responds, either because it hung or because it predates per-user flow authorization and has no
+// flow matching the request to send. It has to clear the worst-case time for a valid open rather
+// than the common case - up to 10s for the admin-token mint (see AdminTokenSource), FA's
 // own 30s tokenAuthenticationTimeout, then the SubjectAccessReview - while staying under the 60s
 // read timeout common in external proxies (ingress-nginx, AWS ALB), which would otherwise cut the
 // response off before this fires.
-const defaultInitialResponseTimeout = 50 * time.Second
+const initialResponseTimeout = 50 * time.Second
 
 // streamErrorEvent describes streamErr for a client, carrying classifyStreamErr's code and
 // retryable flag when it has them so the client does not have to parse Message. It is the body of
@@ -140,8 +141,11 @@ var errUnauthenticatedStream = errors.New("flow stream request carries no resolv
 
 // errInitialResponseTimeout means Subscribe neither confirmed the stream was live nor reported a
 // failure within initialResponseTimeout: the Flow Aggregator accepted the call and then never
-// responded at all. Retryable, since nothing about the request itself is at fault - unlike the
-// hang it reports, a fresh attempt is not expected to hang the same way.
+// responded. Retryable, since nothing about the request itself is at fault: a hung Flow Aggregator
+// is not expected to hang the same way on a fresh attempt. The other cause, a Flow Aggregator too
+// old to send anything before a matching flow, cannot be told apart from a hang here. Retrying it
+// is harmless: nothing is forwarded, and an attempt during which a matching flow arrives fails
+// with StreamErrorCodeFlowAggregatorTooOld instead.
 var errInitialResponseTimeout = retryableInternalStreamError(errors.New("timed out waiting for the flow stream to become ready"))
 
 // SSEHandler handles the SSE endpoint for flow streaming.
@@ -160,18 +164,12 @@ var errInitialResponseTimeout = retryableInternalStreamError(errors.New("timed o
 type SSEHandler struct {
 	logger  logr.Logger
 	handler FlowStreamSubscriber
-	// keepAliveInterval is a field so tests do not have to wait seconds for a tick.
-	keepAliveInterval time.Duration
-	// initialResponseTimeout is a field so tests do not have to wait for the production timeout.
-	initialResponseTimeout time.Duration
 }
 
 func NewSSEHandler(logger logr.Logger, handler FlowStreamSubscriber) *SSEHandler {
 	return &SSEHandler{
-		logger:                 logger,
-		handler:                handler,
-		keepAliveInterval:      defaultKeepAliveInterval,
-		initialResponseTimeout: defaultInitialResponseTimeout,
+		logger:  logger,
+		handler: handler,
 	}
 }
 
@@ -307,7 +305,7 @@ func (h *SSEHandler) StreamFlows(c *gin.Context) {
 	// or readyCh (see Subscribe) lets a real failure reach the client as an HTTP status instead of
 	// prose inside a 200 body, and lets a real success commit to the 200 as soon as it is known
 	// rather than guessed - the timeout below is a fallback for a Flow Aggregator that accepts the
-	// call and then never responds at all, not the common path.
+	// call and then never responds, not the common path.
 	select {
 	case streamErr, ok := <-errCh:
 		if ok {
@@ -321,13 +319,15 @@ func (h *SSEHandler) StreamFlows(c *gin.Context) {
 		errCh = nil
 	case <-readyCh:
 		// The stream is confirmed live: proceed as an ordinary 200 SSE stream.
-	case <-time.After(h.initialResponseTimeout):
+	case <-time.After(initialResponseTimeout):
 		// Subscribe never answered either way. A supported Flow Aggregator sends its first
-		// response as soon as the call clears authorization, so this only means FA hung after
-		// accepting the call, not a valid open still in flight: initialResponseTimeout is sized
-		// above the worst case for that. Committing to a 200 here would show "Connected" on an
-		// empty page with no error and no retry. Report it as a retryable failure instead, the
-		// same shape as the other pre-200 failures, so the client can reconnect.
+		// response as soon as the call clears authorization, so this means FA either hung after
+		// accepting the call or predates per-user flow authorization and has no matching flow to
+		// send (see errInitialResponseTimeout), not a valid open still in flight:
+		// initialResponseTimeout is sized above the worst case for that. Committing to a 200
+		// here would show "Connected" on an empty page with no error and no retry. Report it as
+		// a retryable failure instead, the same shape as the other pre-200 failures, so the
+		// client can reconnect.
 		h.logger.Error(errInitialResponseTimeout, "Flow stream did not respond before the initial response timeout")
 		c.JSON(statusForStreamErr(errInitialResponseTimeout), streamErrorEvent(errInitialResponseTimeout))
 		return
@@ -357,7 +357,7 @@ func (h *SSEHandler) StreamFlows(c *gin.Context) {
 	// filtered streams match nothing for a long time, nothing is sent on flowsCh and this
 	// handler would block forever on the next select, stalling fetch() and freezing the UI.
 	// Periodic SSE comments keep the connection and ReadableStream alive.
-	keepAlive := time.NewTicker(h.keepAliveInterval)
+	keepAlive := time.NewTicker(keepAliveInterval)
 	defer keepAlive.Stop()
 
 	// This is a single request that can run for hours (nginx allows up to 24h for it), so the
