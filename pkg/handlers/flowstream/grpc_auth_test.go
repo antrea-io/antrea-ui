@@ -49,10 +49,11 @@ import (
 // bearer token (if any) each call was made with.
 type fakeFlowStreamServer struct {
 	flowpb.UnimplementedFlowStreamServiceServer
-	// handle decides what a GetFlows call returns.
+	// handle decides what a GetFlows call returns. A non-nil error is returned before anything
+	// is sent, the way FA rejects a call that fails authentication or authorization.
 	handle func(callNum int, bearer string) error
-	// send, when set, is called before handle and can put messages on the stream. Only the
-	// oversized-response test uses it.
+	// send, when set, is called once handle returns nil, in place of sending
+	// firstResponse, and can put any messages (or none) on the stream.
 	send  func(stream grpc.ServerStreamingServer[flowpb.GetFlowsResponse]) error
 	calls atomic.Int32
 	// peerDNSNames captures the DNS SAN names of the TLS client certificate presented on the
@@ -73,12 +74,19 @@ func (f *fakeFlowStreamServer) GetFlows(req *flowpb.GetFlowsRequest, stream grpc
 			f.peerDNSNames.Store(tlsInfo.State.PeerCertificates[0].DNSNames)
 		}
 	}
-	if f.send != nil {
-		if err := f.send(stream); err != nil {
-			return err
-		}
+	if err := f.handle(callNum, bearer); err != nil {
+		return err
 	}
-	return f.handle(callNum, bearer)
+	if f.send != nil {
+		return f.send(stream)
+	}
+	return stream.Send(firstResponse)
+}
+
+// firstResponse is what a Flow Aggregator with per-user flow authorization sends first on every
+// stream: no flows, and a resume_token carrying its stream epoch.
+var firstResponse = &flowpb.GetFlowsResponse{
+	ResumeToken: &flowpb.ResumeToken{StreamEpoch: "test-epoch", SequenceNumber: -1},
 }
 
 // newTestSubscriber starts fake on an in-memory bufconn listener and returns a
@@ -325,16 +333,16 @@ func TestSubscribeReportsOversizedMessageAsNotRetryable(t *testing.T) {
 	}
 }
 
-// A Flow Aggregator that predates per-user flow authorization never sends the post-authz ack, so
-// its first response to a real request carries an actual (unredacted) flow record instead of an
-// empty one. Subscribe must read that as "too old" and refuse the stream rather than pass the
-// record on: forwarding it would show the caller cluster-wide, full-identity data regardless of
-// the scope it asked for.
-func TestSubscribeReportsPreAckFlowAsFlowAggregatorTooOld(t *testing.T) {
+// The counterpart of TestSubscribeReportsMissingStreamEpochAsFlowAggregatorTooOld: once the first
+// response carries a stream epoch, Subscribe must signal ready and forward the flows that follow.
+func TestSubscribeForwardsFlowsAfterStreamEpoch(t *testing.T) {
 	fake := &fakeFlowStreamServer{handle: func(_ int, _ string) error {
 		return nil
 	}}
 	fake.send = func(stream grpc.ServerStreamingServer[flowpb.GetFlowsResponse]) error {
+		if err := stream.Send(firstResponse); err != nil {
+			return err
+		}
 		return stream.Send(&flowpb.GetFlowsResponse{Flows: []*flowpb.Flow{{Id: "flow-1"}}})
 	}
 	h := newTestSubscriber(t, fake)
@@ -347,19 +355,101 @@ func TestSubscribeReportsPreAckFlowAsFlowAggregatorTooOld(t *testing.T) {
 
 	flowsCh, errCh, readyCh := h.Subscribe(ctx, &FlowStreamScope{ClusterWide: true}, &FlowStreamFilter{})
 	select {
-	case err, ok := <-errCh:
-		require.True(t, ok)
-		var streamErr *StreamError
-		require.ErrorAs(t, err, &streamErr)
-		assert.Equal(t, StreamErrorCodeFlowAggregatorTooOld, streamErr.Code)
-		assert.False(t, streamErr.Retryable)
 	case <-readyCh:
-		t.Fatal("must not signal ready for a Flow Aggregator that never sent the post-authz ack")
+	case err := <-errCh:
+		t.Fatalf("unexpected error: %v", err)
 	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for error")
+		t.Fatal("timed out waiting for ready")
+	}
+	select {
+	case evt, ok := <-flowsCh:
+		require.True(t, ok, "the flow after the first response must be forwarded")
+		require.Len(t, evt.Flows, 1)
+		assert.Equal(t, "flow-1", evt.Flows[0].ID)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the flow")
 	}
 	_, ok := <-flowsCh
-	assert.False(t, ok, "the pre-ack flow record must not be forwarded to the caller")
+	assert.False(t, ok, "only the flow record must be forwarded, not the first response")
+	err, ok := <-errCh
+	assert.False(t, ok, "unexpected error: %v", err)
+}
+
+// A Flow Aggregator that predates per-user flow authorization ignores the stream's scope and
+// cannot produce a stream epoch, so a first response without one must be read as "too old" and
+// the stream refused rather than passed on: forwarding it would show the caller cluster-wide,
+// full-identity data regardless of the scope it asked for. That holds whatever else the first
+// response carries: an old Flow Aggregator's first response is not always a flow record.
+func TestSubscribeReportsMissingStreamEpochAsFlowAggregatorTooOld(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		first *flowpb.GetFlowsResponse
+	}{
+		{
+			name:  "flow record",
+			first: &flowpb.GetFlowsResponse{Flows: []*flowpb.Flow{{Id: "flow-1"}}},
+		},
+		{
+			// The ring buffer wrapped before the first read, and every record read was
+			// filtered out.
+			name:  "dropped count only",
+			first: &flowpb.GetFlowsResponse{DroppedCount: 5},
+		},
+		{
+			// A Flow Aggregator built between per-user authorization and stream epochs,
+			// which never shipped in a release.
+			name:  "empty",
+			first: &flowpb.GetFlowsResponse{},
+		},
+		{
+			name:  "resume token with no epoch",
+			first: &flowpb.GetFlowsResponse{ResumeToken: &flowpb.ResumeToken{SequenceNumber: -1}},
+		},
+		{
+			// The stream closed with no response: a non-follow request to an old Flow
+			// Aggregator with nothing buffered.
+			name:  "no response",
+			first: nil,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &fakeFlowStreamServer{handle: func(_ int, _ string) error {
+				return nil
+			}}
+			fake.send = func(stream grpc.ServerStreamingServer[flowpb.GetFlowsResponse]) error {
+				if tc.first == nil {
+					return nil
+				}
+				if err := stream.Send(tc.first); err != nil {
+					return err
+				}
+				return stream.Send(&flowpb.GetFlowsResponse{Flows: []*flowpb.Flow{{Id: "flow-2"}}})
+			}
+			h := newTestSubscriber(t, fake)
+
+			store := newTestStore(t)
+			ctx, _ := ctxWithSessionAuth(t, store, &session.Spec{
+				Mode:       session.ModeToken,
+				Credential: session.Credential{Kind: session.KindBearer, Token: []byte("tok")},
+			})
+
+			flowsCh, errCh, readyCh := h.Subscribe(ctx, &FlowStreamScope{ClusterWide: true}, &FlowStreamFilter{})
+			select {
+			case err, ok := <-errCh:
+				require.True(t, ok)
+				var streamErr *StreamError
+				require.ErrorAs(t, err, &streamErr)
+				assert.Equal(t, StreamErrorCodeFlowAggregatorTooOld, streamErr.Code)
+				assert.False(t, streamErr.Retryable)
+			case <-readyCh:
+				t.Fatal("must not signal ready for a Flow Aggregator with no stream epoch")
+			case <-time.After(2 * time.Second):
+				t.Fatal("timed out waiting for error")
+			}
+			_, ok := <-flowsCh
+			assert.False(t, ok, "no flow record must be forwarded to the caller")
+		})
+	}
 }
 
 // codes.Unavailable, and any other gRPC code with no case of its own in classifyStreamErr, is what
@@ -419,14 +509,14 @@ func TestSubscribeReportsUnauthenticatedAsNotRetryable(t *testing.T) {
 }
 
 // An ordinary client disconnect (tab closed, filter changed) while startStream is still waiting
-// for the first matching flow - which, with a narrow filter, can take a while - must not surface
+// for the first response - which authentication and authorization can delay - must not surface
 // as a stream error: it is indistinguishable from every other client-initiated teardown.
 func TestSubscribeStopsSilentlyOnDisconnectDuringFirstRecv(t *testing.T) {
 	reached := make(chan struct{})
 	never := make(chan struct{})
 	fake := &fakeFlowStreamServer{handle: func(_ int, _ string) error {
 		close(reached)
-		<-never // block until the test cancels ctx; GetFlows call succeeds but no flow ever arrives.
+		<-never // block until the test cancels ctx; GetFlows call succeeds but no response ever arrives.
 		return nil
 	}}
 	h := newTestSubscriber(t, fake)
@@ -448,7 +538,7 @@ func TestSubscribeStopsSilentlyOnDisconnectDuringFirstRecv(t *testing.T) {
 
 	select {
 	case _, ok := <-errCh:
-		assert.False(t, ok, "a client disconnect while waiting for the first flow must not be reported as an error")
+		assert.False(t, ok, "a client disconnect while waiting for the first response must not be reported as an error")
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for the stream to stop")
 	}
@@ -600,7 +690,7 @@ func TestSubscribeStopsSilentlyWhenSessionEndsDuringKindCertStream(t *testing.T)
 	never := make(chan struct{})
 	fake := &fakeFlowStreamServer{handle: func(_ int, _ string) error {
 		close(reached)
-		<-never // block until the test ends the session; no flow ever arrives.
+		<-never // block until the test ends the session; no response ever arrives.
 		return nil
 	}}
 	h := newCertTestSubscriber(t, fake, ca, serverCert, serverName)

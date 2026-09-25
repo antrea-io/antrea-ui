@@ -75,12 +75,13 @@ const defaultKeepAliveInterval = 5 * time.Second
 
 // defaultInitialResponseTimeout bounds how long StreamFlows waits for Subscribe to confirm the
 // stream is live (or fail) before reporting a retryable timeout. See the comment where it is
-// used: against a Flow Aggregator that sends its post-authz ack (antrea-io/antrea#8420), this
-// only fires when FA accepts the call and then never responds at all, so it has to clear the
-// worst-case time for a valid open rather than the common case - up to 10s for the admin-token
-// mint (see AdminTokenSource), FA's own 30s tokenAuthenticationTimeout, then the
-// SubjectAccessReview - while staying under the 60s read timeout common in external proxies
-// (ingress-nginx, AWS ALB), which would otherwise cut the response off before this fires.
+// used: a supported Flow Aggregator sends its first response as soon as the call clears
+// authorization (see Subscribe's stream epoch check), so this only fires when FA accepts the call
+// and then never responds at all. It therefore has to clear the worst-case time for a valid open
+// rather than the common case - up to 10s for the admin-token mint (see AdminTokenSource), FA's
+// own 30s tokenAuthenticationTimeout, then the SubjectAccessReview - while staying under the 60s
+// read timeout common in external proxies (ingress-nginx, AWS ALB), which would otherwise cut the
+// response off before this fires.
 const defaultInitialResponseTimeout = 50 * time.Second
 
 // streamErrorEvent describes streamErr for a client, carrying classifyStreamErr's code and
@@ -321,12 +322,12 @@ func (h *SSEHandler) StreamFlows(c *gin.Context) {
 	case <-readyCh:
 		// The stream is confirmed live: proceed as an ordinary 200 SSE stream.
 	case <-time.After(h.initialResponseTimeout):
-		// Subscribe never answered either way. Against a Flow Aggregator that sends the
-		// post-authz ack this only means FA hung after accepting the call, not a valid open
-		// still in flight - initialResponseTimeout is sized above the worst case for that - so
-		// committing to a 200 here would show "Connected" on an empty page with no error and no
-		// retry. Report it as a retryable failure instead, the same shape as the other pre-200
-		// failures, so the client can reconnect.
+		// Subscribe never answered either way. A supported Flow Aggregator sends its first
+		// response as soon as the call clears authorization, so this only means FA hung after
+		// accepting the call, not a valid open still in flight: initialResponseTimeout is sized
+		// above the worst case for that. Committing to a 200 here would show "Connected" on an
+		// empty page with no error and no retry. Report it as a retryable failure instead, the
+		// same shape as the other pre-200 failures, so the client can reconnect.
 		h.logger.Error(errInitialResponseTimeout, "Flow stream did not respond before the initial response timeout")
 		c.JSON(statusForStreamErr(errInitialResponseTimeout), streamErrorEvent(errInitialResponseTimeout))
 		return

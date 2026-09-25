@@ -218,13 +218,13 @@ fields entirely and streams every flow it has, unredacted, with no disclosure
 markers — which a client correctly reads as full disclosure, since that is the
 zero value. That would silently show a Namespace-scoped caller the whole
 cluster at full identity. antrea-ui detects this from the stream itself: a
-Flow Aggregator that supports this model always sends an empty post-authz
-acknowledgement as its first response before any real flow, so a first
-response carrying an actual flow record means no such acknowledgement was
-sent, and antrea-ui refuses the stream (`StreamErrorCodeFlowAggregatorTooOld`)
-instead of forwarding unredacted data. Antrea UI v1.0.0 requires Antrea and
-the Flow Aggregator at v2.8 or later; flow visibility is unavailable against
-an older deployment.
+Flow Aggregator that supports this model always sends a first response
+carrying a `resume_token` with a non-empty `stream_epoch`, which an older
+one cannot produce. When the first response has no stream epoch, or the
+stream ends before sending one, antrea-ui refuses the stream
+(`StreamErrorCodeFlowAggregatorTooOld`) instead of forwarding unredacted
+data. Antrea UI v1.0.0 requires Antrea and the Flow Aggregator at v2.8 or
+later; flow visibility is unavailable against an older deployment.
 
 The Flow Visibility navigation entry and page are gated on the `flows`
 `watch` grant above, the same RBAC FA itself checks — a rendering hint, not

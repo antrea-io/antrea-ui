@@ -299,16 +299,21 @@ func (h *GRPCFlowStreamSubscriber) Subscribe(ctx context.Context, scope *FlowStr
 			// Nothing to report.
 			return
 		}
-		// The first Recv succeeded (or hit an immediate EOF, which startStream treats as
-		// success too): the call cleared authentication and authorization and FA committed to
-		// the stream. A first response carrying real flow data, rather than FA's empty
-		// post-authz ack, means no ack was ever sent: this Flow Aggregator predates per-user
-		// flow authorization, parsed cluster_wide/namespaces into unknown fields, and ignored
-		// them - see flowAggregatorTooOldErr. Checked per stream rather than once and cached:
-		// a cached "supported" verdict would let a rollback, or a rolling update briefly
-		// routing to an old replica, stream unredacted data with no error for as long as the
-		// verdict stayed trusted.
-		if firstResp != nil && len(firstResp.Flows) > 0 {
+		// The first Recv succeeded (or hit an immediate EOF, which startStream reports as a nil
+		// firstResp): the call cleared authentication and authorization. A Flow Aggregator
+		// with per-user flow authorization always sends a first response carrying a
+		// resume_token with a non-empty stream_epoch before anything else, and one that
+		// predates it cannot produce one. A missing epoch (including no first response at
+		// all) therefore means this Flow Aggregator parsed cluster_wide/namespaces into
+		// unknown fields and ignored them - see flowAggregatorTooOldErr. The check keys on
+		// the presence of the epoch rather than on the first response being empty: an old
+		// Flow Aggregator's first response can also be empty of flows, when its ring buffer
+		// wrapped and every record read was filtered out, and it would still go on to stream
+		// unredacted data. Checked per stream rather than once and cached: a cached
+		// "supported" verdict would let a rollback, or a rolling update briefly routing to an
+		// old replica, stream unredacted data with no error for as long as the verdict stayed
+		// trusted.
+		if firstResp.GetResumeToken().GetStreamEpoch() == "" {
 			errCh <- flowAggregatorTooOldErr(h.address)
 			return
 		}
@@ -358,10 +363,11 @@ func (h *GRPCFlowStreamSubscriber) Subscribe(ctx context.Context, scope *FlowStr
 // server-streaming RPC, FA reports both Unauthenticated and ResourceExhausted before sending any
 // message, and that kind of error does not surface on the call that opens the stream - only on
 // the first Recv. A nil firstResp with a nil error means the server closed the stream immediately
-// with no error and no message; the caller's receive loop handles that the same way it always
-// has. A nil stream with a nil error means ctx ended, or the underlying connection was closed
-// (codes.Canceled) while this call or the wait for a first matching flow was still in flight
-// (which, with a narrow filter, can take a while); the caller treats that as an ordinary
+// with no error and no message, which a Flow Aggregator with per-user flow authorization never
+// does; the caller rejects it the same as any other first response with no stream epoch. A nil
+// stream with a nil error means ctx ended, or the underlying connection was closed
+// (codes.Canceled) while this call or the wait for the first response was still in flight
+// (authentication and authorization can take a while); the caller treats that as an ordinary
 // disconnect, not a failure.
 func (h *GRPCFlowStreamSubscriber) startStream(ctx context.Context, client flowpb.FlowStreamServiceClient, callCtx context.Context, req *flowpb.GetFlowsRequest) (flowpb.FlowStreamService_GetFlowsClient, *flowpb.GetFlowsResponse, error) {
 	stream, err := client.GetFlows(callCtx, req)

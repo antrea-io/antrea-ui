@@ -27,7 +27,9 @@ for f in flow.pb.go service.pb.go service_grpc.pb.go; do
 done
 ```
 
-The current copies carry antrea-io/antrea#8276, which added
-`GetFlowsRequest.cluster_wide`, `GetFlowsRequest.namespaces`,
-`FlowKubernetes.source_disclosure`, `FlowKubernetes.destination_disclosure`
-and the `EndpointDisclosure` enum.
+The current copies are from antrea-io/antrea@35f47b8 (antrea-io/antrea#8432).
+They carry antrea-io/antrea#8276, which added `GetFlowsRequest.cluster_wide`,
+`GetFlowsRequest.namespaces`, `FlowKubernetes.source_disclosure`,
+`FlowKubernetes.destination_disclosure` and the `EndpointDisclosure` enum, and
+antrea-io/antrea#8432, which added `GetFlowsRequest.resume`,
+`GetFlowsResponse.resume_token` and the `ResumeToken` message.
