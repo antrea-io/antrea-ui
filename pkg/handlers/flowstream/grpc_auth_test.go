@@ -22,6 +22,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/go-logr/logr/testr"
@@ -91,7 +92,8 @@ var firstResponse = &flowpb.GetFlowsResponse{
 
 // newTestSubscriber starts fake on an in-memory bufconn listener and returns a
 // GRPCFlowStreamSubscriber dialed against it with no TLS, bypassing the real constructor (which
-// requires real TLS credentials).
+// requires real TLS credentials). bufconn blocks only on channels and sync.Cond, never on real
+// network I/O, so tests using it can run under testing/synctest.
 //
 // extraDialOpts are appended to the client's dial options, for a test that needs to change how the
 // client itself behaves (see TestSubscribeReportsOversizedMessageAsNotRetryable).
@@ -122,6 +124,7 @@ func newTestSubscriber(t *testing.T, fake *fakeFlowStreamServer, extraDialOpts .
 // a client certificate signed by ca, and returns a GRPCFlowStreamSubscriber whose tlsConfig
 // trusts ca. Unlike newTestSubscriber, this cannot use bufconn: buildCertConn dials h.address
 // directly, with no injectable dialer, so the KindCert path needs a real address to connect to.
+// For the same reason, tests using it cannot run under testing/synctest.
 func newCertTestSubscriber(t *testing.T, fake *fakeFlowStreamServer, ca *testcerts.CertificateAuthority, serverCert tls.Certificate, serverName string) *GRPCFlowStreamSubscriber {
 	t.Helper()
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
@@ -163,77 +166,85 @@ func newTestStore(t *testing.T) session.Store {
 // A bearer credential must be attached as "authorization: Bearer <token>" call metadata: that is
 // the only shape FA accepts a token in.
 func TestSubscribeAttachesBearerToken(t *testing.T) {
-	var gotBearer atomic.Value
-	fake := &fakeFlowStreamServer{handle: func(_ int, bearer string) error {
-		gotBearer.Store(bearer)
-		return nil
-	}}
-	h := newTestSubscriber(t, fake)
+	synctest.Test(t, func(t *testing.T) {
+		var gotBearer atomic.Value
+		fake := &fakeFlowStreamServer{handle: func(_ int, bearer string) error {
+			gotBearer.Store(bearer)
+			return nil
+		}}
+		h := newTestSubscriber(t, fake)
 
-	store := newTestStore(t)
-	ctx, _ := ctxWithSessionAuth(t, store, &session.Spec{
-		Mode:       session.ModeToken,
-		Credential: session.Credential{Kind: session.KindBearer, Token: []byte("s3cr3t")},
+		store := newTestStore(t)
+		ctx, _ := ctxWithSessionAuth(t, store, &session.Spec{
+			Mode:       session.ModeToken,
+			Credential: session.Credential{Kind: session.KindBearer, Token: []byte("s3cr3t")},
+		})
+
+		_, errCh, readyCh := h.Subscribe(ctx, &FlowStreamScope{ClusterWide: true}, &FlowStreamFilter{})
+		select {
+		case err, ok := <-errCh:
+			require.False(t, ok, "unexpected error: %v", err)
+		case <-time.After(2 * time.Second):
+			require.FailNow(t, "timed out waiting for stream to finish")
+		}
+		// The fake server closes the stream immediately (handle returns nil), so calls should be 1.
+		assert.Equal(t, int32(1), fake.calls.Load())
+		assert.Equal(t, "Bearer s3cr3t", gotBearer.Load())
+		// readyCh must already be closed by the time errCh reports the stream ended - the caller
+		// deciding whether to commit to a 200 (see StreamFlows) reads it as "the call cleared auth".
+		select {
+		case _, ok := <-readyCh:
+			assert.False(t, ok, "readyCh must be closed, not merely have a value")
+		default:
+			require.FailNow(t, "readyCh was not closed for a stream that cleared authentication")
+		}
 	})
-
-	_, errCh, readyCh := h.Subscribe(ctx, &FlowStreamScope{ClusterWide: true}, &FlowStreamFilter{})
-	select {
-	case err, ok := <-errCh:
-		require.False(t, ok, "unexpected error: %v", err)
-	case <-time.After(2 * time.Second):
-		require.FailNow(t, "timed out waiting for stream to finish")
-	}
-	// The fake server closes the stream immediately (handle returns nil), so calls should be 1.
-	assert.Equal(t, int32(1), fake.calls.Load())
-	assert.Equal(t, "Bearer s3cr3t", gotBearer.Load())
-	// readyCh must already be closed by the time errCh reports the stream ended - the caller
-	// deciding whether to commit to a 200 (see StreamFlows) reads it as "the call cleared auth".
-	select {
-	case _, ok := <-readyCh:
-		assert.False(t, ok, "readyCh must be closed, not merely have a value")
-	default:
-		require.FailNow(t, "readyCh was not closed for a stream that cleared authentication")
-	}
 }
 
 // A failure resolved before any call reaches FA (see resolveCall) must never signal readiness:
 // StreamFlows relies on readyCh only ever closing for a stream that is actually live, so a
 // caller racing errCh against it never mistakes this kind of failure for success.
 func TestSubscribeReadyNeverClosesWithoutResolvedIdentity(t *testing.T) {
-	fake := &fakeFlowStreamServer{handle: func(_ int, _ string) error { return nil }}
-	h := newTestSubscriber(t, fake)
+	synctest.Test(t, func(t *testing.T) {
+		fake := &fakeFlowStreamServer{handle: func(_ int, _ string) error { return nil }}
+		h := newTestSubscriber(t, fake)
 
-	_, errCh, readyCh := h.Subscribe(t.Context(), &FlowStreamScope{ClusterWide: true}, &FlowStreamFilter{})
-	select {
-	case err, ok := <-errCh:
-		require.True(t, ok)
-		assert.Error(t, err)
-	case <-time.After(2 * time.Second):
-		require.FailNow(t, "timed out waiting for error")
-	}
-	select {
-	case <-readyCh:
-		require.FailNow(t, "readyCh must not close on a failure that never reached FA")
-	case <-time.After(50 * time.Millisecond):
-	}
+		_, errCh, readyCh := h.Subscribe(t.Context(), &FlowStreamScope{ClusterWide: true}, &FlowStreamFilter{})
+		select {
+		case err, ok := <-errCh:
+			require.True(t, ok)
+			assert.Error(t, err)
+		case <-time.After(2 * time.Second):
+			require.FailNow(t, "timed out waiting for error")
+		}
+		// Wait until Subscribe's goroutine has done everything it is going to do.
+		synctest.Wait()
+		select {
+		case <-readyCh:
+			require.FailNow(t, "readyCh must not close on a failure that never reached FA")
+		default:
+		}
+	})
 }
 
 // Subscribe must fail closed, without dialing anything, when the context carries no resolved
 // identity: this is a wiring bug, not something a client can trigger, but the flow stream
 // endpoint runs for hours and must not guess a credential.
 func TestSubscribeFailsWithoutResolvedIdentity(t *testing.T) {
-	fake := &fakeFlowStreamServer{handle: func(_ int, _ string) error { return nil }}
-	h := newTestSubscriber(t, fake)
+	synctest.Test(t, func(t *testing.T) {
+		fake := &fakeFlowStreamServer{handle: func(_ int, _ string) error { return nil }}
+		h := newTestSubscriber(t, fake)
 
-	_, errCh, _ := h.Subscribe(t.Context(), &FlowStreamScope{ClusterWide: true}, &FlowStreamFilter{})
-	select {
-	case err, ok := <-errCh:
-		require.True(t, ok)
-		assert.Error(t, err)
-	case <-time.After(2 * time.Second):
-		require.FailNow(t, "timed out waiting for error")
-	}
-	assert.Zero(t, fake.calls.Load(), "must not have dialed GetFlows with no resolved identity")
+		_, errCh, _ := h.Subscribe(t.Context(), &FlowStreamScope{ClusterWide: true}, &FlowStreamFilter{})
+		select {
+		case err, ok := <-errCh:
+			require.True(t, ok)
+			assert.Error(t, err)
+		case <-time.After(2 * time.Second):
+			require.FailNow(t, "timed out waiting for error")
+		}
+		assert.Zero(t, fake.calls.Load(), "must not have dialed GetFlows with no resolved identity")
+	})
 }
 
 // codes.Unauthenticated means FA rejected the credential itself, but that must not invalidate the
@@ -243,56 +254,60 @@ func TestSubscribeFailsWithoutResolvedIdentity(t *testing.T) {
 // over it would log the user out of unrelated pages, on every re-login, if that mismatch is just
 // how the deployment is configured.
 func TestSubscribeDoesNotInvalidateSessionOnUnauthenticated(t *testing.T) {
-	fake := &fakeFlowStreamServer{handle: func(_ int, _ string) error {
-		return status.Error(codes.Unauthenticated, "no credential")
-	}}
-	h := newTestSubscriber(t, fake)
+	synctest.Test(t, func(t *testing.T) {
+		fake := &fakeFlowStreamServer{handle: func(_ int, _ string) error {
+			return status.Error(codes.Unauthenticated, "no credential")
+		}}
+		h := newTestSubscriber(t, fake)
 
-	store := newTestStore(t)
-	ctx, ra := ctxWithSessionAuth(t, store, &session.Spec{
-		Mode:       session.ModeToken,
-		Credential: session.Credential{Kind: session.KindBearer, Token: []byte("bad")},
+		store := newTestStore(t)
+		ctx, ra := ctxWithSessionAuth(t, store, &session.Spec{
+			Mode:       session.ModeToken,
+			Credential: session.Credential{Kind: session.KindBearer, Token: []byte("bad")},
+		})
+
+		_, errCh, _ := h.Subscribe(ctx, &FlowStreamScope{ClusterWide: true}, &FlowStreamFilter{})
+		select {
+		case err := <-errCh:
+			assert.Error(t, err)
+		case <-time.After(2 * time.Second):
+			require.FailNow(t, "timed out waiting for error")
+		}
+
+		_, err := store.Get(t.Context(), ra.SessionID())
+		assert.NoError(t, err, "an FA-rejected credential must not end the antrea-ui session")
 	})
-
-	_, errCh, _ := h.Subscribe(ctx, &FlowStreamScope{ClusterWide: true}, &FlowStreamFilter{})
-	select {
-	case err := <-errCh:
-		assert.Error(t, err)
-	case <-time.After(2 * time.Second):
-		require.FailNow(t, "timed out waiting for error")
-	}
-
-	_, err := store.Get(t.Context(), ra.SessionID())
-	assert.NoError(t, err, "an FA-rejected credential must not end the antrea-ui session")
 }
 
 // codes.ResourceExhausted (the stream limiter, or FA's token-auth semaphore) is reported to the
 // caller as a retryable StreamError rather than retried here: retrying is the frontend's job,
 // driven by its own reconnect backoff (see startStream's doc comment).
 func TestSubscribeReportsResourceExhaustedAsRetryable(t *testing.T) {
-	fake := &fakeFlowStreamServer{handle: func(_ int, _ string) error {
-		return status.Error(codes.ResourceExhausted, "at capacity")
-	}}
-	h := newTestSubscriber(t, fake)
+	synctest.Test(t, func(t *testing.T) {
+		fake := &fakeFlowStreamServer{handle: func(_ int, _ string) error {
+			return status.Error(codes.ResourceExhausted, "at capacity")
+		}}
+		h := newTestSubscriber(t, fake)
 
-	store := newTestStore(t)
-	ctx, _ := ctxWithSessionAuth(t, store, &session.Spec{
-		Mode:       session.ModeToken,
-		Credential: session.Credential{Kind: session.KindBearer, Token: []byte("tok")},
+		store := newTestStore(t)
+		ctx, _ := ctxWithSessionAuth(t, store, &session.Spec{
+			Mode:       session.ModeToken,
+			Credential: session.Credential{Kind: session.KindBearer, Token: []byte("tok")},
+		})
+
+		_, errCh, _ := h.Subscribe(ctx, &FlowStreamScope{ClusterWide: true}, &FlowStreamFilter{})
+		select {
+		case err, ok := <-errCh:
+			require.True(t, ok)
+			var streamErr *StreamError
+			require.ErrorAs(t, err, &streamErr)
+			assert.Equal(t, StreamErrorCodeResourceExhausted, streamErr.Code)
+			assert.True(t, streamErr.Retryable)
+		case <-time.After(2 * time.Second):
+			require.FailNow(t, "timed out waiting for error")
+		}
+		assert.Equal(t, int32(1), fake.calls.Load(), "must not retry on its own")
 	})
-
-	_, errCh, _ := h.Subscribe(ctx, &FlowStreamScope{ClusterWide: true}, &FlowStreamFilter{})
-	select {
-	case err, ok := <-errCh:
-		require.True(t, ok)
-		var streamErr *StreamError
-		require.ErrorAs(t, err, &streamErr)
-		assert.Equal(t, StreamErrorCodeResourceExhausted, streamErr.Code)
-		assert.True(t, streamErr.Retryable)
-	case <-time.After(2 * time.Second):
-		require.FailNow(t, "timed out waiting for error")
-	}
-	assert.Equal(t, int32(1), fake.calls.Load(), "must not retry on its own")
 }
 
 // grpc-go raises codes.ResourceExhausted in the *client* when a response exceeds the configured
@@ -300,77 +315,81 @@ func TestSubscribeReportsResourceExhaustedAsRetryable(t *testing.T) {
 // client's limit - nothing like FA being at capacity. Reporting it as capacity would both retry a
 // batch that cannot ever fit and point whoever debugs it at FA's load instead of the size limit.
 func TestSubscribeReportsOversizedMessageAsNotRetryable(t *testing.T) {
-	// Comfortably past the 1 KiB receive limit set below, so the client rejects the response
-	// before it is ever handed to forwardResp.
-	oversized := &flowpb.GetFlowsResponse{Flows: []*flowpb.Flow{{Id: strings.Repeat("x", 4096)}}}
-	fake := &fakeFlowStreamServer{handle: func(_ int, _ string) error {
-		return nil
-	}}
-	fake.send = func(stream grpc.ServerStreamingServer[flowpb.GetFlowsResponse]) error {
-		return stream.Send(oversized)
-	}
-	h := newTestSubscriber(t, fake, grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(1024)))
+	synctest.Test(t, func(t *testing.T) {
+		// Comfortably past the 1 KiB receive limit set below, so the client rejects the response
+		// before it is ever handed to forwardResp.
+		oversized := &flowpb.GetFlowsResponse{Flows: []*flowpb.Flow{{Id: strings.Repeat("x", 4096)}}}
+		fake := &fakeFlowStreamServer{handle: func(_ int, _ string) error {
+			return nil
+		}}
+		fake.send = func(stream grpc.ServerStreamingServer[flowpb.GetFlowsResponse]) error {
+			return stream.Send(oversized)
+		}
+		h := newTestSubscriber(t, fake, grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(1024)))
 
-	store := newTestStore(t)
-	ctx, _ := ctxWithSessionAuth(t, store, &session.Spec{
-		Mode:       session.ModeToken,
-		Credential: session.Credential{Kind: session.KindBearer, Token: []byte("tok")},
+		store := newTestStore(t)
+		ctx, _ := ctxWithSessionAuth(t, store, &session.Spec{
+			Mode:       session.ModeToken,
+			Credential: session.Credential{Kind: session.KindBearer, Token: []byte("tok")},
+		})
+
+		_, errCh, _ := h.Subscribe(ctx, &FlowStreamScope{ClusterWide: true}, &FlowStreamFilter{})
+		select {
+		case err, ok := <-errCh:
+			require.True(t, ok)
+			var streamErr *StreamError
+			require.ErrorAs(t, err, &streamErr)
+			assert.Equal(t, StreamErrorCodeInternal, streamErr.Code)
+			assert.False(t, streamErr.Retryable)
+			assert.NotContains(t, streamErr.Error(), "at capacity")
+		case <-time.After(2 * time.Second):
+			require.FailNow(t, "timed out waiting for error")
+		}
 	})
-
-	_, errCh, _ := h.Subscribe(ctx, &FlowStreamScope{ClusterWide: true}, &FlowStreamFilter{})
-	select {
-	case err, ok := <-errCh:
-		require.True(t, ok)
-		var streamErr *StreamError
-		require.ErrorAs(t, err, &streamErr)
-		assert.Equal(t, StreamErrorCodeInternal, streamErr.Code)
-		assert.False(t, streamErr.Retryable)
-		assert.NotContains(t, streamErr.Error(), "at capacity")
-	case <-time.After(2 * time.Second):
-		require.FailNow(t, "timed out waiting for error")
-	}
 }
 
 // The counterpart of TestSubscribeReportsMissingStreamEpochAsFlowAggregatorTooOld: once the first
 // response carries a stream epoch, Subscribe must signal ready and forward the flows that follow.
 func TestSubscribeForwardsFlowsAfterStreamEpoch(t *testing.T) {
-	fake := &fakeFlowStreamServer{handle: func(_ int, _ string) error {
-		return nil
-	}}
-	fake.send = func(stream grpc.ServerStreamingServer[flowpb.GetFlowsResponse]) error {
-		if err := stream.Send(firstResponse); err != nil {
-			return err
+	synctest.Test(t, func(t *testing.T) {
+		fake := &fakeFlowStreamServer{handle: func(_ int, _ string) error {
+			return nil
+		}}
+		fake.send = func(stream grpc.ServerStreamingServer[flowpb.GetFlowsResponse]) error {
+			if err := stream.Send(firstResponse); err != nil {
+				return err
+			}
+			return stream.Send(&flowpb.GetFlowsResponse{Flows: []*flowpb.Flow{{Id: "flow-1"}}})
 		}
-		return stream.Send(&flowpb.GetFlowsResponse{Flows: []*flowpb.Flow{{Id: "flow-1"}}})
-	}
-	h := newTestSubscriber(t, fake)
+		h := newTestSubscriber(t, fake)
 
-	store := newTestStore(t)
-	ctx, _ := ctxWithSessionAuth(t, store, &session.Spec{
-		Mode:       session.ModeToken,
-		Credential: session.Credential{Kind: session.KindBearer, Token: []byte("tok")},
+		store := newTestStore(t)
+		ctx, _ := ctxWithSessionAuth(t, store, &session.Spec{
+			Mode:       session.ModeToken,
+			Credential: session.Credential{Kind: session.KindBearer, Token: []byte("tok")},
+		})
+
+		flowsCh, errCh, readyCh := h.Subscribe(ctx, &FlowStreamScope{ClusterWide: true}, &FlowStreamFilter{})
+		select {
+		case <-readyCh:
+		case err := <-errCh:
+			require.FailNow(t, "unexpected error", "%v", err)
+		case <-time.After(2 * time.Second):
+			require.FailNow(t, "timed out waiting for ready")
+		}
+		select {
+		case evt, ok := <-flowsCh:
+			require.True(t, ok, "the flow after the first response must be forwarded")
+			require.Len(t, evt.Flows, 1)
+			assert.Equal(t, "flow-1", evt.Flows[0].ID)
+		case <-time.After(2 * time.Second):
+			require.FailNow(t, "timed out waiting for the flow")
+		}
+		_, ok := <-flowsCh
+		assert.False(t, ok, "only the flow record must be forwarded, not the first response")
+		err, ok := <-errCh
+		assert.False(t, ok, "unexpected error: %v", err)
 	})
-
-	flowsCh, errCh, readyCh := h.Subscribe(ctx, &FlowStreamScope{ClusterWide: true}, &FlowStreamFilter{})
-	select {
-	case <-readyCh:
-	case err := <-errCh:
-		require.FailNow(t, "unexpected error", "%v", err)
-	case <-time.After(2 * time.Second):
-		require.FailNow(t, "timed out waiting for ready")
-	}
-	select {
-	case evt, ok := <-flowsCh:
-		require.True(t, ok, "the flow after the first response must be forwarded")
-		require.Len(t, evt.Flows, 1)
-		assert.Equal(t, "flow-1", evt.Flows[0].ID)
-	case <-time.After(2 * time.Second):
-		require.FailNow(t, "timed out waiting for the flow")
-	}
-	_, ok := <-flowsCh
-	assert.False(t, ok, "only the flow record must be forwarded, not the first response")
-	err, ok := <-errCh
-	assert.False(t, ok, "unexpected error: %v", err)
 }
 
 // A Flow Aggregator that predates per-user flow authorization ignores the stream's scope and
@@ -411,41 +430,43 @@ func TestSubscribeReportsMissingStreamEpochAsFlowAggregatorTooOld(t *testing.T) 
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			fake := &fakeFlowStreamServer{handle: func(_ int, _ string) error {
-				return nil
-			}}
-			fake.send = func(stream grpc.ServerStreamingServer[flowpb.GetFlowsResponse]) error {
-				if tc.first == nil {
+			synctest.Test(t, func(t *testing.T) {
+				fake := &fakeFlowStreamServer{handle: func(_ int, _ string) error {
 					return nil
+				}}
+				fake.send = func(stream grpc.ServerStreamingServer[flowpb.GetFlowsResponse]) error {
+					if tc.first == nil {
+						return nil
+					}
+					if err := stream.Send(tc.first); err != nil {
+						return err
+					}
+					return stream.Send(&flowpb.GetFlowsResponse{Flows: []*flowpb.Flow{{Id: "flow-2"}}})
 				}
-				if err := stream.Send(tc.first); err != nil {
-					return err
-				}
-				return stream.Send(&flowpb.GetFlowsResponse{Flows: []*flowpb.Flow{{Id: "flow-2"}}})
-			}
-			h := newTestSubscriber(t, fake)
+				h := newTestSubscriber(t, fake)
 
-			store := newTestStore(t)
-			ctx, _ := ctxWithSessionAuth(t, store, &session.Spec{
-				Mode:       session.ModeToken,
-				Credential: session.Credential{Kind: session.KindBearer, Token: []byte("tok")},
+				store := newTestStore(t)
+				ctx, _ := ctxWithSessionAuth(t, store, &session.Spec{
+					Mode:       session.ModeToken,
+					Credential: session.Credential{Kind: session.KindBearer, Token: []byte("tok")},
+				})
+
+				flowsCh, errCh, readyCh := h.Subscribe(ctx, &FlowStreamScope{ClusterWide: true}, &FlowStreamFilter{})
+				select {
+				case err, ok := <-errCh:
+					require.True(t, ok)
+					var streamErr *StreamError
+					require.ErrorAs(t, err, &streamErr)
+					assert.Equal(t, StreamErrorCodeFlowAggregatorTooOld, streamErr.Code)
+					assert.False(t, streamErr.Retryable)
+				case <-readyCh:
+					require.FailNow(t, "must not signal ready for a Flow Aggregator with no stream epoch")
+				case <-time.After(2 * time.Second):
+					require.FailNow(t, "timed out waiting for error")
+				}
+				_, ok := <-flowsCh
+				assert.False(t, ok, "no flow record must be forwarded to the caller")
 			})
-
-			flowsCh, errCh, readyCh := h.Subscribe(ctx, &FlowStreamScope{ClusterWide: true}, &FlowStreamFilter{})
-			select {
-			case err, ok := <-errCh:
-				require.True(t, ok)
-				var streamErr *StreamError
-				require.ErrorAs(t, err, &streamErr)
-				assert.Equal(t, StreamErrorCodeFlowAggregatorTooOld, streamErr.Code)
-				assert.False(t, streamErr.Retryable)
-			case <-readyCh:
-				require.FailNow(t, "must not signal ready for a Flow Aggregator with no stream epoch")
-			case <-time.After(2 * time.Second):
-				require.FailNow(t, "timed out waiting for error")
-			}
-			_, ok := <-flowsCh
-			assert.False(t, ok, "no flow record must be forwarded to the caller")
 		})
 	}
 }
@@ -455,172 +476,187 @@ func TestSubscribeReportsMissingStreamEpochAsFlowAggregatorTooOld(t *testing.T) 
 // and before this package existed, the frontend's own reconnect loop recovered from exactly this.
 // It must still be reported as retryable now that classifyStreamErr owns the decision.
 func TestSubscribeReportsUnknownCodeAsRetryable(t *testing.T) {
-	fake := &fakeFlowStreamServer{handle: func(_ int, _ string) error {
-		return status.Error(codes.Unavailable, "connection reset")
-	}}
-	h := newTestSubscriber(t, fake)
+	synctest.Test(t, func(t *testing.T) {
+		fake := &fakeFlowStreamServer{handle: func(_ int, _ string) error {
+			return status.Error(codes.Unavailable, "connection reset")
+		}}
+		h := newTestSubscriber(t, fake)
 
-	store := newTestStore(t)
-	ctx, _ := ctxWithSessionAuth(t, store, &session.Spec{
-		Mode:       session.ModeToken,
-		Credential: session.Credential{Kind: session.KindBearer, Token: []byte("tok")},
+		store := newTestStore(t)
+		ctx, _ := ctxWithSessionAuth(t, store, &session.Spec{
+			Mode:       session.ModeToken,
+			Credential: session.Credential{Kind: session.KindBearer, Token: []byte("tok")},
+		})
+
+		_, errCh, _ := h.Subscribe(ctx, &FlowStreamScope{ClusterWide: true}, &FlowStreamFilter{})
+		select {
+		case err, ok := <-errCh:
+			require.True(t, ok)
+			var streamErr *StreamError
+			require.ErrorAs(t, err, &streamErr)
+			assert.Equal(t, StreamErrorCodeInternal, streamErr.Code)
+			assert.True(t, streamErr.Retryable)
+		case <-time.After(2 * time.Second):
+			require.FailNow(t, "timed out waiting for error")
+		}
 	})
-
-	_, errCh, _ := h.Subscribe(ctx, &FlowStreamScope{ClusterWide: true}, &FlowStreamFilter{})
-	select {
-	case err, ok := <-errCh:
-		require.True(t, ok)
-		var streamErr *StreamError
-		require.ErrorAs(t, err, &streamErr)
-		assert.Equal(t, StreamErrorCodeInternal, streamErr.Code)
-		assert.True(t, streamErr.Retryable)
-	case <-time.After(2 * time.Second):
-		require.FailNow(t, "timed out waiting for error")
-	}
 }
 
 // codes.Unauthenticated is reported as a non-retryable StreamError: the same credential will be
 // rejected again, so the frontend must stop rather than keep reconnecting into it.
 func TestSubscribeReportsUnauthenticatedAsNotRetryable(t *testing.T) {
-	fake := &fakeFlowStreamServer{handle: func(_ int, _ string) error {
-		return status.Error(codes.Unauthenticated, "no credential")
-	}}
-	h := newTestSubscriber(t, fake)
+	synctest.Test(t, func(t *testing.T) {
+		fake := &fakeFlowStreamServer{handle: func(_ int, _ string) error {
+			return status.Error(codes.Unauthenticated, "no credential")
+		}}
+		h := newTestSubscriber(t, fake)
 
-	store := newTestStore(t)
-	ctx, _ := ctxWithSessionAuth(t, store, &session.Spec{
-		Mode:       session.ModeToken,
-		Credential: session.Credential{Kind: session.KindBearer, Token: []byte("bad")},
+		store := newTestStore(t)
+		ctx, _ := ctxWithSessionAuth(t, store, &session.Spec{
+			Mode:       session.ModeToken,
+			Credential: session.Credential{Kind: session.KindBearer, Token: []byte("bad")},
+		})
+
+		_, errCh, _ := h.Subscribe(ctx, &FlowStreamScope{ClusterWide: true}, &FlowStreamFilter{})
+		select {
+		case err, ok := <-errCh:
+			require.True(t, ok)
+			var streamErr *StreamError
+			require.ErrorAs(t, err, &streamErr)
+			assert.Equal(t, StreamErrorCodeUnauthenticated, streamErr.Code)
+			assert.False(t, streamErr.Retryable)
+		case <-time.After(2 * time.Second):
+			require.FailNow(t, "timed out waiting for error")
+		}
 	})
-
-	_, errCh, _ := h.Subscribe(ctx, &FlowStreamScope{ClusterWide: true}, &FlowStreamFilter{})
-	select {
-	case err, ok := <-errCh:
-		require.True(t, ok)
-		var streamErr *StreamError
-		require.ErrorAs(t, err, &streamErr)
-		assert.Equal(t, StreamErrorCodeUnauthenticated, streamErr.Code)
-		assert.False(t, streamErr.Retryable)
-	case <-time.After(2 * time.Second):
-		require.FailNow(t, "timed out waiting for error")
-	}
 }
 
 // An ordinary client disconnect (tab closed, filter changed) while startStream is still waiting
 // for the first response - which authentication and authorization can delay - must not surface
 // as a stream error: it is indistinguishable from every other client-initiated teardown.
 func TestSubscribeStopsSilentlyOnDisconnectDuringFirstRecv(t *testing.T) {
-	reached := make(chan struct{})
-	never := make(chan struct{})
-	fake := &fakeFlowStreamServer{handle: func(_ int, _ string) error {
-		close(reached)
-		<-never // block until the test cancels ctx; GetFlows call succeeds but no response ever arrives.
-		return nil
-	}}
-	h := newTestSubscriber(t, fake)
+	synctest.Test(t, func(t *testing.T) {
+		reached := make(chan struct{})
+		fake := &fakeFlowStreamServer{handle: func(_ int, _ string) error { return nil }}
+		fake.send = func(stream grpc.ServerStreamingServer[flowpb.GetFlowsResponse]) error {
+			close(reached)
+			// Block until the test cancels ctx: the GetFlows call succeeds but no response ever
+			// arrives. Returning on the stream's own context, rather than blocking forever, lets the
+			// synctest bubble finish.
+			<-stream.Context().Done()
+			return stream.Context().Err()
+		}
+		h := newTestSubscriber(t, fake)
 
-	store := newTestStore(t)
-	baseCtx, _ := ctxWithSessionAuth(t, store, &session.Spec{
-		Mode:       session.ModeToken,
-		Credential: session.Credential{Kind: session.KindBearer, Token: []byte("tok")},
+		store := newTestStore(t)
+		baseCtx, _ := ctxWithSessionAuth(t, store, &session.Spec{
+			Mode:       session.ModeToken,
+			Credential: session.Credential{Kind: session.KindBearer, Token: []byte("tok")},
+		})
+		ctx, cancel := context.WithCancel(baseCtx)
+
+		_, errCh, _ := h.Subscribe(ctx, &FlowStreamScope{ClusterWide: true}, &FlowStreamFilter{})
+		select {
+		case <-reached:
+		case <-time.After(2 * time.Second):
+			require.FailNow(t, "timed out waiting for the fake server to be called")
+		}
+		cancel()
+
+		select {
+		case _, ok := <-errCh:
+			assert.False(t, ok, "a client disconnect while waiting for the first response must not be reported as an error")
+		case <-time.After(2 * time.Second):
+			require.FailNow(t, "timed out waiting for the stream to stop")
+		}
 	})
-	ctx, cancel := context.WithCancel(baseCtx)
-
-	_, errCh, _ := h.Subscribe(ctx, &FlowStreamScope{ClusterWide: true}, &FlowStreamFilter{})
-	select {
-	case <-reached:
-	case <-time.After(2 * time.Second):
-		require.FailNow(t, "timed out waiting for the fake server to be called")
-	}
-	cancel()
-
-	select {
-	case _, ok := <-errCh:
-		assert.False(t, ok, "a client disconnect while waiting for the first response must not be reported as an error")
-	case <-time.After(2 * time.Second):
-		require.FailNow(t, "timed out waiting for the stream to stop")
-	}
 }
 
 // A credential kind FA does not support (session.KindImpersonate with no admin token source
 // configured) must fail closed rather than silently calling with no credential at all.
 func TestSubscribeFailsForImpersonateWithoutAdminTokenSource(t *testing.T) {
-	fake := &fakeFlowStreamServer{handle: func(_ int, _ string) error { return nil }}
-	h := newTestSubscriber(t, fake)
+	synctest.Test(t, func(t *testing.T) {
+		fake := &fakeFlowStreamServer{handle: func(_ int, _ string) error { return nil }}
+		h := newTestSubscriber(t, fake)
 
-	store := newTestStore(t)
-	ctx, _ := ctxWithSessionAuth(t, store, &session.Spec{
-		Mode:       session.ModeAdmin,
-		Credential: session.Credential{Kind: session.KindImpersonate, UserName: "antrea-ui-admin"},
+		store := newTestStore(t)
+		ctx, _ := ctxWithSessionAuth(t, store, &session.Spec{
+			Mode:       session.ModeAdmin,
+			Credential: session.Credential{Kind: session.KindImpersonate, UserName: "antrea-ui-admin"},
+		})
+
+		_, errCh, _ := h.Subscribe(ctx, &FlowStreamScope{ClusterWide: true}, &FlowStreamFilter{})
+		select {
+		case err, ok := <-errCh:
+			require.True(t, ok)
+			assert.Error(t, err)
+		case <-time.After(2 * time.Second):
+			require.FailNow(t, "timed out waiting for error")
+		}
+		assert.Zero(t, fake.calls.Load())
 	})
-
-	_, errCh, _ := h.Subscribe(ctx, &FlowStreamScope{ClusterWide: true}, &FlowStreamFilter{})
-	select {
-	case err, ok := <-errCh:
-		require.True(t, ok)
-		assert.Error(t, err)
-	case <-time.After(2 * time.Second):
-		require.FailNow(t, "timed out waiting for error")
-	}
-	assert.Zero(t, fake.calls.Load())
 }
 
 // Most ways CreateToken can fail are transient (the mint timeout firing, an apiserver 5xx,
 // client-side throttling), so a session that opens the flow page during a brief apiserver hiccup
 // must be told to retry rather than stopped for good.
 func TestSubscribeReportsAdminTokenMintFailureAsRetryable(t *testing.T) {
-	fake := &fakeFlowStreamServer{handle: func(_ int, _ string) error { return nil }}
-	h := newTestSubscriber(t, fake)
-	h.adminTokenSource = NewAdminTokenSource(newContextAwareClientset(func(context.Context, string, *authenticationv1.TokenRequest, metav1.CreateOptions) (*authenticationv1.TokenRequest, error) {
-		return nil, fmt.Errorf("apiserver unavailable")
-	}), "ns", "antrea-ui-admin")
+	synctest.Test(t, func(t *testing.T) {
+		fake := &fakeFlowStreamServer{handle: func(_ int, _ string) error { return nil }}
+		h := newTestSubscriber(t, fake)
+		h.adminTokenSource = NewAdminTokenSource(newContextAwareClientset(func(context.Context, string, *authenticationv1.TokenRequest, metav1.CreateOptions) (*authenticationv1.TokenRequest, error) {
+			return nil, fmt.Errorf("apiserver unavailable")
+		}), "ns", "antrea-ui-admin")
 
-	store := newTestStore(t)
-	ctx, _ := ctxWithSessionAuth(t, store, &session.Spec{
-		Mode:       session.ModeAdmin,
-		Credential: session.Credential{Kind: session.KindImpersonate, UserName: "antrea-ui-admin"},
+		store := newTestStore(t)
+		ctx, _ := ctxWithSessionAuth(t, store, &session.Spec{
+			Mode:       session.ModeAdmin,
+			Credential: session.Credential{Kind: session.KindImpersonate, UserName: "antrea-ui-admin"},
+		})
+
+		_, errCh, _ := h.Subscribe(ctx, &FlowStreamScope{ClusterWide: true}, &FlowStreamFilter{})
+		select {
+		case err, ok := <-errCh:
+			require.True(t, ok)
+			var streamErr *StreamError
+			require.ErrorAs(t, err, &streamErr)
+			assert.True(t, streamErr.Retryable)
+		case <-time.After(2 * time.Second):
+			require.FailNow(t, "timed out waiting for error")
+		}
+		assert.Zero(t, fake.calls.Load())
 	})
-
-	_, errCh, _ := h.Subscribe(ctx, &FlowStreamScope{ClusterWide: true}, &FlowStreamFilter{})
-	select {
-	case err, ok := <-errCh:
-		require.True(t, ok)
-		var streamErr *StreamError
-		require.ErrorAs(t, err, &streamErr)
-		assert.True(t, streamErr.Retryable)
-	case <-time.After(2 * time.Second):
-		require.FailNow(t, "timed out waiting for error")
-	}
-	assert.Zero(t, fake.calls.Load())
 }
 
 // A missing serviceaccounts/token grant or a deleted antrea-ui-admin ServiceAccount needs an
 // operator to fix, so retrying the same request will not help - unlike the generic mint failure
 // in TestSubscribeReportsAdminTokenMintFailureAsRetryable.
 func TestSubscribeReportsForbiddenAdminTokenMintAsNotRetryable(t *testing.T) {
-	fake := &fakeFlowStreamServer{handle: func(_ int, _ string) error { return nil }}
-	h := newTestSubscriber(t, fake)
-	h.adminTokenSource = NewAdminTokenSource(newContextAwareClientset(func(context.Context, string, *authenticationv1.TokenRequest, metav1.CreateOptions) (*authenticationv1.TokenRequest, error) {
-		return nil, apierrors.NewForbidden(schema.GroupResource{Resource: "serviceaccounts/token"}, "antrea-ui-admin", fmt.Errorf("no create verb"))
-	}), "ns", "antrea-ui-admin")
+	synctest.Test(t, func(t *testing.T) {
+		fake := &fakeFlowStreamServer{handle: func(_ int, _ string) error { return nil }}
+		h := newTestSubscriber(t, fake)
+		h.adminTokenSource = NewAdminTokenSource(newContextAwareClientset(func(context.Context, string, *authenticationv1.TokenRequest, metav1.CreateOptions) (*authenticationv1.TokenRequest, error) {
+			return nil, apierrors.NewForbidden(schema.GroupResource{Resource: "serviceaccounts/token"}, "antrea-ui-admin", fmt.Errorf("no create verb"))
+		}), "ns", "antrea-ui-admin")
 
-	store := newTestStore(t)
-	ctx, _ := ctxWithSessionAuth(t, store, &session.Spec{
-		Mode:       session.ModeAdmin,
-		Credential: session.Credential{Kind: session.KindImpersonate, UserName: "antrea-ui-admin"},
+		store := newTestStore(t)
+		ctx, _ := ctxWithSessionAuth(t, store, &session.Spec{
+			Mode:       session.ModeAdmin,
+			Credential: session.Credential{Kind: session.KindImpersonate, UserName: "antrea-ui-admin"},
+		})
+
+		_, errCh, _ := h.Subscribe(ctx, &FlowStreamScope{ClusterWide: true}, &FlowStreamFilter{})
+		select {
+		case err, ok := <-errCh:
+			require.True(t, ok)
+			var streamErr *StreamError
+			require.ErrorAs(t, err, &streamErr)
+			assert.False(t, streamErr.Retryable)
+		case <-time.After(2 * time.Second):
+			require.FailNow(t, "timed out waiting for error")
+		}
+		assert.Zero(t, fake.calls.Load())
 	})
-
-	_, errCh, _ := h.Subscribe(ctx, &FlowStreamScope{ClusterWide: true}, &FlowStreamFilter{})
-	select {
-	case err, ok := <-errCh:
-		require.True(t, ok)
-		var streamErr *StreamError
-		require.ErrorAs(t, err, &streamErr)
-		assert.False(t, streamErr.Retryable)
-	case <-time.After(2 * time.Second):
-		require.FailNow(t, "timed out waiting for error")
-	}
-	assert.Zero(t, fake.calls.Load())
 }
 
 // A KindCert credential is presented as the TLS client certificate on its own connection, dialed
