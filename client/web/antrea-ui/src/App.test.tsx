@@ -16,8 +16,14 @@
 
 import { act, fireEvent, render, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router';
+import { navigateTo } from '@antrea/ui-components';
 import App from './App';
 import { store, setSession } from './store';
+
+// jsdom does not implement cross-document navigation; record it instead. Mock the module
+// itself rather than the @antrea/ui-components entry point, so that navigations issued from
+// inside the components (e.g. the OIDC redirect in <antrea-login-page>) are recorded too.
+vi.mock('../../antrea-ui-components/src/lib/navigation.js', () => ({ navigateTo: vi.fn() }));
 
 // AntreaLoginPage/AntreaButton are Lit web components with their own shadow DOM — Testing
 // Library's screen queries don't pierce shadow roots, so assertions below query the DOM
@@ -111,38 +117,25 @@ describe('App', () => {
     });
 
     test('logout: clicking Logout clears the session and shows the login page again', async () => {
-        // useLogout() navigates via window.location.href — intercept the setter only, so jsdom
-        // doesn't attempt a real navigation. That interception is also why /auth/session must
-        // start returning 401 once it fires: unlike a real browser, jsdom does not unload the
-        // page, so AuthShell mounts a fresh <antrea-login-page>, which re-probes the session —
-        // and a real backend would already have cleared the cookie via GET /auth/logout by then.
-        const hrefSetter = vi.fn();
-        stubFetchWithSession(() => (hrefSetter.mock.calls.length === 0 ? { mode: 'admin', username: 'admin' } : null));
-        const originalLocation = Object.getOwnPropertyDescriptor(window, 'location');
-        Object.defineProperty(window, 'location', {
-            value: new Proxy(window.location, {
-                set(target, prop, value) {
-                    if (prop === 'href') { hrefSetter(value); return true; }
-                    return Reflect.set(target, prop, value);
-                },
-            }),
-            configurable: true,
-        });
+        // useLogout() navigates via navigateTo(), which is mocked above. That is also why
+        // /auth/session must start returning 401 once it fires: unlike a real browser, jsdom does
+        // not unload the page, so AuthShell mounts a fresh <antrea-login-page>, which re-probes the
+        // session — and a real backend would already have cleared the cookie via GET /auth/logout
+        // by then.
+        const navigateMock = vi.mocked(navigateTo);
+        navigateMock.mockClear();
+        stubFetchWithSession(() => (navigateMock.mock.calls.length === 0 ? { mode: 'admin', username: 'admin' } : null));
 
-        try {
-            render(<App />, { wrapper: MemoryRouter });
-            await waitFor(() => expect(document.querySelector('antrea-login-page')).toBeNull());
+        render(<App />, { wrapper: MemoryRouter });
+        await waitFor(() => expect(document.querySelector('antrea-login-page')).toBeNull());
 
-            const logoutButton = document.querySelector('antrea-button')!;
-            fireEvent.click(logoutButton);
+        const logoutButton = document.querySelector('antrea-button')!;
+        fireEvent.click(logoutButton);
 
-            await waitFor(() => expect(document.querySelector('antrea-login-page')).not.toBeNull());
-            expect(store.getState().session).toBe('anonymous');
-            expect(hrefSetter).toHaveBeenCalledTimes(1);
-            expect(hrefSetter.mock.calls[0][0]).toContain('/auth/logout?');
-        } finally {
-            if (originalLocation) Object.defineProperty(window, 'location', originalLocation);
-        }
+        await waitFor(() => expect(document.querySelector('antrea-login-page')).not.toBeNull());
+        expect(store.getState().session).toBe('anonymous');
+        expect(navigateMock).toHaveBeenCalledTimes(1);
+        expect(navigateMock.mock.calls[0][0]).toContain('/auth/logout?');
     });
 
     // Without this, a tab left open past the 30-minute idle timeout logs the user out on their

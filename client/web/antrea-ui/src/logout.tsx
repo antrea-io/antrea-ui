@@ -15,7 +15,7 @@
  */
 
 import { useDispatch } from 'react-redux';
-import { getApiBase, resetAccessSummary } from '@antrea/ui-components';
+import { getApiBase, navigateTo, resetAccessSummary } from '@antrea/ui-components';
 import { setSession } from './store';
 
 export function useLogout(): ((msg?: string) => Promise<void>) {
@@ -33,7 +33,7 @@ export function useLogout(): ((msg?: string) => Promise<void>) {
         }
         const params = new URLSearchParams();
         params.set('redirect_url', redirectURL);
-        window.location.href=`${getApiBase()}/auth/logout?${params.toString()}`;
+        navigateTo(`${getApiBase()}/auth/logout?${params.toString()}`);
     }
 
     return logout;
