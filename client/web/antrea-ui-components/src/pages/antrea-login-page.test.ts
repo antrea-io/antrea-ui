@@ -15,6 +15,10 @@
 import { afterEach, beforeEach, describe, expect, test, vi, type Mock } from 'vitest';
 import './antrea-login-page';
 import type { AntreaLoginPage } from './antrea-login-page';
+import { navigateTo } from '../lib/navigation.js';
+
+// jsdom does not implement cross-document navigation; record it instead.
+vi.mock('../lib/navigation.js', () => ({ navigateTo: vi.fn() }));
 
 function jsonResponse(body: unknown, status = 200): Response {
     return new Response(JSON.stringify(body), { status });
@@ -298,29 +302,11 @@ describe('AntreaLoginPage — success message banner', () => {
 });
 
 describe('AntreaLoginPage — OIDC auto-redirect', () => {
-    let hrefSetter: Mock;
-    let originalLocation: PropertyDescriptor | undefined;
-
     beforeEach(() => {
-        // Navigate for real first, so window.location stays same-origin/consistent for
-        // history.replaceState() (called by _readUrlParams() to strip ?auth_method= from the
-        // URL) — then wrap the real Location in a Proxy that only intercepts the `href` setter,
-        // so we can observe the OIDC redirect without jsdom attempting a real navigation.
+        // Navigate for real (same-document), so window.location stays consistent for
+        // history.replaceState(), which _readUrlParams() calls to strip ?auth_method= from the URL.
         window.history.pushState({}, '', '/?auth_method=oidc');
-        hrefSetter = vi.fn();
-        originalLocation = Object.getOwnPropertyDescriptor(window, 'location');
-        const realLocation = window.location;
-        const proxiedLocation = new Proxy(realLocation, {
-            set(target, prop, value) {
-                if (prop === 'href') { hrefSetter(value); return true; }
-                return Reflect.set(target, prop, value);
-            },
-        });
-        Object.defineProperty(window, 'location', { value: proxiedLocation, configurable: true });
-    });
-
-    afterEach(() => {
-        if (originalLocation) Object.defineProperty(window, 'location', originalLocation);
+        vi.mocked(navigateTo).mockClear();
     });
 
     test('?auth_method=oidc with no session auto-triggers the OIDC redirect', async () => {
@@ -330,8 +316,8 @@ describe('AntreaLoginPage — OIDC auto-redirect', () => {
         });
 
         expect(localStorage.getItem('ui.antrea.io/use-oidc')).toBeNull();
-        expect(hrefSetter).toHaveBeenCalledTimes(1);
-        const redirectUrl = hrefSetter.mock.calls[0][0] as string;
+        expect(navigateTo).toHaveBeenCalledTimes(1);
+        const redirectUrl = vi.mocked(navigateTo).mock.calls[0][0];
         expect(redirectUrl).toContain('/auth/oauth2/login?');
         // _readUrlParams() strips ?auth_method= from the URL before _doOidcLogin() runs, so the
         // captured redirect_url reflects the cleaned-up location (no auth_method param), not

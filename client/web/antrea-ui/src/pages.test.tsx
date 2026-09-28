@@ -16,6 +16,7 @@
 
 import { act, render, waitFor } from '@testing-library/react';
 import { Provider } from 'react-redux';
+import { navigateTo } from '@antrea/ui-components';
 import { setupStore } from './store';
 import { SummaryPage } from './pages';
 import { AccessProvider } from './access';
@@ -23,23 +24,9 @@ import { AccessProvider } from './access';
 // AntreaSummaryPage is a Lit web component with its own shadow DOM; we only need
 // its host element here to dispatch the antrea-session-expired event.
 
-function stubLocationHref() {
-    const hrefSetter = vi.fn();
-    const originalLocation = Object.getOwnPropertyDescriptor(window, 'location');
-    Object.defineProperty(window, 'location', {
-        value: new Proxy(window.location, {
-            set(target, prop, value) {
-                if (prop === 'href') { hrefSetter(value); return true; }
-                return Reflect.set(target, prop, value);
-            },
-        }),
-        configurable: true,
-    });
-    return {
-        hrefSetter,
-        restore: () => { if (originalLocation) Object.defineProperty(window, 'location', originalLocation); },
-    };
-}
+// jsdom does not implement cross-document navigation; record the logout redirect issued by
+// useLogout() instead.
+vi.mock('../../antrea-ui-components/src/lib/navigation.js', () => ({ navigateTo: vi.fn() }));
 
 afterEach(() => {
     vi.unstubAllGlobals();
@@ -55,29 +42,25 @@ describe('useLitPage — antrea-session-expired', () => {
             throw new Error(`unexpected fetch to ${url}`);
         });
         vi.stubGlobal('fetch', fetchMock);
-        const location = stubLocationHref();
+        vi.mocked(navigateTo).mockClear();
 
-        try {
-            render(<Provider store={store}><AccessProvider><SummaryPage /></AccessProvider></Provider>);
-            // The access summary fetch fails (fetchMock throws for every URL) and fails open,
-            // so the page renders once that resolves.
-            await waitFor(() => expect(document.querySelector('antrea-summary-page')).not.toBeNull());
-            const el = document.querySelector('antrea-summary-page')!;
+        render(<Provider store={store}><AccessProvider><SummaryPage /></AccessProvider></Provider>);
+        // The access summary fetch fails (fetchMock throws for every URL) and fails open,
+        // so the page renders once that resolves.
+        await waitFor(() => expect(document.querySelector('antrea-summary-page')).not.toBeNull());
+        const el = document.querySelector('antrea-summary-page')!;
 
-            await act(async () => {
-                el.dispatchEvent(new CustomEvent('antrea-session-expired'));
-            });
+        await act(async () => {
+            el.dispatchEvent(new CustomEvent('antrea-session-expired'));
+        });
 
-            await waitFor(() => expect(store.getState().session).toBe('anonymous'));
-            expect(location.hrefSetter).toHaveBeenCalledTimes(1);
-            const redirect = location.hrefSetter.mock.calls[0][0] as string;
-            expect(redirect).toContain('/auth/logout?');
-            // The message is nested inside the redirect_url parameter, hence double-encoded.
-            expect(decodeURIComponent(redirect)).toContain('session+has+expired');
-            // No /auth/* round-trip: the old code tried a token refresh here first.
-            expect(fetchMock.mock.calls.filter(([url]) => url.startsWith('/auth/'))).toHaveLength(0);
-        } finally {
-            location.restore();
-        }
+        await waitFor(() => expect(store.getState().session).toBe('anonymous'));
+        expect(navigateTo).toHaveBeenCalledTimes(1);
+        const redirect = vi.mocked(navigateTo).mock.calls[0][0];
+        expect(redirect).toContain('/auth/logout?');
+        // The message is nested inside the redirect_url parameter, hence double-encoded.
+        expect(decodeURIComponent(redirect)).toContain('session+has+expired');
+        // No /auth/* round-trip: the old code tried a token refresh here first.
+        expect(fetchMock.mock.calls.filter(([url]) => url.startsWith('/auth/'))).toHaveLength(0);
     });
 });

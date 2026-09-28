@@ -16,6 +16,7 @@ import { LitElement, html, css, nothing } from 'lit';
 import { state, query } from 'lit/decorators.js';
 import { pageStyles } from '../lib/styles.js';
 import { APIError, getApiBase } from '../lib/api.js';
+import { navigateTo } from '../lib/navigation.js';
 import {
     AppSettings,
     SessionInfo,
@@ -264,7 +265,7 @@ export class AntreaLoginPage extends LitElement {
     private _doOidcLogin() {
         const params = new URLSearchParams();
         params.set('redirect_url', window.location.href);
-        window.location.href = `${getApiBase()}/auth/oauth2/login?${params.toString()}`;
+        navigateTo(`${getApiBase()}/auth/oauth2/login?${params.toString()}`);
     }
 
     private _renderBasicForm() {
