@@ -96,7 +96,7 @@ require (
 	github.com/lucasb-eyer/go-colorful v1.2.0 // indirect
 	github.com/mattn/go-ciede2000 v0.0.0-20170301095244-782e8c62fec3 // indirect
 	github.com/mattn/go-isatty v0.0.23 // indirect
-	github.com/mattn/go-zglob v0.0.2-0.20190814121620-e3c945676326 // indirect
+	github.com/mattn/go-zglob v0.0.2-0.0.20190814121620-e3c945676326 // indirect
 	github.com/mitchellh/go-ps v1.0.0 // indirect
 	github.com/mitchellh/hashstructure v1.1.0 // indirect
 	github.com/moby/spdystream v0.5.1 // indirect
