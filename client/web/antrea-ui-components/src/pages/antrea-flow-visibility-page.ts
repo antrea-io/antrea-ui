@@ -64,6 +64,18 @@ export interface EdgeSelection {
  * this selection. */
 export type EdgeExtraRenderer = (selection: EdgeSelection) => Node | null;
 
+/** A filter to seed this page with on mount, e.g. when arriving here from the Overview landing
+ * page's "click a Pod/Service to see its flows" links. See the `initialFilter` property below.
+ * No viewMode: that is now the route itself (see index.tsx's flows/list and flows/map), so a
+ * deep link to the map picks it by linking to /flows/map directly rather than through this. */
+export interface FlowVisibilityInitialFilter {
+    namespaces?: string[];
+    podNames?: string[];
+    /** "namespace/name" form — run through destinationK8sServiceFilterKey by _onApplyFilters, which
+     * returns '' (dropping the entry) for a bare name. */
+    serviceNames?: string[];
+}
+
 /** A single column of the flow list table. */
 export interface FlowTableColumn {
     key: string;
@@ -515,6 +527,11 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
     // `@antrea/ui-plugin-sdk`). Never set by manifest/attribute, so `attribute: false`.
     @property({ attribute: false }) edgeExtraRenderers: EdgeExtraRenderer[] = [];
     @property({ attribute: false }) flowTableColumnsProcessors: FlowTableColumnsProcessor[] = [];
+    // Lets another page (e.g. the Overview landing page) deep-link here with a filter already
+    // applied — set once by the host from a query string, so `attribute: false` like the two
+    // properties above. Applied exactly once: see _applyInitialFilter().
+    @property({ attribute: false }) initialFilter?: FlowVisibilityInitialFilter;
+    private _initialFilterApplied = false;
 
     // Non-reactive refs
     private _store = new FlowStore();
@@ -545,8 +562,11 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
 
     protected override onSessionReady() {
         // No credential to wait for: the browser attaches the session cookie to the SSE fetch
-        // itself, so the stream can open as soon as the element is in the DOM.
-        this._startStream();
+        // itself, so the stream can open as soon as the element is in the DOM. A deep link's
+        // filter is applied first when React has already set it (it assigns properties before
+        // connecting the element), so the stream opens once, filtered, not unfiltered then again.
+        this._applyInitialFilter();
+        if (!this._client) this._startStream();
         // The flow stream itself is not filtered by this (see accessSummary()'s doc): this only
         // narrows the namespace filter menu, and fails open on failure.
         accessSummary()
@@ -566,6 +586,9 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
 
     override updated(changed: Map<string, unknown>) {
         super.updated(changed);
+        // Covers a host that sets initialFilter after the element has connected; see
+        // onSessionReady() for the usual case where it is already set by then.
+        if (changed.has('initialFilter')) this._applyInitialFilter();
         // Setup ResizeObserver once the DOM is ready
         if (changed.has('viewMode') && this.viewMode === 'map') {
             // The <svg> is always freshly created when switching into map view (render()
@@ -670,6 +693,17 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
     }
 
     // ── Filter actions ────────────────────────────────────────────────────────
+
+    // Applied at most once: re-applying on every later property churn would stomp on filter
+    // changes the user makes afterward on this page.
+    private _applyInitialFilter() {
+        if (!this.initialFilter || this._initialFilterApplied) return;
+        this._initialFilterApplied = true;
+        this._pendingNs = this.initialFilter.namespaces ?? [];
+        this._pendingPods = this.initialFilter.podNames ?? [];
+        this._pendingServices = this.initialFilter.serviceNames ?? [];
+        this._onApplyFilters();
+    }
 
     private _onApplyFilters() {
         this._nsOpen = false; this._podOpen = false; this._svcOpen = false;

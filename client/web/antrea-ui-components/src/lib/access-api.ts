@@ -51,7 +51,8 @@ export interface AccessSummary {
     namespaces: string[]
 }
 
-let inFlight: Promise<AccessSummary> | null = null;
+// Keyed by namespace; '' is the cluster-scoped summary.
+const inFlight = new Map<string, Promise<AccessSummary>>();
 
 /**
  * How long to wait for the access summary before aborting it. The whole shell gates on this one
@@ -66,28 +67,35 @@ const ACCESS_SUMMARY_TIMEOUT_MS = 10_000;
 /**
  * Fetches GET /api/v1/access-summary, memoized so the React shell and every Lit page share one
  * in-flight request. This is the single fetch: nothing else caches the result across calls.
+ *
+ * With a namespace, the rules are evaluated in that namespace, so grants that come from a
+ * RoleBinding there are included; without one they are evaluated cluster-scoped and only
+ * cluster-wide grants show. Each scope is memoized separately.
  */
-export function accessSummary(): Promise<AccessSummary> {
-    if (!inFlight) {
+export function accessSummary(namespace = ''): Promise<AccessSummary> {
+    let existing = inFlight.get(namespace);
+    if (!existing) {
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), ACCESS_SUMMARY_TIMEOUT_MS);
-        const p = apiFetchJSON<AccessSummary>('access-summary', { signal: controller.signal });
+        const path = namespace ? `access-summary?namespace=${encodeURIComponent(namespace)}` : 'access-summary';
+        const p = apiFetchJSON<AccessSummary>(path, { signal: controller.signal });
         // Two-arg then, not finally: finally returns a promise that re-rejects, which would be
         // unhandled on this branch. The rejection stays handled by the caller either way.
         p.then(() => clearTimeout(timer), () => clearTimeout(timer));
         // Memoize successes only. A rejection left in place would disable permission gating for
         // the whole session after one transient failure — silently, since every gate fails open.
         // The catch goes on a separate branch so the rejection stays handled by the caller.
-        p.catch(() => { if (inFlight === p) inFlight = null; });
-        inFlight = p;
+        p.catch(() => { if (inFlight.get(namespace) === p) inFlight.delete(namespace); });
+        inFlight.set(namespace, p);
+        existing = p;
     }
-    return inFlight;
+    return existing;
 }
 
 /** Clears the memoized fetch, so the next accessSummary() call re-evaluates. Call this on
  * logout/re-login: permissions from a previous session must never leak into a new one. */
 export function resetAccessSummary(): void {
-    inFlight = null;
+    inFlight.clear();
 }
 
 export interface ResourceQuery {
@@ -185,4 +193,30 @@ export function canViewFlows(s: AccessSummary | null): boolean {
 
 export function canViewSummary(s: AccessSummary | null): boolean {
     return can(s, GATE_AGENT_INFO_LIST) || can(s, GATE_CONTROLLER_INFO_GET) || canNonResource(s, GATE_FEATUREGATES);
+}
+
+// Gates for the Overview landing page's inventory tiles — one per Kubernetes resource type it
+// reads, following the same "one predicate per page" convention as the gates above.
+export const GATE_NAMESPACES_LIST = { group: '', resource: 'namespaces', verb: 'list' };
+export const GATE_PODS_LIST = { group: '', resource: 'pods', verb: 'list' };
+export const GATE_SERVICES_LIST = { group: '', resource: 'services', verb: 'list' };
+export const GATE_DEPLOYMENTS_LIST = { group: 'apps', resource: 'deployments', verb: 'list' };
+export const GATE_STATEFULSETS_LIST = { group: 'apps', resource: 'statefulsets', verb: 'list' };
+export const GATE_DAEMONSETS_LIST = { group: 'apps', resource: 'daemonsets', verb: 'list' };
+export const GATE_K8S_NETWORKPOLICIES_LIST = { group: 'networking.k8s.io', resource: 'networkpolicies', verb: 'list' };
+export const GATE_ANTREA_CLUSTERNETWORKPOLICIES_LIST = { group: 'crd.antrea.io', resource: 'clusternetworkpolicies', verb: 'list' };
+export const GATE_ANTREA_NETWORKPOLICIES_LIST = { group: 'crd.antrea.io', resource: 'networkpolicies', verb: 'list' };
+export const GATE_EVENTS_LIST = { group: '', resource: 'events', verb: 'list' };
+
+// GATE_NAMESPACES_LIST is deliberately not part of this predicate: a Namespaces-only grant (e.g. a
+// role copied from the old antrea-ui-admin-core) would otherwise send the user from a Summary page
+// they can use to an Overview with a single tile. A user with no cluster-wide grant at all but
+// RoleBindings in specific namespaces (a non-empty summary.namespaces) does get the page: the
+// Overview re-evaluates their access per selected namespace.
+export function canViewOverview(s: AccessSummary | null): boolean {
+    if (accessibleNamespaces(s)?.length) return true;
+    return can(s, GATE_PODS_LIST) || can(s, GATE_SERVICES_LIST) ||
+        can(s, GATE_DEPLOYMENTS_LIST) || can(s, GATE_STATEFULSETS_LIST) || can(s, GATE_DAEMONSETS_LIST) ||
+        can(s, GATE_K8S_NETWORKPOLICIES_LIST) || can(s, GATE_ANTREA_CLUSTERNETWORKPOLICIES_LIST) ||
+        can(s, GATE_ANTREA_NETWORKPOLICIES_LIST) || can(s, GATE_EVENTS_LIST);
 }
