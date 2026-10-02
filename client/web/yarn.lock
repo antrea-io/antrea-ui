@@ -12,7 +12,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@antrea/ui-components@npm:0.1.0, @antrea/ui-components@workspace:*, @antrea/ui-components@workspace:antrea-ui-components":
+"@antrea/ui-components@workspace:*, @antrea/ui-components@workspace:antrea-ui-components":
   version: 0.0.0-use.local
   resolution: "@antrea/ui-components@workspace:antrea-ui-components"
   dependencies:
@@ -38,10 +38,10 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "@antrea/ui-plugin-sdk@workspace:antrea-ui-plugin-sdk"
   dependencies:
-    "@antrea/ui-components": "npm:0.1.0"
+    "@antrea/ui-components": "workspace:*"
     typescript: "npm:^6.0.0"
   peerDependencies:
-    "@antrea/ui-components": 0.1.0
+    "@antrea/ui-components": "workspace:*"
   languageName: unknown
   linkType: soft
 
