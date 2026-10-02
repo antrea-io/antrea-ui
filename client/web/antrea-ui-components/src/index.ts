@@ -34,7 +34,7 @@ export {
     apiFetchAppSettings,
     sessionIdentity,
 } from './lib/auth-api.js';
-export { APIError, setApiBase, getApiBase, apiFetch, apiFetchJSON } from './lib/api.js';
+export { APIError, setApiBase, getApiBase } from './lib/api.js';
 export { navigateTo } from './lib/navigation.js';
 export type { AccessSummary, ResourceRule, NonResourceRule, SubjectRules, ResourceQuery } from './lib/access-api.js';
 export {

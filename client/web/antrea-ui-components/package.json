@@ -11,6 +11,10 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
+    "./api": {
+      "types": "./dist/lib/api.d.ts",
+      "import": "./dist/api.js"
+    },
     "./src/tokens.css": "./src/tokens.css"
   },
   "files": [
