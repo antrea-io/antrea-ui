@@ -513,9 +513,11 @@ there's no host-provided import map for a runtime `import()`.
 The host passes your element no credential, and there is none to ask for:
 requests to the Antrea UI backend authenticate with the `antrea-ui-session`
 cookie the browser already holds, so `credentials: 'include'` is the whole of
-it. (`apiFetch`/`apiFetchJSON` from `@antrea/ui-components` do this for you,
+it. (`apiFetch`/`apiFetchJSON` from `@antrea/ui-components/api` do this for you,
 along with turning a non-2xx response into an `APIError`, if you would rather
-not hand-roll it.) Never send an `Authorization` header of your own.
+not hand-roll it. Import them from that subpath, not the package root: the
+root registers every custom element, which throws in the host, where those
+tags are already defined.) Never send an `Authorization` header of your own.
 
 `plugins/examples/pod-counter/src/index.ts`:
 
@@ -579,11 +581,14 @@ always valid, it just isn't always nested.
 
 `@antrea/ui-plugin-sdk` is a devDependency resolved from this repo's
 workspace (`file:../../../client/web/antrea-ui-plugin-sdk` in
-`package.json`) — build it once before building any example plugin:
+`package.json`) — build it once before building any example plugin. Its
+types resolve from `@antrea/ui-components`' built `dist/`, so build that first:
 
 ```bash
-cd client/web/antrea-ui-plugin-sdk && yarn build
-cd ../../../plugins/examples/pod-counter
+cd client/web && yarn install
+yarn workspace @antrea/ui-components build
+yarn workspace @antrea/ui-plugin-sdk build
+cd ../../plugins/examples/pod-counter
 npm install && npm run build   # vite build, copies manifest.json, zips everything else into bundle.zip
 ```
 
