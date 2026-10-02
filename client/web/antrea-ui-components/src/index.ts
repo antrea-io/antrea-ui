@@ -42,12 +42,11 @@ export {
     resetAccessSummary,
     can,
     canNonResource,
-    accessibleNamespaces,
     canViewSummary,
-    canViewFlows,
     GATE_TRACEFLOW_CREATE,
     GATE_AGENT_INFO_LIST,
     GATE_CONTROLLER_INFO_GET,
     GATE_FEATUREGATES,
-    GATE_FLOWS_WATCH,
 } from './lib/access-api.js';
+export type { FlowNamespaceAccess, FlowNamespacesResponse } from './lib/flow-namespaces-api.js';
+export { flowNamespaces, observableNamespaces, canViewFlows } from './lib/flow-namespaces-api.js';

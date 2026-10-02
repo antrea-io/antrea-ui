@@ -202,3 +202,39 @@ type FlowStreamErrorEvent struct {
 	// frontend uses this to decide whether to keep reconnecting or to stop and show Message.
 	Retryable bool `json:"retryable"`
 }
+
+// FlowNamespaceAccess is one candidate Namespace and whether the user may observe flows in it.
+//
+// Both observable and non-observable candidates are reported, so the selector can show a
+// Namespace it knows about as unavailable rather than silently omitting it — the difference
+// between "you cannot observe flows there" and "that Namespace does not exist" is the one a user
+// asks about.
+type FlowNamespaceAccess struct {
+	Namespace string `json:"namespace"`
+	// CanObserve is the verdict of a SelfSubjectAccessReview for watch on
+	// flows.observability.antrea.io in this Namespace. watch, not list: the flow stream always
+	// follows, and the Flow Aggregator grants list alone as history-only access, so a
+	// list-only Namespace would be offered here and then fail to stream.
+	CanObserve bool `json:"canObserve"`
+}
+
+// FlowNamespacesResponse answers "which Namespaces may I observe flows in", which Kubernetes has
+// no reverse lookup for: the Flow Aggregator requires every stream to name its scope, so the
+// options have to be enumerated. Like AccessSummary this is a rendering hint — the Flow
+// Aggregator authorizes every stream itself.
+type FlowNamespacesResponse struct {
+	// Namespaces is the candidate list with a verdict for each, sorted by name. Never null. An
+	// empty list is a real answer: this user is a subject of no RoleBinding that would put a
+	// Namespace within reach.
+	Namespaces []FlowNamespaceAccess `json:"namespaces"`
+	// ClusterWide is the verdict of one cluster-scoped review. It drives whether the selector
+	// offers the cluster-wide option, which is the only scope in which nothing is redacted.
+	ClusterWide bool `json:"clusterWide"`
+	// Incomplete mirrors SubjectRulesReviewStatus.Incomplete: the candidate list is not
+	// exhaustive, so a Namespace's absence from it does not mean the user cannot observe
+	// flows there. It is set whenever the candidates were derived from RoleBinding subjects
+	// rather than enumerated, and when the candidate list had to be truncated. Discovering
+	// Namespaces a user may observe but may not list is not answerable; this is how they are
+	// told.
+	Incomplete bool `json:"incomplete"`
+}

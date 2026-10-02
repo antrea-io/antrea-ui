@@ -118,7 +118,11 @@ rules:
     resources:
       - flows
     # watch, not just list: the SSE stream always sets Follow, and upstream grants list alone as
-    # history-only access.
+    # history-only access. It also decides how much of a peer outside the requested scope is
+    # disclosed: the Flow Aggregator shows a peer in full when the client holds the stream's own
+    # verb on flows in the peer's Namespace, so a stream scoped to one Namespace shows what a
+    # cluster-wide one would. Holding only list would leave those peers redacted on every stream
+    # this UI opens.
     verbs:
       - list
       - watch

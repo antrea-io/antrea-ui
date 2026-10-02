@@ -18,9 +18,7 @@ import {
     resetAccessSummary,
     can,
     canNonResource,
-    accessibleNamespaces,
     canViewSummary,
-    canViewFlows,
     GATE_CONTROLLER_INFO_GET,
     type AccessSummary,
     type SubjectRules,
@@ -252,31 +250,6 @@ describe('canNonResource', () => {
     });
 });
 
-describe('accessibleNamespaces', () => {
-    test('null for null summary', () => {
-        expect(accessibleNamespaces(null)).toBeNull();
-    });
-
-    test('null for incomplete rules', () => {
-        expect(accessibleNamespaces(summary({ rules: rules({ incomplete: true }) }))).toBeNull();
-    });
-
-    test('null for ["*"]', () => {
-        expect(accessibleNamespaces(summary({ namespaces: ['*'] }))).toBeNull();
-    });
-
-    test('the concrete list otherwise', () => {
-        expect(accessibleNamespaces(summary({ namespaces: ['ns-a', 'ns-b'] }))).toEqual(['ns-a', 'ns-b']);
-    });
-
-    test('null, not a throw, when namespaces is null', () => {
-        // An older server sends "namespaces": null when it could not resolve the list, and
-        // does not set rules.incomplete for it, so the early return above does not cover this.
-        const s = { ...summary(), namespaces: null } as unknown as AccessSummary;
-        expect(accessibleNamespaces(s)).toBeNull();
-    });
-});
-
 describe('canViewSummary', () => {
     test('true if any of the three summary-card gates is granted', () => {
         const agentInfo = summary({ rules: rules({ resourceRules: [{ apiGroups: ['crd.antrea.io'], resources: ['antreaagentinfos'], verbs: ['list'] }] }) });
@@ -293,26 +266,3 @@ describe('canViewSummary', () => {
     });
 });
 
-describe('canViewFlows', () => {
-    const flowsWatch = rules({ resourceRules: [{ apiGroups: ['observability.antrea.io'], resources: ['flows'], verbs: ['watch'] }] });
-
-    test('true on a cluster-wide watch grant', () => {
-        expect(canViewFlows(summary({ rules: flowsWatch }))).toBe(true);
-    });
-
-    test('false without the watch verb', () => {
-        const listOnly = rules({ resourceRules: [{ apiGroups: ['observability.antrea.io'], resources: ['flows'], verbs: ['list'] }] });
-        expect(canViewFlows(summary({ rules: listOnly }))).toBe(false);
-        expect(canViewFlows(summary())).toBe(false);
-    });
-
-    test('false on a namespace-scoped summary, however it answers', () => {
-        // The same grant that passes cluster-wide authorizes nothing the page can ask for when
-        // it comes from a namespaced Role, so the scope of the summary decides on its own.
-        expect(canViewFlows(summary({ rules: flowsWatch, namespace: 'ns-a' }))).toBe(false);
-    });
-
-    test('fails open on a null summary, like the can() gates', () => {
-        expect(canViewFlows(null)).toBe(true);
-    });
-});
