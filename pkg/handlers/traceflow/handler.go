@@ -27,7 +27,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/dynamic"
-	"k8s.io/utils/clock"
 )
 
 const (
@@ -53,19 +52,13 @@ type requestsHandler struct {
 	// flight and so has to act as antrea-ui-admin. User-initiated operations take their client
 	// as an argument instead.
 	gcClient dynamic.Interface
-	clock    clock.Clock
-}
-
-func newRequestsHandlerWithClock(logger logr.Logger, gcClient dynamic.Interface, clock clock.Clock) *requestsHandler {
-	return &requestsHandler{
-		logger:   logger,
-		gcClient: gcClient,
-		clock:    clock,
-	}
 }
 
 func NewRequestsHandler(logger logr.Logger, gcClient dynamic.Interface) *requestsHandler {
-	return newRequestsHandlerWithClock(logger, gcClient, &clock.RealClock{})
+	return &requestsHandler{
+		logger:   logger,
+		gcClient: gcClient,
+	}
 }
 
 func (h *requestsHandler) Run(stopCh <-chan struct{}) {
@@ -138,7 +131,7 @@ func (h *requestsHandler) doGC(ctx context.Context) {
 		return
 	}
 	expiredTraceflows := []string{}
-	now := h.clock.Now()
+	now := time.Now()
 	for idx := range list.Items {
 		tf := &list.Items[idx]
 		creationTimestamp := tf.GetCreationTimestamp()
@@ -154,8 +147,5 @@ func (h *requestsHandler) doGC(ctx context.Context) {
 }
 
 func (h *requestsHandler) runGC(stopCh <-chan struct{}) {
-	ctx := wait.ContextForChannel(stopCh)
-	//lint:ignore SA1019 apimachinery doesn't provide a correct alternative yet
-	go wait.BackoffUntil(func() { h.doGC(ctx) }, wait.NewJitteredBackoffManager(gcPeriod, 0.0, h.clock), true, stopCh)
-	<-stopCh
+	wait.UntilWithContext(wait.ContextForChannel(stopCh), h.doGC, gcPeriod)
 }
