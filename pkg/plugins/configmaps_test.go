@@ -413,10 +413,7 @@ func TestConfigMapQueueRetriesFailureUntilItSucceeds(t *testing.T) {
 		broken := invalidConfigMap("pod-counter-cm")
 		indexer := newTestIndexer(t, broken)
 		queue := workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[string]())
-		defer func() {
-			queue.ShutDown()
-			synctest.Wait()
-		}()
+		defer queue.ShutDown()
 		go r.runConfigMapWorker(indexer, queue)
 
 		key := configMapKey(t, broken)
@@ -451,10 +448,7 @@ func TestConfigMapQueueGivesUpAfterMaxRetries(t *testing.T) {
 		broken := invalidConfigMap("pod-counter-cm")
 		indexer := newTestIndexer(t, broken)
 		queue := workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[string]())
-		defer func() {
-			queue.ShutDown()
-			synctest.Wait()
-		}()
+		defer queue.ShutDown()
 		go r.runConfigMapWorker(indexer, queue)
 
 		key := configMapKey(t, broken)
