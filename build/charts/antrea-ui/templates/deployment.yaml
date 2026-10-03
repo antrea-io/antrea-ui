@@ -121,6 +121,12 @@ spec:
               mountPath: /app/server-conf.yaml
               subPath: server.conf
               readOnly: true
+            - name: backend-logs
+              mountPath: /var/log/antrea-ui
+            {{- if .Values.supportBundle.enabled }}
+            - name: supportbundles
+              mountPath: /var/run/antrea-ui/supportbundles
+            {{- end }}
             {{- if .Values.plugins.signature.enabled }}
             # One directory per trusted key, not a subPath: a subPath mount is resolved once at
             # container start, so a rotated key ConfigMap would never be reflected in the
@@ -154,6 +160,18 @@ spec:
         - name: server-conf
           configMap:
             name: antrea-ui-backend
+        # Room for the current log file, the rotated ones (compressed, so this is generous), and
+        # one rotated file before it is compressed.
+        - name: backend-logs
+          emptyDir:
+            sizeLimit: {{ mul .Values.backend.logs.maxSizeMB (add .Values.backend.logs.maxBackups 2) }}Mi
+        {{- if .Values.supportBundle.enabled }}
+        # The backend keeps the bundles within maxTotalBytes; the slack covers filesystem
+        # overhead.
+        - name: supportbundles
+          emptyDir:
+            sizeLimit: {{ add (int64 .Values.supportBundle.maxTotalBytes) (div (int64 .Values.supportBundle.maxTotalBytes) 10) }}
+        {{- end }}
         {{- if .Values.plugins.signature.enabled }}
         {{- include "antrea-ui.validatePluginTrustedKeys" . }}
         # Not created by this chart - a trust anchor doesn't belong in values.yaml. See

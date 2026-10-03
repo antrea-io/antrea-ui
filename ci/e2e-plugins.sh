@@ -22,6 +22,10 @@
 #   - pod-counter:          signed, and expected to load (TestPluginLoading)
 #   - no-signature-plugin:  structurally valid but carrying no manifest.json.asc, and expected to
 #                           be rejected (TestPluginWithoutSignatureIsRejected)
+#   - supportbundle-plugin: pod-counter's bundle under another name, signed, with a manifest
+#                           declaring the support bundle source that ci/e2e-supportbundle.sh
+#                           deploys as an APIService (TestSupportBundle). Its frontend
+#                           duplicates pod-counter's in a browser, which no test opens.
 #
 # The signing key is generated here into a throwaway GNUPGHOME and never leaves the machine; no
 # key material is committed.
@@ -48,6 +52,11 @@ PLUGIN_DIST="${ROOT_DIR}/plugins/examples/pod-counter/dist"
 # shells) and still find each other's output.
 WORK_DIR="/tmp/antrea-ui-e2e-plugins"
 PUBLIC_KEY="${WORK_DIR}/public-key.asc"
+SUPPORTBUNDLE_PLUGIN_DIR="${WORK_DIR}/supportbundle-plugin"
+# Matches supportBundlePluginName in test/e2e/supportbundle_test.go.
+SUPPORTBUNDLE_PLUGIN_NAME="supportbundle-plugin"
+# The APIService ci/e2e-supportbundle.sh registers.
+SUPPORTBUNDLE_PLUGIN_PATH="/apis/supportbundle.e2e.antrea.io/v1alpha1"
 export GNUPGHOME="${WORK_DIR}/gnupg"
 
 # The namespace Antrea UI is installed into, where the trusted key ConfigMap has to be (the backend
@@ -89,6 +98,15 @@ function sign() {
     # Writes bundle.zip's digest into manifest.json and only then signs it - that order is the
     # whole reason this is a script rather than two commands (see docs/plugins.md).
     "${ROOT_DIR}/hack/sign-plugin.sh" "${PLUGIN_DIST}"
+
+    log "Signing ${SUPPORTBUNDLE_PLUGIN_NAME}"
+    rm -rf "${SUPPORTBUNDLE_PLUGIN_DIR}"
+    mkdir -p "${SUPPORTBUNDLE_PLUGIN_DIR}"
+    cp "${PLUGIN_DIST}/bundle.zip" "${SUPPORTBUNDLE_PLUGIN_DIR}/bundle.zip"
+    jq --arg name "${SUPPORTBUNDLE_PLUGIN_NAME}" --arg path "${SUPPORTBUNDLE_PLUGIN_PATH}" \
+        '.name = $name | .supportBundle = {apiServer: {path: $path}}' \
+        "${PLUGIN_DIST}/manifest.json" > "${SUPPORTBUNDLE_PLUGIN_DIR}/manifest.json"
+    "${ROOT_DIR}/hack/sign-plugin.sh" "${SUPPORTBUNDLE_PLUGIN_DIR}"
 }
 
 function configure_cluster() {
@@ -134,6 +152,13 @@ function create_plugins() {
     kubectl label configmap pod-counter-plugin --namespace "${PLUGINS_NAMESPACE}" ui.antrea.io/plugin=true
     # Grants the plugin's own RBAC; without it the plugin's page loads but its K8s call gets a 403.
     kubectl apply -f "${ROOT_DIR}/plugins/examples/pod-counter/clusterrole.yaml"
+
+    log "Creating the ${SUPPORTBUNDLE_PLUGIN_NAME} ConfigMap (signed, declares a support bundle source)"
+    kubectl create configmap "${SUPPORTBUNDLE_PLUGIN_NAME}" --namespace "${PLUGINS_NAMESPACE}" \
+        --from-file="${SUPPORTBUNDLE_PLUGIN_DIR}/bundle.zip" \
+        --from-file="${SUPPORTBUNDLE_PLUGIN_DIR}/manifest.json" \
+        --from-file="${SUPPORTBUNDLE_PLUGIN_DIR}/manifest.json.asc"
+    kubectl label configmap "${SUPPORTBUNDLE_PLUGIN_NAME}" --namespace "${PLUGINS_NAMESPACE}" ui.antrea.io/plugin=true
 }
 
 function clean() {

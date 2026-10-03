@@ -15,7 +15,9 @@
 package server
 
 import (
+	"crypto/x509"
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -24,6 +26,9 @@ import (
 	"github.com/spf13/viper"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/validation"
+
+	apisv1 "antrea.io/antrea-ui/apis/v1"
+	"antrea.io/antrea-ui/pkg/supportbundle/spec"
 )
 
 const (
@@ -39,6 +44,19 @@ const (
 	DefaultMaxDirectoryPlugins = 10
 
 	DefaultMaxBundleBytes = 10 * 1024 * 1024 // 10MiB
+
+	DefaultLogDirectory  = "/var/log/antrea-ui"
+	DefaultLogMaxSizeMB  = 10
+	DefaultLogMaxBackups = 5
+
+	DefaultMaxSupportBundlesPerHour       = 100
+	DefaultSupportBundleDirectory         = "/var/run/antrea-ui/supportbundles"
+	DefaultSupportBundleMaxBundles        = 5
+	DefaultSupportBundleMaxConcurrent     = 2
+	DefaultSupportBundleMaxTotalBytes     = 1024 * 1024 * 1024 // 1GiB
+	DefaultSupportBundleMaxSourceBytes    = 256 * 1024 * 1024  // 256MiB
+	DefaultSupportBundleTTL               = 6 * time.Hour
+	DefaultSupportBundleCollectionTimeout = 10 * time.Minute
 )
 
 type FlowAggregatorConfig struct {
@@ -69,12 +87,76 @@ type Config struct {
 	Session        SessionConfig
 	FlowAggregator FlowAggregatorConfig
 	Limits         struct {
-		MaxLoginsPerSecond   int
-		MaxTraceflowsPerHour int
+		MaxLoginsPerSecond       int
+		MaxTraceflowsPerHour     int
+		MaxSupportBundlesPerHour int
 	}
 	LogVerbosity    int
+	Log             LogConfig
 	AntreaNamespace string
 	Plugins         PluginsConfig
+	SupportBundle   SupportBundleConfig
+}
+
+// LogConfig configures the copy of the backend's logs written to disk, which is what a support
+// bundle collects. Logs are always written to stderr as well.
+type LogConfig struct {
+	// Directory is where the log file (and its rotated, compressed predecessors) are written.
+	// Empty disables file logging, and support bundles then carry no backend logs.
+	Directory string
+	// MaxSizeMB is the size at which the log file is rotated.
+	MaxSizeMB int
+	// MaxBackups is how many rotated files are kept.
+	MaxBackups int
+}
+
+// SupportBundleConfig configures the support bundle API (see docs/supportbundle.md).
+type SupportBundleConfig struct {
+	Enabled bool
+	// Directory holds the bundles, which are restored when the container restarts. Entries not
+	// named like a bundle are left alone.
+	Directory string
+	// MaxBundles caps how many bundles are retained, in any state.
+	MaxBundles int
+	// MaxConcurrent caps how many bundles may be collecting at once.
+	MaxConcurrent int
+	// MaxTotalBytes is the byte budget shared by every bundle on disk, including the files of
+	// bundles still being collected.
+	MaxTotalBytes int64
+	// MaxSourceBytes caps the size of the tarball downloaded from any one source.
+	MaxSourceBytes int64
+	// TTL is how long a bundle is kept after it is created.
+	TTL time.Duration
+	// CollectionTimeout bounds the collection of one bundle, sources included.
+	CollectionTimeout time.Duration
+	// ExtraSources are secondary sources configured by the operator, collected alongside the
+	// ones plugins declare.
+	ExtraSources []SupportBundleExtraSource
+}
+
+// SupportBundleExtraSource is a support bundle source configured by the operator. Exactly one of
+// HTTPS and APIServer must be set.
+type SupportBundleExtraSource struct {
+	// Name identifies the source, and names its tarball inside the bundle. Must be a DNS-1123
+	// label, unique within ExtraSources.
+	Name      string
+	HTTPS     *SupportBundleHTTPSSource
+	APIServer *apisv1.APIServerSourceSpec
+}
+
+// SupportBundleHTTPSSource is a source reached directly over HTTPS. Unlike the apiserver variant,
+// it is not available to plugins: the URL receives an antrea-ui-admin token (with audience
+// supportbundle.ui.antrea.io/<name>), so only the operator may choose where it points.
+type SupportBundleHTTPSSource struct {
+	// URL is the base URL of the source; antrea-ui appends /supportbundle to it.
+	URL string
+	// CAData is a PEM bundle used to verify the server certificate. Empty means the system
+	// trust store.
+	CAData string
+	// ServerName overrides the name used to verify the server certificate.
+	ServerName string
+	// InsecureSkipVerify disables server certificate verification, for development only.
+	InsecureSkipVerify bool
 }
 
 type PluginsConfig struct {
@@ -219,6 +301,16 @@ func (a *AuthConfig) anyModeEnabled() bool {
 	return a.Basic.Enabled || a.OIDC.Enabled || a.Kubeconfig.Enabled || a.Token.Enabled
 }
 
+// Redacted returns a copy of c that is safe to log or to ship in a support bundle: every secret is
+// replaced with a placeholder.
+func (c *Config) Redacted() Config {
+	r := *c
+	if r.Auth.OIDC.ClientSecret != "" {
+		r.Auth.OIDC.ClientSecret = "<redacted>"
+	}
+	return r
+}
+
 func validateConfig(config *Config) error {
 	if config.LogVerbosity < 0 || config.LogVerbosity >= 128 {
 		return fmt.Errorf("invalid verbosity level %d: it should be >= 0 and < 128", config.LogVerbosity)
@@ -279,6 +371,91 @@ func validateConfig(config *Config) error {
 		}
 	}
 
+	if config.Log.Directory != "" {
+		if config.Log.MaxSizeMB <= 0 {
+			return fmt.Errorf("log.maxSizeMB must be positive")
+		}
+		// lumberjack keeps every rotated file when this is 0, which would outgrow the volume
+		// sized for a bounded number of them.
+		if config.Log.MaxBackups <= 0 {
+			return fmt.Errorf("log.maxBackups must be positive")
+		}
+	}
+
+	if err := validateSupportBundleConfig(&config.SupportBundle); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func validateSupportBundleConfig(c *SupportBundleConfig) error {
+	if !c.Enabled {
+		return nil
+	}
+	if c.Directory == "" {
+		return fmt.Errorf("supportBundle.directory is required")
+	}
+	if c.MaxBundles <= 0 {
+		return fmt.Errorf("supportBundle.maxBundles must be positive")
+	}
+	if c.MaxConcurrent <= 0 {
+		return fmt.Errorf("supportBundle.maxConcurrent must be positive")
+	}
+	if c.MaxTotalBytes <= 0 {
+		return fmt.Errorf("supportBundle.maxTotalBytes must be positive")
+	}
+	if c.MaxSourceBytes <= 0 {
+		return fmt.Errorf("supportBundle.maxSourceBytes must be positive")
+	}
+	// A source tarball is charged twice while it is copied into the bundle tarball.
+	if c.MaxSourceBytes > c.MaxTotalBytes/2 {
+		return fmt.Errorf("supportBundle.maxSourceBytes must be <= half of supportBundle.maxTotalBytes")
+	}
+	if c.TTL <= 0 {
+		return fmt.Errorf("supportBundle.ttl must be positive")
+	}
+	if c.CollectionTimeout <= 0 {
+		return fmt.Errorf("supportBundle.collectionTimeout must be positive")
+	}
+	// A bundle that expires while it is still being collected is removed, collection included.
+	if c.TTL <= c.CollectionTimeout {
+		return fmt.Errorf("supportBundle.ttl must be greater than supportBundle.collectionTimeout")
+	}
+	names := sets.New[string]()
+	for i, source := range c.ExtraSources {
+		if errs := validation.IsDNS1123Label(source.Name); len(errs) > 0 {
+			return fmt.Errorf("supportBundle.extraSources[%d].name %q is invalid: %s", i, source.Name, strings.Join(errs, "; "))
+		}
+		if names.Has(source.Name) {
+			return fmt.Errorf("supportBundle.extraSources[%d].name %q is not unique", i, source.Name)
+		}
+		names.Insert(source.Name)
+		if (source.HTTPS == nil) == (source.APIServer == nil) {
+			return fmt.Errorf("supportBundle.extraSources[%d] (%s) must set exactly one of https and apiServer", i, source.Name)
+		}
+		if source.APIServer != nil {
+			if err := spec.ValidateAPIServerPath(source.APIServer.Path); err != nil {
+				return fmt.Errorf("supportBundle.extraSources[%d] (%s) has an invalid apiServer.path: %w", i, source.Name, err)
+			}
+			continue
+		}
+		u, err := url.Parse(source.HTTPS.URL)
+		if err != nil {
+			return fmt.Errorf("supportBundle.extraSources[%d] (%s) has an invalid https.url: %w", i, source.Name, err)
+		}
+		if u.Scheme != "https" || u.Host == "" {
+			return fmt.Errorf("supportBundle.extraSources[%d] (%s) https.url must be an absolute https:// URL", i, source.Name)
+		}
+		// The URL is a base that paths are appended to: anything that would not survive that,
+		// or that would carry a credential of its own, is a mistake.
+		if u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+			return fmt.Errorf("supportBundle.extraSources[%d] (%s) https.url must not have user info, a query or a fragment", i, source.Name)
+		}
+		if source.HTTPS.CAData != "" && !x509.NewCertPool().AppendCertsFromPEM([]byte(source.HTTPS.CAData)) {
+			return fmt.Errorf("supportBundle.extraSources[%d] (%s) https.caData holds no valid PEM certificate", i, source.Name)
+		}
+	}
 	return nil
 }
 
@@ -314,10 +491,25 @@ func LoadConfig() (*Config, error) {
 	// A path, not a secret, but still machine-specific rather than something to check into a
 	// shared config file - env var is the convenient way to point a local dev server at it.
 	v.MustBindEnv("plugins.directory", "ANTREA_UI_PLUGINS_DIRECTORY")
+	// Same for these two, whose in-cluster defaults are usually not writable on a dev machine.
+	v.MustBindEnv("log.directory", "ANTREA_UI_LOG_DIRECTORY")
+	v.MustBindEnv("supportBundle.directory", "ANTREA_UI_SUPPORTBUNDLE_DIRECTORY")
 
 	// You can set defaults for configuration parameters here
 	v.SetDefault("limits.maxLoginsPerSecond", DefaultMaxLoginsPerSecond)
 	v.SetDefault("limits.maxTraceflowsPerHour", DefaultMaxTraceflowsPerHour)
+	v.SetDefault("limits.maxSupportBundlesPerHour", DefaultMaxSupportBundlesPerHour)
+	v.SetDefault("log.directory", DefaultLogDirectory)
+	v.SetDefault("log.maxSizeMB", DefaultLogMaxSizeMB)
+	v.SetDefault("log.maxBackups", DefaultLogMaxBackups)
+	v.SetDefault("supportBundle.enabled", true)
+	v.SetDefault("supportBundle.directory", DefaultSupportBundleDirectory)
+	v.SetDefault("supportBundle.maxBundles", DefaultSupportBundleMaxBundles)
+	v.SetDefault("supportBundle.maxConcurrent", DefaultSupportBundleMaxConcurrent)
+	v.SetDefault("supportBundle.maxTotalBytes", DefaultSupportBundleMaxTotalBytes)
+	v.SetDefault("supportBundle.maxSourceBytes", DefaultSupportBundleMaxSourceBytes)
+	v.SetDefault("supportBundle.ttl", DefaultSupportBundleTTL)
+	v.SetDefault("supportBundle.collectionTimeout", DefaultSupportBundleCollectionTimeout)
 	v.SetDefault("auth.cookieSecure", true)
 	v.SetDefault("auth.basic.enabled", true)
 	v.SetDefault("auth.oidc.enabled", false)

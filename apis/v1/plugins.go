@@ -45,6 +45,12 @@ type PluginManifest struct {
 	// through this digest. Required when plugins.signature.trustedKeys is non-empty; optional
 	// otherwise, but always verified when present.
 	BundleSha256 string `json:"bundleSha256,omitempty"`
+
+	// SupportBundle optionally declares a source of diagnostics that antrea-ui collects into its
+	// own support bundle (see docs/supportbundle.md). A declaration with no variant this backend
+	// recognizes does not reject the manifest: the source is skipped, and the support bundle
+	// records why.
+	SupportBundle *SupportBundleSourceSpec `json:"supportBundle,omitempty"`
 }
 
 // PluginFederation is the plugin's federation remote entry file, plus the
