@@ -16,26 +16,26 @@ package traceflow
 
 import (
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/go-logr/logr/testr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 	k8stesting "k8s.io/client-go/testing"
-	"k8s.io/utils/clock"
-	clocktesting "k8s.io/utils/clock/testing"
 )
 
-func setup(t *testing.T, clock clock.Clock) (*requestsHandler, *dynamicfake.FakeDynamicClient) {
+func setup(t *testing.T) (*requestsHandler, *dynamicfake.FakeDynamicClient) {
 	logger := testr.New(t)
 	scheme := runtime.NewScheme()
 	scheme.AddKnownTypeWithName(traceflowGVR.GroupVersion().WithKind("TraceflowList"), &unstructured.UnstructuredList{})
 	k8sClient := dynamicfake.NewSimpleDynamicClient(scheme)
-	handler := newRequestsHandlerWithClock(logger, k8sClient, clock)
+	handler := NewRequestsHandler(logger, k8sClient)
 	return handler, k8sClient
 }
 
@@ -75,7 +75,7 @@ func TestRequestsHandler(t *testing.T) {
 	for _, tc := range testCases {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			h, k8sClient := setup(t, &clock.RealClock{})
+			h, k8sClient := setup(t)
 			request := &Request{
 				Object: getTraceflow(),
 			}
@@ -113,39 +113,37 @@ func TestRequestsHandler(t *testing.T) {
 }
 
 func TestRequestsHandlerGC(t *testing.T) {
-	ctx := t.Context()
-	now := time.Now()
-	clock := clocktesting.NewFakeClock(now)
-	h, k8sClient := setup(t, clock)
-	k8sClient.PrependReactor("create", "traceflows", func(action k8stesting.Action) (bool, runtime.Object, error) {
-		tf := action.(k8stesting.CreateAction).GetObject().(*unstructured.Unstructured)
-		tf.SetCreationTimestamp(metav1.NewTime(clock.Now()))
-		return false, tf, nil
+	synctest.Test(t, func(t *testing.T) {
+		ctx := t.Context()
+		h, k8sClient := setup(t)
+		// The fake client does not set the creation timestamp, which is what GC relies on.
+		k8sClient.PrependReactor("create", "traceflows", func(action k8stesting.Action) (bool, runtime.Object, error) {
+			tf := action.(k8stesting.CreateAction).GetObject().(*unstructured.Unstructured)
+			tf.SetCreationTimestamp(metav1.NewTime(time.Now()))
+			return false, tf, nil
+		})
+		stopCh := make(chan struct{})
+		defer close(stopCh)
+		go h.Run(stopCh)
+
+		request := &Request{
+			Object: getTraceflow(),
+		}
+
+		requestID, err := h.CreateRequest(ctx, k8sClient, request)
+		tfName := requestID
+		require.NoError(t, err)
+
+		// A GC run happens at exactly traceflowExpiryTimeout, and must not delete the Traceflow
+		// yet: it only expires once it is strictly older than that.
+		time.Sleep(traceflowExpiryTimeout)
+		synctest.Wait()
+		_, err = k8sClient.Resource(traceflowGVR).Get(ctx, tfName, metav1.GetOptions{})
+		require.NoError(t, err, "Traceflow should not be deleted by GC before it expires")
+
+		time.Sleep(gcPeriod)
+		synctest.Wait()
+		_, err = k8sClient.Resource(traceflowGVR).Get(ctx, tfName, metav1.GetOptions{})
+		assert.True(t, apierrors.IsNotFound(err), "Traceflow should be deleted by GC")
 	})
-	stopCh := make(chan struct{})
-	defer close(stopCh)
-	go h.Run(stopCh)
-
-	request := &Request{
-		Object: getTraceflow(),
-	}
-
-	requestID, err := h.CreateRequest(ctx, k8sClient, request)
-	tfName := requestID
-	require.NoError(t, err)
-
-	_, err = k8sClient.Resource(traceflowGVR).Get(ctx, tfName, metav1.GetOptions{})
-	require.NoError(t, err)
-
-	clock.SetTime(now.Add(traceflowExpiryTimeout - 1*time.Minute))
-	assert.Never(t, func() bool {
-		_, err := k8sClient.Resource(traceflowGVR).Get(ctx, tfName, metav1.GetOptions{})
-		return err != nil
-	}, 1*time.Second, 100*time.Millisecond)
-
-	clock.SetTime(now.Add(traceflowExpiryTimeout + 1*time.Minute))
-	assert.Eventually(t, func() bool {
-		_, err := k8sClient.Resource(traceflowGVR).Get(ctx, tfName, metav1.GetOptions{})
-		return err != nil
-	}, 1*time.Second, 100*time.Millisecond, "Traceflow should be deleted by GC")
 }
