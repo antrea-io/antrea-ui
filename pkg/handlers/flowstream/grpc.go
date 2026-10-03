@@ -35,6 +35,7 @@ import (
 	apisv1 "antrea.io/antrea-ui/apis/v1"
 	"antrea.io/antrea-ui/pkg/auth/session"
 	flowpb "antrea.io/antrea-ui/pkg/flowpb"
+	"antrea.io/antrea-ui/pkg/k8s"
 )
 
 // flowStreamConnKey is the session transport/connection cache key for a per-credential
@@ -144,7 +145,7 @@ type GRPCFlowStreamSubscriber struct {
 	conn   *grpc.ClientConn
 	// adminTokenSource mints the bearer token used for admin-password (KindImpersonate)
 	// sessions. Nil disables flow streaming for that login mode.
-	adminTokenSource *AdminTokenSource
+	adminTokenSource *k8s.AdminTokenSource
 }
 
 // GRPCConfig holds the connection parameters for the FlowAggregator gRPC server.
@@ -156,7 +157,7 @@ type GRPCConfig struct {
 	TLSConfig *tls.Config
 	// AdminTokenSource mints the bearer token used for admin-password sessions. May be nil, in
 	// which case that login mode cannot use flow streaming.
-	AdminTokenSource *AdminTokenSource
+	AdminTokenSource *k8s.AdminTokenSource
 }
 
 func NewGRPCFlowStreamSubscriber(logger logr.Logger, cfg GRPCConfig) (*GRPCFlowStreamSubscriber, error) {

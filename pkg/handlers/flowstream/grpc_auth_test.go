@@ -37,14 +37,26 @@ import (
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
-	authenticationv1 "k8s.io/api/authentication/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/kubernetes"
+	k8sfake "k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 
 	"antrea.io/antrea-ui/pkg/auth/session"
 	flowpb "antrea.io/antrea-ui/pkg/flowpb"
+	"antrea.io/antrea-ui/pkg/k8s"
 )
+
+// newTokenErrorClientset returns a clientset on which every CreateToken call fails with err.
+func newTokenErrorClientset(err error) kubernetes.Interface {
+	c := k8sfake.NewSimpleClientset()
+	c.PrependReactor("create", "serviceaccounts", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		return action.GetSubresource() == "token", nil, err
+	})
+	return c
+}
 
 // fakeFlowStreamServer lets each test script the GetFlows behavior it needs, and records the
 // bearer token (if any) each call was made with.
@@ -604,9 +616,7 @@ func TestSubscribeReportsAdminTokenMintFailureAsRetryable(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		fake := &fakeFlowStreamServer{handle: func(_ int, _ string) error { return nil }}
 		h := newTestSubscriber(t, fake)
-		h.adminTokenSource = NewAdminTokenSource(newContextAwareClientset(func(context.Context, string, *authenticationv1.TokenRequest, metav1.CreateOptions) (*authenticationv1.TokenRequest, error) {
-			return nil, fmt.Errorf("apiserver unavailable")
-		}), "ns", "antrea-ui-admin")
+		h.adminTokenSource = k8s.NewAdminTokenSource(newTokenErrorClientset(fmt.Errorf("apiserver unavailable")), "ns", "antrea-ui-admin", "")
 
 		store := newTestStore(t)
 		ctx, _ := ctxWithSessionAuth(t, store, &session.Spec{
@@ -635,9 +645,7 @@ func TestSubscribeReportsForbiddenAdminTokenMintAsNotRetryable(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		fake := &fakeFlowStreamServer{handle: func(_ int, _ string) error { return nil }}
 		h := newTestSubscriber(t, fake)
-		h.adminTokenSource = NewAdminTokenSource(newContextAwareClientset(func(context.Context, string, *authenticationv1.TokenRequest, metav1.CreateOptions) (*authenticationv1.TokenRequest, error) {
-			return nil, apierrors.NewForbidden(schema.GroupResource{Resource: "serviceaccounts/token"}, "antrea-ui-admin", fmt.Errorf("no create verb"))
-		}), "ns", "antrea-ui-admin")
+		h.adminTokenSource = k8s.NewAdminTokenSource(newTokenErrorClientset(apierrors.NewForbidden(schema.GroupResource{Resource: "serviceaccounts/token"}, "antrea-ui-admin", fmt.Errorf("no create verb"))), "ns", "antrea-ui-admin", "")
 
 		store := newTestStore(t)
 		ctx, _ := ctxWithSessionAuth(t, store, &session.Spec{

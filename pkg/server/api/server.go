@@ -27,6 +27,7 @@ import (
 	accesshandler "antrea.io/antrea-ui/pkg/handlers/access"
 	"antrea.io/antrea-ui/pkg/handlers/antreasvc"
 	"antrea.io/antrea-ui/pkg/handlers/flowstream"
+	"antrea.io/antrea-ui/pkg/handlers/supportbundle"
 	"antrea.io/antrea-ui/pkg/handlers/traceflow"
 	"antrea.io/antrea-ui/pkg/k8s"
 	"antrea.io/antrea-ui/pkg/password"
@@ -38,7 +39,8 @@ import (
 
 type serverConfig struct {
 	// keep all fields exported, so the config struct can be logged
-	MaxTraceflowsPerHour int
+	MaxTraceflowsPerHour     int
+	MaxSupportBundlesPerHour int
 }
 
 // Options are the dependencies of the API server.
@@ -58,6 +60,8 @@ type Options struct {
 	// AccessResolver answers namespace-discovery and cluster-scope-probe questions for
 	// GET /api/v1/access-summary.
 	AccessResolver accesshandler.Resolver
+	// SupportBundleManager serves /api/v1/supportbundle. Nil means the feature is disabled.
+	SupportBundleManager supportbundle.Manager
 }
 
 type Server struct {
@@ -73,11 +77,13 @@ type Server struct {
 	frontendSettings         *apisv1.FrontendSettings
 	pluginRegistry           *plugins.Registry
 	accessResolver           accesshandler.Resolver
+	supportBundleManager     supportbundle.Manager
 }
 
 func NewServer(o Options) *Server {
 	c := serverConfig{
-		MaxTraceflowsPerHour: o.Config.Limits.MaxTraceflowsPerHour,
+		MaxTraceflowsPerHour:     o.Config.Limits.MaxTraceflowsPerHour,
+		MaxSupportBundlesPerHour: o.Config.Limits.MaxSupportBundlesPerHour,
 	}
 	o.Logger.Info("Created API server config", "config", c)
 	var flowSSEHandler *flowstream.SSEHandler
@@ -97,6 +103,7 @@ func NewServer(o Options) *Server {
 		frontendSettings:         buildFrontendSettingsFromConfig(o.Config),
 		pluginRegistry:           o.PluginRegistry,
 		accessResolver:           o.AccessResolver,
+		supportBundleManager:     o.SupportBundleManager,
 	}
 }
 
@@ -128,6 +135,7 @@ func (s *Server) AddRoutes(r *gin.RouterGroup) {
 	apiv1.GET("/featuregates", s.authenticate(), s.GetFeatureGates)
 	s.AddFlowStreamRoutes(apiv1)
 	s.AddAccessRoutes(apiv1)
+	s.AddSupportBundleRoutes(apiv1)
 }
 
 func (s *Server) AddFlowStreamRoutes(r *gin.RouterGroup) {

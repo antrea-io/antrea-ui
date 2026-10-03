@@ -22,6 +22,8 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -33,6 +35,7 @@ import (
 	"github.com/go-logr/zapr"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
+	"gopkg.in/natefinch/lumberjack.v2"
 
 	"antrea.io/antrea-ui/pkg/auth/session"
 	serverconfig "antrea.io/antrea-ui/pkg/config/server"
@@ -41,6 +44,7 @@ import (
 	antreasvchandler "antrea.io/antrea-ui/pkg/handlers/antreasvc"
 	"antrea.io/antrea-ui/pkg/handlers/flowstream"
 	"antrea.io/antrea-ui/pkg/handlers/k8sproxy"
+	supportbundlehandler "antrea.io/antrea-ui/pkg/handlers/supportbundle"
 	traceflowhandler "antrea.io/antrea-ui/pkg/handlers/traceflow"
 	"antrea.io/antrea-ui/pkg/k8s"
 	"antrea.io/antrea-ui/pkg/password"
@@ -59,7 +63,15 @@ const antreaUIAdminSAName = "antrea-ui-admin"
 var (
 	config *serverconfig.Config
 	logger logr.Logger
+	// logDirectory is where the backend's logs are actually written: config.Log.Directory, or
+	// empty if file logging is disabled or could not be set up.
+	logDirectory string
 )
+
+// logConfig logs the loaded configuration, redacted: the log file ends up in support bundles.
+func logConfig(logger logr.Logger, c *serverconfig.Config) {
+	logger.V(2).Info("Config loaded", "config", c.Redacted())
+}
 
 func ginLogger(logger logr.Logger, level int) gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -79,7 +91,9 @@ func ginLogger(logger logr.Logger, level int) gin.HandlerFunc {
 
 		clientIP := c.ClientIP()
 		method := c.Request.Method
-		if raw != "" {
+		// The query of an auth route can carry secrets (the OAuth2 authorization code), and the
+		// log file ends up in support bundles.
+		if raw != "" && !strings.HasPrefix(path, "/auth/") {
 			path = path + "?" + raw
 		}
 		statusCode := c.Writer.Status()
@@ -227,6 +241,19 @@ func run() error {
 		}
 	}
 
+	// Admin-password sessions (session.KindImpersonate) carry no bearer token or client cert of
+	// their own, which is all the Flow Aggregator's FlowStreamService accepts. A real, short-lived
+	// token is minted for the antrea-ui-admin ServiceAccount and used for those calls only.
+	// k8sClientset authenticates as antrea-ui's own ServiceAccount, which is what
+	// build/charts/antrea-ui/templates/role.yaml grants the "serviceaccounts/token" create verb
+	// to. The Flow Aggregator integration only needs it when auth.basic.enable is also set, since
+	// that is the only login mode that produces a KindImpersonate session and so the only one that
+	// ever needs this token minted.
+	var adminTokenSource *k8s.AdminTokenSource
+	if config.Auth.Basic.Enabled {
+		adminTokenSource = k8s.NewAdminTokenSource(k8sClientset, env.GetNamespace(), antreaUIAdminSAName, "")
+	}
+
 	var flowStreamSubscriber flowstream.FlowStreamSubscriber
 	if config.FlowAggregator.Enabled {
 		logger.Info("FlowAggregator integration enabled", "address", config.FlowAggregator.Address)
@@ -255,19 +282,6 @@ func run() error {
 		if err != nil {
 			return fmt.Errorf("failed to build TLS config for FlowAggregator: %w", err)
 		}
-		// Admin-password sessions (session.KindImpersonate) carry no bearer token or client
-		// cert of their own - the two credential shapes FlowStreamService accepts - so a
-		// real, short-lived token is minted for the antrea-ui-admin ServiceAccount and used
-		// for this call only. k8sClientset authenticates as antrea-ui's own ServiceAccount,
-		// which is what build/charts/antrea-ui/templates/role.yaml grants the
-		// "serviceaccounts/token" create verb to - only when auth.basic.enable is also set,
-		// since that is the only login mode that produces a KindImpersonate session and so the
-		// only one that ever needs this token minted.
-		var adminTokenSource *flowstream.AdminTokenSource
-		if config.Auth.Basic.Enabled {
-			adminTokenSource = flowstream.NewAdminTokenSource(k8sClientset, env.GetNamespace(), antreaUIAdminSAName)
-		}
-
 		grpcSubscriber, err := flowstream.NewGRPCFlowStreamSubscriber(logger, flowstream.GRPCConfig{
 			Address:          config.FlowAggregator.Address,
 			TLSConfig:        tlsCfg,
@@ -278,6 +292,31 @@ func run() error {
 		}
 		defer grpcSubscriber.Close()
 		flowStreamSubscriber = grpcSubscriber
+	}
+
+	var supportBundleManager supportbundlehandler.Manager
+	if config.SupportBundle.Enabled {
+		// Collection runs as antrea-ui-admin, whoever requested the bundle and whatever their login
+		// mode: apiServer sources are reached by impersonating it, and every https source gets
+		// tokens minted for it with an audience of its own (see docs/supportbundle.md).
+		supportBundleManager, err = supportbundlehandler.NewManager(supportbundlehandler.Options{
+			Logger: logger,
+			Config: &config.SupportBundle,
+			Backend: supportbundlehandler.BackendOptions{
+				LogDirectory: logDirectory,
+				Config:       config,
+				Plugins:      pluginRegistry.Index,
+			},
+			APIServerURL:       k8sServerURL,
+			APIServerTransport: k8sHTTPClient.Transport,
+			AdminUserName:      antreaUIAdminUser,
+			NewAdminTokenSource: func(audience string) supportbundlehandler.TokenSource {
+				return k8s.NewAdminTokenSource(k8sClientset, env.GetNamespace(), antreaUIAdminSAName, audience)
+			},
+		})
+		if err != nil {
+			return fmt.Errorf("failed to create support bundle manager: %w", err)
+		}
 	}
 
 	s, err := server.NewServer(server.Options{
@@ -294,6 +333,7 @@ func run() error {
 		PluginRegistry:           pluginRegistry,
 		AdminUserName:            antreaUIAdminUser,
 		AccessResolver:           accessResolver,
+		SupportBundleManager:     supportBundleManager,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create server: %w", err)
@@ -335,6 +375,9 @@ func run() error {
 		logger.Info("No plugin source configured, plugins are disabled")
 	}
 	go accessResolver.Run(stopCh)
+	if supportBundleManager != nil {
+		go supportBundleManager.Run(stopCh)
+	}
 
 	// Initializing the server in a goroutine so that
 	// it won't block the graceful shutdown handling below
@@ -381,6 +424,29 @@ func buildFlowAggregatorTLSConfig(logger logr.Logger, cfg serverconfig.FlowAggre
 	return tlsCfg, nil
 }
 
+// newFileLogCore returns a zap core that writes the same JSON lines as zc to a rotated log file in
+// config.Log.Directory, which is what support bundles collect.
+func newFileLogCore(zc zap.Config) (zapcore.Core, error) {
+	if err := os.MkdirAll(config.Log.Directory, 0o755); err != nil {
+		return nil, err
+	}
+	filename := filepath.Join(config.Log.Directory, supportbundlehandler.LogFileName)
+	// lumberjack opens the file lazily, on the first write: check now that it can, rather than
+	// have every log line fail later.
+	f, err := os.OpenFile(filename, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return nil, err
+	}
+	f.Close()
+	w := &lumberjack.Logger{
+		Filename:   filename,
+		MaxSize:    config.Log.MaxSizeMB,
+		MaxBackups: config.Log.MaxBackups,
+		Compress:   true,
+	}
+	return zapcore.NewCore(zapcore.NewJSONEncoder(zc.EncoderConfig), zapcore.AddSync(w), zc.Level), nil
+}
+
 func main() {
 	var err error
 	config, err = serverconfig.LoadConfig()
@@ -398,9 +464,21 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Cannot initialize Zap logger: %v\n", err)
 		os.Exit(1)
 	}
+	if config.Log.Directory != "" {
+		if fileCore, err := newFileLogCore(zc); err != nil {
+			// Not fatal: the logs still go to stderr, and support bundles say that they
+			// could not include them.
+			fmt.Fprintf(os.Stderr, "Cannot write logs to %s, file logging is disabled: %v\n", config.Log.Directory, err)
+		} else {
+			logDirectory = config.Log.Directory
+			zapLog = zapLog.WithOptions(zap.WrapCore(func(core zapcore.Core) zapcore.Core {
+				return zapcore.NewTee(core, fileCore)
+			}))
+		}
+	}
 	logger = zapr.NewLogger(zapLog)
 
-	logger.V(2).Info("Config loaded", "config", config)
+	logConfig(logger, config)
 
 	if err := run(); err != nil {
 		logger.Error(err, "error in run() function")

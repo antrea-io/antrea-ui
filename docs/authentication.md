@@ -155,6 +155,13 @@ else:
 - `list` and `watch` on `flows.observability.antrea.io`, the virtual resource
   the Flow Aggregator authorizes flow streams against (see [Flow data is
   per-user](#flow-data-is-per-user))
+- `create`/`get`/`list`/`delete` on `supportbundles.ui.antrea.io`, the virtual
+  resource Antrea UI checks before every support bundle request. Bundles are
+  shared: everyone holding this grant can list, download and delete every
+  bundle, whoever requested it. Collection also runs as `antrea-ui-admin`,
+  whoever requests it, so `create` lets the holder trigger a collection, as
+  `antrea-ui-admin`, from every configured source and every installed plugin's
+  source (see [supportbundle.md](supportbundle.md#trust-model))
 
 Its rule list is static: it only ever changes when you upgrade the chart, and
 you can read exactly what it grants in
@@ -168,6 +175,8 @@ Its rules are assembled by the API server from every ClusterRole labeled
 `antrea-ui-admin-core` plus whatever any installed plugin contributes (see
 [plugins.md](plugins.md)). It is what the admin-password mode impersonates,
 which is why that mode sees everything the UI and its plugins can reach.
+Support bundle collection also runs as `antrea-ui-admin`, whoever requests the
+bundle (see [supportbundle.md](supportbundle.md#trust-model)).
 
 **Its contents grow on their own.** Deploying a plugin that ships an aggregated
 ClusterRole silently widens `antrea-ui-admin`, and therefore silently widens

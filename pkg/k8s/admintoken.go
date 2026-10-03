@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package flowstream
+package k8s
 
 import (
 	"context"
@@ -27,8 +27,9 @@ import (
 )
 
 // adminTokenExpiration is how long a minted antrea-ui-admin token is valid for. It only has to
-// outlive one flow-stream call: KeepAlive never presents this token again, so nothing depends on
-// it surviving for the life of a long-running stream.
+// outlive one call: a flow stream's KeepAlive never presents this token again, and support bundle
+// collection asks for a token before every request it sends, so nothing depends on it surviving for
+// the life of a long-running operation.
 const adminTokenExpiration = 10 * time.Minute
 
 // adminTokenRenewBefore is how far ahead of expiry a cached token is treated as stale, so a call
@@ -40,18 +41,23 @@ const adminTokenRenewBefore = time.Minute
 const adminTokenMintTimeout = 10 * time.Second
 
 // AdminTokenSource mints short-lived, self-issued tokens for the antrea-ui-admin ServiceAccount
-// via the TokenRequest API, and caches them until they are close to expiry.
+// via the TokenRequest API, for one audience, and caches them until they are close to expiry.
 //
-// It exists because FlowStreamService accepts a bearer token or a client certificate and nothing
-// else - no impersonation header - so the admin-password login mode (session.KindImpersonate),
-// which normally reaches the API server by impersonating antrea-ui-admin, has no credential it
-// can hand to the Flow Aggregator. Minting a real token for that same ServiceAccount gives it one,
-// scoped to this one call: every other K8s call made in admin-password mode keeps using
-// impersonation.
+// It exists because services other than the API server accept a bearer token or a client
+// certificate and nothing else - no impersonation header. The admin-password login mode
+// (session.KindImpersonate), which normally reaches the API server by impersonating
+// antrea-ui-admin, has no credential it can hand to the Flow Aggregator's FlowStreamService:
+// minting a real token for that same ServiceAccount, with the default audience, gives it one,
+// scoped to those calls (every K8s call made in admin-password mode keeps using impersonation).
+// Support bundle sources reached by URL are always called as antrea-ui-admin, whoever requested
+// the bundle, with a token whose only audience is the source's own, which the API server and
+// every other source reject.
 type AdminTokenSource struct {
 	clientset kubernetes.Interface
 	namespace string
 	saName    string
+	// audiences is nil for the API server's default audiences.
+	audiences []string
 
 	// group collapses concurrent minting calls into one CreateToken request instead of one per
 	// caller. mutex guards only the cached (token, expiresAt) pair, and is never held across
@@ -66,13 +72,19 @@ type AdminTokenSource struct {
 // NewAdminTokenSource builds an AdminTokenSource that mints tokens for saName in namespace using
 // clientset. clientset must authenticate as antrea-ui's own ServiceAccount and be authorized to
 // create tokens for saName (verb "create" on resource "serviceaccounts/token", scoped to
-// resourceName saName - see build/charts/antrea-ui/templates/role.yaml).
-func NewAdminTokenSource(clientset kubernetes.Interface, namespace, saName string) *AdminTokenSource {
-	return &AdminTokenSource{
+// resourceName saName - see build/charts/antrea-ui/templates/role.yaml). audience, when not
+// empty, is the only audience of the tokens; empty means the API server's default audiences, so
+// that the API server accepts them too.
+func NewAdminTokenSource(clientset kubernetes.Interface, namespace, saName, audience string) *AdminTokenSource {
+	a := &AdminTokenSource{
 		clientset: clientset,
 		namespace: namespace,
 		saName:    saName,
 	}
+	if audience != "" {
+		a.audiences = []string{audience}
+	}
+	return a
 }
 
 // Token returns a bearer token for the antrea-ui-admin ServiceAccount, minting (or renewing) one
@@ -100,6 +112,7 @@ func (a *AdminTokenSource) Token(ctx context.Context) (string, error) {
 		expirationSeconds := int64(adminTokenExpiration.Seconds())
 		tr, err := a.clientset.CoreV1().ServiceAccounts(a.namespace).CreateToken(mintCtx, a.saName, &authenticationv1.TokenRequest{
 			Spec: authenticationv1.TokenRequestSpec{
+				Audiences:         a.audiences,
 				ExpirationSeconds: &expirationSeconds,
 			},
 		}, metav1.CreateOptions{})

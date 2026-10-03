@@ -25,6 +25,14 @@ backend:
   resources: {}
   # -- Log verbosity switch for backend server.
   logVerbosity: 0
+  # Besides stderr, the backend writes its logs to a file in an emptyDir volume, which is what
+  # support bundles collect.
+  logs:
+    # -- Size in MiB at which the backend log file is rotated. The emptyDir volume holding the
+    # logs is sized from this and maxBackups.
+    maxSizeMB: 10
+    # -- Number of rotated (compressed) log files to keep. Must be at least 1.
+    maxBackups: 5
   # -- Additional volumeMounts.
   extraVolumeMounts: []
 
@@ -92,6 +100,51 @@ plugins:
     #   configMap:
     #     name: antrea-ui-plugin-keys
     #     key: public-key.asc
+
+# Support bundles: an aggregated .tar.gz of diagnostics for antrea-ui, its plugins and extra
+# sources, collected on demand through /api/v1/supportbundle (see docs/supportbundle.md).
+supportBundle:
+  # -- Enable the support bundle API. Callers also need the "supportbundles" resource of the
+  # "ui.antrea.io" API group in their RBAC (antrea-ui-admin-core grants it).
+  enabled: true
+  # -- How many support bundles may be requested per hour, across all users. 0 refuses every
+  # request, and a negative value disables the limit.
+  maxBundlesPerHour: 100
+  # -- How many bundles are retained at once, in any state.
+  maxBundles: 5
+  # -- How many bundles may be collected at once.
+  maxConcurrent: 2
+  # -- Disk budget in bytes shared by all bundles. The emptyDir volume holding the bundles is
+  # sized from it.
+  maxTotalBytes: 1073741824
+  # -- Maximum size in bytes of the tarball downloaded from any one source. At most half of
+  # maxTotalBytes, which should leave room beyond twice this value for the backend's logs and
+  # the other sources.
+  maxSourceBytes: 268435456
+  # -- How long a bundle is kept after it is requested. Bundles are also lost when the Pod is
+  # replaced, but survive a restart of the backend container. Must be greater than
+  # collectionTimeout.
+  ttl: 6h
+  # -- How long the collection of a bundle may take, sources included.
+  collectionTimeout: 10m
+  # -- Extra sources to collect diagnostics from, each implementing the source protocol described
+  # in docs/supportbundle.md. Each entry has a `name` (a DNS-1123 label, unique within the list)
+  # and exactly one of `apiServer` (`path`, of the form /apis/<group>/<version>, reached through
+  # the Kubernetes apiserver) or `https` (`url`, plus optional `caData`, `serverName` and
+  # `insecureSkipVerify`). Every source is called as antrea-ui-admin, whoever requested the
+  # bundle: an `https` source receives a short-lived token for antrea-ui-admin whose audience is
+  # supportbundle.ui.antrea.io/<name>, so only point it at a service you trust. An `apiServer`
+  # source needs antrea-ui-admin to be granted access to it (see docs/plugins.md).
+  extraSources: []
+  # - name: foo
+  #   https:
+  #     url: https://foo.foo-ns.svc/api/v1
+  #     caData: |
+  #       -----BEGIN CERTIFICATE-----
+  #       ...
+  # - name: bar
+  #   apiServer:
+  #     path: /apis/bar.example.com/v1alpha1
 
 # Flow Aggregator gRPC integration (live flow visibility in the UI).
 flowAggregator:

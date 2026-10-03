@@ -27,6 +27,19 @@ rules:
     verbs:
       - list
       - watch
+{{- if .Values.supportBundle.enabled }}
+  # Support bundle collection impersonates antrea-ui-admin (see role.yaml) with these user extras,
+  # which tell the apiserver's audit log and the sources who requested which bundle. Impersonating
+  # extras is checked cluster-wide, so it cannot go in role.yaml. No resourceNames: the values (a
+  # username, a bundle ID) are not known in advance.
+  - apiGroups:
+      - authentication.k8s.io
+    resources:
+      - userextras/supportbundle.ui.antrea.io/requested-by
+      - userextras/supportbundle.ui.antrea.io/bundle-id
+    verbs:
+      - impersonate
+{{- end }}
 ---
 # antrea-ui-admin holds every permission needed to serve K8s API requests made on behalf of the
 # UI user (as opposed to antrea-ui's own operations, see the antrea-ui ClusterRole above), e.g.
@@ -122,3 +135,17 @@ rules:
     verbs:
       - list
       - watch
+  # Support bundles. Nothing serves this resource: antrea-ui checks it with a
+  # SelfSubjectAccessReview before every /api/v1/supportbundle request. This is admin-level access
+  # to diagnostics: bundles are collected as antrea-ui-admin, which reaches whatever each
+  # installed plugin's source returns, and they are shared, so everyone holding it can list,
+  # download and delete every bundle, whoever requested it.
+  - apiGroups:
+      - ui.antrea.io
+    resources:
+      - supportbundles
+    verbs:
+      - create
+      - get
+      - list
+      - delete

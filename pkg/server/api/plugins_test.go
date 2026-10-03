@@ -103,6 +103,25 @@ func TestGetPluginsIndex(t *testing.T) {
 	})
 }
 
+// A plugin's support bundle source is for the backend only, and is left out of the index.
+func TestGetPluginsIndexOmitsSupportBundleSource(t *testing.T) {
+	ts := newTestServer(t)
+	_, err := ts.pluginsClientset.CoreV1().ConfigMaps("antrea-ui").Create(context.Background(), &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "pod-counter-plugin",
+			Labels: map[string]string{"ui.antrea.io/plugin": "true"},
+		},
+		Data: map[string]string{
+			"manifest.json": `{"name":"pod-counter","version":"0.1.0","entry":"index.js","supportBundle":{"apiServer":{"path":"/apis/foo.example.com/v1"}}}`,
+		},
+		BinaryData: map[string][]byte{"bundle.zip": buildZip(t, map[string][]byte{"index.js": []byte("console.log('hi')")})},
+	}, metav1.CreateOptions{})
+	require.NoError(t, err)
+	waitForPluginIndex(t, ts, []apisv1.PluginManifest{
+		{Name: "pod-counter", Version: "0.1.0", Entry: "index.js"},
+	})
+}
+
 // TestGetPluginsIndexReflectsConfigMapDeletion exercises Run's queue-driven delete path
 // end-to-end: a deleted ConfigMap is detected by its absence from the informer's indexer (see
 // processConfigMapQueueItem), not by the object a Delete event happens to carry.
