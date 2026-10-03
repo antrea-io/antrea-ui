@@ -352,10 +352,7 @@ func TestDebounceCollapsesBurstIntoOneDelayedReload(t *testing.T) {
 		r := NewRegistry(Options{Logger: testr.New(t), Clientset: nil, Namespace: "antrea-ui", LabelSelector: "ui.antrea.io/plugin=true", MaxConfigMapPlugins: 0, MaxDirectoryPlugins: 0, MaxBundleBytes: 0})
 		t.Cleanup(r.Close)
 		queue := workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[string]())
-		defer func() {
-			queue.ShutDown()
-			synctest.Wait()
-		}()
+		defer queue.ShutDown()
 		go r.runDiskPluginWorker(dir, watcher, queue)
 
 		// Five events for the same plugin in a tight burst - as if a build wrote five files in
