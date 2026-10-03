@@ -22,6 +22,7 @@ import (
 	"strings"
 
 	apisv1 "antrea.io/antrea-ui/apis/v1"
+	"antrea.io/antrea-ui/pkg/utils/k8sapipath"
 )
 
 // reservedRoutePrefixes mirrors the nginx config's location blocks
@@ -253,6 +254,14 @@ func parseManifest(manifestJSON []byte) (*apisv1.PluginManifest, error) {
 				}
 				return nil, fmt.Errorf("manifest's 'federation.routes[%d].path' %q falls under 'federation.routes[%d].path' %q, whose kind %q makes the plugin own that whole route tree", j, other.Path, i, route.Path, apisv1.PluginRouteKindRoutes)
 			}
+		}
+	}
+	// Only the variant this backend knows is validated. A supportBundle declaring none of them
+	// (e.g. a variant added by a later version) is not a reason to reject the plugin's UI: the
+	// support bundle skips that source and records why.
+	if manifest.SupportBundle != nil && manifest.SupportBundle.APIServer != nil {
+		if err := k8sapipath.ValidateGroupPath(manifest.SupportBundle.APIServer.Path); err != nil {
+			return nil, fmt.Errorf("manifest's 'supportBundle.apiServer.path' is invalid: %w", err)
 		}
 	}
 	return &manifest, nil

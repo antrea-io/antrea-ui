@@ -42,50 +42,6 @@ const testBundlePath = "/apis/ui.example.com/v1"
 // testBundleRequestPrefix is what the backend appends the digest and "/download" to.
 const testBundleRequestPrefix = testBundlePath + "/uipluginbundles"
 
-func TestValidateBundleAPIServerPath(t *testing.T) {
-	tests := []struct {
-		path    string
-		wantErr bool
-	}{
-		{path: testBundlePath},
-		{path: "/apis/ui.example.com/v1beta2"},
-		{path: "/apis/ui.example.com/v2alpha1"},
-		{path: "/apis/ui.example.com/v1/", wantErr: true},
-		{path: "/apis/ui.example.com/v1/uipluginbundles", wantErr: true},
-		{path: "/apis/ui.example.com", wantErr: true},
-		{path: "/apis/ui.example.com/1", wantErr: true},
-		{path: "/apis/ui.example.com/v0", wantErr: true},
-		{path: "/apis/UI.example.com/v1", wantErr: true},
-		{path: "/api/v1", wantErr: true},
-		{path: "/api/v1/namespaces/ns/services/svc/proxy", wantErr: true},
-		{path: "/apis/ui.example.com/v1/proxy", wantErr: true},
-		{path: "/x", wantErr: true},
-		{path: "", wantErr: true},
-		{path: "apis/x", wantErr: true},
-		{path: "//evil.example/apis/x", wantErr: true},
-		{path: "https://evil.example/apis/x", wantErr: true},
-		{path: "/apis/x?watch=true", wantErr: true},
-		{path: "/apis/x#frag", wantErr: true},
-		{path: "/apis/../api/v1/secrets", wantErr: true},
-		{path: "/apis/./x", wantErr: true},
-		{path: "/apis/ui.example.com/..", wantErr: true},
-		{path: "/apis//x", wantErr: true},
-		{path: "/apis/%2e%2e/x", wantErr: true},
-		{path: `/apis\x`, wantErr: true},
-		{path: "/", wantErr: true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.path, func(t *testing.T) {
-			err := validateBundleAPIServerPath(tt.path)
-			if tt.wantErr {
-				assert.Error(t, err)
-			} else {
-				assert.NoError(t, err)
-			}
-		})
-	}
-}
-
 func TestBundleRequestPath(t *testing.T) {
 	digest := bundleDigest([]byte("x"))
 	assert.Equal(t, testBundleRequestPrefix+"/"+digest+"/download", bundleRequestPath(testBundlePath, digest))

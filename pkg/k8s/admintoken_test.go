@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package flowstream
+package k8s
 
 import (
 	"context"
@@ -90,7 +90,7 @@ func TestAdminTokenSourceCachesUntilRenewWindow(t *testing.T) {
 				ExpirationTimestamp: metav1.NewTime(time.Now().Add(adminTokenExpiration)),
 			}}, nil
 		}
-		src := NewAdminTokenSource(newContextAwareClientset(createToken), "ns", "sa")
+		src := NewAdminTokenSource(newContextAwareClientset(createToken), "ns", "sa", "")
 
 		tok1, err := src.Token(t.Context())
 		require.NoError(t, err)
@@ -123,7 +123,7 @@ func TestAdminTokenSourceDeduplicatesConcurrentMints(t *testing.T) {
 				ExpirationTimestamp: metav1.NewTime(time.Now().Add(adminTokenExpiration)),
 			}}, nil
 		}
-		src := NewAdminTokenSource(newContextAwareClientset(createToken), "ns", "sa")
+		src := NewAdminTokenSource(newContextAwareClientset(createToken), "ns", "sa", "")
 
 		type result struct {
 			token string
@@ -168,7 +168,7 @@ func TestAdminTokenSourceMintSurvivesCallerCancellation(t *testing.T) {
 				ExpirationTimestamp: metav1.NewTime(time.Now().Add(adminTokenExpiration)),
 			}}, nil
 		}
-		src := NewAdminTokenSource(newContextAwareClientset(createToken), "ns", "sa")
+		src := NewAdminTokenSource(newContextAwareClientset(createToken), "ns", "sa", "")
 
 		callerCtx, cancel := context.WithCancel(context.Background())
 		type result struct {
@@ -200,9 +200,34 @@ func TestAdminTokenSourceMintTimesOutIndependently(t *testing.T) {
 			<-ctx.Done() // simulates a wedged API server: never returns on its own.
 			return nil, ctx.Err()
 		}
-		src := NewAdminTokenSource(newContextAwareClientset(createToken), "ns", "sa")
+		src := NewAdminTokenSource(newContextAwareClientset(createToken), "ns", "sa", "")
 
 		_, err := src.Token(context.Background())
 		assert.ErrorIs(t, err, context.DeadlineExceeded)
 	})
+}
+
+// A token minted for one service must carry that service's audience only, and a token minted
+// without one must keep the API server's default audiences.
+func TestAdminTokenSourceAudience(t *testing.T) {
+	for _, tc := range []struct {
+		audience string
+		want     []string
+	}{
+		{audience: "", want: nil},
+		{audience: "supportbundle.ui.antrea.io/foo", want: []string{"supportbundle.ui.antrea.io/foo"}},
+	} {
+		var got []string
+		createToken := func(_ context.Context, _ string, tr *authenticationv1.TokenRequest, _ metav1.CreateOptions) (*authenticationv1.TokenRequest, error) {
+			got = tr.Spec.Audiences
+			return &authenticationv1.TokenRequest{Status: authenticationv1.TokenRequestStatus{
+				Token:               "tok",
+				ExpirationTimestamp: metav1.NewTime(time.Now().Add(adminTokenExpiration)),
+			}}, nil
+		}
+		src := NewAdminTokenSource(newContextAwareClientset(createToken), "ns", "sa", tc.audience)
+		_, err := src.Token(t.Context())
+		require.NoError(t, err)
+		assert.Equal(t, tc.want, got, "audience %q", tc.audience)
+	}
 }
