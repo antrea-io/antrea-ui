@@ -323,8 +323,9 @@ func TestStreamFlowsUnauthenticatedIsNotA401(t *testing.T) {
 // closeNotifyRecorder adapts httptest.ResponseRecorder to gin's ResponseWriter, whose Stream
 // method type-asserts the underlying http.ResponseWriter to http.CloseNotifier (see gin's
 // (*responseWriter).CloseNotify) - httptest.ResponseRecorder alone does not implement it, so
-// calling c.Stream against a bare recorder panics. closec is never closed: nothing in these
-// tests simulates a client disconnect.
+// calling c.Stream against a bare recorder panics. closec is never closed: no test using this
+// recorder simulates a client disconnect (TestStreamStopsWhenClientDisconnects does it with a real
+// client).
 type closeNotifyRecorder struct {
 	*httptest.ResponseRecorder
 	closec chan bool
@@ -408,13 +409,9 @@ func (s *flowsChErrChRaceSubscriber) Subscribe(_ context.Context, _ *FlowStreamS
 // closed-flowsCh path and silently drop the error. Run enough iterations that a regression would
 // very likely produce at least one miss.
 //
-// Runs under synctest with the handler driven directly (via httptest.ResponseRecorder, see
-// closeNotifyRecorder) rather than against a real httptest.NewServer/http.Get pair: an
-// httptest.NewServer response body blocks on a real socket, which synctest does not consider
-// durably blocked, and the writeGate synchronization below relies on synctest recognizing the
-// StreamFlows goroutine as durably blocked in Write so this goroutine's <-w.started only proceeds
-// once it truly is - a real server makes both goroutines' progress a matter of OS scheduling
-// instead, which is exactly the kind of real-time dependency this rewrite removes.
+// The handler is driven directly rather than through a server and a client, with writeGate
+// standing in for its ResponseWriter (see closeNotifyRecorder): nothing here needs a client, and
+// this is the simplest way to gate the handler's writes.
 func TestStreamFlowsErrorSurvivesFlowsChRace(t *testing.T) {
 	logger := testr.New(t)
 
