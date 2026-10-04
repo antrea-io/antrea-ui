@@ -26,6 +26,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -99,25 +100,47 @@ func newStreamingServer(t *testing.T, subscriber *flowingSubscriber) (*testServe
 	return ts, fakeAPIServer, handlerReturned
 }
 
+// openStream sends a flow stream request to a real server running ts.router, authenticating with
+// token as a bearer token. See openStreamAs.
+func openStream(t *testing.T, ts *testServer, token, query string) *http.Response {
+	t.Helper()
+	return openStreamAs(t, ts, query, func(req *http.Request) {
+		req.Header.Set("Authorization", "Bearer "+token)
+	})
+}
+
 // httptest.ResponseRecorder does not implement http.CloseNotifier, which gin's Stream needs, so
-// the stream cases need a real server.
+// the stream cases need a real server. It uses the in-memory network of httptest.NewTestServer and
+// not a loopback socket, which is what lets these cases run in a testing/synctest bubble: a
+// goroutine blocked on real network I/O is never durably blocked.
 //
 // query is appended to the request URL. Every caller has to name a scope now: it is what the Flow
 // Aggregator authorizes the stream against, and StreamFlows rejects a request without one with a
-// 400 before any connection is made.
-func openStream(t *testing.T, ts *testServer, token, query string) (*http.Response, func()) {
-	srv := httptest.NewServer(ts.router)
+// 400 before any connection is made. authorize sets the caller's credentials on the request.
+//
+// The request is abandoned after 5 seconds, which is fake time in a bubble. It is a safety net for
+// a stream that sends nothing at all, not even keepalives: a read of its body would never return,
+// and synctest does not report a deadlock while a timer, such as the keepalive ticker of the
+// handler, keeps the fake clock advancing.
+func openStreamAs(t *testing.T, ts *testServer, query string, authorize func(req *http.Request)) *http.Response {
+	t.Helper()
+	srv := httptest.NewTestServer(t, ts.router)
+	// Only the server's own client can reach it. The first call to Client is also what starts
+	// the server and sets its URL.
+	client := srv.Client()
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	req, err := http.NewRequestWithContext(ctx, "GET", srv.URL+"/api/v1/flows/stream?"+query, nil)
 	require.NoError(t, err)
-	req.Header.Set("Authorization", "Bearer "+token)
-	resp, err := http.DefaultClient.Do(req)
+	authorize(req)
+	resp, err := client.Do(req)
 	require.NoError(t, err)
-	return resp, func() {
+	// Closing the server waits for outstanding requests. An open stream does not get in the
+	// way: t.Context is canceled before any cleanup runs, and that ends the stream.
+	t.Cleanup(func() {
 		cancel()
 		resp.Body.Close()
-		srv.Close()
-	}
+	})
+	return resp
 }
 
 // assertRejectedWithoutSubscribing asserts the backend did not ask the Flow Aggregator for flow
@@ -125,13 +148,14 @@ func openStream(t *testing.T, ts *testServer, token, query string) (*http.Respon
 // after every code path that could have subscribed has run — no polling, and no window in which a
 // slow handler makes the assertion pass vacuously.
 //
-// The wait cannot use testing/synctest: the stream cases need a real server (see openStream), and
-// goroutines blocked on real network I/O are never durably blocked, so a bubble would simply hang.
+// Must be called from a testing/synctest bubble. Once synctest.Wait returns, a handler chain that
+// has still not returned is durably blocked, and so is streaming rather than rejecting.
 func assertRejectedWithoutSubscribing(t *testing.T, handlerReturned <-chan struct{}, subscriber *flowingSubscriber, msg string) {
 	t.Helper()
+	synctest.Wait()
 	select {
 	case <-handlerReturned:
-	case <-time.After(5 * time.Second):
+	default:
 		require.FailNow(t, "the handler never returned, so it is still streaming rather than rejecting", msg)
 	}
 	assert.Zero(t, subscriber.subscribes.Load(), msg)
@@ -159,21 +183,23 @@ func receivesFlow(t *testing.T, resp *http.Response) bool {
 // incidentally present the credential to the API server on the way past.
 func TestFlowStreamRejectsUnvalidatedBearerToken(t *testing.T) {
 	t.Run("rejected token gets no data", func(t *testing.T) {
-		subscriber := &flowingSubscriber{}
-		ts, _, handlerReturned := newStreamingServer(t, subscriber)
-		ts.credentialValidator.rejected["bogus"] = true
-		resp, cleanup := openStream(t, ts, "bogus", "clusterWide=true")
-		defer cleanup()
-		assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
-		assertRejectedWithoutSubscribing(t, handlerReturned, subscriber, "an unauthenticated request must not reach the Flow Aggregator")
+		synctest.Test(t, func(t *testing.T) {
+			subscriber := &flowingSubscriber{}
+			ts, _, handlerReturned := newStreamingServer(t, subscriber)
+			ts.credentialValidator.rejected["bogus"] = true
+			resp := openStream(t, ts, "bogus", "clusterWide=true")
+			assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+			assertRejectedWithoutSubscribing(t, handlerReturned, subscriber, "an unauthenticated request must not reach the Flow Aggregator")
+		})
 	})
 
 	t.Run("valid token streams", func(t *testing.T) {
-		ts, _, _ := newStreamingServer(t, &flowingSubscriber{})
-		resp, cleanup := openStream(t, ts, "good", "clusterWide=true")
-		defer cleanup()
-		require.Equal(t, http.StatusOK, resp.StatusCode)
-		assert.True(t, receivesFlow(t, resp), "a validated token should receive flow data")
+		synctest.Test(t, func(t *testing.T) {
+			ts, _, _ := newStreamingServer(t, &flowingSubscriber{})
+			resp := openStream(t, ts, "good", "clusterWide=true")
+			require.Equal(t, http.StatusOK, resp.StatusCode)
+			assert.True(t, receivesFlow(t, resp), "a validated token should receive flow data")
+		})
 	})
 }
 
@@ -188,110 +214,101 @@ func TestFlowStreamRejectsUnvalidatedBearerToken(t *testing.T) {
 // is reported as the Flow Aggregator's, with its own error code, rather than manufactured here.
 func TestFlowStreamAuthorizationIsTheFlowAggregators(t *testing.T) {
 	t.Run("an ordinary user reaches the Flow Aggregator", func(t *testing.T) {
-		subscriber := &flowingSubscriber{}
-		ts, fakeAPIServer, _ := newStreamingServer(t, subscriber)
-		// The caller is emphatically not a cluster admin, which the removed gate would have
-		// refused on. Whether they may see any flows is now the Flow Aggregator's call.
-		fakeAPIServer.clusterAdmin = false
-		resp, cleanup := openStream(t, ts, "good", "observedNamespace=ns-b")
-		defer cleanup()
-		require.Equal(t, http.StatusOK, resp.StatusCode)
-		assert.True(t, receivesFlow(t, resp), "an ordinary user's request must reach the Flow Aggregator")
-		assert.Equal(t, int32(1), subscriber.subscribes.Load())
+		synctest.Test(t, func(t *testing.T) {
+			subscriber := &flowingSubscriber{}
+			ts, fakeAPIServer, _ := newStreamingServer(t, subscriber)
+			// The caller is emphatically not a cluster admin, which the removed gate
+			// would have refused on. Whether they may see any flows is now the Flow
+			// Aggregator's call.
+			fakeAPIServer.clusterAdmin = false
+			resp := openStream(t, ts, "good", "observedNamespace=ns-b")
+			require.Equal(t, http.StatusOK, resp.StatusCode)
+			assert.True(t, receivesFlow(t, resp), "an ordinary user's request must reach the Flow Aggregator")
+			assert.Equal(t, int32(1), subscriber.subscribes.Load())
+		})
 	})
 
 	t.Run("no SelfSubjectAccessReview is issued for the route", func(t *testing.T) {
-		subscriber := &flowingSubscriber{}
-		ts, fakeAPIServer, _ := newStreamingServer(t, subscriber)
-		// Nothing at all is reachable, so an antrea-ui-side review would fail the request
-		// rather than quietly answer. That is the strongest available form of "no review":
-		// the route works with the review endpoint broken.
-		fakeAPIServer.statusOverride["selfsubjectaccessreviews"] = http.StatusInternalServerError
-		var sawReview atomic.Bool
-		inner := fakeAPIServer.Config.Handler
-		// Safe to swap: the server has served nothing yet, and openStream below is what
-		// starts the first request.
-		fakeAPIServer.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if strings.Contains(r.URL.Path, "selfsubjectaccessreviews") {
-				sawReview.Store(true)
-			}
-			inner.ServeHTTP(w, r)
-		})
+		synctest.Test(t, func(t *testing.T) {
+			subscriber := &flowingSubscriber{}
+			ts, fakeAPIServer, _ := newStreamingServer(t, subscriber)
+			// Nothing at all is reachable, so an antrea-ui-side review would fail the
+			// request rather than quietly answer. That is the strongest available form
+			// of "no review": the route works with the review endpoint broken.
+			fakeAPIServer.statusOverride["selfsubjectaccessreviews"] = http.StatusInternalServerError
 
-		resp, cleanup := openStream(t, ts, "good", "observedNamespace=ns-b")
-		defer cleanup()
-		require.Equal(t, http.StatusOK, resp.StatusCode)
-		assert.True(t, receivesFlow(t, resp))
-		assert.False(t, sawReview.Load(), "opening a flow stream must not cost a SelfSubjectAccessReview")
+			resp := openStream(t, ts, "good", "observedNamespace=ns-b")
+			require.Equal(t, http.StatusOK, resp.StatusCode)
+			assert.True(t, receivesFlow(t, resp))
+			assert.Zero(t, fakeAPIServer.accessReviews.Load(), "opening a flow stream must not cost a SelfSubjectAccessReview")
+		})
 	})
 
 	t.Run("the static admin reaches the Flow Aggregator", func(t *testing.T) {
-		subscriber := &flowingSubscriber{}
-		ts, fakeAPIServer, _ := newStreamingServer(t, subscriber)
-		fakeAPIServer.clusterAdmin = false
-		fakeAPIServer.statusOverride["selfsubjectaccessreviews"] = http.StatusInternalServerError
+		synctest.Test(t, func(t *testing.T) {
+			subscriber := &flowingSubscriber{}
+			ts, fakeAPIServer, _ := newStreamingServer(t, subscriber)
+			fakeAPIServer.clusterAdmin = false
+			fakeAPIServer.statusOverride["selfsubjectaccessreviews"] = http.StatusInternalServerError
 
-		srv := httptest.NewServer(ts.router)
-		defer srv.Close()
-		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-		defer cancel()
-		req, err := http.NewRequestWithContext(ctx, "GET", srv.URL+"/api/v1/flows/stream?clusterWide=true", nil)
-		require.NoError(t, err)
-		ts.authorizeRequestAs(req, session.ModeAdmin)
-		resp, err := http.DefaultClient.Do(req)
-		require.NoError(t, err)
-		defer resp.Body.Close()
-		require.Equal(t, http.StatusOK, resp.StatusCode)
-		// The built-in admin presents a minted antrea-ui-admin token to the Flow Aggregator,
-		// which honours only Kubernetes RBAC - hence the flows rule this change adds to the
-		// antrea-ui-admin-core ClusterRole in the chart.
-		assert.True(t, receivesFlow(t, resp), "the built-in admin should receive flow data")
+			resp := openStreamAs(t, ts, "clusterWide=true", func(req *http.Request) {
+				ts.authorizeRequestAs(req, session.ModeAdmin)
+			})
+			require.Equal(t, http.StatusOK, resp.StatusCode)
+			// The built-in admin presents a minted antrea-ui-admin token to the Flow
+			// Aggregator, which honours only Kubernetes RBAC - hence the flows rule
+			// this change adds to the antrea-ui-admin-core ClusterRole in the chart.
+			assert.True(t, receivesFlow(t, resp), "the built-in admin should receive flow data")
+		})
 	})
 
 	t.Run("the Flow Aggregator's PermissionDenied is surfaced", func(t *testing.T) {
-		// What a caller without the flows grant gets now: the Flow Aggregator's own refusal,
-		// wrapped the way the real subscriber wraps it, carrying the code and the
-		// not-retryable flag the frontend acts on. Never a 401, and a real 403 rather than the
-		// generic 502 - see statusForStreamErr.
-		subscriber := &flowingSubscriber{err: fmt.Errorf("stream refused: %w", &flowstream.StreamError{
-			Code:      flowstream.StreamErrorCodeForbidden,
-			Retryable: false,
-		})}
-		ts, fakeAPIServer, _ := newStreamingServer(t, subscriber)
-		fakeAPIServer.clusterAdmin = false
-		resp, cleanup := openStream(t, ts, "good", "observedNamespace=ns-b")
-		defer cleanup()
-		require.Equal(t, http.StatusForbidden, resp.StatusCode)
-		assert.Equal(t, int32(1), subscriber.subscribes.Load(), "the request must have reached the Flow Aggregator to be refused by it")
+		synctest.Test(t, func(t *testing.T) {
+			// What a caller without the flows grant gets now: the Flow Aggregator's own
+			// refusal, wrapped the way the real subscriber wraps it, carrying the code
+			// and the not-retryable flag the frontend acts on. Never a 401, and a real
+			// 403 rather than the generic 502 - see statusForStreamErr.
+			subscriber := &flowingSubscriber{err: fmt.Errorf("stream refused: %w", &flowstream.StreamError{
+				Code:      flowstream.StreamErrorCodeForbidden,
+				Retryable: false,
+			})}
+			ts, fakeAPIServer, _ := newStreamingServer(t, subscriber)
+			fakeAPIServer.clusterAdmin = false
+			resp := openStream(t, ts, "good", "observedNamespace=ns-b")
+			require.Equal(t, http.StatusForbidden, resp.StatusCode)
+			assert.Equal(t, int32(1), subscriber.subscribes.Load(), "the request must have reached the Flow Aggregator to be refused by it")
 
-		body, err := io.ReadAll(resp.Body)
-		require.NoError(t, err)
-		var evt apisv1.FlowStreamErrorEvent
-		require.NoError(t, json.Unmarshal(body, &evt))
-		assert.Equal(t, flowstream.StreamErrorCodeForbidden, evt.Code)
-		assert.False(t, evt.Retryable, "a permanent refusal must not be retried in a reconnect loop")
+			body, err := io.ReadAll(resp.Body)
+			require.NoError(t, err)
+			var evt apisv1.FlowStreamErrorEvent
+			require.NoError(t, json.Unmarshal(body, &evt))
+			assert.Equal(t, flowstream.StreamErrorCodeForbidden, evt.Code)
+			assert.False(t, evt.Retryable, "a permanent refusal must not be retried in a reconnect loop")
+		})
 	})
 
 	t.Run("the scope reaches the subscriber", func(t *testing.T) {
-		subscriber := &flowingSubscriber{}
-		ts, _, _ := newStreamingServer(t, subscriber)
-		resp, cleanup := openStream(t, ts, "good", "observedNamespace=ns-b&namespaces=ns-c")
-		defer cleanup()
-		require.Equal(t, http.StatusOK, resp.StatusCode)
-		require.True(t, receivesFlow(t, resp))
-		scope := subscriber.scope.Load()
-		require.NotNil(t, scope)
-		assert.Equal(t, "ns-b", scope.ObservedNamespace)
-		assert.False(t, scope.ClusterWide)
+		synctest.Test(t, func(t *testing.T) {
+			subscriber := &flowingSubscriber{}
+			ts, _, _ := newStreamingServer(t, subscriber)
+			resp := openStream(t, ts, "good", "observedNamespace=ns-b&namespaces=ns-c")
+			require.Equal(t, http.StatusOK, resp.StatusCode)
+			require.True(t, receivesFlow(t, resp))
+			scope := subscriber.scope.Load()
+			require.NotNil(t, scope)
+			assert.Equal(t, "ns-b", scope.ObservedNamespace)
+			assert.False(t, scope.ClusterWide)
+		})
 	})
 
 	t.Run("a request with no scope is rejected without subscribing", func(t *testing.T) {
-		subscriber := &flowingSubscriber{}
-		ts, _, handlerReturned := newStreamingServer(t, subscriber)
-		resp, cleanup := openStream(t, ts, "good", "")
-		defer cleanup()
-		require.Equal(t, http.StatusBadRequest, resp.StatusCode)
-		assertRejectedWithoutSubscribing(t, handlerReturned, subscriber, "a request naming no scope must not reach the Flow Aggregator")
+		synctest.Test(t, func(t *testing.T) {
+			subscriber := &flowingSubscriber{}
+			ts, _, handlerReturned := newStreamingServer(t, subscriber)
+			resp := openStream(t, ts, "good", "")
+			require.Equal(t, http.StatusBadRequest, resp.StatusCode)
+			assertRejectedWithoutSubscribing(t, handlerReturned, subscriber, "a request naming no scope must not reach the Flow Aggregator")
+		})
 	})
 
 	t.Run("disabled path answers 501 for every authenticated user", func(t *testing.T) {
