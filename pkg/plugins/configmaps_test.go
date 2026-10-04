@@ -429,8 +429,7 @@ func TestConfigMapQueueRetriesFailureUntilItSucceeds(t *testing.T) {
 		require.NoError(t, indexer.Update(fixed))
 
 		// Past the first backoff (5ms with the default rate limiter, well under a second).
-		time.Sleep(time.Second)
-		synctest.Wait()
+		synctest.Sleep(time.Second)
 		require.Len(t, r.Index(), 1)
 		assert.Equal(t, "pod-counter", r.Index()[0].Name)
 		assert.Equal(t, 0, queue.NumRequeues(key), "a successful load must Forget the key")
@@ -456,8 +455,7 @@ func TestConfigMapQueueGivesUpAfterMaxRetries(t *testing.T) {
 
 		// Long enough for every backoff in the budget to elapse under the fake clock, and then
 		// for a further stretch during which nothing more may happen.
-		time.Sleep(time.Hour)
-		synctest.Wait()
+		synctest.Sleep(time.Hour)
 
 		// The initial attempt plus maxPluginLoadRetries retries: the give-up branch triggers on
 		// the attempt that finds NumRequeues already at maxPluginLoadRetries.

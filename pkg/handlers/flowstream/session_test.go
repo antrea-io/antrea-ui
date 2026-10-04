@@ -62,7 +62,8 @@ func (s *silentSubscriber) Subscribe(ctx context.Context, _ *FlowStreamScope, _ 
 // The handler is driven directly through a recorder rather than through httptest.NewServer, so
 // these tests can run under testing/synctest: a real server's response body blocks on a socket,
 // which synctest does not consider durably blocked. The recorder must only be read once the
-// handler goroutine is blocked (after synctest.Wait) or has returned (after done is closed).
+// handler goroutine is blocked (after synctest.Wait or synctest.Sleep) or has returned (after
+// done is closed).
 func startSilentStream(t *testing.T, ra *session.RequestAuth) (*closeNotifyRecorder, <-chan struct{}) {
 	t.Helper()
 	ctx := t.Context()
@@ -129,8 +130,7 @@ func TestStreamKeepsSessionAlive(t *testing.T) {
 
 		// Stream for well past the idle timeout. If the stream did not touch its session, the
 		// session would be gone by now.
-		time.Sleep(4 * idleTimeout)
-		synctest.Wait()
+		synctest.Sleep(4 * idleTimeout)
 		requireStreamCommitted(t, w)
 		assert.Greater(t, strings.Count(w.Body.String(), "keepalive"), 1, "expected the stream to keep emitting keepalives")
 		select {
@@ -207,8 +207,7 @@ func TestStreamStopsWhenBearerCredentialExpires(t *testing.T) {
 	t.Run("valid credential keeps streaming", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			w, done := startSilentStream(t, ephemeralAuth(time.Now().Add(1*time.Hour)))
-			time.Sleep(3 * keepAliveInterval)
-			synctest.Wait()
+			synctest.Sleep(3 * keepAliveInterval)
 			requireStreamCommitted(t, w)
 			assert.Greater(t, strings.Count(w.Body.String(), "keepalive"), 1)
 			select {
@@ -224,8 +223,7 @@ func TestStreamStopsWhenBearerCredentialExpires(t *testing.T) {
 	t.Run("credential with no expiry keeps streaming", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			w, done := startSilentStream(t, ephemeralAuth(time.Time{}))
-			time.Sleep(3 * keepAliveInterval)
-			synctest.Wait()
+			synctest.Sleep(3 * keepAliveInterval)
 			requireStreamCommitted(t, w)
 			assert.Greater(t, strings.Count(w.Body.String(), "keepalive"), 1)
 			select {
