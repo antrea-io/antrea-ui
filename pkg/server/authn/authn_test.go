@@ -63,11 +63,10 @@ func (v *fakeValidator) ValidateCredential(_ context.Context, cred *session.Cred
 	v.mutex.Lock()
 	defer v.mutex.Unlock()
 	v.calls++
-	token := string(cred.Token)
-	if v.failed[token] {
+	if v.failed[string(cred.Token)] {
 		return "", apierrors.NewServiceUnavailable("API server is having a bad day")
 	}
-	if v.rejected[token] {
+	if v.rejected[string(cred.Token)] {
 		return "", apierrors.NewUnauthorized("invalid bearer token")
 	}
 	return v.username, nil

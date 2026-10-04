@@ -36,6 +36,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v7
+    - name: Set up Go using version from .go-version
+      uses: actions/setup-go@v7
+      with:
+        go-version-file: '.go-version'
     - name: Build container images
       run: make
     - name: Set up Node

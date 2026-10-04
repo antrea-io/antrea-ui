@@ -60,7 +60,7 @@ contributions (it's your responsibility to check with your employer).
 
 ### Dependencies
 
-* [Go >= 1.21](https://golang.org/doc/install)
+* [Go >= 1.27](https://golang.org/doc/install)
 * [Yarn >= 1.22](https://classic.yarnpkg.com/lang/en/docs/install/)
 * `client/web/` is a single Yarn workspace covering both `antrea-ui` (the
   React frontend) and `antrea-ui-components` (the shared Lit component

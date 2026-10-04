@@ -47,6 +47,8 @@ linters:
       - third_party$
       - builtin$
       - examples$
+      # Some npm packages ship Go source files, which are not ours to lint.
+      - node_modules
 formatters:
   enable:
     - gofmt

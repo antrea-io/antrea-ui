@@ -16,10 +16,10 @@ jobs:
     steps:
     - name: Check-out code
       uses: actions/checkout@v7
-    - name: Set up Go using version from go.mod
+    - name: Set up Go using version from .go-version
       uses: actions/setup-go@v7
       with:
-        go-version-file: 'go.mod'
+        go-version-file: '.go-version'
     - name: Build binaries
       run: |
         make bin
@@ -30,10 +30,10 @@ jobs:
     steps:
     - name: Check-out code
       uses: actions/checkout@v7
-    - name: Set up Go using version from go.mod
+    - name: Set up Go using version from .go-version
       uses: actions/setup-go@v7
       with:
-        go-version-file: 'go.mod'
+        go-version-file: '.go-version'
     - name: Run unit tests
       run: |
         make test
@@ -44,10 +44,10 @@ jobs:
     steps:
     - name: Check-out code
       uses: actions/checkout@v7
-    - name: Set up Go using version from go.mod
+    - name: Set up Go using version from .go-version
       uses: actions/setup-go@v7
       with:
-        go-version-file: 'go.mod'
+        go-version-file: '.go-version'
     - name: Check tidiness
       run: |
         go mod tidy
@@ -64,10 +64,10 @@ jobs:
     steps:
     - name: Check-out code
       uses: actions/checkout@v7
-    - name: Set up Go using version from go.mod
+    - name: Set up Go using version from .go-version
       uses: actions/setup-go@v7
       with:
-        go-version-file: 'go.mod'
+        go-version-file: '.go-version'
     - name: Run code linters
       run: |
         make golangci
