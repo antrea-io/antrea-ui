@@ -21,9 +21,9 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+	"uuid"
 
 	"github.com/golang/mock/gomock"
-	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -62,7 +62,7 @@ func TestTraceflowRequest(t *testing.T) {
 	req := httptest.NewRequest("POST", "/api/v1/traceflow", bytes.NewReader(tfJSON))
 	ts.authorizeRequest(req)
 	rr := httptest.NewRecorder()
-	requestID := uuid.NewString()
+	requestID := uuid.New().String()
 	ts.traceflowRequestsHandler.EXPECT().CreateRequest(gomock.Any(), gomock.Any(), &traceflowhandler.Request{
 		Object: tf,
 	}).Return(requestID, nil)
@@ -156,7 +156,7 @@ func TestTraceflowRequestRateLimiting(t *testing.T) {
 		ts := newTestServer(t, setMaxTraceflowsPerHour(5*3600))
 		ts.traceflowRequestsHandler.EXPECT().CreateRequest(gomock.Any(), gomock.Any(), &traceflowhandler.Request{
 			Object: tf,
-		}).Return(uuid.NewString(), nil).AnyTimes()
+		}).Return(uuid.New().String(), nil).AnyTimes()
 		rr := sendRequest(ts)
 		assert.Equal(t, http.StatusAccepted, rr.Code)
 		assert.Eventually(t, func() bool {

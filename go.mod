@@ -12,7 +12,6 @@ require (
 	github.com/go-logr/logr v1.4.4
 	github.com/go-logr/zapr v1.3.0
 	github.com/golang/mock v1.6.0
-	github.com/google/uuid v1.6.0
 	github.com/gruntwork-io/terratest/modules/core/v2 v2.0.0
 	github.com/gruntwork-io/terratest/modules/helm/v2 v2.0.0
 	github.com/gruntwork-io/terratest/modules/httphelper/v2 v2.0.0
@@ -83,6 +82,7 @@ require (
 	github.com/gonvenience/wrap v1.1.2 // indirect
 	github.com/gonvenience/ytbx v1.4.4 // indirect
 	github.com/google/gnostic-models v0.7.1 // indirect
+	github.com/google/uuid v1.6.0 // indirect
 	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674 // indirect
 	github.com/gruntwork-io/go-commons v0.8.0 // indirect
 	github.com/homeport/dyff v1.6.0 // indirect

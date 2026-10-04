@@ -17,9 +17,9 @@ package traceflow
 import (
 	"context"
 	"time"
+	"uuid"
 
 	"github.com/go-logr/logr"
-	"github.com/google/uuid"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -74,7 +74,7 @@ func (h *requestsHandler) Run(stopCh <-chan struct{}) {
 }
 
 func (h *requestsHandler) CreateRequest(ctx context.Context, client dynamic.Interface, request *Request) (string, error) {
-	requestID := uuid.NewString()
+	requestID := uuid.New().String()
 	if err := h.createTraceflow(ctx, client, requestID, request.Object); err != nil {
 		return "", err
 	}
