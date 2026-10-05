@@ -39,6 +39,8 @@ Kubernetes: `>= 1.28.0-0`
 | backend.extraVolumeMounts | list | `[]` | Additional volumeMounts. |
 | backend.image | object | `{"pullPolicy":"IfNotPresent","repository":"antrea/antrea-ui-backend","tag":""}` | Container image to use for the Antrea UI backend. |
 | backend.logVerbosity | int | `0` | Log verbosity switch for backend server. |
+| backend.logs.maxBackups | int | `5` | Number of rotated (compressed) log files to keep. Must be at least 1. |
+| backend.logs.maxSizeMB | int | `10` | Size in MiB at which the backend log file is rotated. The emptyDir volume holding the logs is sized from this and maxBackups. |
 | backend.port | int | `8080` | Container port on which the backend will listen. |
 | backend.resources | object | `{}` | Resource requests and limits for the backend container. |
 | extraVolumes | list | `[]` | Additional volumes. |
@@ -94,6 +96,15 @@ Kubernetes: `>= 1.28.0-0`
 | session.maxLifetime | string | `"12h"` | Absolute cap on a session's lifetime, however active the user is. |
 | session.maxSessions | int | `1000` | Maximum number of concurrent sessions the backend will hold. |
 | session.maxSessionsPerUser | int | `10` | Maximum number of concurrent sessions one identity may hold. This is what keeps a single user from filling maxSessions and denying logins to everyone else. Logging in past the cap evicts that user's own least-recently-used session rather than failing the login. Must be <= maxSessions. Admin-password sessions are exempt: they all authenticate as the same "admin", so capping them would give every user of that password one shared budget. |
+| supportBundle.collectionTimeout | string | `"10m"` | How long the collection of a bundle may take, sources included. |
+| supportBundle.enabled | bool | `true` | Enable the support bundle API. Callers also need the "supportbundles" resource of the "ui.antrea.io" API group in their RBAC (antrea-ui-admin-core grants it). |
+| supportBundle.extraSources | list | `[]` | Extra sources to collect diagnostics from, each implementing the source protocol described in docs/supportbundle.md. Each entry has a `name` (a DNS-1123 label, unique within the list) and exactly one of `apiServer` (`path`, of the form /apis/<group>/<version>, reached through the Kubernetes apiserver) or `https` (`url`, plus optional `caData`, `serverName` and `insecureSkipVerify`). Every source is called as antrea-ui-admin, whoever requested the bundle: an `https` source receives a short-lived token for antrea-ui-admin whose audience is supportbundle.ui.antrea.io/<name>, so only point it at a service you trust. An `apiServer` source needs antrea-ui-admin to be granted access to it (see docs/plugins.md). |
+| supportBundle.maxBundles | int | `5` | How many bundles are retained at once, in any state. |
+| supportBundle.maxBundlesPerHour | int | `100` | How many support bundles may be requested per hour, across all users. 0 refuses every request, and a negative value disables the limit. |
+| supportBundle.maxConcurrent | int | `2` | How many bundles may be collected at once. |
+| supportBundle.maxSourceBytes | int | `268435456` | Maximum size in bytes of the tarball downloaded from any one source. At most half of maxTotalBytes, which should leave room beyond twice this value for the backend's logs and the other sources. |
+| supportBundle.maxTotalBytes | int | `1073741824` | Disk budget in bytes shared by all bundles. The emptyDir volume holding the bundles is sized from it. |
+| supportBundle.ttl | string | `"6h"` | How long a bundle is kept after it is requested. Bundles are also lost when the Pod is replaced, but survive a restart of the backend container. Must be greater than collectionTimeout. |
 | tolerations | object | `{}` | Tolerations for the Antrea UI Pod. |
 | url | string | `""` | Address at which the Antrea UI is accessible. Not required for most configurations. |
 

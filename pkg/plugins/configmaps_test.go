@@ -95,6 +95,26 @@ func TestRegistryUpsertReadsManifestFromBinaryData(t *testing.T) {
 	}, r.Index())
 }
 
+func TestRegistryAcceptsSupportBundleDeclarations(t *testing.T) {
+	newCM := func(t *testing.T, name, supportBundle string) *corev1.ConfigMap {
+		return &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "antrea-ui", ResourceVersion: "1"},
+			Data:       map[string]string{"manifest.json": `{"name":"` + name + `","version":"0.1.0","entry":"index.js","supportBundle":` + supportBundle + `}`},
+			BinaryData: map[string][]byte{"bundle.zip": buildZip(t, map[string]string{"index.js": "x"})},
+		}
+	}
+	r := newTestRegistry(t)
+	r.handleUpsert(newCM(t, "a", `{"apiServer":{"path":"/apis/a.example.com/v1alpha1"}}`))
+	// A variant this backend does not know (here, one only operator-configured sources may use)
+	// leaves the plugin loaded, with no recognized variant for the support bundle to collect.
+	r.handleUpsert(newCM(t, "b", `{"https":{"url":"https://b.example.com"}}`))
+
+	assert.Equal(t, []apisv1.PluginManifest{
+		{Name: "a", Version: "0.1.0", Entry: "index.js", SupportBundle: &apisv1.SupportBundleSourceSpec{APIServer: &apisv1.APIServerSourceSpec{Path: "/apis/a.example.com/v1alpha1"}}},
+		{Name: "b", Version: "0.1.0", Entry: "index.js", SupportBundle: &apisv1.SupportBundleSourceSpec{}},
+	}, r.Index())
+}
+
 func TestRegistryDelete(t *testing.T) {
 	r := newTestRegistry(t)
 	cm := configMap(t, "pod-counter-plugin", "pod-counter", "0.1.0", "index.js", map[string]string{"index.js": "x"})
@@ -291,6 +311,16 @@ func TestRegistrySkipsInvalidConfigMaps(t *testing.T) {
 			return withBundle(t,
 				`{"name":"plugin","version":"0.1.0","entry":"shared.js","federation":{"remoteEntry":"./shared.js","routes":[{"path":"/plugin","sidebarLabel":"Plugin","exposedModule":"./Page"}]}}`,
 				map[string]string{"shared.js": "x"})
+		},
+		"supportBundle apiServer path outside /apis/<group>/<version>": func(t *testing.T) *corev1.ConfigMap {
+			return withBundle(t,
+				`{"name":"plugin","version":"0.1.0","entry":"index.js","supportBundle":{"apiServer":{"path":"/api/v1/namespaces/kube-system/services/foo/proxy"}}}`,
+				map[string]string{"index.js": "x"})
+		},
+		"supportBundle apiServer path with a dot segment": func(t *testing.T) *corev1.ConfigMap {
+			return withBundle(t,
+				`{"name":"plugin","version":"0.1.0","entry":"index.js","supportBundle":{"apiServer":{"path":"/apis/foo.example.com/v1/.."}}}`,
+				map[string]string{"index.js": "x"})
 		},
 		"federation remoteEntry file not present": func(t *testing.T) *corev1.ConfigMap {
 			return withBundle(t,

@@ -26,6 +26,25 @@ session:
   maxSessions: {{ .Values.session.maxSessions }}
   maxSessionsPerUser: {{ .Values.session.maxSessionsPerUser }}
 logVerbosity: {{ .Values.backend.logVerbosity }}
+log:
+  directory: "/var/log/antrea-ui"
+  maxSizeMB: {{ .Values.backend.logs.maxSizeMB }}
+  maxBackups: {{ .Values.backend.logs.maxBackups }}
+limits:
+  maxSupportBundlesPerHour: {{ .Values.supportBundle.maxBundlesPerHour }}
+supportBundle:
+  enabled: {{ .Values.supportBundle.enabled }}
+  directory: "/var/run/antrea-ui/supportbundles"
+  maxBundles: {{ .Values.supportBundle.maxBundles }}
+  maxConcurrent: {{ .Values.supportBundle.maxConcurrent }}
+  maxTotalBytes: {{ int64 .Values.supportBundle.maxTotalBytes }}
+  maxSourceBytes: {{ int64 .Values.supportBundle.maxSourceBytes }}
+  ttl: {{ .Values.supportBundle.ttl | quote }}
+  collectionTimeout: {{ .Values.supportBundle.collectionTimeout | quote }}
+  {{- with .Values.supportBundle.extraSources }}
+  extraSources:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
 plugins:
   labelSelector: {{ .Values.plugins.labelSelector | quote }}
   namespace: {{ .Values.plugins.namespace | quote }}

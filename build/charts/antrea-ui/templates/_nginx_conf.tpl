@@ -63,6 +63,22 @@ server {
             {{- end }}
         }
 
+        # Support bundle downloads can be large: stream them instead of buffering them to nginx's
+        # own temporary files.
+        location /api/v1/supportbundle {
+            proxy_http_version 1.1;
+            proxy_pass_request_headers on;
+            proxy_hide_header Access-Control-Allow-Origin;
+            proxy_buffering off;
+            proxy_pass http://127.0.0.1:{{ .Values.backend.port }};
+            {{- $secure := include "cookieSecure" . -}}
+            {{- if eq $secure "true" }}
+            proxy_cookie_flags ~ httponly secure;
+            {{- else }}
+            proxy_cookie_flags ~ httponly;
+            {{- end }}
+        }
+
         location /api {
             proxy_http_version 1.1;
             proxy_pass_request_headers on;

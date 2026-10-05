@@ -25,6 +25,7 @@ import (
 	accesshandler "antrea.io/antrea-ui/pkg/handlers/access"
 	"antrea.io/antrea-ui/pkg/handlers/antreasvc"
 	"antrea.io/antrea-ui/pkg/handlers/flowstream"
+	"antrea.io/antrea-ui/pkg/handlers/supportbundle"
 	"antrea.io/antrea-ui/pkg/handlers/traceflow"
 	"antrea.io/antrea-ui/pkg/k8s"
 	"antrea.io/antrea-ui/pkg/password"
@@ -69,6 +70,8 @@ type Options struct {
 	// AccessResolver answers namespace-discovery and cluster-scope-probe questions for
 	// GET /api/v1/access-summary.
 	AccessResolver accesshandler.Resolver
+	// SupportBundleManager serves /api/v1/supportbundle. Nil means the feature is disabled.
+	SupportBundleManager supportbundle.Manager
 }
 
 type Server struct {
@@ -115,6 +118,7 @@ func NewServer(o Options) (*Server, error) {
 			Authenticator:            authenticator,
 			ClientFactory:            o.ClientFactory,
 			AccessResolver:           o.AccessResolver,
+			SupportBundleManager:     o.SupportBundleManager,
 		}),
 		passwordStore: o.PasswordStore,
 		sessionStore:  o.SessionStore,

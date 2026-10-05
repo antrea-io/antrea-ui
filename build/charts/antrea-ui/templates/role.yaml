@@ -29,13 +29,18 @@ rules:
       - "antrea-ui-admin"
     verbs:
       - "impersonate"
-{{- if and .Values.flowAggregator.enabled .Values.auth.basic.enable }}
-  # Lets antrea-ui mint a real, short-lived token for antrea-ui-admin and present it to the Flow
-  # Aggregator's FlowStreamService, which does not support impersonation (see
-  # serviceaccounts.yaml). Only admin-password sessions (session.KindImpersonate) need this: they
-  # are the one login mode with no bearer token or client cert of their own to present to FA.
-  # Gated on auth.basic.enable too so the grant does not exist - and cannot be used to mint
-  # antrea-ui-admin tokens from outside the cluster - when that login mode is disabled.
+  # Lets antrea-ui mint real, short-lived tokens for antrea-ui-admin (see serviceaccounts.yaml),
+  # to present to services that do not support impersonation:
+  # - the Flow Aggregator's FlowStreamService, for admin-password sessions
+  #   (session.KindImpersonate), the one login mode with no bearer token or client cert of its
+  #   own.
+  # - support bundle sources reached by URL, which are always called as antrea-ui-admin. Those
+  #   tokens are minted with an audience of the source's own, which the apiserver rejects.
+  # antrea-ui can already act as antrea-ui-admin through the impersonation rule above, so this
+  # adds no new access. RBAC cannot limit the audience or lifetime of the tokens minted, though:
+  # a holder of antrea-ui's credential could mint antrea-ui-admin tokens that outlive it (deleting
+  # the antrea-ui-admin ServiceAccount revokes them). The grant does not depend on which features
+  # are enabled, which keeps this Role the same whatever the configuration.
   - apiGroups:
       - ""
     resources:
@@ -44,4 +49,3 @@ rules:
       - "antrea-ui-admin"
     verbs:
       - "create"
-{{- end }}
