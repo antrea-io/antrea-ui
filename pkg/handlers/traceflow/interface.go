@@ -32,6 +32,6 @@ type RequestsHandler interface {
 	// GetRequestResult returns the Traceflow object, and a boolean to indicate whether the
 	// Traceflow request is completed. Completed means that the Traceflow Status has either been
 	// updated to "Succeeded" or "Failed".
-	GetRequestResult(ctx context.Context, client dynamic.Interface, requestID string) (map[string]interface{}, bool, error)
+	GetRequestResult(ctx context.Context, client dynamic.Interface, requestID string) (map[string]any, bool, error)
 	DeleteRequest(ctx context.Context, client dynamic.Interface, requestID string) (bool, error)
 }

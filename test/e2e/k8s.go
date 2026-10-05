@@ -17,7 +17,7 @@ package e2e
 import (
 	"context"
 	"fmt"
-	"math/rand"
+	"math/rand/v2"
 	"strings"
 	"time"
 
@@ -28,7 +28,6 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
-	"k8s.io/utils/ptr"
 )
 
 func createK8sClient(kubeconfigPath string) (*rest.Config, kubernetes.Interface, error) {
@@ -63,15 +62,13 @@ func getAntreaUIPod(ctx context.Context) (*corev1.Pod, error) {
 var (
 	// A DNS-1123 subdomain must consist of lower case alphanumeric characters
 	lettersAndDigits = []rune("abcdefghijklmnopqrstuvwxyz0123456789")
-
-	randGen = rand.New(rand.NewSource(time.Now().Unix())) // #nosec G404: random number generator not used for security purposes
 )
 
 func randSeq(n int) string {
 	b := make([]rune, n)
 	for i := range b {
 		// #nosec G404: random number generator not used for security purposes
-		randIdx := randGen.Intn(len(lettersAndDigits))
+		randIdx := rand.IntN(len(lettersAndDigits))
 		b[i] = lettersAndDigits[randIdx]
 	}
 	return string(b)
@@ -128,7 +125,7 @@ func createTestDeployment(ctx context.Context, namespace string, name string, nu
 						},
 					},
 					// Set it to 1s for immediate shutdown to reduce test run time and to avoid affecting subsequent tests.
-					TerminationGracePeriodSeconds: ptr.To[int64](1),
+					TerminationGracePeriodSeconds: new(int64(1)),
 				},
 			},
 		},

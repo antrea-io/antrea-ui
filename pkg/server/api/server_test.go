@@ -137,11 +137,9 @@ func newTestServer(t *testing.T, options ...testServerOptions) *testServer {
 	t.Cleanup(pluginRegistry.Close)
 	stopCh := make(chan struct{})
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		pluginRegistry.RunConfigMapWatch(stopCh)
-	}()
+	})
 	t.Cleanup(func() {
 		close(stopCh)
 		wg.Wait()

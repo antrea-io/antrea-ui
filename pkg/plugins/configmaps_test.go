@@ -365,7 +365,7 @@ type countingIndexer struct {
 	gets atomic.Int64
 }
 
-func (i *countingIndexer) GetByKey(key string) (interface{}, bool, error) {
+func (i *countingIndexer) GetByKey(key string) (any, bool, error) {
 	i.gets.Add(1)
 	return i.Indexer.GetByKey(key)
 }

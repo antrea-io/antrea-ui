@@ -156,10 +156,7 @@ func (p *OIDCProvider) Init(ctx context.Context) error {
 		case <-ctx.Done():
 			return fmt.Errorf("failed to initialize OIDC provider with OIDC discovery: %w", ctx.Err())
 		case <-time.After(wait):
-			wait = 2 * wait
-			if wait > maxWait {
-				wait = maxWait
-			}
+			wait = min(2*wait, maxWait)
 		}
 	}
 
@@ -200,7 +197,7 @@ type oidcRefresher struct {
 }
 
 func (r *oidcRefresher) Refresh(ctx context.Context, refreshToken []byte) (session.Credential, []byte, error) {
-	fail := func(format string, args ...interface{}) (session.Credential, []byte, error) {
+	fail := func(format string, args ...any) (session.Credential, []byte, error) {
 		return session.Credential{}, nil, fmt.Errorf(format, args...)
 	}
 	if len(refreshToken) == 0 {

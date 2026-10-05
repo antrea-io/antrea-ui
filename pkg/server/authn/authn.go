@@ -264,11 +264,11 @@ func bearerToken(req *http.Request) (string, bool) {
 	if header == "" {
 		return "", false
 	}
-	parts := strings.SplitN(header, " ", 2)
-	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") || parts[1] == "" {
+	scheme, token, ok := strings.Cut(header, " ")
+	if !ok || !strings.EqualFold(scheme, "Bearer") || token == "" {
 		return "", false
 	}
-	return parts[1], true
+	return token, true
 }
 
 // checkCSRF guards cookie-authenticated requests. SameSite=Strict on the session cookie is the

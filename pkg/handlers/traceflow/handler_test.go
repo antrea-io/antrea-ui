@@ -39,14 +39,14 @@ func setup(t *testing.T, clock clock.Clock) (*requestsHandler, *dynamicfake.Fake
 	return handler, k8sClient
 }
 
-func getTraceflow() map[string]interface{} {
-	return map[string]interface{}{
-		"spec": map[string]interface{}{
-			"source": map[string]interface{}{
+func getTraceflow() map[string]any {
+	return map[string]any{
+		"spec": map[string]any{
+			"source": map[string]any{
 				"namespace": "default",
 				"pod":       "podX",
 			},
-			"destination": map[string]interface{}{
+			"destination": map[string]any{
 				"namespace": "default",
 				"pod":       "podY",
 			},
@@ -73,7 +73,6 @@ func TestRequestsHandler(t *testing.T) {
 	}
 
 	for _, tc := range testCases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			h, k8sClient := setup(t, &clock.RealClock{})
 			request := &Request{
@@ -91,7 +90,7 @@ func TestRequestsHandler(t *testing.T) {
 
 			traceflow, err := k8sClient.Resource(traceflowGVR).Get(ctx, tfName, metav1.GetOptions{})
 			require.NoError(t, err)
-			traceflow.Object["status"] = map[string]interface{}{
+			traceflow.Object["status"] = map[string]any{
 				"phase": tc.phase,
 			}
 			_, err = k8sClient.Resource(traceflowGVR).Update(ctx, traceflow, metav1.UpdateOptions{})

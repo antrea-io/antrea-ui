@@ -81,7 +81,7 @@ func (h *requestsHandler) CreateRequest(ctx context.Context, client dynamic.Inte
 	return requestID, nil
 }
 
-func (h *requestsHandler) GetRequestResult(ctx context.Context, client dynamic.Interface, requestID string) (map[string]interface{}, bool, error) {
+func (h *requestsHandler) GetRequestResult(ctx context.Context, client dynamic.Interface, requestID string) (map[string]any, bool, error) {
 	return h.getTraceflow(ctx, client, requestID)
 }
 
@@ -96,7 +96,7 @@ func (h *requestsHandler) DeleteRequest(ctx context.Context, client dynamic.Inte
 	}
 	return true, nil
 }
-func (h *requestsHandler) getTraceflow(ctx context.Context, client dynamic.Interface, tfName string) (map[string]interface{}, bool, error) {
+func (h *requestsHandler) getTraceflow(ctx context.Context, client dynamic.Interface, tfName string) (map[string]any, bool, error) {
 	traceflow, err := client.Resource(traceflowGVR).Get(ctx, tfName, metav1.GetOptions{})
 	if err != nil {
 		return nil, false, err
@@ -111,12 +111,12 @@ func (h *requestsHandler) getTraceflow(ctx context.Context, client dynamic.Inter
 	return traceflow.Object, (phase == "Succeeded" || phase == "Failed"), nil
 }
 
-func (h *requestsHandler) createTraceflow(ctx context.Context, client dynamic.Interface, tfName string, object map[string]interface{}) error {
+func (h *requestsHandler) createTraceflow(ctx context.Context, client dynamic.Interface, tfName string, object map[string]any) error {
 	traceflow := &unstructured.Unstructured{
-		Object: map[string]interface{}{
+		Object: map[string]any{
 			"apiVersion": traceflowGVR.Group + "/" + traceflowGVR.Version,
 			"kind":       "Traceflow",
-			"metadata": map[string]interface{}{
+			"metadata": map[string]any{
 				"name": tfName,
 			},
 			"spec": object["spec"],

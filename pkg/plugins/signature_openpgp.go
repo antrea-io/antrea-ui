@@ -77,7 +77,7 @@ func newOpenPGPPolicy() *packet.Config {
 	// later go-crypto that maps a newer crypto.Hash, which would otherwise fall outside the map
 	// and be accepted.
 	rejectedHashes := make(map[crypto.Hash]bool)
-	for h := crypto.Hash(0); h < 256; h++ {
+	for h := range crypto.Hash(256) {
 		if !allowedHashes[h] {
 			rejectedHashes[h] = true
 		}
@@ -91,7 +91,7 @@ func newOpenPGPPolicy() *packet.Config {
 		packet.PubKeyAlgoEd448:   true,
 	}
 	rejectedPublicKeyAlgorithms := make(map[packet.PublicKeyAlgorithm]bool)
-	for i := 0; i < 256; i++ {
+	for i := range 256 {
 		if algorithm := packet.PublicKeyAlgorithm(i); !allowedPublicKeyAlgorithms[algorithm] {
 			rejectedPublicKeyAlgorithms[algorithm] = true
 		}

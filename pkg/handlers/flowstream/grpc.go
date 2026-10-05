@@ -494,8 +494,8 @@ func (h *GRPCFlowStreamSubscriber) classifyStreamErr(err error) *StreamError {
 // names the subject it reviewed, not the antrea-ui session it arrived from, so this line is what
 // ties the two together.
 func (h *GRPCFlowStreamSubscriber) logDenial(ctx context.Context, err error) {
-	var streamErr *StreamError
-	if !errors.As(err, &streamErr) || streamErr.Code != StreamErrorCodeForbidden {
+	streamErr, ok := errors.AsType[*StreamError](err)
+	if !ok || streamErr.Code != StreamErrorCodeForbidden {
 		return
 	}
 	username := ""

@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -91,8 +92,8 @@ func ClientKeyIP(req *http.Request) string {
 		for _, v := range values {
 			parts = append(parts, strings.Split(v, ",")...)
 		}
-		for i := len(parts) - 1; i >= 0; i-- {
-			part := strings.TrimSpace(parts[i])
+		for _, part := range slices.Backward(parts) {
+			part = strings.TrimSpace(part)
 			ip := net.ParseIP(part)
 			if ip != nil && !ip.IsPrivate() {
 				return ip

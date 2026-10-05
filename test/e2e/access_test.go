@@ -20,7 +20,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"sort"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -278,9 +278,9 @@ func TestAccessSummary(t *testing.T) {
 				return false
 			}
 			namespaces := summary.Namespaces
-			sort.Strings(namespaces)
+			slices.Sort(namespaces)
 			expected := []string{homeNs, otherNs}
-			sort.Strings(expected)
+			slices.Sort(expected)
 			return assert.ObjectsAreEqual(expected, namespaces)
 		}, 30*time.Second, time.Second, "namespaces should list both RoleBinding namespaces once the watch syncs")
 	})

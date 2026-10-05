@@ -61,9 +61,9 @@ func (r *Registry) RunConfigMapWatch(stopCh <-chan struct{}) {
 	// does - see processConfigMapQueueItem.
 	queue := workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[string]())
 	if _, err := informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc:    func(obj interface{}) { r.enqueueConfigMap(queue, obj) },
-		UpdateFunc: func(_, newObj interface{}) { r.enqueueConfigMap(queue, newObj) },
-		DeleteFunc: func(obj interface{}) { r.enqueueConfigMap(queue, obj) },
+		AddFunc:    func(obj any) { r.enqueueConfigMap(queue, obj) },
+		UpdateFunc: func(_, newObj any) { r.enqueueConfigMap(queue, newObj) },
+		DeleteFunc: func(obj any) { r.enqueueConfigMap(queue, obj) },
 	}); err != nil {
 		r.logger.Error(err, "failed to register plugin ConfigMap event handler")
 		return
@@ -73,19 +73,17 @@ func (r *Registry) RunConfigMapWatch(stopCh <-chan struct{}) {
 	// matters: queue.ShutDown only unblocks the worker's next queue.Get, it doesn't wait for the
 	// worker goroutine to actually exit.
 	var wg sync.WaitGroup
-	wg.Add(1)
 	defer wg.Wait()
 	defer queue.ShutDown()
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		r.runConfigMapWorker(informer.GetIndexer(), queue)
-	}()
+	})
 
 	r.logger.Info("Starting plugin ConfigMap watch", "namespace", r.namespace, "labelSelector", r.labelSelector)
 	informer.Run(stopCh)
 }
 
-func asConfigMap(obj interface{}) *corev1.ConfigMap {
+func asConfigMap(obj any) *corev1.ConfigMap {
 	if cm, ok := obj.(*corev1.ConfigMap); ok {
 		return cm
 	}
@@ -99,7 +97,7 @@ func asConfigMap(obj interface{}) *corev1.ConfigMap {
 
 // enqueueConfigMap adds obj's namespace/name key to queue, the same key shape
 // cache.MetaNamespaceKeyFunc and indexer.GetByKey already agree on - see processConfigMapQueueItem.
-func (r *Registry) enqueueConfigMap(queue workqueue.TypedRateLimitingInterface[string], obj interface{}) {
+func (r *Registry) enqueueConfigMap(queue workqueue.TypedRateLimitingInterface[string], obj any) {
 	cm := asConfigMap(obj)
 	if cm == nil {
 		return
@@ -215,7 +213,7 @@ func (r *Registry) handleUpsert(cm *corev1.ConfigMap) bool {
 // isolation; RunConfigMapWatch's own queue instead detects a deletion by the ConfigMap's absence
 // from the indexer (see processConfigMapQueueItem) rather than calling this from a DeleteFunc,
 // since the object a delete event carries can already be stale by the time the queue gets to it.
-func (r *Registry) handleDelete(obj interface{}) {
+func (r *Registry) handleDelete(obj any) {
 	cm := asConfigMap(obj)
 	if cm == nil {
 		return

@@ -30,7 +30,7 @@ import (
 	traceflowhandler "antrea.io/antrea-ui/pkg/handlers/traceflow"
 )
 
-func mustMarshal(obj interface{}) []byte {
+func mustMarshal(obj any) []byte {
 	b, err := json.Marshal(obj)
 	if err != nil {
 		panic("Failed to marshal object to JSON")
@@ -39,13 +39,13 @@ func mustMarshal(obj interface{}) []byte {
 }
 
 var (
-	tf = map[string]interface{}{
-		"spec": map[string]interface{}{
-			"source": map[string]interface{}{
+	tf = map[string]any{
+		"spec": map[string]any{
+			"source": map[string]any{
 				"namespace": "default",
 				"pod":       "podX",
 			},
-			"destination": map[string]interface{}{
+			"destination": map[string]any{
 				"namespace": "default",
 				"pod":       "podY",
 			},
@@ -97,9 +97,9 @@ func TestTraceflowRequest(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, statusURI, url.RequestURI())
 
-	tfResult := map[string]interface{}{
+	tfResult := map[string]any{
 		"spec": tf["spec"],
-		"status": map[string]interface{}{
+		"status": map[string]any{
 			"phase": "Succeeded",
 		},
 	}
@@ -124,7 +124,7 @@ func TestTraceflowRequest(t *testing.T) {
 	ts.traceflowRequestsHandler.EXPECT().GetRequestResult(gomock.Any(), gomock.Any(), requestID).Return(tfResult, true, nil)
 	ts.router.ServeHTTP(rr, req)
 	require.Equal(t, http.StatusOK, rr.Code)
-	var result map[string]interface{}
+	var result map[string]any
 	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &result))
 	assert.Equal(t, tfResult, result)
 

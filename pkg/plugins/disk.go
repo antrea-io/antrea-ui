@@ -80,13 +80,11 @@ func (r *Registry) RunDirectoryWatch(dir string, stopCh <-chan struct{}) {
 	// last - defers unwind LIFO) so ShutDown unblocks queue.Get before Wait blocks for the
 	// goroutine to actually exit.
 	var wg sync.WaitGroup
-	wg.Add(1)
 	defer wg.Wait()
 	defer queue.ShutDown()
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		r.runDiskPluginWorker(dir, watcher, queue)
-	}()
+	})
 
 	for _, e := range entries {
 		if isPluginSubdirectory(dir, e) {
@@ -261,7 +259,8 @@ func pluginNameFromEventPath(dir, path string) (string, bool) {
 	if err != nil || rel == ".." || rel == "." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return "", false
 	}
-	return strings.SplitN(filepath.ToSlash(rel), "/", 2)[0], true
+	name, _, _ := strings.Cut(filepath.ToSlash(rel), "/")
+	return name, true
 }
 
 // loadDiskPlugin (re)loads the plugin bundle in rootDir/pluginName and watches that subdirectory

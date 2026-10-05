@@ -131,7 +131,7 @@ func TestMaxLifetime(t *testing.T) {
 	require.NoError(t, err)
 
 	// Stay active throughout, so only the absolute cap can end the session.
-	for i := 0; i < 47; i++ {
+	for i := range 47 {
 		fakeClock.Step(15 * time.Minute)
 		_, err := st.Get(t.Context(), s.ID())
 		require.NoErrorf(t, err, "session should still be alive after %d minutes", 15*(i+1))
@@ -253,7 +253,7 @@ func TestGCSweepsExpiredNonRefreshableCredential(t *testing.T) {
 // share of the store is bounded well below it by the per-user cap.
 func TestMaxSessions(t *testing.T) {
 	st, _ := newTestStore(t, func(o *Options) { o.MaxSessions = 3 })
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		_, err := st.Create(distinctUserSpec(i))
 		require.NoError(t, err)
 	}
@@ -272,7 +272,7 @@ func TestMaxSessionsPerUser(t *testing.T) {
 	concrete := st.(*store)
 
 	ids := make([]string, 0, 5)
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		s, err := st.Create(bearerSpecForUser("greedy", fmt.Sprintf("tok-%d", i)))
 		// The login past the cap succeeds; it is that user's own oldest session that goes.
 		require.NoError(t, err)
@@ -355,7 +355,7 @@ func TestPerUserLimitExemptsAdminPassword(t *testing.T) {
 		o.MaxSessionsPerUser = 2
 	})
 	ids := make([]string, 0, 5)
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		s, err := st.Create(&Spec{
 			Mode:       ModeAdmin,
 			Username:   "admin",
@@ -399,7 +399,7 @@ func TestPerUserLimitIgnoresEmptyUsername(t *testing.T) {
 		o.MaxSessions = 10
 		o.MaxSessionsPerUser = 2
 	})
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		_, err := st.Create(bearerSpecForUser("", fmt.Sprintf("tok-%d", i)))
 		require.NoError(t, err)
 	}
@@ -427,7 +427,7 @@ func TestMaxSessionsReclaimsExpiredBeforeGC(t *testing.T) {
 		o.IdleTimeout = 30 * time.Minute
 	})
 	ids := make([]string, 0, 3)
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		s, err := st.Create(distinctUserSpec(i))
 		require.NoError(t, err)
 		ids = append(ids, s.ID())
@@ -504,7 +504,7 @@ func TestTransportIsBuiltOncePerSession(t *testing.T) {
 		builds.Add(1)
 		return http.DefaultTransport, nil, nil
 	}
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		_, err := s.transportFor(TransportKeyK8s, build)
 		require.NoError(t, err)
 	}
@@ -550,7 +550,7 @@ func TestGetKeepsAnActiveSessionAliveUpToTheAbsoluteCap(t *testing.T) {
 	s, err := st.Create(bearerSpec("tok"))
 	require.NoError(t, err)
 
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		fakeClock.Step(20 * time.Minute)
 		_, err = st.Get(t.Context(), s.ID())
 		require.NoError(t, err, "an actively-used session should not idle out")
@@ -569,7 +569,7 @@ func TestGC(t *testing.T) {
 	concrete := st.(*store)
 
 	ids := make([]string, 0, 200)
-	for i := 0; i < 200; i++ {
+	for i := range 200 {
 		s, err := st.Create(distinctUserSpec(i))
 		require.NoError(t, err)
 		ids = append(ids, s.ID())
@@ -796,12 +796,10 @@ func TestRefreshIsSingleFlight(t *testing.T) {
 	const concurrency = 3
 	var wg sync.WaitGroup
 	errs := make([]error, concurrency)
-	for i := 0; i < concurrency; i++ {
-		wg.Add(1)
-		go func(idx int) {
-			defer wg.Done()
-			_, errs[idx] = st.Get(t.Context(), s.ID())
-		}(i)
+	for i := range concurrency {
+		wg.Go(func() {
+			_, errs[i] = st.Get(t.Context(), s.ID())
+		})
 	}
 	// Give the goroutines a chance to pile up on the refresh mutex before releasing.
 	assert.Eventually(t, func() bool { return refresher.calls.Load() == 1 }, time.Second, time.Millisecond)

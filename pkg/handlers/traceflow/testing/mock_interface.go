@@ -82,10 +82,10 @@ func (mr *MockRequestsHandlerMockRecorder) DeleteRequest(ctx, client, requestID 
 }
 
 // GetRequestResult mocks base method.
-func (m *MockRequestsHandler) GetRequestResult(ctx context.Context, client dynamic.Interface, requestID string) (map[string]interface{}, bool, error) {
+func (m *MockRequestsHandler) GetRequestResult(ctx context.Context, client dynamic.Interface, requestID string) (map[string]any, bool, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "GetRequestResult", ctx, client, requestID)
-	ret0, _ := ret[0].(map[string]interface{})
+	ret0, _ := ret[0].(map[string]any)
 	ret1, _ := ret[1].(bool)
 	ret2, _ := ret[2].(error)
 	return ret0, ret1, ret2

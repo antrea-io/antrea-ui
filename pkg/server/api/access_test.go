@@ -79,11 +79,11 @@ func newFakeAccessK8sAPIServer(t *testing.T) *fakeAccessK8sAPIServer {
 		switch {
 		case strings.Contains(r.URL.Path, "selfsubjectreviews"):
 			w.WriteHeader(http.StatusCreated)
-			resp := map[string]interface{}{
+			resp := map[string]any{
 				"apiVersion": "authentication.k8s.io/v1",
 				"kind":       "SelfSubjectReview",
-				"status": map[string]interface{}{
-					"userInfo": map[string]interface{}{
+				"status": map[string]any{
+					"userInfo": map[string]any{
 						"username": f.username,
 						"groups":   f.groups,
 					},
@@ -169,9 +169,9 @@ func TestGetAccessSummaryClusterWideViewer(t *testing.T) {
 	ts.router.ServeHTTP(rr, req)
 	require.Equal(t, http.StatusOK, rr.Code)
 
-	var summary map[string]interface{}
+	var summary map[string]any
 	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &summary))
-	assert.Equal(t, []interface{}{"*"}, summary["namespaces"])
+	assert.Equal(t, []any{"*"}, summary["namespaces"])
 	assert.Equal(t, "alice", summary["username"])
 	assert.Equal(t, accesshandler.ClusterScopeProbeNamespace, fakeAPIServer.lastRulesNamespace)
 	assert.NotContains(t, summary, "namespace")
@@ -191,9 +191,9 @@ func TestGetAccessSummaryNamespaceScoped(t *testing.T) {
 	ts.router.ServeHTTP(rr, req)
 	require.Equal(t, http.StatusOK, rr.Code)
 
-	var summary map[string]interface{}
+	var summary map[string]any
 	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &summary))
-	assert.Equal(t, []interface{}{"ns-a", "ns-b"}, summary["namespaces"])
+	assert.Equal(t, []any{"ns-a", "ns-b"}, summary["namespaces"])
 }
 
 func TestGetAccessSummaryModeAdminSeesAllNamespaces(t *testing.T) {
@@ -210,9 +210,9 @@ func TestGetAccessSummaryModeAdminSeesAllNamespaces(t *testing.T) {
 	ts.router.ServeHTTP(rr, req)
 	require.Equal(t, http.StatusOK, rr.Code)
 
-	var summary map[string]interface{}
+	var summary map[string]any
 	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &summary))
-	assert.Equal(t, []interface{}{"*"}, summary["namespaces"])
+	assert.Equal(t, []any{"*"}, summary["namespaces"])
 }
 
 func TestGetAccessSummaryQueryNamespaceEchoedAndPassedToSSRR(t *testing.T) {
@@ -227,7 +227,7 @@ func TestGetAccessSummaryQueryNamespaceEchoedAndPassedToSSRR(t *testing.T) {
 	ts.router.ServeHTTP(rr, req)
 	require.Equal(t, http.StatusOK, rr.Code)
 
-	var summary map[string]interface{}
+	var summary map[string]any
 	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &summary))
 	assert.Equal(t, "rbac-test-alpha", summary["namespace"])
 	assert.Equal(t, "rbac-test-alpha", fakeAPIServer.lastRulesNamespace)
@@ -302,10 +302,10 @@ func TestGetAccessSummaryNoNamespacesIsEmptyArrayNotNull(t *testing.T) {
 	ts.router.ServeHTTP(rr, req)
 	require.Equal(t, http.StatusOK, rr.Code)
 
-	var summary map[string]interface{}
+	var summary map[string]any
 	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &summary))
 	// Not assert.Empty: that passes for null too.
-	assert.Equal(t, []interface{}{}, summary["namespaces"])
+	assert.Equal(t, []any{}, summary["namespaces"])
 }
 
 // The static-admin answer never comes from the resolver, so a broken resolver must not fail the
@@ -326,9 +326,9 @@ func TestGetAccessSummaryModeAdminUnaffectedByResolverFailure(t *testing.T) {
 	ts.router.ServeHTTP(rr, req)
 	require.Equal(t, http.StatusOK, rr.Code)
 
-	var summary map[string]interface{}
+	var summary map[string]any
 	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &summary))
-	assert.Equal(t, []interface{}{"*"}, summary["namespaces"])
+	assert.Equal(t, []any{"*"}, summary["namespaces"])
 }
 
 type assertError struct{}
@@ -348,9 +348,9 @@ func TestGetAccessSummaryClusterScopeProbeUnusable(t *testing.T) {
 	ts.router.ServeHTTP(rr, req)
 	require.Equal(t, http.StatusOK, rr.Code)
 
-	var summary map[string]interface{}
+	var summary map[string]any
 	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &summary))
-	rules := summary["rules"].(map[string]interface{})
+	rules := summary["rules"].(map[string]any)
 	assert.Equal(t, true, rules["incomplete"])
 }
 
@@ -367,8 +367,8 @@ func TestGetAccessSummaryClusterScopeProbeIrrelevantForNamespacedQuery(t *testin
 	ts.router.ServeHTTP(rr, req)
 	require.Equal(t, http.StatusOK, rr.Code)
 
-	var summary map[string]interface{}
+	var summary map[string]any
 	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &summary))
-	rules := summary["rules"].(map[string]interface{})
+	rules := summary["rules"].(map[string]any)
 	assert.NotEqual(t, true, rules["incomplete"])
 }

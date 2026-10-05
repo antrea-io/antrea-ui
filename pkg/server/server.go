@@ -132,6 +132,6 @@ func (s *Server) AddRoutes(router *gin.Engine) {
 	s.AddAuthRoutes(&router.RouterGroup)
 }
 
-func (s *Server) LogError(sError *errors.ServerError, msg string, keysAndValues ...interface{}) {
+func (s *Server) LogError(sError *errors.ServerError, msg string, keysAndValues ...any) {
 	errors.LogError(s.logger, sError, msg, keysAndValues...)
 }

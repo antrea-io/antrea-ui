@@ -180,8 +180,7 @@ func TestStreamFlowsHappyPath(t *testing.T) {
 	var foundFlowEvent bool
 	for scanner.Scan() {
 		line := scanner.Text()
-		if strings.HasPrefix(line, "data:") {
-			data := strings.TrimPrefix(line, "data:")
+		if data, ok := strings.CutPrefix(line, "data:"); ok {
 			var event apisv1.FlowStreamEvent
 			err := json.Unmarshal([]byte(data), &event)
 			require.NoError(t, err)
@@ -403,7 +402,7 @@ func (s *flowsChErrChRaceSubscriber) Subscribe(_ context.Context, _ *FlowStreamS
 func TestStreamFlowsErrorSurvivesFlowsChRace(t *testing.T) {
 	logger := testr.New(t)
 
-	for i := 0; i < 50; i++ {
+	for i := range 50 {
 		synctest.Test(t, func(t *testing.T) {
 			w := newWriteGate()
 			stub := &flowsChErrChRaceSubscriber{err: fmt.Errorf("at capacity"), started: w.started, delivered: make(chan struct{})}

@@ -7,10 +7,17 @@ linters:
     - gosec
     - govet
     - misspell
+    - modernize
     - revive
     - staticcheck
     - unused
   settings:
+    modernize:
+      disable:
+        # embedlit rewrites struct literals to set the fields of an embedded struct directly
+        # (Name: "x" in place of ObjectMeta: metav1.ObjectMeta{Name: "x"}). We keep the
+        # explicit form, which is the usual Kubernetes idiom.
+        - embedlit
     gosec:
       excludes:
         # G124: http.Cookie missing or has insecure Secure, HttpOnly, or SameSite attribute

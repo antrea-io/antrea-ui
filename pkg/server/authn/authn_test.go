@@ -422,7 +422,7 @@ func TestBearerValidationIsCached(t *testing.T) {
 		return rr.Code
 	}
 
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		require.Equal(t, http.StatusOK, send("good"))
 	}
 	assert.Equal(t, 1, validator.callCount(), "repeat requests with the same token should be served from the cache")
@@ -471,7 +471,7 @@ func TestBearerValidationMissesAreRateLimited(t *testing.T) {
 
 	// Every token is distinct, so every request is a cache miss and reaches the validator.
 	throttled := false
-	for i := 0; i < bearerMissBurst+20; i++ {
+	for i := range bearerMissBurst + 20 {
 		if send(fmt.Sprintf("token-%d", i)) == http.StatusTooManyRequests {
 			throttled = true
 			break

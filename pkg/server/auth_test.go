@@ -42,7 +42,7 @@ import (
 	cookieutils "antrea.io/antrea-ui/pkg/server/utils/cookie"
 )
 
-func postJSON(ts *testServer, path string, body interface{}) *httptest.ResponseRecorder {
+func postJSON(ts *testServer, path string, body any) *httptest.ResponseRecorder {
 	b, err := json.Marshal(body)
 	if err != nil {
 		panic(err)
