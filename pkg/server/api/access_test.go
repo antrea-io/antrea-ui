@@ -20,7 +20,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/http/httputil"
-	"net/url"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -35,11 +34,13 @@ import (
 	accesshandler "antrea.io/antrea-ui/pkg/handlers/access"
 	accesshandlertesting "antrea.io/antrea-ui/pkg/handlers/access/testing"
 	"antrea.io/antrea-ui/pkg/k8s"
+	k8stesting "antrea.io/antrea-ui/pkg/k8s/testing"
 )
 
 // fakeAccessK8sAPIServer answers the four self-review calls GetAccessSummary makes. It uses the
 // in-memory network of httptest.NewTestServer and not a loopback socket, so that it can also be
-// created in a testing/synctest bubble: see newTestServerForAccess for how clients reach it.
+// created in a testing/synctest bubble: see k8stesting.InMemoryServerConfig for how clients reach
+// it.
 type fakeAccessK8sAPIServer struct {
 	*httptest.Server
 	username              string
@@ -129,22 +130,9 @@ func newFakeAccessK8sAPIServer(t *testing.T) *fakeAccessK8sAPIServer {
 func newTestServerForAccess(t *testing.T, accessResolver *accesshandlertesting.MockResolver) (*testServer, *fakeAccessK8sAPIServer) {
 	ts := newTestServer(t)
 	fakeAPIServer := newFakeAccessK8sAPIServer(t)
-	// Only the fake API server's own client can reach it, as it is not listening on a real
-	// address. Its transport is used as is for impersonated requests, and the transports the
-	// ClientFactory builds from the config have to dial the same way. That dial function
-	// ignores the address, so Host can be a name that never resolves: if a transport ever
-	// stopped dialing the fake API server, its requests would fail instead of reaching a real
-	// host. Unlike a loopback address, such a Host is subject to the proxy configured in the
-	// environment, if any, hence Proxy.
-	fakeAPIServerTransport, ok := fakeAPIServer.Client().Transport.(*http.Transport)
-	require.True(t, ok)
-	require.NotNil(t, fakeAPIServerTransport.DialContext)
-	clientFactory, err := k8s.NewClientFactory(&rest.Config{
-		Host:          "http://fake-apiserver.invalid",
-		ContentConfig: rest.ContentConfig{ContentType: "application/json"},
-		Dial:          fakeAPIServerTransport.DialContext,
-		Proxy:         func(*http.Request) (*url.URL, error) { return nil, nil },
-	}, fakeAPIServerTransport, session.TransportKeyK8s)
+	config, fakeAPIServerTransport := k8stesting.InMemoryServerConfig(t, fakeAPIServer.Server)
+	config.ContentConfig = rest.ContentConfig{ContentType: "application/json"}
+	clientFactory, err := k8s.NewClientFactory(config, fakeAPIServerTransport, session.TransportKeyK8s)
 	require.NoError(t, err)
 	ts.s.clientFactory = clientFactory
 	if accessResolver != nil {

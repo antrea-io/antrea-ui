@@ -33,6 +33,7 @@ import (
 	"k8s.io/client-go/transport"
 
 	"antrea.io/antrea-ui/pkg/auth/session"
+	k8stesting "antrea.io/antrea-ui/pkg/k8s/testing"
 )
 
 // recordingServer captures the last request it saw, so tests can assert on what reached the wire.
@@ -42,6 +43,10 @@ type recordingServer struct {
 	peer   []*x509.Certificate
 }
 
+// newRecordingServer starts a TLS server on a loopback port when tlsEnabled is set: the client
+// then does its own TLS handshake, which the in-memory network of httptest.NewTestServer has no
+// documented entry point for. Otherwise the server uses that in-memory network: see
+// k8stesting.InMemoryServerConfig for how clients reach it.
 func newRecordingServer(t *testing.T, tlsEnabled bool) *recordingServer {
 	rs := &recordingServer{}
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -55,10 +60,10 @@ func newRecordingServer(t *testing.T, tlsEnabled bool) *recordingServer {
 		rs.Server = httptest.NewUnstartedServer(handler)
 		rs.TLS = &tls.Config{ClientAuth: tls.RequestClientCert, MinVersion: tls.VersionTLS12}
 		rs.StartTLS()
+		t.Cleanup(rs.Close)
 	} else {
-		rs.Server = httptest.NewServer(handler)
+		rs.Server = httptest.NewTestServer(t, handler)
 	}
-	t.Cleanup(rs.Close)
 	return rs
 }
 
@@ -85,15 +90,16 @@ func TestTransportForBearer(t *testing.T) {
 	ts := newRecordingServer(t, false)
 	// The SA transport would add antrea-ui's own token; the user's bearer token must be what
 	// reaches the API server, so the factory has to layer it on an anonymous base instead.
-	saTransport := transport.NewBearerAuthRoundTripper("antrea-ui-sa-token", http.DefaultTransport)
-	f, err := NewClientFactory(&rest.Config{Host: ts.URL}, saTransport, session.TransportKeyK8s)
+	config, tsTransport := k8stesting.InMemoryServerConfig(t, ts.Server)
+	saTransport := transport.NewBearerAuthRoundTripper("antrea-ui-sa-token", tsTransport)
+	f, err := NewClientFactory(config, saTransport, session.TransportKeyK8s)
 	require.NoError(t, err)
 
 	rt, cleanup, err := f.TransportFor(&session.Credential{Kind: session.KindBearer, Token: []byte("user-token")})
 	require.NoError(t, err)
 	assert.Nil(t, cleanup, "a bearer transport shares the base pool and owns nothing to clean up")
 
-	resp, err := f.HTTPClient(rt).Get(ts.URL)
+	resp, err := f.HTTPClient(rt).Get(config.Host)
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
@@ -103,15 +109,16 @@ func TestTransportForBearer(t *testing.T) {
 
 func TestTransportForImpersonate(t *testing.T) {
 	ts := newRecordingServer(t, false)
-	saTransport := transport.NewBearerAuthRoundTripper("antrea-ui-sa-token", http.DefaultTransport)
-	f, err := NewClientFactory(&rest.Config{Host: ts.URL}, saTransport, session.TransportKeyK8s)
+	config, tsTransport := k8stesting.InMemoryServerConfig(t, ts.Server)
+	saTransport := transport.NewBearerAuthRoundTripper("antrea-ui-sa-token", tsTransport)
+	f, err := NewClientFactory(config, saTransport, session.TransportKeyK8s)
 	require.NoError(t, err)
 
 	userName := ServiceAccountUserName("kube-system", "antrea-ui-admin")
 	rt, _, err := f.TransportFor(&session.Credential{Kind: session.KindImpersonate, UserName: userName})
 	require.NoError(t, err)
 
-	resp, err := f.HTTPClient(rt).Get(ts.URL)
+	resp, err := f.HTTPClient(rt).Get(config.Host)
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
@@ -152,8 +159,7 @@ func TestTransportForUnsupportedKind(t *testing.T) {
 }
 
 func TestDynamicClient(t *testing.T) {
-	ts := newRecordingServer(t, false)
-	f, err := NewClientFactory(&rest.Config{Host: ts.URL}, http.DefaultTransport, session.TransportKeyK8s)
+	f, err := NewClientFactory(&rest.Config{Host: "https://localhost:6443"}, http.DefaultTransport, session.TransportKeyK8s)
 	require.NoError(t, err)
 	rt, _, err := f.TransportFor(&session.Credential{Kind: session.KindBearer, Token: []byte("user-token")})
 	require.NoError(t, err)
