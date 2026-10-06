@@ -73,7 +73,7 @@ func NewResolver(logger logr.Logger, clientset kubernetes.Interface) *resolver {
 
 // trimRoleBinding clears fields the resolver never reads, to keep the informer cache lean. Only
 // .metadata.namespace and .subjects are ever used.
-func trimRoleBinding(obj interface{}) (interface{}, error) {
+func trimRoleBinding(obj any) (any, error) {
 	rb, ok := obj.(*rbacv1.RoleBinding)
 	if !ok {
 		return obj, nil
@@ -96,9 +96,9 @@ func (r *resolver) Run(stopCh <-chan struct{}) {
 	lister := factory.Rbac().V1().RoleBindings().Lister()
 	informer := factory.Rbac().V1().RoleBindings().Informer()
 	if _, err := informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc:    func(obj interface{}) { r.handleRoleBindingEvent(obj) },
-		UpdateFunc: func(_, newObj interface{}) { r.handleRoleBindingEvent(newObj) },
-		DeleteFunc: func(obj interface{}) { r.handleRoleBindingEvent(obj) },
+		AddFunc:    func(obj any) { r.handleRoleBindingEvent(obj) },
+		UpdateFunc: func(_, newObj any) { r.handleRoleBindingEvent(newObj) },
+		DeleteFunc: func(obj any) { r.handleRoleBindingEvent(obj) },
 	}); err != nil {
 		r.logger.Error(err, "failed to register RoleBinding event handler")
 		return
@@ -119,7 +119,7 @@ func (r *resolver) Run(stopCh <-chan struct{}) {
 // handleRoleBindingEvent is the informer event handler. It only needs to react when the event
 // concerns the cluster-scope probe namespace; everything else affects NamespacesFor via the shared
 // lister with no bookkeeping required here.
-func (r *resolver) handleRoleBindingEvent(obj interface{}) {
+func (r *resolver) handleRoleBindingEvent(obj any) {
 	rb, ok := obj.(*rbacv1.RoleBinding)
 	if !ok {
 		if tombstone, ok := obj.(cache.DeletedFinalStateUnknown); ok {

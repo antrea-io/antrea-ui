@@ -364,12 +364,10 @@ func TestDebounceCollapsesBurstIntoOneDelayedReload(t *testing.T) {
 			queue.AddAfter("pod-counter", requeueDelay)
 		}
 
-		time.Sleep(requeueDelay - time.Nanosecond)
-		synctest.Wait()
+		synctest.Sleep(requeueDelay - time.Nanosecond)
 		assert.Empty(t, r.Index(), "must not reload before requeueDelay elapses")
 
-		time.Sleep(time.Nanosecond)
-		synctest.Wait()
+		synctest.Sleep(time.Nanosecond)
 		require.Len(t, r.Index(), 1)
 		assert.Equal(t, "pod-counter", r.Index()[0].Name)
 	})

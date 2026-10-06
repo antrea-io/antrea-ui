@@ -43,7 +43,7 @@ import (
 // The kubeconfig bytes are the caller's to discard as soon as this returns; nothing here retains
 // them, and no part of them is ever included in a returned error.
 func CredentialFromKubeconfig(data []byte) (session.Credential, error) {
-	fail := func(format string, args ...interface{}) (session.Credential, error) {
+	fail := func(format string, args ...any) (session.Credential, error) {
 		return session.Credential{}, fmt.Errorf(format, args...)
 	}
 

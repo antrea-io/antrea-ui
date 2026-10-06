@@ -54,7 +54,7 @@ func TestCredentialIsUnprintable(t *testing.T) {
 
 	// Structured loggers commonly marshal a wrapping struct, so the redaction has to survive
 	// being nested.
-	b, err = json.Marshal(map[string]interface{}{"credential": cred})
+	b, err = json.Marshal(map[string]any{"credential": cred})
 	require.NoError(t, err)
 	assert.NotContains(t, string(b), secretToken)
 }

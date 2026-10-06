@@ -54,7 +54,6 @@ func TestNewConfig(t *testing.T) {
 	}
 
 	for _, tc := range testCases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			config, err := newConfig(tc.rateStr, tc.burstSize)
 			if tc.expectedErr != "" {
@@ -112,7 +111,6 @@ func TestRateFromStr(t *testing.T) {
 	}
 
 	for _, tc := range testCases {
-		tc := tc
 		t.Run(tc.rateStr, func(t *testing.T) {
 			rate, err := rateFromStr(tc.rateStr)
 			if tc.expectedErr != "" {

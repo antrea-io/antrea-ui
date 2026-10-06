@@ -108,7 +108,7 @@ func (rw *K8sSecret) Write(ctx context.Context, hash []byte, salt []byte) error 
 	}
 	hashS := base64.StdEncoding.EncodeToString(hash)
 	saltS := base64.StdEncoding.EncodeToString(salt)
-	data := map[string]interface{}{
+	data := map[string]any{
 		// using hash and salt directly seems to work with the
 		// regular client, but not with the fake client (used for
 		// unit tests)
@@ -118,10 +118,10 @@ func (rw *K8sSecret) Write(ctx context.Context, hash []byte, salt []byte) error 
 	if !ok {
 		// create
 		secret := &unstructured.Unstructured{
-			Object: map[string]interface{}{
+			Object: map[string]any{
 				"apiVersion": k8sSecretGVR.Group + "/" + k8sSecretGVR.Version,
 				"kind":       "Secret",
-				"metadata": map[string]interface{}{
+				"metadata": map[string]any{
 					"namespace": rw.secretNamespace,
 					"name":      rw.secretName,
 				},

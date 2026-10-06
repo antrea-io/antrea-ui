@@ -79,7 +79,6 @@ func TestClientKeyIP(t *testing.T) {
 	}
 
 	for _, tc := range testCases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			req := &http.Request{
 				RemoteAddr: tc.remoteAddr,
@@ -178,14 +177,12 @@ func TestClientRateLimiterConcurrent(t *testing.T) {
 	}
 
 	var wg sync.WaitGroup
-	for i := 0; i < numClients; i++ {
+	for i := range numClients {
 		ip := clientIP(i)
-		for j := 0; j < numRequestsPerClient; j++ {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+		for range numRequestsPerClient {
+			wg.Go(func() {
 				resultsCh <- rl.testAllow(ip)
-			}()
+			})
 		}
 	}
 	wg.Wait()
@@ -195,7 +192,7 @@ func TestClientRateLimiterConcurrent(t *testing.T) {
 		assert.True(t, result)
 	}
 
-	for i := 0; i < numClients; i++ {
+	for i := range numClients {
 		assert.False(t, rl.testAllow(clientIP(i)))
 	}
 }

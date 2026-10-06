@@ -95,8 +95,7 @@ func streamErrorEvent(streamErr error) apisv1.FlowStreamErrorEvent {
 	// *StreamError has not been classified as permanent by anything on this path, so treating it
 	// as such here would halt the client's reconnect loop for good on what may well be transient.
 	evt := apisv1.FlowStreamErrorEvent{Message: streamErr.Error(), Retryable: true}
-	var se *StreamError
-	if errors.As(streamErr, &se) {
+	if se, ok := errors.AsType[*StreamError](streamErr); ok {
 		evt.Code = se.Code
 		evt.Retryable = se.Retryable
 	}
@@ -117,8 +116,7 @@ func streamErrorEvent(streamErr error) apisv1.FlowStreamErrorEvent {
 // configured. The failure is an upstream one, so it gets an upstream status; the client tells the
 // kinds apart from the response body's code/retryable fields, not from the status.
 func statusForStreamErr(err error) int {
-	var streamErr *StreamError
-	if errors.As(err, &streamErr) {
+	if streamErr, ok := errors.AsType[*StreamError](err); ok {
 		switch streamErr.Code {
 		case StreamErrorCodeResourceExhausted:
 			// Capacity, not a broken upstream: the one pre-200 failure worth retrying, and

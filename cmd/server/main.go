@@ -89,7 +89,7 @@ func ginLogger(logger logr.Logger, level int) gin.HandlerFunc {
 			errorMessage = lastError.Error()
 		}
 
-		keysAndValues := []interface{}{
+		keysAndValues := []any{
 			"code", statusCode,
 			"client", clientIP,
 			"method", method,

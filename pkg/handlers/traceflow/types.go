@@ -15,5 +15,5 @@
 package traceflow
 
 type Request struct {
-	Object map[string]interface{}
+	Object map[string]any
 }

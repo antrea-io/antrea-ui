@@ -156,6 +156,6 @@ func (s *Server) flowStreamDisabled(c *gin.Context) {
 	})
 }
 
-func (s *Server) LogError(sError *errors.ServerError, msg string, keysAndValues ...interface{}) {
+func (s *Server) LogError(sError *errors.ServerError, msg string, keysAndValues ...any) {
 	errors.LogError(s.logger, sError, msg, keysAndValues...)
 }

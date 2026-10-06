@@ -29,7 +29,7 @@ import (
 func (s *Server) CreateTraceflowRequest(c *gin.Context) {
 	var requestID string
 	if sError := func() *errors.ServerError {
-		var tfRequest map[string]interface{}
+		var tfRequest map[string]any
 		if err := c.BindJSON(&tfRequest); err != nil {
 			return &errors.ServerError{
 				Code:    http.StatusBadRequest,

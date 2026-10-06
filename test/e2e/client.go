@@ -26,7 +26,6 @@ import (
 
 	authenticationv1 "k8s.io/api/authentication/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/utils/ptr"
 
 	apisv1 "antrea.io/antrea-ui/apis/v1"
 )
@@ -57,7 +56,7 @@ func (p *AuthProvider) getAccessToken(ctx context.Context) (string, error) {
 	}
 	tr, err := k8sClient.CoreV1().ServiceAccounts(antreaNamespace).CreateToken(ctx, authProviderSAName, &authenticationv1.TokenRequest{
 		Spec: authenticationv1.TokenRequestSpec{
-			ExpirationSeconds: ptr.To(int64(authProviderTokenTTL / time.Second)),
+			ExpirationSeconds: new(int64(authProviderTokenTTL / time.Second)),
 		},
 	}, metav1.CreateOptions{})
 	if err != nil {

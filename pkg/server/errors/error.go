@@ -41,7 +41,7 @@ func HandleError(c *gin.Context, sError *ServerError) {
 	}
 }
 
-func LogError(logger logr.Logger, sError *ServerError, msg string, keysAndValues ...interface{}) {
+func LogError(logger logr.Logger, sError *ServerError, msg string, keysAndValues ...any) {
 	if sError == nil || sError.Err == nil {
 		return
 	}

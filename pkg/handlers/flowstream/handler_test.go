@@ -109,17 +109,6 @@ func TestParseFlowStreamFilter(t *testing.T) {
 type stubFlowStreamSubscriber struct {
 	events []apisv1.FlowStreamEvent
 	err    error
-	// closeFlowsChOnErr additionally closes flowsCh right after buffering err into errCh,
-	// reproducing the real GRPCFlowStreamSubscriber.Subscribe shape: every one of its error
-	// paths does "errCh <- err; return", and its deferred close(flowsCh)/close(errCh) then run
-	// with both channels ready at once. Left false by default (leaving flowsCh open) for
-	// tests that don't care about that race; see TestStreamFlowsErrorSurvivesFlowsChRace.
-	closeFlowsChOnErr bool
-	// delay, if set, buffers err into errCh (and closes flowsCh, if closeFlowsChOnErr) from a
-	// goroutine after delay instead of before Subscribe returns. Used to place the error after
-	// StreamFlows's initial synchronous wait so a test can still exercise the flowsCh/errCh race
-	// inside the later c.Stream loop.
-	delay time.Duration
 }
 
 func (s *stubFlowStreamSubscriber) Subscribe(_ context.Context, _ *FlowStreamScope, _ *FlowStreamFilter) (<-chan apisv1.FlowStreamEvent, <-chan error, <-chan struct{}) {
@@ -128,20 +117,11 @@ func (s *stubFlowStreamSubscriber) Subscribe(_ context.Context, _ *FlowStreamSco
 	ready := make(chan struct{})
 
 	if s.err != nil {
-		deliver := func() {
-			errCh <- s.err
-			if s.closeFlowsChOnErr {
-				close(flowsCh)
-			}
-			// Otherwise leave flowsCh open so the select picks up errCh first.
-		}
-		if s.delay > 0 {
-			go func() { time.Sleep(s.delay); deliver() }()
-		} else {
-			deliver()
-		}
-		// Left open: a failure that never reached a live stream must never signal readiness,
-		// the same as the real GRPCFlowStreamSubscriber (see grpc.go's Subscribe).
+		// The error is buffered before Subscribe returns and ready is left open, so
+		// StreamFlows reports it from its initial wait, as an HTTP error status. A failure
+		// that never reached a live stream must never signal readiness, the same as the real
+		// GRPCFlowStreamSubscriber (see grpc.go's Subscribe).
+		errCh <- s.err
 	} else {
 		close(ready)
 		for _, e := range s.events {
@@ -200,8 +180,7 @@ func TestStreamFlowsHappyPath(t *testing.T) {
 	var foundFlowEvent bool
 	for scanner.Scan() {
 		line := scanner.Text()
-		if strings.HasPrefix(line, "data:") {
-			data := strings.TrimPrefix(line, "data:")
+		if data, ok := strings.CutPrefix(line, "data:"); ok {
 			var event apisv1.FlowStreamEvent
 			err := json.Unmarshal([]byte(data), &event)
 			require.NoError(t, err)
@@ -323,8 +302,9 @@ func TestStreamFlowsUnauthenticatedIsNotA401(t *testing.T) {
 // closeNotifyRecorder adapts httptest.ResponseRecorder to gin's ResponseWriter, whose Stream
 // method type-asserts the underlying http.ResponseWriter to http.CloseNotifier (see gin's
 // (*responseWriter).CloseNotify) - httptest.ResponseRecorder alone does not implement it, so
-// calling c.Stream against a bare recorder panics. closec is never closed: nothing in these
-// tests simulates a client disconnect.
+// calling c.Stream against a bare recorder panics. closec is never closed: no test using this
+// recorder simulates a client disconnect (TestStreamStopsWhenClientDisconnects does it with a real
+// client).
 type closeNotifyRecorder struct {
 	*httptest.ResponseRecorder
 	closec chan bool
@@ -408,17 +388,21 @@ func (s *flowsChErrChRaceSubscriber) Subscribe(_ context.Context, _ *FlowStreamS
 // closed-flowsCh path and silently drop the error. Run enough iterations that a regression would
 // very likely produce at least one miss.
 //
-// Runs under synctest with the handler driven directly (via httptest.ResponseRecorder, see
-// closeNotifyRecorder) rather than against a real httptest.NewServer/http.Get pair: an
-// httptest.NewServer response body blocks on a real socket, which synctest does not consider
-// durably blocked, and the writeGate synchronization below relies on synctest recognizing the
-// StreamFlows goroutine as durably blocked in Write so this goroutine's <-w.started only proceeds
-// once it truly is - a real server makes both goroutines' progress a matter of OS scheduling
-// instead, which is exactly the kind of real-time dependency this rewrite removes.
+// The handler is driven directly rather than through a server and a client, with writeGate
+// standing in for its ResponseWriter (see closeNotifyRecorder): nothing here needs a client, and
+// this is the simplest way to gate the handler's writes.
+//
+// The interleaving is enforced by channels alone, and each iteration still runs in a synctest
+// bubble, to keep the handler's keep-alive ticker out of the race: when the test passes, a
+// goroutine is runnable at every point of an iteration, so the fake clock never advances and the
+// ticker never becomes a third ready case. An iteration which gets stuck also fails without
+// waiting on real time: as a synctest deadlock or, if the handler is parked in its select, because
+// the fake clock then fires the ticker, which ends the stream without the error event (the
+// request carries no session).
 func TestStreamFlowsErrorSurvivesFlowsChRace(t *testing.T) {
 	logger := testr.New(t)
 
-	for i := 0; i < 50; i++ {
+	for i := range 50 {
 		synctest.Test(t, func(t *testing.T) {
 			w := newWriteGate()
 			stub := &flowsChErrChRaceSubscriber{err: fmt.Errorf("at capacity"), started: w.started, delivered: make(chan struct{})}

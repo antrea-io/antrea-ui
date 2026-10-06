@@ -111,13 +111,13 @@ func TestAPI(t *testing.T) {
 		require.NoError(t, err)
 		require.Len(t, pods, 2)
 
-		tf := map[string]interface{}{
-			"spec": map[string]interface{}{
-				"source": map[string]interface{}{
+		tf := map[string]any{
+			"spec": map[string]any{
+				"source": map[string]any{
 					"namespace": ns,
 					"pod":       pods[0].Name,
 				},
-				"destination": map[string]interface{}{
+				"destination": map[string]any{
 					"namespace": ns,
 					"pod":       pods[1].Name,
 				},

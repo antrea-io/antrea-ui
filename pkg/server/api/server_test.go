@@ -88,11 +88,10 @@ type fakeCredentialValidator struct {
 }
 
 func (v *fakeCredentialValidator) ValidateCredential(_ context.Context, cred *session.Credential) (string, error) {
-	token := string(cred.Token)
-	if v.failed[token] {
+	if v.failed[string(cred.Token)] {
 		return "", apierrors.NewServiceUnavailable("API server is having a bad day")
 	}
-	if v.rejected[token] {
+	if v.rejected[string(cred.Token)] {
 		return "", apierrors.NewUnauthorized("invalid bearer token")
 	}
 	return v.username, nil
@@ -138,11 +137,9 @@ func newTestServer(t *testing.T, options ...testServerOptions) *testServer {
 	t.Cleanup(pluginRegistry.Close)
 	stopCh := make(chan struct{})
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		pluginRegistry.RunConfigMapWatch(stopCh)
-	}()
+	})
 	t.Cleanup(func() {
 		close(stopCh)
 		wg.Wait()

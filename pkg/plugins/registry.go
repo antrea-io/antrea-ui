@@ -37,9 +37,11 @@ package plugins
 import (
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
+	"strings"
 	"sync"
 
 	apisv1 "antrea.io/antrea-ui/apis/v1"
@@ -273,7 +275,7 @@ func (r *Registry) sortedEntries() []sourcedEntry {
 	for name, entry := range r.diskPlugins {
 		all = append(all, sourcedEntry{sortKey: directorySourceName + "/" + name, entry: entry})
 	}
-	sort.Slice(all, func(i, j int) bool { return all[i].sortKey < all[j].sortKey })
+	slices.SortFunc(all, func(a, b sourcedEntry) int { return strings.Compare(a.sortKey, b.sortKey) })
 	return all
 }
 
@@ -369,11 +371,7 @@ func (r *Registry) Index() []apisv1.PluginManifest {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	names := make([]string, 0, len(r.resolved))
-	for name := range r.resolved {
-		names = append(names, name)
-	}
-	sort.Strings(names)
+	names := slices.Sorted(maps.Keys(r.resolved))
 	manifests := make([]apisv1.PluginManifest, 0, len(r.resolved))
 	for _, name := range names {
 		manifests = append(manifests, r.resolved[name].manifest)

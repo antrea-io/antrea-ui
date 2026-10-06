@@ -15,9 +15,10 @@
 package session
 
 import (
+	"cmp"
 	"context"
 	"errors"
-	"sort"
+	"slices"
 	"sync"
 	"time"
 
@@ -238,12 +239,8 @@ func (st *store) enforcePerUserLimitLocked(capKey string) {
 	// Oldest last-seen first, so the sessions dropped are the ones the user is least likely to
 	// still have a tab open on. Creation time breaks ties, which matters when several logins
 	// land inside one clock tick and none of them has been used since.
-	sort.Slice(owned, func(i, j int) bool {
-		li, lj := owned[i].LastSeen(), owned[j].LastSeen()
-		if !li.Equal(lj) {
-			return li.Before(lj)
-		}
-		return owned[i].createdAt.Before(owned[j].createdAt)
+	slices.SortFunc(owned, func(a, b *Session) int {
+		return cmp.Or(a.LastSeen().Compare(b.LastSeen()), a.createdAt.Compare(b.createdAt))
 	})
 	evict := owned[:len(owned)-st.opts.MaxSessionsPerUser+1]
 	for _, s := range evict {
