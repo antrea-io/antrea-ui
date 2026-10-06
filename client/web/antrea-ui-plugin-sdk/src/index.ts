@@ -38,8 +38,11 @@ import type { EdgeExtraRenderer, FlowTableColumnsProcessor } from '@antrea/ui-co
  * plugin's entry module registers via customElements.define(...); the host renders it with the
  * same session-expiry wiring as its own built-in pages. Your element receives no credential:
  * calls to the Antrea UI backend authenticate with the session cookie the browser already holds,
- * so use apiFetch()/apiFetchJSON() from @antrea/ui-components/api (not the root entry, which
- * registers every custom element and would throw in the host) and add nothing of your own. */
+ * so a plain fetch with credentials: 'include' is enough, and you should add nothing of your own.
+ * If you want apiFetch()/apiFetchJSON(), they live in @antrea/ui-components/api (not the root
+ * entry, which registers every custom element and would throw in the host); that package is not
+ * published yet, so it has to be added to your plugin as a file: dependency. The SDK itself
+ * stays types-only and does not re-export them. */
 export interface PluginRoute {
     // The in-app route path, e.g. "/plugin/pod-counter". Must not start with "/api/" — that
     // prefix is reserved for the backend API (including serving plugin static assets), so a

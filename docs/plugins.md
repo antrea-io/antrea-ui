@@ -513,11 +513,16 @@ there's no host-provided import map for a runtime `import()`.
 The host passes your element no credential, and there is none to ask for:
 requests to the Antrea UI backend authenticate with the `antrea-ui-session`
 cookie the browser already holds, so `credentials: 'include'` is the whole of
-it. (`apiFetch`/`apiFetchJSON` from `@antrea/ui-components/api` do this for you,
-along with turning a non-2xx response into an `APIError`, if you would rather
-not hand-roll it. Import them from that subpath, not the package root: the
-root registers every custom element, which throws in the host, where those
-tags are already defined.) Never send an `Authorization` header of your own.
+it. The example below does exactly that with a plain `fetch`. If you would
+rather have `apiFetch`/`apiFetchJSON` (they also turn a non-2xx response into
+an `APIError`), note that `@antrea/ui-components` is not published to a
+registry yet, so a plugin outside this repo has to depend on it the same way
+it depends on the SDK: add
+`"@antrea/ui-components": "file:<path-to-this-repo>/client/web/antrea-ui-components"`
+to `package.json`, after building it (see below). Import from the
+`@antrea/ui-components/api` subpath, not the package root: the root registers
+every custom element, which throws in the host, where those tags are already
+defined. Never send an `Authorization` header of your own.
 
 `plugins/examples/pod-counter/src/index.ts`:
 
