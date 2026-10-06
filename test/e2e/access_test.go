@@ -337,3 +337,74 @@ func TestAccessSummary(t *testing.T) {
 		}, 30*time.Second, time.Second, "namespaces should become [\"*\"] once RBAC propagates")
 	})
 }
+
+// fetchNamespaceAccessSummaries is fetchAccessSummary for GET /api/v1/access-summary/namespaces,
+// and like it never fails the test itself, so that it can be used in a require.Eventually.
+func fetchNamespaceAccessSummaries(ctx context.Context, token string, namespaces ...string) (apisv1.NamespaceAccessSummaryList, error) {
+	var list apisv1.NamespaceAccessSummaryList
+	u := &url.URL{
+		Scheme:   "http",
+		Host:     host,
+		Path:     "api/v1/access-summary/namespaces",
+		RawQuery: url.Values{"namespace": namespaces}.Encode(),
+	}
+	resp, err := RequestURLWithClient(ctx, http.DefaultClient, "GET", u, nil, setAccessTokenMutator(token))
+	if err != nil {
+		return list, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		return list, fmt.Errorf("expected status %d, got %d: %s", http.StatusOK, resp.StatusCode, string(body))
+	}
+	// getResponseBody closes the body.
+	if err := getResponseBody(resp, &list); err != nil {
+		return list, err
+	}
+	return list, nil
+}
+
+// TestNamespaceAccessSummaries exercises GET /api/v1/access-summary/namespaces against a real API
+// server: each Namespace named gets what that Namespace grants, which is what lets a consumer tell
+// the Namespaces apart.
+func TestNamespaceAccessSummaries(t *testing.T) {
+	ctx := t.Context()
+	viewNs, err := createTestNamespace(ctx)
+	require.NoError(t, err)
+	defer deleteNamespace(ctx, viewNs)
+	editNs, err := createTestNamespace(ctx)
+	require.NoError(t, err)
+	defer deleteNamespace(ctx, editNs)
+	unboundNs, err := createTestNamespace(ctx)
+	require.NoError(t, err)
+	defer deleteNamespace(ctx, unboundNs)
+
+	token := createServiceAccountWithToken(ctx, t, viewNs, "per-namespace")
+	subject := rbacv1.Subject{Kind: rbacv1.ServiceAccountKind, Name: "per-namespace", Namespace: viewNs}
+	createRoleBinding(ctx, t, viewNs, "e2e-namespace-access-view", "view", subject)
+	createRoleBinding(ctx, t, editNs, "e2e-namespace-access-edit", "edit", subject)
+
+	var list apisv1.NamespaceAccessSummaryList
+	require.Eventually(t, func() bool {
+		var err error
+		list, err = fetchNamespaceAccessSummaries(ctx, token, viewNs, editNs, unboundNs)
+		if err != nil {
+			t.Logf("namespace access summaries request failed, retrying: %v", err)
+			return false
+		}
+		// RBAC changes take a moment to propagate: wait for the last grant to show.
+		return len(list.Items) == 3 && hasResourceRule(list.Items[1].Rules.ResourceRules, "", "pods", "create")
+	}, 30*time.Second, time.Second, "the RoleBindings should take effect")
+
+	require.Len(t, list.Items, 3)
+	assert.Equal(t, []string{viewNs, editNs, unboundNs},
+		[]string{list.Items[0].Namespace, list.Items[1].Namespace, list.Items[2].Namespace})
+
+	// "view" may read pods and "edit" may also create them, and a Namespace with no RoleBinding
+	// grants nothing of the kind: the same question has a different answer in each.
+	assert.True(t, hasResourceRule(list.Items[0].Rules.ResourceRules, "", "pods", "get"))
+	assert.False(t, hasResourceRule(list.Items[0].Rules.ResourceRules, "", "pods", "create"))
+	assert.True(t, hasResourceRule(list.Items[1].Rules.ResourceRules, "", "pods", "create"))
+	assert.False(t, hasResourceRule(list.Items[2].Rules.ResourceRules, "", "pods", "get"))
+	assert.False(t, list.Items[2].Rules.Incomplete)
+}

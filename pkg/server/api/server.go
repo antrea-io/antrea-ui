@@ -73,6 +73,9 @@ type Server struct {
 	frontendSettings         *apisv1.FrontendSettings
 	pluginRegistry           *plugins.Registry
 	accessResolver           accesshandler.Resolver
+	// namespaceAccess memoizes GET /api/v1/access-summary/namespaces per session, which costs one
+	// SelfSubjectRulesReview per candidate Namespace to answer.
+	namespaceAccess *namespaceAccessCache
 }
 
 func NewServer(o Options) *Server {
@@ -97,6 +100,7 @@ func NewServer(o Options) *Server {
 		frontendSettings:         buildFrontendSettingsFromConfig(o.Config),
 		pluginRegistry:           o.PluginRegistry,
 		accessResolver:           o.AccessResolver,
+		namespaceAccess:          newNamespaceAccessCache(),
 	}
 }
 
