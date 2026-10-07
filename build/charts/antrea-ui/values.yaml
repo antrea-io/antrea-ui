@@ -67,7 +67,10 @@ plugins:
   # both sources. A ConfigMap's own ~1MiB etcd size limit only bounds the compressed bytes, not
   # what they decompress to, and a plugin directory has no equivalent limit at all, so this is
   # what actually protects the backend from a maliciously high-ratio archive ("zip bomb")
-  # exhausting its disk. 0 means unbounded.
+  # exhausting its disk. It also caps the size of a bundle.zip that is downloaded rather than
+  # read from the ConfigMap (see bundleSource in docs/plugins.md), checked on the bytes
+  # received, independently of the decompressed size. 0 means unbounded, except that a plugin
+  # whose bundle is downloaded is refused unless this is positive.
   maxBundleBytes: 10485760
   signature:
     # -- When true, every plugin must ship a signature that verifies against at least one of

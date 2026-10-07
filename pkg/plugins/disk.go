@@ -16,6 +16,7 @@ package plugins
 
 import (
 	"archive/zip"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -419,6 +420,9 @@ func parsePluginArchive(pluginDir, dest string, maxBundleBytes int64, verifiers 
 	if err != nil {
 		return nil, err
 	}
+	if manifest.BundleSource != nil {
+		return nil, fmt.Errorf("manifest's 'bundleSource' is only supported for plugin ConfigMaps, not for a plugin directory that already holds its %s", bundleFileName)
+	}
 
 	// Through a SectionReader rather than bundle itself: the copy's offset is at EOF, where
 	// copyBundleForVerification's io.Copy left it, and reading from there would hash zero bytes
@@ -434,6 +438,9 @@ func parsePluginArchive(pluginDir, dest string, maxBundleBytes int64, verifiers 
 	}
 	return &pluginEntry{manifest: *manifest, diskRoot: extractRoot, verifiedBy: verifiedBy}, nil
 }
+
+// errBundleTooLarge is wrapped by copyBundleToTemp when the bundle exceeds maxBundleBytes.
+var errBundleTooLarge = errors.New("bundle exceeds size budget")
 
 // copyBundleForVerification copies pluginDir/bundle.zip into a private file next to dest, and
 // returns it open, along with its size. Every read after this one - the central directory, the
@@ -462,7 +469,14 @@ func copyBundleForVerification(pluginDir, dest string, maxBundleBytes int64) (*o
 		return nil, 0, fmt.Errorf("failed to open %s: %w", bundleFileName, err)
 	}
 	defer src.Close()
+	return copyBundleToTemp(src, dest, maxBundleBytes)
+}
 
+// copyBundleToTemp writes src, a bundle.zip from any source, into a private file next to dest
+// and returns it open, along with its size, refusing a bundle larger than maxBundleBytes (zero
+// means unbounded). See copyBundleForVerification for why every later read goes through the copy
+// and why the bound exists.
+func copyBundleToTemp(src io.Reader, dest string, maxBundleBytes int64) (*os.File, int64, error) {
 	// Alongside the extraction directory, not in the system temp dir: the copy then lands on the
 	// same filesystem whose space maxBundleBytes is meant to bound, and a process that dies
 	// before the caller's defer runs leaves it inside cacheRoot, which Close/the container
@@ -501,7 +515,7 @@ func copyBundleForVerification(pluginDir, dest string, maxBundleBytes int64) (*o
 		for {
 			n, err := src.Read(extra[:])
 			if n > 0 {
-				return nil, 0, fmt.Errorf("%s is larger than this plugin's bundle size budget (%d bytes), refusing to load it", bundleFileName, maxBundleBytes)
+				return nil, 0, fmt.Errorf("%s is larger than this plugin's bundle size budget (%d bytes), refusing to load it: %w", bundleFileName, maxBundleBytes, errBundleTooLarge)
 			}
 			if err == io.EOF {
 				break

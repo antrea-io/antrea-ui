@@ -161,19 +161,27 @@ func verifyManifestBundleDigest(verifiers []SignatureVerifier, manifest *apisv1.
 // truncated digest, a "sha256:" prefix, a typo - is a rejection rather than a "treat as absent",
 // so a malformed digest can't silently downgrade a plugin to unverified.
 func verifyBundleDigest(r io.Reader, wantHex string) error {
-	if len(wantHex) != sha256HexLen {
-		return fmt.Errorf("manifest's 'bundleSha256' must be %d hex characters", sha256HexLen)
+	if err := checkBundleSha256(wantHex); err != nil {
+		return err
 	}
-	want, err := hex.DecodeString(wantHex)
-	if err != nil {
-		return fmt.Errorf("manifest's 'bundleSha256' is not valid hex: %w", err)
-	}
+	want, _ := hex.DecodeString(wantHex)
 	h := sha256.New()
 	if _, err := io.Copy(h, r); err != nil {
 		return fmt.Errorf("failed to hash %s: %w", bundleFileName, err)
 	}
 	if !bytes.Equal(h.Sum(nil), want) {
 		return fmt.Errorf("%s does not match the manifest's 'bundleSha256'", bundleFileName)
+	}
+	return nil
+}
+
+// checkBundleSha256 reports whether digest is well-formed: 64 hex characters, in either case.
+func checkBundleSha256(digest string) error {
+	if len(digest) != sha256HexLen {
+		return fmt.Errorf("manifest's 'bundleSha256' must be %d hex characters", sha256HexLen)
+	}
+	if _, err := hex.DecodeString(digest); err != nil {
+		return fmt.Errorf("manifest's 'bundleSha256' is not valid hex: %w", err)
 	}
 	return nil
 }

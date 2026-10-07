@@ -93,6 +93,32 @@ func isReservedRoutePath(normalized string) bool {
 // not its content, since both callers only have names cheaply available (from bundle.zip's
 // central directory) before deciding whether the bundle is even worth extracting to disk.
 func validateManifest(manifestJSON []byte, names map[string]bool) (*apisv1.PluginManifest, error) {
+	manifest, err := parseManifest(manifestJSON)
+	if err != nil {
+		return nil, err
+	}
+	if err := checkManifestFiles(manifest, names); err != nil {
+		return nil, err
+	}
+	return manifest, nil
+}
+
+// checkManifestFiles checks that every file manifest references is one of names.
+func checkManifestFiles(manifest *apisv1.PluginManifest, names map[string]bool) error {
+	if !names[cleanEntryName(manifest.Entry)] {
+		return fmt.Errorf("entry file %q referenced by manifest not found in %s", manifest.Entry, bundleFileName)
+	}
+	if manifest.Federation != nil && !names[cleanEntryName(manifest.Federation.RemoteEntry)] {
+		return fmt.Errorf("remote entry file %q referenced by manifest's federation not found in %s", manifest.Federation.RemoteEntry, bundleFileName)
+	}
+	return nil
+}
+
+// parseManifest parses manifestJSON and checks everything about it that doesn't need the
+// bundle's contents. A manifest that downloads its bundle (see apisv1.PluginBundleSource) goes
+// through this before the download, so one that is malformed is never worth fetching a bundle
+// for.
+func parseManifest(manifestJSON []byte) (*apisv1.PluginManifest, error) {
 	var manifest apisv1.PluginManifest
 	if err := json.Unmarshal(manifestJSON, &manifest); err != nil {
 		return nil, fmt.Errorf("invalid %s: %w", manifestFileName, err)
@@ -104,8 +130,10 @@ func validateManifest(manifestJSON []byte, names map[string]bool) (*apisv1.Plugi
 		return nil, fmt.Errorf("manifest is missing 'entry'")
 	}
 	entry := cleanEntryName(manifest.Entry)
-	if !names[entry] {
-		return nil, fmt.Errorf("entry file %q referenced by manifest not found in %s", manifest.Entry, bundleFileName)
+	if manifest.BundleSource != nil {
+		if err := validateBundleSource(manifest.BundleSource); err != nil {
+			return nil, err
+		}
 	}
 	if manifest.Federation != nil {
 		if manifest.Federation.RemoteEntry == "" {
@@ -114,9 +142,6 @@ func validateManifest(manifestJSON []byte, names map[string]bool) (*apisv1.Plugi
 		remoteEntry := cleanEntryName(manifest.Federation.RemoteEntry)
 		if remoteEntry == entry {
 			return nil, fmt.Errorf("manifest's 'federation.remoteEntry' must not be the same file as 'entry' - the host always import()s 'entry' as a plain ES module, which a federation remote entry is not")
-		}
-		if !names[remoteEntry] {
-			return nil, fmt.Errorf("remote entry file %q referenced by manifest's federation not found in %s", manifest.Federation.RemoteEntry, bundleFileName)
 		}
 		if len(manifest.Federation.Routes) == 0 {
 			return nil, fmt.Errorf("manifest's 'federation.routes' must not be empty")
