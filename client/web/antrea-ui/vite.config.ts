@@ -28,8 +28,13 @@ export default defineConfig({
         // resolve to a stale prebuilt bundle instead of picking up source edits. Send the bare
         // specifier straight to source instead, so `yarn start`/`yarn build` here reload on
         // changes to antrea-ui-components — a RegExp (not a plain string) so this doesn't also
-        // catch the separate "./src/tokens.css" subpath export, which should keep resolving
-        // normally.
+        // catch the separate "./src/tokens.css" and "./api" subpath exports, which should keep
+        // resolving normally. Nothing in the host imports "./api" today; if it ever did, it would
+        // resolve to dist/api.js while the root resolves to source, giving a second module
+        // instance with its own apiBase (or failing if dist/ is unbuilt). The root only
+        // re-exports APIError, setApiBase and getApiBase, not apiFetch/apiFetchJSON, so such an
+        // importer would need a matching alias from "@antrea/ui-components/api" to src/lib/api.ts
+        // (here and in vitest.config.ts), so that it shares the root's module instance.
         alias: [
             { find: /^@antrea\/ui-components$/, replacement: path.resolve(__dirname, '../antrea-ui-components/src/index.ts') },
         ],

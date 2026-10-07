@@ -18,9 +18,13 @@ import { resolve } from 'path';
 export default defineConfig({
   build: {
     lib: {
-      entry: resolve(__dirname, 'src/index.ts'),
-      name: 'AntreaUIComponents',
-      fileName: 'index',
+      // api is its own entry so plugins can import apiFetch without pulling in index.js, whose
+      // top-level customElements.define() calls would throw in the host (tags already defined).
+      entry: {
+        index: resolve(__dirname, 'src/index.ts'),
+        api: resolve(__dirname, 'src/lib/api.ts'),
+      },
+      fileName: (_format, entryName) => `${entryName}.js`,
       formats: ['es'],
     },
     rollupOptions: {

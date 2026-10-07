@@ -12,14 +12,18 @@
       "import": "./dist/index.js"
     }
   },
+  "files": [
+    "dist"
+  ],
   "scripts": {
-    "build": "tsc"
+    "build": "tsc",
+    "prepack": "yarn workspace @antrea/ui-components build && yarn build"
   },
   "peerDependencies": {
-    "@antrea/ui-components": "0.1.0"
+    "@antrea/ui-components": "workspace:*"
   },
   "devDependencies": {
-    "@antrea/ui-components": "0.1.0",
+    "@antrea/ui-components": "workspace:*",
     "typescript": "^6.0.0"
   }
 }

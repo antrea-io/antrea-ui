@@ -504,18 +504,28 @@ the same resolution as two plugins declaring the same `name`.
 ## Writing a plugin
 
 A plugin is a standalone package — not part of the `client/web` Yarn
-workspace, and it doesn't depend on `@antrea/ui-components` internals. It
-relies on `@antrea/ui-plugin-sdk` to register itself with the host, and on
-Antrea UI's REST API. Its own `vite.config.ts` must bundle dependencies like
+workspace, and it doesn't need `@antrea/ui-components`, apart from the
+optional `/api` subpath described below. It relies on
+`@antrea/ui-plugin-sdk` to register itself with the host, and on Antrea UI's
+REST API. Its own `vite.config.ts` must bundle dependencies like
 `lit` in, rather than externalizing them (unlike `@antrea/ui-components`) —
 there's no host-provided import map for a runtime `import()`.
 
 The host passes your element no credential, and there is none to ask for:
 requests to the Antrea UI backend authenticate with the `antrea-ui-session`
 cookie the browser already holds, so `credentials: 'include'` is the whole of
-it. (`apiFetch`/`apiFetchJSON` from `@antrea/ui-components` do this for you,
-along with turning a non-2xx response into an `APIError`, if you would rather
-not hand-roll it.) Never send an `Authorization` header of your own.
+it. The example below does exactly that with a plain `fetch`. If you would
+rather have `apiFetch`/`apiFetchJSON` (they also turn a non-2xx response into
+an `APIError`), note that `@antrea/ui-components` is not published to a
+registry yet, so a plugin outside this repo has to depend on it the same way
+it depends on the SDK: add
+`"@antrea/ui-components": "file:<path-to-this-repo>/client/web/antrea-ui-components"`
+to `package.json`, after building it (see below). Import from the
+`@antrea/ui-components/api` subpath, not the package root: the root registers
+every custom element, which throws in the host, where those tags are already
+defined. A plugin bundles its own copy of that module, so its `apiFetch`
+always makes same-origin requests and does not pick up the host's API base.
+Never send an `Authorization` header of your own.
 
 `plugins/examples/pod-counter/src/index.ts`:
 
@@ -579,11 +589,14 @@ always valid, it just isn't always nested.
 
 `@antrea/ui-plugin-sdk` is a devDependency resolved from this repo's
 workspace (`file:../../../client/web/antrea-ui-plugin-sdk` in
-`package.json`) — build it once before building any example plugin:
+`package.json`) — build it once before building any example plugin. Its
+types resolve from `@antrea/ui-components`' built `dist/`, so build that first:
 
 ```bash
-cd client/web/antrea-ui-plugin-sdk && yarn build
-cd ../../../plugins/examples/pod-counter
+cd client/web && yarn install
+yarn workspace @antrea/ui-components build
+yarn workspace @antrea/ui-plugin-sdk build
+cd ../../plugins/examples/pod-counter
 npm install && npm run build   # vite build, copies manifest.json, zips everything else into bundle.zip
 ```
 
