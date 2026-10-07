@@ -18,6 +18,7 @@ export { AntreaCard } from './antrea-card.js';
 export { AntreaNav, AntreaNavItem, AntreaNavGroup } from './antrea-nav.js';
 export { AntreaInput } from './antrea-input.js';
 export { AntreaSummaryPage } from './pages/antrea-summary-page.js';
+export { AntreaOverviewPage } from './pages/antrea-overview-page.js';
 export { AntreaSettingsPage } from './pages/antrea-settings-page.js';
 export { AntreaTraceflowPage } from './pages/antrea-traceflow-page.js';
 export { AntreaFlowVisibilityPage } from './pages/antrea-flow-visibility-page.js';
@@ -36,18 +37,43 @@ export {
 } from './lib/auth-api.js';
 export { APIError, setApiBase, getApiBase } from './lib/api.js';
 export { navigateTo } from './lib/navigation.js';
-export type { AccessSummary, ResourceRule, NonResourceRule, SubjectRules, ResourceQuery } from './lib/access-api.js';
+export type {
+    AccessSummary,
+    NamespaceAccessSummary,
+    NamespaceAccessSummaryList,
+    ResourceRule,
+    NonResourceRule,
+    SubjectRules,
+    ResourceQuery,
+    HasRules,
+    Verdict,
+} from './lib/access-api.js';
 export {
     accessSummary,
+    namespaceAccessSummaries,
+    MAX_NAMESPACE_ACCESS_NAMES,
     resetAccessSummary,
     can,
+    verdict,
     canNonResource,
     accessibleNamespaces,
     canViewSummary,
     canViewFlows,
+    canViewOverview,
+    holdsOverviewResources,
     GATE_TRACEFLOW_CREATE,
     GATE_AGENT_INFO_LIST,
     GATE_CONTROLLER_INFO_GET,
     GATE_FEATUREGATES,
     GATE_FLOWS_WATCH,
+    GATE_NAMESPACES_LIST,
+    GATE_PODS_LIST,
+    GATE_SERVICES_LIST,
+    GATE_DEPLOYMENTS_LIST,
+    GATE_STATEFULSETS_LIST,
+    GATE_DAEMONSETS_LIST,
+    GATE_K8S_NETWORKPOLICIES_LIST,
+    GATE_ANTREA_CLUSTERNETWORKPOLICIES_LIST,
+    GATE_ANTREA_NETWORKPOLICIES_LIST,
+    GATE_EVENTS_LIST,
 } from './lib/access-api.js';

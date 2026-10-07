@@ -195,4 +195,5 @@ func (s *Server) namespacesFor(username string, groups []string) ([]string, *err
 
 func (s *Server) AddAccessRoutes(r *gin.RouterGroup) {
 	r.GET("/access-summary", s.authenticate(), s.GetAccessSummary)
+	r.GET("/access-summary/namespaces", s.authenticate(), s.GetNamespaceAccessSummaries)
 }

@@ -21,8 +21,10 @@ import (
 	"net/http/httptest"
 	"net/http/httputil"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/assert"
@@ -51,9 +53,22 @@ type fakeAccessK8sAPIServer struct {
 	// statusOverride forces a status code for calls whose path contains the given substring,
 	// instead of the normal 201 response.
 	statusOverride map[string]int
+	// mu guards what the handler records and the fields below it, as reviews can arrive
+	// concurrently.
+	mu sync.Mutex
 	// lastRulesNamespace records the namespace the SelfSubjectRulesReview was evaluated
 	// against, for assertions.
 	lastRulesNamespace string
+	// rulesNamespaces records every namespace a SelfSubjectRulesReview was made for, in order of
+	// arrival.
+	rulesNamespaces []string
+	// rulesByNamespace overrides rules for a namespace.
+	rulesByNamespace map[string]authorizationv1.SubjectRulesReviewStatus
+	// rulesStatusByNamespace forces a status code for the SelfSubjectRulesReview of a namespace.
+	rulesStatusByNamespace map[string]int
+	// rulesDelay is how long a SelfSubjectRulesReview takes to answer. Only meaningful in a
+	// testing/synctest bubble, where it is virtual time.
+	rulesDelay time.Duration
 	// accessReviews counts the SelfSubjectAccessReview calls received, including the ones
 	// that statusOverride answers.
 	accessReviews atomic.Int32
@@ -95,9 +110,23 @@ func newFakeAccessK8sAPIServer(t *testing.T) *fakeAccessK8sAPIServer {
 			body, _ := io.ReadAll(r.Body)
 			var review authorizationv1.SelfSubjectRulesReview
 			_ = json.Unmarshal(body, &review)
+			f.mu.Lock()
 			f.lastRulesNamespace = review.Spec.Namespace
+			f.rulesNamespaces = append(f.rulesNamespaces, review.Spec.Namespace)
+			rules, ok := f.rulesByNamespace[review.Spec.Namespace]
+			if !ok {
+				rules = f.rules
+			}
+			status := f.rulesStatusByNamespace[review.Spec.Namespace]
+			delay := f.rulesDelay
+			f.mu.Unlock()
+			time.Sleep(delay)
+			if status != 0 {
+				w.WriteHeader(status)
+				return
+			}
 			w.WriteHeader(http.StatusCreated)
-			resp := authorizationv1.SelfSubjectRulesReview{Status: f.rules}
+			resp := authorizationv1.SelfSubjectRulesReview{Status: rules}
 			_ = json.NewEncoder(w).Encode(resp)
 		case strings.Contains(r.URL.Path, "selfsubjectaccessreviews"):
 			body, _ := io.ReadAll(r.Body)

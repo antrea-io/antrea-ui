@@ -45,3 +45,26 @@ type AccessSummary struct {
 	// cannot be worked out at all, the endpoint fails rather than reporting [].
 	Namespaces []string `json:"namespaces"`
 }
+
+// NamespaceAccessSummary is what the logged-in user is allowed to do in one Namespace. It carries
+// only what differs between Namespaces: the identity and the cluster-admin verdict are the same
+// everywhere, so repeating them for every entry would only grow
+// the response. Rules has the same meaning as in AccessSummary, so the same matcher applies.
+type NamespaceAccessSummary struct {
+	Namespace string `json:"namespace"`
+	// Rules is the SelfSubjectRulesReview result for Namespace. It includes grants that apply
+	// cluster-wide, which is what makes it answer "may I do this in Namespace" rather than "does
+	// a RoleBinding in Namespace allow it".
+	//
+	// When the review for this Namespace could not be evaluated, Incomplete is true and
+	// EvaluationError says why: an unknown answer, which a consumer must tell apart from a
+	// denial, exactly as it does for an API server that cannot enumerate its rules.
+	Rules authorizationv1.SubjectRulesReviewStatus `json:"rules"`
+}
+
+// NamespaceAccessSummaryList answers AccessSummary's question for each of the Namespaces a request
+// names, in one response. It is a rendering hint, never an authorization decision.
+type NamespaceAccessSummaryList struct {
+	// Items has one entry per Namespace named, in the order they were first named. Never null.
+	Items []NamespaceAccessSummary `json:"items"`
+}

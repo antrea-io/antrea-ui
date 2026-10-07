@@ -155,6 +155,18 @@ else:
 - `list` and `watch` on `flows.observability.antrea.io`, the virtual resource
   the Flow Aggregator authorizes flow streams against (see [Flow data is
   per-user](#flow-data-is-per-user))
+- `list` on `pods`, `services` and `events`
+- `list` on `deployments`, `statefulsets` and `daemonsets`
+- `list` on `networkpolicies` (both `networking.k8s.io` and `crd.antrea.io`)
+  and on `clusternetworkpolicies`
+
+The reads from `list` onwards (from `pods` on) are what the Overview page
+counts, plus its Recent Events panel. They are read-only and deliberately
+enumerated rather than granted as a wildcard: Kubernetes RBAC has no deny
+rules, so "everything except Secrets" cannot be expressed, and the K8s proxy
+applies no path allowlist of its own (RBAC is its only guard). A wildcard
+here would therefore let anyone holding the admin password read every Secret
+in the cluster.
 
 Its rule list is static: it only ever changes when you upgrade the chart, and
 you can read exactly what it grants in
@@ -268,6 +280,44 @@ Granting less is fine and expected — a user bound only to a namespace-scoped
 subset simply sees less. The UI hides what a partially-authorized user cannot
 do, described next, rather than letting them hit a page and get a 403.
 
+A second, concrete example: an application-developer group that should see
+what is running, but not how it is network-segmented — NetworkPolicy stays a
+platform/security team's concern. Kubernetes ships no built-in ClusterRole
+for this split (`view` and `edit` both grant `list`/`watch` on
+NetworkPolicies and ClusterNetworkPolicies alongside every workload type), so
+it has to be written by hand:
+
+```yaml
+# antrea-ui-app-developers: Overview's workload tiles (Pods, Services,
+# Deployments, StatefulSets, DaemonSets) and their counts, but neither
+# NetworkPolicy kind — canViewOverview() still passes on the workload grants
+# alone, so the page renders, just with the two NetworkPolicy tiles missing
+# and the same "some information is not shown" notice a 403 on any other
+# tile produces.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: antrea-ui-app-developers
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["list"]
+  - apiGroups: [""]
+    resources: ["pods", "services"]
+    verbs: ["list"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets", "daemonsets"]
+    verbs: ["list"]
+  # Deliberately absent: networking.k8s.io/networkpolicies and
+  # crd.antrea.io/{networkpolicies,clusternetworkpolicies}.
+```
+
+```bash
+kubectl apply -f antrea-ui-app-developers-clusterrole.yaml
+kubectl create clusterrolebinding antrea-ui-app-developers \
+  --clusterrole=antrea-ui-app-developers --group=app-developers
+```
+
 ## What the frontend knows about your permissions
 
 `GET /api/v1/access-summary` (optional `?namespace=<ns>`) tells the frontend
@@ -339,6 +389,72 @@ than reusing a failure.
   indistinguishable. Static-admin sessions are unaffected: their answer never
   comes from the resolver, so a broken resolver cannot lock an operator out of
   the one login used to fix cluster RBAC.
+
+### The same question for several namespaces
+
+`GET /api/v1/access-summary?namespace=<ns>` answers for one namespace. A feature
+that needs an answer for several, such as one that picks a default namespace or
+marks the ones the user may not use, would have to make that request once for
+each. `GET /api/v1/access-summary/namespaces?namespace=<ns>&namespace=<ns>...`
+makes them in one request:
+
+```json
+{
+  "items": [
+    {
+      "namespace": "rbac-test-alpha",
+      "rules": {
+        "resourceRules": [{"verbs": ["watch"], "apiGroups": ["observability.antrea.io"], "resources": ["flows"]}],
+        "nonResourceRules": [],
+        "incomplete": false
+      }
+    },
+    {
+      "namespace": "rbac-test-beta",
+      "rules": {"resourceRules": [], "nonResourceRules": [], "incomplete": true, "evaluationError": "..."}
+    }
+  ]
+}
+```
+
+Each item is a `SelfSubjectRulesReview` for that namespace, with the same
+meaning as `rules` above, including the grants that apply cluster-wide. The
+identity, `clusterAdmin` and `namespaces` are not repeated, since they do not
+differ between namespaces. The endpoint does not know what a feature will ask
+of the rules: which resource and verb a page needs is the frontend's gate,
+exactly as for the other pages, and every feature shares this one answer.
+
+- **The caller names the namespaces.** The backend does not look for them:
+  Kubernetes has no reverse lookup from a subject to the namespaces it may
+  access, and `namespaces` in the access summary already says what antrea-ui can
+  know (a caller who may list namespaces can list them through the Kubernetes
+  API proxy). A feature asks about the namespaces it is about to offer or act
+  on. There is one item per namespace, in the order they were first named, and a
+  namespace named twice is reviewed once. A request naming none, an invalid
+  name, or more than 10 namespaces is rejected with `400`. A user who may use
+  hundreds of namespaces picks a few from a searchable list and asks about
+  those, rather than about all of them.
+- **Unknown is not denied.** A namespace whose review cannot be evaluated is
+  reported with `rules.incomplete: true` and an `evaluationError`, and the
+  others are still answered. Such an answer is not cached, so the next request
+  evaluates again rather than keeping those namespaces unknown for the rest of
+  the cache lifetime. A consumer needs three outcomes: *allowed* when a
+  rule matches, which is safe even when the list is incomplete, since rules are
+  additive; *unknown* when nothing matches in an incomplete list, as with a
+  webhook authorizer the API server cannot enumerate; and *denied* otherwise.
+  Only a denial should hide or mark a namespace. The frontend's `verdict()`
+  returns exactly these. A `401`, or a `403` that says the cluster stripped the
+  self-review grant every authenticated identity has by default, is not about
+  one namespace and fails the request.
+- **Cost.** One review per namespace named, so at most 10, and at most eight at
+  a time. A user who holds the grant cluster-wide has no use for this endpoint,
+  as the grant holds in every namespace and the cluster-scoped summary says so.
+  Answers are cached for the session and the namespaces asked about for 30
+  seconds, and concurrent identical requests share one evaluation. The frontend
+  keeps what it fetched for the same 30 seconds, so that features asking the same
+  question share it, and then asks again: a grant added or revoked shows up
+  without the user logging out. It has the same ten-second timeout as
+  `access-summary`.
 
 ### The cluster-scope sentinel namespace
 

@@ -14,28 +14,38 @@
  * limitations under the License.
  */
 
-import React, { useRef, useCallback } from 'react';
+import React, { useRef, useCallback, useMemo } from 'react';
+import { useSelector } from 'react-redux';
 import '@antrea/ui-components';
-import { can, canViewSummary, canViewFlows, GATE_TRACEFLOW_CREATE } from '@antrea/ui-components';
-import { Navigate } from 'react-router';
+import { can, canViewSummary, canViewOverview, holdsOverviewResources, canViewFlows, sessionIdentity, GATE_TRACEFLOW_CREATE } from '@antrea/ui-components';
+import { Navigate, useSearchParams } from 'react-router';
 import { useLogout } from './logout';
-import { getEdgeExtraRenderers, getFlowTableColumnsProcessors } from './plugins';
+import { BUILTIN_LANDING_PAGE_TAB_ID, getEdgeExtraRenderers, getFlowTableColumnsProcessors, getLandingPageTabs } from './plugins';
 import { useAccess } from './access';
+import type { RootState } from './store';
 
 // Picks the first route the user is actually permitted to see, so a partially-authorized user
-// doesn't land on a Summary page that's just going to show the permission panel. While the
-// access summary hasn't loaded yet, renders nothing.
+// doesn't land on a page that's just going to show the permission panel. While the access
+// summary hasn't loaded yet, renders nothing.
+//
+// The Overview comes first only for a user whose cluster-scoped summary grants something it shows.
+// A user who merely appears in some RoleBinding (canViewOverview's wider test, from the
+// summary.namespaces heuristic) may have a working Summary, Traceflow or Flows grant and no
+// access to anything the Overview lists, so that case ranks after those: still before Settings,
+// since the page may have something for them, which they can find by picking a namespace.
 export function HomeRedirect() {
     const { summary, loaded } = useAccess();
     if (!loaded) return null;
+    if (holdsOverviewResources(summary)) return <Navigate to="/overview" replace />;
     if (canViewSummary(summary)) return <Navigate to="/summary" replace />;
     if (can(summary, GATE_TRACEFLOW_CREATE)) return <Navigate to="/traceflow" replace />;
     // canViewFlows is a rendering hint fed by the same RBAC the Flow Aggregator itself checks
     // (see access-api.ts), not a stand-in for its authorization decision - it can only ever
     // agree with FA's own answer or be more conservative, never grant a stream FA would refuse.
     if (canViewFlows(summary)) return <Navigate to="/flows/list" replace />;
-    // A user permitted none of Summary, Traceflow or Flows lands on Settings, which needs no
-    // permission at all - the floor everyone can reach.
+    if (canViewOverview(summary)) return <Navigate to="/overview" replace />;
+    // A user permitted none of these lands on Settings, which needs no permission at all - the
+    // floor everyone can reach.
     return <Navigate to="/settings" replace />;
 }
 
@@ -85,6 +95,52 @@ function useLitPage() {
     }, [onSessionExpired]);
 
     return { ref };
+}
+
+interface OverviewTab { id: string; label: string; tag?: string; }
+
+export function OverviewPage() {
+    const [searchParams, setSearchParams] = useSearchParams();
+    const { summary, loaded } = useAccess();
+    // The same identity the app header's UserIdentity derives its display from (App.tsx) — a
+    // friendly name, not the raw Kubernetes username (e.g. a ServiceAccount's is just the
+    // "<namespace>:<name>" part, and the static admin login's is its local login name).
+    const sessionInfo = useSelector((state: RootState) => state.sessionInfo);
+    const welcomeName = sessionInfo?.username
+        ? sessionIdentity({ mode: sessionInfo.mode, username: sessionInfo.username }).name
+        : undefined;
+
+    const { ref } = useLitPage();
+
+    // Plugin tabs (e.g. ANS's "Security") are registered once at startup (see plugins.ts) and
+    // never change afterward, so this only needs to run once per mount.
+    const tabs: OverviewTab[] = useMemo(() => [{ id: BUILTIN_LANDING_PAGE_TAB_ID, label: 'Network Traffic & Inventory' }, ...getLandingPageTabs()], []);
+    const activeTab = tabs.find(t => t.id === searchParams.get('tab')) ?? tabs[0];
+
+    return (
+        <RequirePermission allowed={canViewOverview(summary)} loaded={loaded}>
+            <div className="page-layout">
+                <p className="page-title">{welcomeName ? `Welcome, ${welcomeName}` : 'Welcome'}</p>
+                {/* Shown even with only the built-in tab: it names what's below, and keeps the
+                    layout stable whether or not a plugin has registered tabs. */}
+                <div className="tab-bar">
+                    {tabs.map(tab => (
+                        <button
+                            key={tab.id}
+                            type="button"
+                            className={`tab-bar-item${tab.id === activeTab.id ? ' active' : ''}`}
+                            onClick={() => setSearchParams(tab.id === BUILTIN_LANDING_PAGE_TAB_ID ? {} : { tab: tab.id })}
+                        >
+                            {tab.label}
+                        </button>
+                    ))}
+                </div>
+                {activeTab.id === BUILTIN_LANDING_PAGE_TAB_ID
+                    ? <antrea-overview-page ref={ref} />
+                    : React.createElement(activeTab.tag as string, { ref })}
+            </div>
+        </RequirePermission>
+    );
 }
 
 export function SummaryPage() {
