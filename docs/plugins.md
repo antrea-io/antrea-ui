@@ -504,9 +504,10 @@ the same resolution as two plugins declaring the same `name`.
 ## Writing a plugin
 
 A plugin is a standalone package — not part of the `client/web` Yarn
-workspace, and it doesn't depend on `@antrea/ui-components` internals. It
-relies on `@antrea/ui-plugin-sdk` to register itself with the host, and on
-Antrea UI's REST API. Its own `vite.config.ts` must bundle dependencies like
+workspace, and it doesn't need `@antrea/ui-components`, apart from the
+optional `/api` subpath described below. It relies on
+`@antrea/ui-plugin-sdk` to register itself with the host, and on Antrea UI's
+REST API. Its own `vite.config.ts` must bundle dependencies like
 `lit` in, rather than externalizing them (unlike `@antrea/ui-components`) —
 there's no host-provided import map for a runtime `import()`.
 
@@ -522,7 +523,9 @@ it depends on the SDK: add
 to `package.json`, after building it (see below). Import from the
 `@antrea/ui-components/api` subpath, not the package root: the root registers
 every custom element, which throws in the host, where those tags are already
-defined. Never send an `Authorization` header of your own.
+defined. A plugin bundles its own copy of that module, so its `apiFetch`
+always makes same-origin requests and does not pick up the host's API base.
+Never send an `Authorization` header of your own.
 
 `plugins/examples/pod-counter/src/index.ts`:
 
