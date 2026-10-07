@@ -50,7 +50,7 @@ func pluginSources() []pluginSource {
 			load: func(t *testing.T, trustedKeys []SignatureVerifier, manifestJSON string, signatures map[string][]byte, bundleZip []byte) (string, bool) {
 				t.Helper()
 				r := newSignatureTestRegistry(t, trustedKeys)
-				r.handleUpsert(signedConfigMap(t, "pod-counter-plugin", manifestJSON, signatures, bundleZip))
+				r.handleUpsert(t.Context(), signedConfigMap(t, "pod-counter-plugin", manifestJSON, signatures, bundleZip))
 				if len(r.Index()) != 1 {
 					return "", false
 				}

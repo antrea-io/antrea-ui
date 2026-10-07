@@ -34,6 +34,25 @@ import (
 // treating extractZip's error as opaque.
 var errDestGone = errors.New("previous extraction removed")
 
+// errInvalidArchive marks an extractZip failure caused by the archive itself - an entry that
+// cannot be opened or decompressed, or one that decompresses past the size budget - as opposed to
+// the local filesystem failing (a full disk, say). Only the former cannot change without the
+// bundle changing; a caller that downloads the bundle (parseRemotePluginConfigMap) retries the
+// latter.
+var errInvalidArchive = errors.New("invalid archive")
+
+// archiveReader marks a read error of the archive's decompressed stream as errInvalidArchive, so
+// extractZipFile can tell it apart from the error of the write on the other side of the copy.
+type archiveReader struct{ r io.Reader }
+
+func (a archiveReader) Read(p []byte) (int, error) {
+	n, err := a.r.Read(p)
+	if err != nil && err != io.EOF {
+		err = fmt.Errorf("%w: %w", errInvalidArchive, err)
+	}
+	return n, err
+}
+
 // safeJoin joins root and name the way net/http.Dir does: name is treated as rooted (as if it
 // had a leading "/") before being cleaned, so any number of ".." segments collapse instead of
 // escaping root - the standard technique for turning a URL path segment (pluginEntry.open, from
@@ -147,7 +166,7 @@ func extractZip(zr *zip.Reader, dest string, maxBundleBytes int64) (string, erro
 func extractZipFile(f *zip.File, target string, budget int64) (int64, error) {
 	rc, err := f.Open()
 	if err != nil {
-		return 0, fmt.Errorf("failed to open %q in %s: %w", f.Name, bundleFileName, err)
+		return 0, fmt.Errorf("failed to open %q in %s: %w: %w", f.Name, bundleFileName, errInvalidArchive, err)
 	}
 	defer rc.Close()
 	out, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
@@ -157,7 +176,7 @@ func extractZipFile(f *zip.File, target string, budget int64) (int64, error) {
 	// budget can be math.MaxInt64 (unbounded case) - budget+1 would overflow, so instead of
 	// io.CopyN(out, rc, budget+1) copy exactly budget bytes, then peek one more to tell "exactly
 	// budget bytes" apart from "more remained".
-	written, err := io.Copy(out, io.LimitReader(rc, budget))
+	written, err := io.Copy(out, io.LimitReader(archiveReader{rc}, budget))
 	if err != nil {
 		out.Close()
 		return 0, fmt.Errorf("failed to write %q: %w", target, err)
@@ -170,14 +189,14 @@ func extractZipFile(f *zip.File, target string, budget int64) (int64, error) {
 			n, err := rc.Read(extra[:])
 			if n > 0 {
 				out.Close()
-				return 0, fmt.Errorf("%q decompresses past this plugin's bundle size budget, refusing to extract further (possible zip bomb)", f.Name)
+				return 0, fmt.Errorf("%q decompresses past this plugin's bundle size budget, refusing to extract further (possible zip bomb): %w", f.Name, errInvalidArchive)
 			}
 			if err == io.EOF {
 				break
 			}
 			if err != nil {
 				out.Close()
-				return 0, fmt.Errorf("failed to read %q past its size budget: %w", f.Name, err)
+				return 0, fmt.Errorf("failed to read %q past its size budget: %w: %w", f.Name, errInvalidArchive, err)
 			}
 		}
 	}

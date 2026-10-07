@@ -100,3 +100,20 @@ func TestExtractZipRejectsCombinedEntriesPastTheDecompressedSizeLimit(t *testing
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "zip bomb")
 }
+
+// TestExtractZipErrorsTellAnInvalidArchiveFromAFailingFilesystem checks the distinction a
+// downloaded bundle's retry policy rests on: an archive that cannot be extracted however many times
+// it is downloaded is errInvalidArchive, a failure of the local disk is not.
+func TestExtractZipErrorsTellAnInvalidArchiveFromAFailingFilesystem(t *testing.T) {
+	zr := openZip(t, map[string]string{"index.js": strings.Repeat("x", 200)})
+
+	_, err := extractZip(zr, filepath.Join(t.TempDir(), "plugin"), 100)
+	require.ErrorIs(t, err, errInvalidArchive)
+
+	// The parent of dest is a file, so creating it fails.
+	notADir := filepath.Join(t.TempDir(), "file")
+	require.NoError(t, os.WriteFile(notADir, nil, 0o600))
+	_, err = extractZip(zr, filepath.Join(notADir, "plugin"), 1000)
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, errInvalidArchive)
+}

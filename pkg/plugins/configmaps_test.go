@@ -52,7 +52,7 @@ func TestRunConfigMapWatchNoopWhenNamespaceEmpty(t *testing.T) {
 func TestRegistryUpsertAndIndex(t *testing.T) {
 	r := newTestRegistry(t)
 
-	r.handleUpsert(configMap(t, "pod-counter-plugin", "pod-counter", "0.1.0", "index.js", map[string]string{
+	r.handleUpsert(t.Context(), configMap(t, "pod-counter-plugin", "pod-counter", "0.1.0", "index.js", map[string]string{
 		"index.js": "console.log('hi')",
 	}))
 
@@ -88,7 +88,7 @@ func TestRegistryUpsertReadsManifestFromBinaryData(t *testing.T) {
 		},
 	}
 
-	r.handleUpsert(cm)
+	r.handleUpsert(t.Context(), cm)
 
 	assert.Equal(t, []apisv1.PluginManifest{
 		{Name: "pod-counter", Version: "0.1.0", Entry: "index.js"},
@@ -99,7 +99,7 @@ func TestRegistryDelete(t *testing.T) {
 	r := newTestRegistry(t)
 	cm := configMap(t, "pod-counter-plugin", "pod-counter", "0.1.0", "index.js", map[string]string{"index.js": "x"})
 
-	r.handleUpsert(cm)
+	r.handleUpsert(t.Context(), cm)
 	assert.Len(t, r.Index(), 1)
 
 	r.handleDelete(cm)
@@ -110,8 +110,8 @@ func TestRegistryUpdateReplacesPreviousContents(t *testing.T) {
 	r := newTestRegistry(t)
 	name := "pod-counter-plugin"
 
-	r.handleUpsert(configMap(t, name, "pod-counter", "0.1.0", "index.js", map[string]string{"index.js": "v1"}))
-	r.handleUpsert(configMap(t, name, "pod-counter", "0.2.0", "index.js", map[string]string{"index.js": "v2"}))
+	r.handleUpsert(t.Context(), configMap(t, name, "pod-counter", "0.1.0", "index.js", map[string]string{"index.js": "v1"}))
+	r.handleUpsert(t.Context(), configMap(t, name, "pod-counter", "0.2.0", "index.js", map[string]string{"index.js": "v2"}))
 
 	assert.Equal(t, []apisv1.PluginManifest{
 		{Name: "pod-counter", Version: "0.2.0", Entry: "index.js"},
@@ -125,21 +125,21 @@ func TestRegistrySkipsRedundantUpsertWithUnchangedResourceVersion(t *testing.T) 
 	r := newTestRegistry(t)
 	name := "pod-counter-plugin"
 
-	r.handleUpsert(configMap(t, name, "pod-counter", "0.1.0", "index.js", map[string]string{"index.js": "v1"}))
+	r.handleUpsert(t.Context(), configMap(t, name, "pod-counter", "0.1.0", "index.js", map[string]string{"index.js": "v1"}))
 
 	// Same ResourceVersion ("0.1.0", reused by the configMap helper - see its doc comment) as
 	// an Update event replaying the informer's cache after a watch reconnect would carry, even
 	// though nothing about the ConfigMap actually changed. A changed manifest/bundle here would
 	// only show up if handleUpsert incorrectly re-parsed and re-extracted it.
 	cm := configMap(t, name, "pod-counter", "0.1.0", "index.js", map[string]string{"index.js": "should not be applied"})
-	r.handleUpsert(cm)
+	r.handleUpsert(t.Context(), cm)
 
 	rc, _, ok := r.File("pod-counter", "index.js")
 	require.True(t, ok)
 	assert.Equal(t, "v1", readAll(t, rc))
 
 	// A genuine change (new ResourceVersion) is still picked up normally.
-	r.handleUpsert(configMap(t, name, "pod-counter", "0.2.0", "index.js", map[string]string{"index.js": "v2"}))
+	r.handleUpsert(t.Context(), configMap(t, name, "pod-counter", "0.2.0", "index.js", map[string]string{"index.js": "v2"}))
 	rc, _, ok = r.File("pod-counter", "index.js")
 	require.True(t, ok)
 	assert.Equal(t, "v2", readAll(t, rc))
@@ -301,7 +301,7 @@ func TestRegistrySkipsInvalidConfigMaps(t *testing.T) {
 	for name, buildCM := range cases {
 		t.Run(name, func(t *testing.T) {
 			r := newTestRegistry(t)
-			r.handleUpsert(buildCM(t))
+			r.handleUpsert(t.Context(), buildCM(t))
 			assert.Empty(t, r.Index())
 		})
 	}
@@ -312,7 +312,7 @@ func TestRegistrySkipsInvalidConfigMaps(t *testing.T) {
 // by message, in TestRegistrySkipsInvalidConfigMaps).
 func TestRegistryHandleUpsertSkipsInvalidConfigMap(t *testing.T) {
 	r := newTestRegistry(t)
-	r.handleUpsert(&corev1.ConfigMap{
+	r.handleUpsert(t.Context(), &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{Name: "cm"},
 		Data:       map[string]string{"manifest.json": "not json"},
 	})
@@ -323,12 +323,12 @@ func TestRegistryRejectsNewConfigMapPluginPastLimit(t *testing.T) {
 	r := NewRegistry(Options{Logger: testr.New(t), Clientset: nil, Namespace: "antrea-ui", LabelSelector: "ui.antrea.io/plugin=true", MaxConfigMapPlugins: 1, MaxDirectoryPlugins: 0, MaxBundleBytes: 0})
 	t.Cleanup(r.Close)
 
-	r.handleUpsert(configMap(t, "first-cm", "first", "0.1.0", "index.js", map[string]string{"index.js": "x"}))
-	r.handleUpsert(configMap(t, "second-cm", "second", "0.1.0", "index.js", map[string]string{"index.js": "x"}))
+	r.handleUpsert(t.Context(), configMap(t, "first-cm", "first", "0.1.0", "index.js", map[string]string{"index.js": "x"}))
+	r.handleUpsert(t.Context(), configMap(t, "second-cm", "second", "0.1.0", "index.js", map[string]string{"index.js": "x"}))
 	assert.Equal(t, []apisv1.PluginManifest{{Name: "first", Version: "0.1.0", Entry: "index.js"}}, r.Index())
 
 	// An update to the already-tracked plugin is never blocked by the limit.
-	r.handleUpsert(configMap(t, "first-cm", "first", "0.2.0", "index.js", map[string]string{"index.js": "x"}))
+	r.handleUpsert(t.Context(), configMap(t, "first-cm", "first", "0.2.0", "index.js", map[string]string{"index.js": "x"}))
 	assert.Equal(t, []apisv1.PluginManifest{{Name: "first", Version: "0.2.0", Entry: "index.js"}}, r.Index())
 }
 
@@ -337,21 +337,21 @@ func TestRegistryRejectsConfigMapBundlePastTheDecompressedSizeLimit(t *testing.T
 	t.Cleanup(r.Close)
 
 	// A single entry over the limit...
-	r.handleUpsert(configMap(t, "plugin-cm", "plugin", "0.1.0", "index.js", map[string]string{
+	r.handleUpsert(t.Context(), configMap(t, "plugin-cm", "plugin", "0.1.0", "index.js", map[string]string{
 		"index.js": strings.Repeat("x", 200),
 	}))
 	assert.Empty(t, r.Index(), "a bundle decompressing past the limit must be rejected")
 
 	// ...and several entries that only exceed it combined, must both be rejected: the limit
 	// applies to the bundle's total decompressed size, not any one entry's.
-	r.handleUpsert(configMap(t, "plugin-cm", "plugin", "0.1.0", "index.js", map[string]string{
+	r.handleUpsert(t.Context(), configMap(t, "plugin-cm", "plugin", "0.1.0", "index.js", map[string]string{
 		"index.js": strings.Repeat("x", 60),
 		"other.js": strings.Repeat("y", 60),
 	}))
 	assert.Empty(t, r.Index())
 
 	// A bundle within the limit is accepted.
-	r.handleUpsert(configMap(t, "plugin-cm", "plugin", "0.1.0", "index.js", map[string]string{
+	r.handleUpsert(t.Context(), configMap(t, "plugin-cm", "plugin", "0.1.0", "index.js", map[string]string{
 		"index.js": strings.Repeat("x", 50),
 	}))
 	assert.Equal(t, []apisv1.PluginManifest{{Name: "plugin", Version: "0.1.0", Entry: "index.js"}}, r.Index())
@@ -414,7 +414,7 @@ func TestConfigMapQueueRetriesFailureUntilItSucceeds(t *testing.T) {
 		indexer := newTestIndexer(t, broken)
 		queue := workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[string]())
 		defer queue.ShutDown()
-		go r.runConfigMapWorker(indexer, queue)
+		go r.runConfigMapWorker(t.Context(), indexer, queue)
 
 		key := configMapKey(t, broken)
 		queue.Add(key)
@@ -448,7 +448,7 @@ func TestConfigMapQueueGivesUpAfterMaxRetries(t *testing.T) {
 		indexer := newTestIndexer(t, broken)
 		queue := workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[string]())
 		defer queue.ShutDown()
-		go r.runConfigMapWorker(indexer, queue)
+		go r.runConfigMapWorker(t.Context(), indexer, queue)
 
 		key := configMapKey(t, broken)
 		queue.Add(key)
@@ -482,11 +482,11 @@ func TestConfigMapQueueCapRejectionSkipsRetryBudget(t *testing.T) {
 	queue := workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[string]())
 	t.Cleanup(queue.ShutDown)
 
-	r.processConfigMapQueueItem(indexer, configMapKey(t, first), queue)
+	r.processConfigMapQueueItem(t.Context(), indexer, configMapKey(t, first), queue)
 	require.Len(t, r.Index(), 1)
 
 	capKey := configMapKey(t, pastCap)
-	r.processConfigMapQueueItem(indexer, capKey, queue)
+	r.processConfigMapQueueItem(t.Context(), indexer, capKey, queue)
 	assert.Len(t, r.Index(), 1, "a plugin past the cap must not be served")
 	assert.Equal(t, 0, queue.NumRequeues(capKey), "a cap rejection must not spend the retry budget")
 
