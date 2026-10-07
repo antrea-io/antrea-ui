@@ -32,6 +32,7 @@ import (
 	apisv1 "antrea.io/antrea-ui/apis/v1"
 	"antrea.io/antrea-ui/pkg/auth/session"
 	accesshandlertesting "antrea.io/antrea-ui/pkg/handlers/access/testing"
+	cookieutils "antrea.io/antrea-ui/pkg/server/utils/cookie"
 )
 
 const namespaceAccessPath = "/api/v1/access-summary/namespaces"
@@ -316,15 +317,26 @@ func TestGetNamespaceAccessSummariesFailedReviewHasEmptyRuleLists(t *testing.T) 
 	assert.Contains(t, rr.Body.String(), `"nonResourceRules":[]`)
 }
 
-// The access routes share one per-user budget, and one user's requests do not spend another's.
+// The access routes share one budget per user, whatever the session: another session of the same
+// user spends it too, another user has a budget of their own, and static-admin sessions, which all
+// authenticate as the same user, each have theirs.
 func TestAccessRoutesAreRateLimitedPerUser(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		resolver := accesshandlertesting.NewMockResolver(gomock.NewController(t))
 		resolver.EXPECT().ClusterScopeProbeUsable().Return(true).AnyTimes()
 		resolver.EXPECT().NamespacesFor(gomock.Any(), gomock.Any()).Return([]string{}, nil).AnyTimes()
 		ts, _ := newTestServerForAccess(t, resolver)
-		cookie := ts.newSession(session.ModeToken)
-		get := func(path string) int {
+		newSessionFor := func(username string) *http.Cookie {
+			sess, err := ts.sessionStore.Create(&session.Spec{
+				Mode:       session.ModeToken,
+				Username:   username,
+				Credential: session.Credential{Kind: session.KindBearer, Token: []byte("user-token")},
+			})
+			require.NoError(t, err)
+			return &http.Cookie{Name: cookieutils.SessionCookieName, Value: sess.ID()}
+		}
+		const summaryPath = "/api/v1/access-summary?namespace=ns-a"
+		get := func(cookie *http.Cookie, path string) int {
 			req := httptest.NewRequest("GET", path, nil)
 			req.AddCookie(cookie)
 			req.Header.Set("Sec-Fetch-Site", "same-origin")
@@ -332,19 +344,31 @@ func TestAccessRoutesAreRateLimitedPerUser(t *testing.T) {
 			ts.router.ServeHTTP(rr, req)
 			return rr.Code
 		}
-
-		for i := range accessRequestsBurst {
-			path := "/api/v1/access-summary?namespace=ns-a"
-			if i%2 == 1 {
-				path = namespaceAccessPath + "?namespace=ns-a"
+		spendBudget := func(cookie *http.Cookie) {
+			for i := range accessRequestsBurst {
+				path := summaryPath
+				if i%2 == 1 {
+					path = namespaceAccessPath + "?namespace=ns-a"
+				}
+				require.Equal(t, http.StatusOK, get(cookie, path), "request %d is within the burst", i)
 			}
-			require.Equal(t, http.StatusOK, get(path), "request %d is within the burst", i)
 		}
-		assert.Equal(t, http.StatusTooManyRequests, get("/api/v1/access-summary?namespace=ns-a"))
-		assert.Equal(t, http.StatusTooManyRequests, get(namespaceAccessPath+"?namespace=ns-a"), "the budget is shared")
+
+		alice := newSessionFor("alice")
+		spendBudget(alice)
+		assert.Equal(t, http.StatusTooManyRequests, get(alice, summaryPath))
+		assert.Equal(t, http.StatusTooManyRequests, get(alice, namespaceAccessPath+"?namespace=ns-a"), "the budget is shared")
+		assert.Equal(t, http.StatusTooManyRequests, get(newSessionFor("alice"), summaryPath), "another session of the same user spends the same budget")
+		assert.Equal(t, http.StatusOK, get(newSessionFor("bob"), summaryPath), "another user has a budget of their own")
+
+		admin1 := ts.newSession(session.ModeAdmin)
+		admin2 := ts.newSession(session.ModeAdmin)
+		spendBudget(admin1)
+		assert.Equal(t, http.StatusTooManyRequests, get(admin1, summaryPath))
+		assert.Equal(t, http.StatusOK, get(admin2, summaryPath), "static-admin sessions do not share a budget")
 
 		time.Sleep(time.Second)
-		assert.Equal(t, http.StatusOK, get("/api/v1/access-summary?namespace=ns-a"), "the budget refills")
+		assert.Equal(t, http.StatusOK, get(alice, summaryPath), "the budget refills")
 	})
 }
 

@@ -37,14 +37,23 @@ import (
 
 const (
 	// namespaceAccessTTL is how long one session's review of a Namespace is reused. It is short
-	// because the answer is what a Namespace selector offers: a grant added or revoked should show up without
-	// the user logging out. What the TTL is for is collapsing the burst of calls a page load
-	// makes, not sparing the API server indefinitely.
+	// because the answer is what a Namespace selector offers: a grant added or revoked should
+	// show up without the user logging out. What the TTL is for is collapsing the burst of calls
+	// a page load makes, not sparing the API server indefinitely.
 	namespaceAccessTTL = 30 * time.Second
-	// namespaceAccessCacheSize bounds the cache, at one entry per Namespace. Sessions are already
-	// capped (session.DefaultMaxSessions) and a session asks about at most maxNamespaceAccessNames
-	// Namespaces at a time; entries expire on their own well before they would be evicted.
-	namespaceAccessCacheSize = 10000
+	// namespaceAccessCacheSize bounds the cache, at one entry per (session, Namespace). The TTL
+	// bounds how stale an answer can be, not how much memory the cache uses: LRUExpireCache has no
+	// background expiry, so an expired entry is only removed when its key is read again or when
+	// the cap evicts it. Entries of ended sessions, and of Namespaces a session no longer asks
+	// about, stay until the LRU pushes them out, so a long-running server settles at this many
+	// entries. A request is bounded by maxNamespaceAccessNames, but what a session adds over
+	// successive requests is bounded only by the access routes' rate limit. Evicting an entry only
+	// costs a review, so the cap is sized for the live working set, a few Namespaces for each of
+	// the sessions that are in use (session.DefaultMaxSessions at most), rather than for every
+	// session at its limit. An entry holds a rule list: about 2 KiB in memory for a user with a
+	// handful of grants, and about 50 KiB for one with 150 rules, so the cache takes a few MiB
+	// typically, and tens of MiB if a tenth of the entries are of the second kind.
+	namespaceAccessCacheSize = 2000
 	// maxNamespaceAccessNames caps how many Namespaces one request asks about, so that one
 	// request cannot fan out into more SelfSubjectRulesReviews than a selector has any use for.
 	// A user who may use hundreds of Namespaces picks a few from a searchable list, and asks

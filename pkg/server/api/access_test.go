@@ -25,7 +25,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/assert"
@@ -65,9 +64,6 @@ type fakeAccessK8sAPIServer struct {
 	rulesByNamespace map[string]authorizationv1.SubjectRulesReviewStatus
 	// rulesStatusByNamespace forces a status code for the SelfSubjectRulesReview of a namespace.
 	rulesStatusByNamespace map[string]int
-	// rulesDelay is how long a SelfSubjectRulesReview takes to answer. Only meaningful in a
-	// testing/synctest bubble, where it is virtual time.
-	rulesDelay time.Duration
 	// accessReviews counts the SelfSubjectAccessReview calls received, including the ones
 	// that statusOverride answers.
 	accessReviews atomic.Int32
@@ -117,9 +113,7 @@ func newFakeAccessK8sAPIServer(t *testing.T) *fakeAccessK8sAPIServer {
 				rules = f.rules
 			}
 			status := f.rulesStatusByNamespace[review.Spec.Namespace]
-			delay := f.rulesDelay
 			f.mu.Unlock()
-			time.Sleep(delay)
 			if status != 0 {
 				w.WriteHeader(status)
 				return

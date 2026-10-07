@@ -48,8 +48,8 @@ type AccessSummary struct {
 
 // NamespaceAccessSummary is what the logged-in user is allowed to do in one Namespace. It carries
 // only what differs between Namespaces: the identity and the cluster-admin verdict are the same
-// everywhere, so repeating them for every entry would only grow
-// the response. Rules has the same meaning as in AccessSummary, so the same matcher applies.
+// everywhere, so repeating them for every entry would only grow the response. Rules has the same
+// meaning as in AccessSummary, so the same matcher applies.
 type NamespaceAccessSummary struct {
 	Namespace string `json:"namespace"`
 	// Rules is the SelfSubjectRulesReview result for Namespace. It includes grants that apply
