@@ -39,7 +39,21 @@ func roleBinding(name, namespace string, subjects []rbacv1.Subject) *rbacv1.Role
 // synced (or the test times out).
 func startAndWaitSynced(t *testing.T, r *resolver, stopCh chan struct{}) {
 	t.Helper()
-	go r.Run(stopCh)
+	// Run only returns once the informer's event handlers are done. Wait for that before the
+	// test completes: a handler logging through testr after that point panics.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		r.Run(stopCh)
+	}()
+	t.Cleanup(func() {
+		select {
+		case <-stopCh:
+		default:
+			close(stopCh)
+		}
+		<-done
+	})
 	require.Eventually(t, func() bool {
 		r.mu.RLock()
 		defer r.mu.RUnlock()
