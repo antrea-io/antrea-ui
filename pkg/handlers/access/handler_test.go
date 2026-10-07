@@ -37,9 +37,20 @@ func roleBinding(name, namespace string, subjects []rbacv1.Subject) *rbacv1.Role
 
 // startAndWaitSynced starts r.Run in a goroutine and blocks until the RoleBinding cache has
 // synced (or the test times out).
-func startAndWaitSynced(t *testing.T, r *resolver, stopCh chan struct{}) {
+func startAndWaitSynced(t *testing.T, r *resolver) {
 	t.Helper()
-	go r.Run(stopCh)
+	stopCh := make(chan struct{})
+	// Run only returns once the informer's event handlers are done. Wait for that before the
+	// test completes: a handler logging through testr after that point panics.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		r.Run(stopCh)
+	}()
+	t.Cleanup(func() {
+		close(stopCh)
+		<-done
+	})
 	require.Eventually(t, func() bool {
 		r.mu.RLock()
 		defer r.mu.RUnlock()
@@ -60,9 +71,7 @@ func TestNamespacesFor(t *testing.T) {
 		roleBinding("rb-dup-2", "ns-dup", []rbacv1.Subject{{Kind: rbacv1.GroupKind, Name: "team-a"}}),
 	)
 	r := NewResolver(testr.New(t), clientset)
-	stopCh := make(chan struct{})
-	defer close(stopCh)
-	startAndWaitSynced(t, r, stopCh)
+	startAndWaitSynced(t, r)
 
 	namespaces, err := r.NamespacesFor("alice", []string{"team-a"})
 	require.NoError(t, err)
@@ -104,18 +113,14 @@ func TestClusterScopeProbeUsable(t *testing.T) {
 			roleBinding("rb", "some-other-namespace", []rbacv1.Subject{{Kind: rbacv1.UserKind, Name: "alice"}}),
 		)
 		r := NewResolver(testr.New(t), clientset)
-		stopCh := make(chan struct{})
-		defer close(stopCh)
-		startAndWaitSynced(t, r, stopCh)
+		startAndWaitSynced(t, r)
 		assert.True(t, r.ClusterScopeProbeUsable())
 	})
 
 	t.Run("becomes unusable once a RoleBinding is added to the probe namespace", func(t *testing.T) {
 		clientset := k8sfake.NewSimpleClientset()
 		r := NewResolver(testr.New(t), clientset)
-		stopCh := make(chan struct{})
-		defer close(stopCh)
-		startAndWaitSynced(t, r, stopCh)
+		startAndWaitSynced(t, r)
 		require.True(t, r.ClusterScopeProbeUsable())
 
 		_, err := clientset.RbacV1().RoleBindings(ClusterScopeProbeNamespace).Create(

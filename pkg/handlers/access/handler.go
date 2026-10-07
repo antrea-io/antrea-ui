@@ -84,7 +84,7 @@ func trimRoleBinding(obj any) (any, error) {
 }
 
 // Run watches RoleBindings cluster-wide until stopCh is closed. It blocks and should be called from
-// a goroutine.
+// a goroutine. Once it returns, no further work is done on behalf of the resolver.
 func (r *resolver) Run(stopCh <-chan struct{}) {
 	factory := informers.NewSharedInformerFactoryWithOptions(
 		r.clientset,
@@ -103,7 +103,11 @@ func (r *resolver) Run(stopCh <-chan struct{}) {
 		r.logger.Error(err, "failed to register RoleBinding event handler")
 		return
 	}
-	go informer.Run(stopCh)
+	// informer.Run only returns once its event handlers have finished, so waiting for it
+	// guarantees no handler (and no logging from it) outlives Run.
+	var wg sync.WaitGroup
+	defer wg.Wait()
+	wg.Go(func() { informer.Run(stopCh) })
 	if !cache.WaitForCacheSync(stopCh, informer.HasSynced) {
 		r.logger.Info("RoleBinding cache did not sync; namespace discovery is unavailable")
 		return
