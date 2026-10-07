@@ -60,6 +60,11 @@ type NamespaceAccessSummary struct {
 	// EvaluationError says why: an unknown answer, which a consumer must tell apart from a
 	// denial, exactly as it does for an API server that cannot enumerate its rules.
 	Rules authorizationv1.SubjectRulesReviewStatus `json:"rules"`
+	// EvaluationFailed is true when the review for this Namespace failed, and Rules is the
+	// unknown answer described above. It tells a failure that may clear on its own apart from an
+	// API server that cannot enumerate its rules, which is stable: the server does not cache the
+	// former, and a consumer should not either.
+	EvaluationFailed bool `json:"evaluationFailed,omitempty"`
 }
 
 // NamespaceAccessSummaryList answers AccessSummary's question for each of the Namespaces a request

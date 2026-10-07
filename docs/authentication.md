@@ -361,6 +361,7 @@ makes them in one request:
     },
     {
       "namespace": "rbac-test-beta",
+      "evaluationFailed": true,
       "rules": {"resourceRules": [], "nonResourceRules": [], "incomplete": true, "evaluationError": "..."}
     }
   ]
@@ -385,10 +386,13 @@ exactly as for the other pages, and every feature shares this one answer.
   hundreds of namespaces picks a few from a searchable list and asks about
   those, rather than about all of them.
 - **Unknown is not denied.** A namespace whose review cannot be evaluated is
-  reported with `rules.incomplete: true` and an `evaluationError`, and the
-  others are still answered. Such an answer is not cached, so the next request
-  evaluates again rather than keeping those namespaces unknown for the rest of
-  the cache lifetime. A consumer needs three outcomes: *allowed* when a
+  reported with `rules.incomplete: true`, an `evaluationError` and
+  `evaluationFailed: true`, and the others are still answered. A failed review
+  is not cached, so the next request reviews that namespace again rather than
+  keeping it unknown for the rest of the cache lifetime. `evaluationFailed`
+  tells such a failure, which may clear on its own, from an API server that
+  cannot enumerate its rules, which is stable: the frontend does not keep an
+  answer that contains one. A consumer needs three outcomes: *allowed* when a
   rule matches, which is safe even when the list is incomplete, since rules are
   additive; *unknown* when nothing matches in an incomplete list, as with a
   webhook authorizer the API server cannot enumerate; and *denied* otherwise.
@@ -399,8 +403,12 @@ exactly as for the other pages, and every feature shares this one answer.
 - **Cost.** One review per namespace named, so at most 10, and at most eight at
   a time. A user who holds the grant cluster-wide has no use for this endpoint,
   as the grant holds in every namespace and the cluster-scoped summary says so.
-  Answers are cached for the session and the namespaces asked about for 30
-  seconds, and concurrent identical requests share one evaluation. The frontend
+  Each successful review is cached for 30 seconds, per session and namespace,
+  so the same namespaces in another order, or some of those already answered,
+  cost nothing, and only the namespaces not cached are reviewed. Both access
+  routes are rate limited per user, with one budget shared between them (2
+  requests per second, with a burst of 10); a static-admin session is limited
+  by its own session, as every such login is the user `admin`. The frontend
   keeps what it fetched for the same 30 seconds, so that features asking the same
   question share it, and then asks again: a grant added or revoked shows up
   without the user logging out. It has the same ten-second timeout as

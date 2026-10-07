@@ -178,6 +178,10 @@ func TestAPIUnauthorized(t *testing.T) {
 			path:   "api/v1/access-summary",
 			method: "GET",
 		},
+		{
+			path:   "api/v1/access-summary/namespaces",
+			method: "GET",
+		},
 	}
 	for _, tc := range testCases {
 		t.Run(fmt.Sprintf("%s %s", tc.method, tc.path), func(t *testing.T) {

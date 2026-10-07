@@ -276,6 +276,22 @@ describe('namespaceAccessSummaries', () => {
         expect(fetchMock).toHaveBeenCalledTimes(2);
     });
 
+    test('does not memoize an answer in which a review failed: the next call asks again', async () => {
+        const failed = namespaceList({
+            items: [{ namespace: 'ns-a', evaluationFailed: true, rules: rules({ incomplete: true }) }],
+        });
+        const fetchMock = vi.fn()
+            .mockResolvedValueOnce(jsonResponse(failed))
+            .mockResolvedValueOnce(jsonResponse(namespaceList()));
+        vi.stubGlobal('fetch', fetchMock);
+
+        expect((await namespaceAccessSummaries(['ns-a'])).items[0].evaluationFailed).toBe(true);
+        expect((await namespaceAccessSummaries(['ns-a'])).items[0].evaluationFailed).toBeUndefined();
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+        await namespaceAccessSummaries(['ns-a']);
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
     test('aborts a request that never settles, like the cluster-scoped summary', async () => {
         vi.useFakeTimers();
         vi.stubGlobal('fetch', vi.fn().mockImplementation((_url: string, init: RequestInit) => (

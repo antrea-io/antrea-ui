@@ -16,16 +16,13 @@ package api
 
 import (
 	"context"
-	goerrors "errors"
 	"fmt"
 	"net/http"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"golang.org/x/sync/errgroup"
-	"golang.org/x/sync/singleflight"
 	authorizationv1 "k8s.io/api/authorization/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -39,15 +36,15 @@ import (
 )
 
 const (
-	// namespaceAccessTTL is how long one session's answer is reused. It is short because the
-	// answer is what a Namespace selector offers: a grant added or revoked should show up without
+	// namespaceAccessTTL is how long one session's review of a Namespace is reused. It is short
+	// because the answer is what a Namespace selector offers: a grant added or revoked should show up without
 	// the user logging out. What the TTL is for is collapsing the burst of calls a page load
 	// makes, not sparing the API server indefinitely.
 	namespaceAccessTTL = 30 * time.Second
-	// namespaceAccessCacheSize bounds the cache. Sessions are already capped
-	// (session.MaxSessions) and a session asks about a few sets of names at a time; entries
-	// expire on their own well before they would be evicted.
-	namespaceAccessCacheSize = 1024
+	// namespaceAccessCacheSize bounds the cache, at one entry per Namespace. Sessions are already
+	// capped (session.DefaultMaxSessions) and a session asks about at most maxNamespaceAccessNames
+	// Namespaces at a time; entries expire on their own well before they would be evicted.
+	namespaceAccessCacheSize = 10000
 	// maxNamespaceAccessNames caps how many Namespaces one request asks about, so that one
 	// request cannot fan out into more SelfSubjectRulesReviews than a selector has any use for.
 	// A user who may use hundreds of Namespaces picks a few from a searchable list, and asks
@@ -60,29 +57,22 @@ const (
 	namespaceAccessConcurrency = 8
 )
 
-// namespaceAccessCache memoizes GET /api/v1/access-summary/namespaces per session and set of
-// Namespaces.
-//
-// It uses singleflight.Group, and the key is what makes that sound: the session ID, so every
-// caller collapsed onto one flight is the same session presenting the same credential, and the
-// Namespaces asked about, so they are all asking the same question. The leader's answer,
-// including its error, is genuinely the follower's.
+// namespaceAccessCache memoizes one session's review of one Namespace, so that the same
+// Namespaces in another order, or a subset of an earlier request, are answered without a review.
 type namespaceAccessCache struct {
-	// entries holds *apisv1.NamespaceAccessSummaryList keyed by namespaceAccessKey. A cached
-	// response is shared by every request that reads it and must be treated as immutable.
+	// entries holds authorizationv1.SubjectRulesReviewStatus keyed by namespaceAccessKey. A cached
+	// status is shared by every request that reads it and must be treated as immutable.
 	entries *cache.LRUExpireCache
-	flights singleflight.Group
 }
 
 func newNamespaceAccessCache() *namespaceAccessCache {
 	return &namespaceAccessCache{entries: cache.NewLRUExpireCache(namespaceAccessCacheSize)}
 }
 
-// namespaceAccessKey is the cache key of one session's question. The names are in request order,
-// which is the order of the answer, so a question in a different order is a different one.
-func namespaceAccessKey(sessionID string, names []string) string {
+// namespaceAccessKey is the cache key of one session's review of one Namespace.
+func namespaceAccessKey(sessionID, namespace string) string {
 	// Neither a session ID nor a Namespace name can contain a NUL.
-	return sessionID + "\x00" + strings.Join(names, "\x00")
+	return sessionID + "\x00" + namespace
 }
 
 // GetNamespaceAccessSummaries handles GET /api/v1/access-summary/namespaces?namespace=<ns>...:
@@ -107,16 +97,15 @@ func (s *Server) GetNamespaceAccessSummaries(c *gin.Context) {
 		if sError != nil {
 			return sError
 		}
-		ctx := c.Request.Context()
 		// The authenticate middleware sets this on every request that gets here. If it were ever
 		// missing the request is evaluated without the cache, which is correct and only slower,
 		// so it is not worth failing over; a bearer request without a session takes the same path.
-		var cacheKey string
-		if ra, ok := authn.RequestAuthFromGin(c); ok && ra.SessionID() != "" {
-			cacheKey = namespaceAccessKey(ra.SessionID(), names)
+		var sessionID string
+		if ra, ok := authn.RequestAuthFromGin(c); ok {
+			sessionID = ra.SessionID()
 		}
 
-		result, err := s.resolveNamespaceAccess(ctx, cacheKey, names)
+		result, err := s.resolveNamespaceAccess(c.Request.Context(), sessionID, names)
 		if err != nil {
 			return s.k8sError(c, err, "error when evaluating namespace access summaries")
 		}
@@ -163,96 +152,72 @@ func namespaceAccessNames(requested []string) ([]string, *errors.ServerError) {
 	return names, nil
 }
 
-// resolveNamespaceAccess returns the cached answer for this question, or evaluates one. An empty
-// cacheKey evaluates without the cache.
+// resolveNamespaceAccess answers for each Namespace from the session's cache, and reviews the
+// ones it has none for. An empty sessionID evaluates without the cache.
 //
-// Only complete successes are cached, for the same reason the frontend memoizes only successful
+// Only successful reviews are cached, for the same reason the frontend memoizes only successful
 // access summaries: a cached failure would keep answering for the whole TTL after the condition
-// that caused it cleared. An answer in which a Namespace's review failed is not complete: that
-// Namespace would stay unknown for the whole TTL after a blip of a second.
-func (s *Server) resolveNamespaceAccess(ctx context.Context, cacheKey string, names []string) (*apisv1.NamespaceAccessSummaryList, error) {
-	if cacheKey == "" {
-		// A bearer-authenticated request has no session, so there is nothing to scope a
-		// cache entry to, and nothing to key a single flight by either. Sharing one key
-		// across session-less requests would collapse callers presenting different
-		// credentials onto one answer, which is the thing this cache must never do, so
-		// these requests pay for their own reviews.
-		list, _, err := s.evaluateNamespaceAccess(ctx, names)
-		return list, err
-	}
-	if v, ok := s.namespaceAccess.entries.Get(cacheKey); ok {
-		return v.(*apisv1.NamespaceAccessSummaryList), nil
-	}
-	v, err, shared := s.namespaceAccess.flights.Do(cacheKey, func() (any, error) {
-		// Re-read under the flight: a request that arrived while the previous leader was
-		// storing its answer would otherwise become a leader of its own.
-		if v, ok := s.namespaceAccess.entries.Get(cacheKey); ok {
-			return v, nil
-		}
-		result, complete, err := s.evaluateNamespaceAccess(ctx, names)
-		if err != nil {
-			return nil, err
-		}
-		if complete {
-			s.namespaceAccess.entries.Add(cacheKey, result, namespaceAccessTTL)
-		}
-		return result, nil
-	})
-	if err != nil {
-		// The flight runs on the leader's request context, so a leader whose client
-		// disconnected cancels it, and one that ran out of time (the HTTP server's own timeout)
-		// ends it with a deadline. Either is the leader's own outcome and not the follower's: a
-		// follower whose request is still live evaluates for itself rather than reporting an
-		// error that had nothing to do with it.
-		if shared && (goerrors.Is(err, context.Canceled) || goerrors.Is(err, context.DeadlineExceeded)) && ctx.Err() == nil {
-			list, _, err := s.evaluateNamespaceAccess(ctx, names)
-			return list, err
-		}
-		return nil, err
-	}
-	return v.(*apisv1.NamespaceAccessSummaryList), nil
-}
-
-// evaluateNamespaceAccess reviews each Namespace. The bool is false when the review of some
-// Namespace failed and was reported as unknown, which a caller must not cache.
-func (s *Server) evaluateNamespaceAccess(ctx context.Context, names []string) (*apisv1.NamespaceAccessSummaryList, bool, error) {
-	clientset, err := s.clientFactory.KubernetesClientForRequest(ctx)
-	if err != nil {
-		return nil, false, fmt.Errorf("failed to build K8s client for request: %w", err)
-	}
-
+// that caused it cleared. A Namespace whose review failed is reported as unknown and reviewed
+// again by the next request, while the others stay cached.
+func (s *Server) resolveNamespaceAccess(ctx context.Context, sessionID string, names []string) (*apisv1.NamespaceAccessSummaryList, error) {
 	list := &apisv1.NamespaceAccessSummaryList{
 		Items: make([]apisv1.NamespaceAccessSummary, len(names)),
 	}
-	var downgraded atomic.Bool
-	g, gCtx := errgroup.WithContext(ctx)
-	g.SetLimit(namespaceAccessConcurrency)
+	// A bearer-authenticated request has no session, so there is nothing to scope a cache entry
+	// to. Sharing one key across session-less requests would hand one credential's answer to
+	// another, which this cache must never do, so these requests pay for their own reviews.
+	var misses []int
 	for i, ns := range names {
 		list.Items[i].Namespace = ns
+		if sessionID != "" {
+			if v, ok := s.namespaceAccess.entries.Get(namespaceAccessKey(sessionID, ns)); ok {
+				list.Items[i].Rules = v.(authorizationv1.SubjectRulesReviewStatus)
+				continue
+			}
+		}
+		misses = append(misses, i)
+	}
+	if len(misses) == 0 {
+		return list, nil
+	}
+
+	clientset, err := s.clientFactory.KubernetesClientForRequest(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build K8s client for request: %w", err)
+	}
+	g, gCtx := errgroup.WithContext(ctx)
+	g.SetLimit(namespaceAccessConcurrency)
+	for _, i := range misses {
+		item := &list.Items[i]
 		g.Go(func() error {
-			rules, err := selfSubjectRules(gCtx, clientset, ns)
+			rules, err := selfSubjectRules(gCtx, clientset, item.Namespace)
 			switch {
 			case err == nil:
-				list.Items[i].Rules = rules
+				item.Rules = rules
+				if sessionID != "" {
+					s.namespaceAccess.entries.Add(namespaceAccessKey(sessionID, item.Namespace), rules, namespaceAccessTTL)
+				}
 			case isFatalReviewError(gCtx, err):
 				return err
 			default:
 				// Neither an allow nor a denial: unknown, which is what Incomplete says. The
 				// error itself stays in the log, as it can name the API server's address.
-				s.logger.Error(err, "Failed to review access in namespace", "namespace", ns)
-				downgraded.Store(true)
-				list.Items[i].Rules = authorizationv1.SubjectRulesReviewStatus{
-					Incomplete:      true,
-					EvaluationError: "the access review for this namespace could not be evaluated",
+				s.logger.Error(err, "Failed to review access in namespace", "namespace", item.Namespace)
+				item.EvaluationFailed = true
+				item.Rules = authorizationv1.SubjectRulesReviewStatus{
+					ResourceRules:    []authorizationv1.ResourceRule{},
+					NonResourceRules: []authorizationv1.NonResourceRule{},
+					Incomplete:       true,
+					EvaluationError:  "the access review for this namespace could not be evaluated",
 				}
 			}
 			return nil
 		})
 	}
 	if err := g.Wait(); err != nil {
-		return nil, false, err
+		return nil, err
 	}
-	return list, !downgraded.Load(), nil
+	return list, nil
 }
 
 // isFatalReviewError reports whether a failed review means the whole request has no answer, rather

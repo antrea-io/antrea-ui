@@ -55,6 +55,10 @@ export interface AccessSummary {
  * differs between Namespaces, so the identity and the cluster-admin verdict are not repeated. */
 export interface NamespaceAccessSummary {
     namespace: string
+    /** The review for this Namespace failed, and `rules` is the unknown answer. Unlike an API
+     * server that cannot enumerate its rules, which is stable, a failure may clear on its own:
+     * the backend does not cache it, and neither should a consumer. */
+    evaluationFailed?: boolean
     /** Evaluated for `namespace`, so it includes the grants that apply cluster-wide. When the
      * review for this Namespace could not be evaluated, `incomplete` is true and
      * `evaluationError` says so: unknown, not denied. */
@@ -166,11 +170,17 @@ export function namespaceAccessSummaries(namespaces: string[]): Promise<Namespac
         settledAt: null,
     };
     namespaceAccessMemos.set(key, entry);
-    // A rejection is not memoized, as for accessSummary(). The guard is for a reset that replaced
-    // this entry while it was pending.
+    // A rejection is not memoized, as for accessSummary(), and neither is an answer in which a
+    // review failed: the backend does not cache those either, so that a brief API error does not
+    // last for the whole TTL. Callers already waiting on this promise still share it. The guard is
+    // for a reset that replaced this entry while it was pending.
+    const forget = () => { if (namespaceAccessMemos.get(key) === entry) namespaceAccessMemos.delete(key); };
     entry.promise.then(
-        () => { entry.settledAt = Date.now(); },
-        () => { if (namespaceAccessMemos.get(key) === entry) namespaceAccessMemos.delete(key); },
+        list => {
+            if (list.items.some(item => item.evaluationFailed)) forget();
+            else entry.settledAt = Date.now();
+        },
+        forget,
     );
     return entry.promise;
 }

@@ -15,23 +15,23 @@
 package api
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
 
+	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	authorizationv1 "k8s.io/api/authorization/v1"
 
 	apisv1 "antrea.io/antrea-ui/apis/v1"
 	"antrea.io/antrea-ui/pkg/auth/session"
+	accesshandlertesting "antrea.io/antrea-ui/pkg/handlers/access/testing"
 )
 
 const namespaceAccessPath = "/api/v1/access-summary/namespaces"
@@ -238,10 +238,10 @@ func TestGetNamespaceAccessSummariesIsCachedForTheTTL(t *testing.T) {
 	})
 }
 
-// A cached answer is the answer to one question from one session: another session, other
-// Namespaces, or the same ones in another order (which is the order of the answer) each pay for
-// their own.
-func TestGetNamespaceAccessSummariesCacheKeyIsSessionAndNamespaces(t *testing.T) {
+// A cached review is one session's review of one Namespace: the same Namespaces in another order,
+// or a subset of an earlier request, are answered from it, and only the misses are reviewed.
+// Another session never reads it.
+func TestGetNamespaceAccessSummariesCacheKeyIsSessionAndNamespace(t *testing.T) {
 	ts, fakeAPIServer := newTestServerForAccess(t, nil)
 	mine := ts.newSession(session.ModeToken)
 	other := ts.newSession(session.ModeToken)
@@ -254,22 +254,22 @@ func TestGetNamespaceAccessSummariesCacheKeyIsSessionAndNamespaces(t *testing.T)
 	assert.Equal(t, []string{"ns-a", "ns-b"}, ask(mine, "ns-a", "ns-b"))
 	assert.Equal(t, 2, fakeAPIServer.reviewCount())
 
-	assert.Equal(t, []string{"ns-a", "ns-b"}, ask(mine, "ns-a", "ns-b"))
-	assert.Equal(t, 2, fakeAPIServer.reviewCount(), "the same question is answered from the cache")
-
 	assert.Equal(t, []string{"ns-b", "ns-a"}, ask(mine, "ns-b", "ns-a"))
-	assert.Equal(t, 4, fakeAPIServer.reviewCount(), "the same Namespaces in another order are another question")
+	assert.Equal(t, 2, fakeAPIServer.reviewCount(), "another order is answered from the cache")
 
 	assert.Equal(t, []string{"ns-a"}, ask(mine, "ns-a"))
-	assert.Equal(t, 5, fakeAPIServer.reviewCount(), "other Namespaces are another question")
+	assert.Equal(t, 2, fakeAPIServer.reviewCount(), "a subset is answered from the cache")
+
+	assert.Equal(t, []string{"ns-c", "ns-a"}, ask(mine, "ns-c", "ns-a"))
+	assert.Equal(t, 3, fakeAPIServer.reviewCount(), "only the Namespace not seen before is reviewed")
 
 	assert.Equal(t, []string{"ns-a", "ns-b"}, ask(other, "ns-a", "ns-b"))
-	assert.Equal(t, 7, fakeAPIServer.reviewCount(), "another session never reads this session's answer")
+	assert.Equal(t, 5, fakeAPIServer.reviewCount(), "another session never reads this session's answer")
 }
 
-// An answer in which a Namespace was reported as unknown is not cached: that Namespace would stay
-// unknown for the whole TTL after a blip of a second. The next request evaluates again, and the
-// answer it gets is the complete one.
+// A Namespace reported as unknown is not cached: it would stay unknown for the whole TTL after a
+// blip of a second. The next request reviews it again, while the Namespaces that were answered
+// stay cached.
 func TestGetNamespaceAccessSummariesDoesNotCacheUnknownNamespaces(t *testing.T) {
 	ts, fakeAPIServer := newTestServerForAccess(t, nil)
 	fakeAPIServer.rulesByNamespace = map[string]authorizationv1.SubjectRulesReviewStatus{
@@ -286,6 +286,9 @@ func TestGetNamespaceAccessSummariesDoesNotCacheUnknownNamespaces(t *testing.T) 
 	first := do()
 	require.Len(t, first.Items, 2)
 	assert.True(t, first.Items[1].Rules.Incomplete)
+	assert.True(t, first.Items[1].EvaluationFailed)
+	assert.False(t, first.Items[0].EvaluationFailed)
+	assert.Equal(t, 2, fakeAPIServer.reviewCount())
 
 	fakeAPIServer.mu.Lock()
 	fakeAPIServer.rulesStatusByNamespace = nil
@@ -293,10 +296,56 @@ func TestGetNamespaceAccessSummariesDoesNotCacheUnknownNamespaces(t *testing.T) 
 	second := do()
 	require.Len(t, second.Items, 2)
 	assert.Equal(t, flowRules("watch"), second.Items[1].Rules)
+	assert.False(t, second.Items[1].EvaluationFailed)
+	assert.Equal(t, 3, fakeAPIServer.reviewCount(), "only the failed Namespace is reviewed again")
 
-	// The complete answer is cached, as before: no review for a third request.
+	// The complete answer is cached: no review for a third request.
 	do()
-	assert.Equal(t, 4, fakeAPIServer.reviewCount())
+	assert.Equal(t, 3, fakeAPIServer.reviewCount())
+}
+
+// A failed review is reported with empty rule lists, not null ones, as the type says.
+func TestGetNamespaceAccessSummariesFailedReviewHasEmptyRuleLists(t *testing.T) {
+	ts, fakeAPIServer := newTestServerForAccess(t, nil)
+	fakeAPIServer.rulesStatusByNamespace = map[string]int{"ns-a": http.StatusInternalServerError}
+
+	rr := httptest.NewRecorder()
+	ts.router.ServeHTTP(rr, namespaceAccessRequest(ts.newSession(session.ModeToken), "ns-a"))
+	require.Equal(t, http.StatusOK, rr.Code)
+	assert.Contains(t, rr.Body.String(), `"resourceRules":[]`)
+	assert.Contains(t, rr.Body.String(), `"nonResourceRules":[]`)
+}
+
+// The access routes share one per-user budget, and one user's requests do not spend another's.
+func TestAccessRoutesAreRateLimitedPerUser(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		resolver := accesshandlertesting.NewMockResolver(gomock.NewController(t))
+		resolver.EXPECT().ClusterScopeProbeUsable().Return(true).AnyTimes()
+		resolver.EXPECT().NamespacesFor(gomock.Any(), gomock.Any()).Return([]string{}, nil).AnyTimes()
+		ts, _ := newTestServerForAccess(t, resolver)
+		cookie := ts.newSession(session.ModeToken)
+		get := func(path string) int {
+			req := httptest.NewRequest("GET", path, nil)
+			req.AddCookie(cookie)
+			req.Header.Set("Sec-Fetch-Site", "same-origin")
+			rr := httptest.NewRecorder()
+			ts.router.ServeHTTP(rr, req)
+			return rr.Code
+		}
+
+		for i := range accessRequestsBurst {
+			path := "/api/v1/access-summary?namespace=ns-a"
+			if i%2 == 1 {
+				path = namespaceAccessPath + "?namespace=ns-a"
+			}
+			require.Equal(t, http.StatusOK, get(path), "request %d is within the burst", i)
+		}
+		assert.Equal(t, http.StatusTooManyRequests, get("/api/v1/access-summary?namespace=ns-a"))
+		assert.Equal(t, http.StatusTooManyRequests, get(namespaceAccessPath+"?namespace=ns-a"), "the budget is shared")
+
+		time.Sleep(time.Second)
+		assert.Equal(t, http.StatusOK, get("/api/v1/access-summary?namespace=ns-a"), "the budget refills")
+	})
 }
 
 // Failures are not cached either: the next request after the condition clears must not be answered
@@ -314,66 +363,4 @@ func TestGetNamespaceAccessSummariesDoesNotCacheFailure(t *testing.T) {
 	fakeAPIServer.mu.Unlock()
 	code, _ = serveNamespaceAccess(t, ts, namespaceAccessRequest(cookie, "ns-a"))
 	assert.Equal(t, http.StatusOK, code)
-}
-
-// Concurrent requests of one session for the same Namespaces join one flight. With the reviews
-// held in virtual time, the test can see that exactly one has reached the API server while every
-// caller is parked.
-func TestGetNamespaceAccessSummariesConcurrentRequestsShareOneFlight(t *testing.T) {
-	const callers = 8
-	synctest.Test(t, func(t *testing.T) {
-		ts, fakeAPIServer := newTestServerForAccess(t, nil)
-		fakeAPIServer.rulesDelay = time.Second
-		cookie := ts.newSession(session.ModeToken)
-
-		codes := make([]int, callers)
-		var wg sync.WaitGroup
-		for i := range callers {
-			wg.Go(func() {
-				codes[i], _ = serveNamespaceAccess(t, ts, namespaceAccessRequest(cookie, "ns-a"))
-			})
-		}
-		synctest.Wait()
-		assert.Equal(t, 1, fakeAPIServer.reviewCount(), "one review is in flight and the other callers are waiting on it")
-
-		time.Sleep(time.Second)
-		wg.Wait()
-		for _, code := range codes {
-			assert.Equal(t, http.StatusOK, code)
-		}
-		assert.Equal(t, 1, fakeAPIServer.reviewCount())
-	})
-}
-
-// The flight runs on the leader's request context. A leader that runs out of time, as the HTTP
-// server's own timeout makes it, ends the flight for everyone with a deadline error that is not the
-// follower's: a follower whose own request is live evaluates for itself.
-func TestResolveNamespaceAccessFollowerRetriesWhenLeaderTimesOut(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		ts, fakeAPIServer := newTestServerForAccess(t, nil)
-		fakeAPIServer.rulesDelay = time.Second
-		authCtx := session.WithRequestAuth(t.Context(), session.NewEphemeralAuth(
-			session.Credential{Kind: session.KindBearer, Token: []byte("user-token")}, "alice"))
-		leaderCtx, cancel := context.WithTimeout(authCtx, time.Second/2)
-		defer cancel()
-		names := []string{"ns-a"}
-
-		var wg sync.WaitGroup
-		var leaderErr, followerErr error
-		var followerList *apisv1.NamespaceAccessSummaryList
-		wg.Go(func() {
-			_, leaderErr = ts.s.resolveNamespaceAccess(leaderCtx, "session", names)
-		})
-		// The leader is in its review, so the follower joins its flight.
-		synctest.Wait()
-		wg.Go(func() {
-			followerList, followerErr = ts.s.resolveNamespaceAccess(authCtx, "session", names)
-		})
-		wg.Wait()
-
-		assert.ErrorIs(t, leaderErr, context.DeadlineExceeded)
-		require.NoError(t, followerErr)
-		require.Len(t, followerList.Items, 1)
-		assert.Equal(t, "ns-a", followerList.Items[0].Namespace)
-	})
 }
