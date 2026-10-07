@@ -23,6 +23,20 @@
 #   - no-signature-plugin:  structurally valid but carrying no manifest.json.asc, and expected to
 #                           be rejected (TestPluginWithoutSignatureIsRejected)
 #
+# Three more cover a plugin whose bundle is downloaded instead of shipped in its ConfigMap (see
+# "Downloading the bundle" in docs/plugins.md). A stub bundle server (ci/e2e-bundle-server.py)
+# serves the bundle two ways. Over TLS it is an aggregated API server registered with an
+# APIService, so requests go through kube-apiserver for real, and the backend's ServiceAccount is
+# granted - or, for the denied plugin, not granted - access to its bundles. Over plain HTTP it is
+# an ordinary Service:
+#
+#   - remote-plugin:         through kube-apiserver, expected to load (TestPluginBundleDownload)
+#   - remote-plugin-denied:  the same, but the ServiceAccount has no RBAC for the resource it
+#                            names, so kube-apiserver refuses with a 403 and the backend keeps
+#                            retrying (TestPluginBundleDownloadWithoutRBAC)
+#   - http-plugin:           over plain HTTP to the Service, the URL being in the ConfigMap,
+#                            expected to load (TestPluginBundleDownloadOverHTTP)
+#
 # The signing key is generated here into a throwaway GNUPGHOME and never leaves the machine; no
 # key material is committed.
 #
@@ -63,6 +77,14 @@ KEY_NAME="antrea-ui e2e plugin signing"
 # Matches plugins.signature.trustedKeys in ci/antrea-ui-values.yml.
 KEY_CONFIGMAP="antrea-ui-plugin-keys"
 KEY_CONFIGMAP_KEY="public-key.asc"
+
+# The stub bundle server's API group (matching ci/e2e-bundle-server.py) and the name its objects
+# share. It lives in the plugins namespace, which is deleted by clean.
+BUNDLE_API_GROUP="ui.e2e.antrea.io"
+BUNDLE_SERVER="e2e-bundle-server"
+BUNDLE_PATH="/apis/${BUNDLE_API_GROUP}/v1/uipluginbundles"
+# A resource of the same group the ServiceAccount is not granted access to.
+DENIED_BUNDLE_PATH="/apis/${BUNDLE_API_GROUP}/v1/deniedbundles"
 
 function log() {
     echo "[e2e-plugins] $*"
@@ -105,6 +127,162 @@ function configure_cluster() {
         --from-file="${KEY_CONFIGMAP_KEY}=${PUBLIC_KEY}"
 }
 
+# Deploys the stub aggregated API server, registers it with kube-apiserver and grants the
+# antrea-ui ServiceAccount read access to uipluginbundles (and only that).
+function create_bundle_server() {
+    log "Deploying the stub bundle server"
+    local dir="${WORK_DIR}/bundle-server"
+    mkdir -p "${dir}"
+    # kube-apiserver's connection to an aggregated API server is TLS; the APIService below skips
+    # verifying it, so the certificate only has to exist.
+    openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj "/CN=${BUNDLE_SERVER}" \
+        -keyout "${dir}/tls.key" -out "${dir}/tls.crt" 2>/dev/null
+    kubectl create secret tls "${BUNDLE_SERVER}-tls" --namespace "${PLUGINS_NAMESPACE}" \
+        --cert="${dir}/tls.crt" --key="${dir}/tls.key"
+    kubectl create configmap "${BUNDLE_SERVER}-script" --namespace "${PLUGINS_NAMESPACE}" \
+        --from-file="${THIS_DIR}/e2e-bundle-server.py"
+    kubectl create configmap "${BUNDLE_SERVER}-bundle" --namespace "${PLUGINS_NAMESPACE}" \
+        --from-file="${PLUGIN_DIST}/bundle.zip"
+    kubectl apply -f - <<EOF
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ${BUNDLE_SERVER}
+  namespace: ${PLUGINS_NAMESPACE}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ${BUNDLE_SERVER}
+  template:
+    metadata:
+      labels:
+        app: ${BUNDLE_SERVER}
+    spec:
+      containers:
+      - name: server
+        image: python:3.13-alpine
+        command: ["python", "-u", "/script/e2e-bundle-server.py"]
+        ports:
+        - containerPort: 8443
+        - containerPort: 8080
+        readinessProbe:
+          tcpSocket:
+            port: 8443
+        volumeMounts:
+        - {name: script, mountPath: /script}
+        - {name: bundle, mountPath: /bundle}
+        - {name: tls, mountPath: /tls}
+      volumes:
+      - name: script
+        configMap:
+          name: ${BUNDLE_SERVER}-script
+      - name: bundle
+        configMap:
+          name: ${BUNDLE_SERVER}-bundle
+      - name: tls
+        secret:
+          secretName: ${BUNDLE_SERVER}-tls
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${BUNDLE_SERVER}
+  namespace: ${PLUGINS_NAMESPACE}
+spec:
+  selector:
+    app: ${BUNDLE_SERVER}
+  ports:
+  - name: https
+    port: 443
+    targetPort: 8443
+  - name: http
+    port: 8080
+    targetPort: 8080
+---
+apiVersion: apiregistration.k8s.io/v1
+kind: APIService
+metadata:
+  name: v1.${BUNDLE_API_GROUP}
+spec:
+  group: ${BUNDLE_API_GROUP}
+  version: v1
+  groupPriorityMinimum: 1000
+  versionPriority: 15
+  insecureSkipTLSVerify: true
+  service:
+    name: ${BUNDLE_SERVER}
+    namespace: ${PLUGINS_NAMESPACE}
+    port: 443
+---
+# What docs/plugins.md tells a plugin provider's chart to ship. Deliberately nothing for deniedbundles.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: ${BUNDLE_SERVER}-reader
+rules:
+- apiGroups: ["${BUNDLE_API_GROUP}"]
+  resources: ["uipluginbundles"]
+  verbs: ["get", "list"]
+- apiGroups: ["${BUNDLE_API_GROUP}"]
+  resources: ["uipluginbundles/download"]
+  verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: ${BUNDLE_SERVER}-reader
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: ${BUNDLE_SERVER}-reader
+subjects:
+- kind: ServiceAccount
+  name: antrea-ui
+  namespace: ${RELEASE_NAMESPACE}
+EOF
+    kubectl rollout status --namespace "${PLUGINS_NAMESPACE}" "deployment/${BUNDLE_SERVER}" --timeout=5m
+    # The plugin ConfigMaps are created only once the APIService answers, so the tests don't
+    # depend on the backend's retry to get past the aggregation layer coming up.
+    kubectl wait --for=condition=Available "apiservice/v1.${BUNDLE_API_GROUP}" --timeout=3m
+}
+
+# create_remote_plugin NAME PATH creates a signed, manifest-only plugin ConfigMap named NAME,
+# whose bundle (the pod-counter one, as the digest in its manifest says) is downloaded from PATH.
+function create_remote_plugin() {
+    local name="$1" path="$2"
+    local dir="${WORK_DIR}/${name}"
+    mkdir -p "${dir}"
+    jq --arg n "${name}" --arg p "${path}" \
+        '.name = $n | .bundleSource = {apiServer: {path: $p}}' \
+        "${PLUGIN_DIST}/manifest.json" > "${dir}/manifest.json"
+    # The only key in this GNUPGHOME is the one sign generated.
+    gpg --detach-sign --armor --yes --output "${dir}/manifest.json.asc" "${dir}/manifest.json"
+    kubectl create configmap "${name}" --namespace "${PLUGINS_NAMESPACE}" \
+        --from-file="${dir}/manifest.json" \
+        --from-file="${dir}/manifest.json.asc"
+    kubectl label configmap "${name}" --namespace "${PLUGINS_NAMESPACE}" ui.antrea.io/plugin=true
+}
+
+# create_http_plugin NAME creates a signed, manifest-only plugin ConfigMap named NAME, whose bundle
+# is downloaded over plain HTTP from the stub server's Service. The URL is in the ConfigMap, not
+# the signed manifest.
+function create_http_plugin() {
+    local name="$1"
+    local dir="${WORK_DIR}/${name}"
+    mkdir -p "${dir}"
+    jq --arg n "${name}" '.name = $n | .bundleSource = {http: {}}' \
+        "${PLUGIN_DIST}/manifest.json" > "${dir}/manifest.json"
+    gpg --detach-sign --armor --yes --output "${dir}/manifest.json.asc" "${dir}/manifest.json"
+    local digest
+    digest="$(jq -r '.bundleSha256' "${dir}/manifest.json")"
+    kubectl create configmap "${name}" --namespace "${PLUGINS_NAMESPACE}" \
+        --from-file="${dir}/manifest.json" \
+        --from-file="${dir}/manifest.json.asc" \
+        --from-literal="bundleURL=http://${BUNDLE_SERVER}.${PLUGINS_NAMESPACE}.svc:8080/bundles/${digest}"
+    kubectl label configmap "${name}" --namespace "${PLUGINS_NAMESPACE}" ui.antrea.io/plugin=true
+}
+
 function create_plugins() {
     # Creation order between the two doesn't matter: TestPluginWithoutSignatureIsRejected
     # waits for the backend to log its rejection of this ConfigMap before asserting the
@@ -134,12 +312,25 @@ function create_plugins() {
     kubectl label configmap pod-counter-plugin --namespace "${PLUGINS_NAMESPACE}" ui.antrea.io/plugin=true
     # Grants the plugin's own RBAC; without it the plugin's page loads but its K8s call gets a 403.
     kubectl apply -f "${ROOT_DIR}/plugins/examples/pod-counter/clusterrole.yaml"
+
+    create_bundle_server
+    # The ConfigMap names are matched by TestPluginBundleDownload,
+    # TestPluginBundleDownloadOverHTTP and TestPluginBundleDownloadWithoutRBAC in
+    # test/e2e/plugin_test.go.
+    log "Creating the remote-plugin ConfigMap (bundle downloaded, expected to load)"
+    create_remote_plugin remote-plugin "${BUNDLE_PATH}"
+    log "Creating the http-plugin ConfigMap (bundle downloaded over plain HTTP)"
+    create_http_plugin http-plugin
+    log "Creating the remote-plugin-denied ConfigMap (download refused by RBAC)"
+    create_remote_plugin remote-plugin-denied "${DENIED_BUNDLE_PATH}"
 }
 
 function clean() {
     log "Removing the plugins namespace, the key ConfigMap and the throwaway key"
     # Deleting the namespace takes the plugin ConfigMaps with it.
     kubectl delete namespace "${PLUGINS_NAMESPACE}" --ignore-not-found
+    kubectl delete apiservice "v1.${BUNDLE_API_GROUP}" --ignore-not-found
+    kubectl delete clusterrolebinding,clusterrole "${BUNDLE_SERVER}-reader" --ignore-not-found
     kubectl delete configmap "${KEY_CONFIGMAP}" --namespace "${RELEASE_NAMESPACE}" --ignore-not-found
     rm -rf "${WORK_DIR}"
 }
