@@ -19,7 +19,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -166,10 +165,14 @@ func TestStreamFlowsHappyPath(t *testing.T) {
 	}
 
 	sseHandler := NewSSEHandler(logger, stub)
-	ts := httptest.NewServer(newTestRouter(sseHandler))
-	defer ts.Close()
+	// The stream is served by a real server, like in the session tests (see startSilentStream),
+	// to cover what a client actually receives. The stub closes its flow channel after its
+	// events, so the stream ends on its own.
+	ts := httptest.NewTestServer(t, newTestRouter(sseHandler))
+	// The first call to Client is what starts the server and sets its URL.
+	client := ts.Client()
 
-	resp, err := http.Get(ts.URL + "/api/v1/flows/stream?clusterWide=true")
+	resp, err := client.Get(ts.URL + "/api/v1/flows/stream?clusterWide=true")
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
@@ -204,17 +207,11 @@ func TestStreamFlowsErrorPath(t *testing.T) {
 	}
 
 	sseHandler := NewSSEHandler(logger, stub)
-	ts := httptest.NewServer(newTestRouter(sseHandler))
-	defer ts.Close()
+	rr := httptest.NewRecorder()
+	newTestRouter(sseHandler).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v1/flows/stream?clusterWide=true", nil))
 
-	resp, err := http.Get(ts.URL + "/api/v1/flows/stream?clusterWide=true")
-	require.NoError(t, err)
-	defer resp.Body.Close()
-
-	assert.Equal(t, http.StatusBadGateway, resp.StatusCode)
-	body, err := io.ReadAll(resp.Body)
-	require.NoError(t, err)
-	assert.Contains(t, string(body), "upstream connection lost")
+	assert.Equal(t, http.StatusBadGateway, rr.Code)
+	assert.Contains(t, rr.Body.String(), "upstream connection lost")
 }
 
 // classifyStreamErr's StreamError.Code maps to a specific, more useful HTTP status than the
@@ -226,17 +223,13 @@ func TestStreamFlowsErrorPathClassifiedStatus(t *testing.T) {
 	}
 
 	sseHandler := NewSSEHandler(logger, stub)
-	ts := httptest.NewServer(newTestRouter(sseHandler))
-	defer ts.Close()
+	rr := httptest.NewRecorder()
+	newTestRouter(sseHandler).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v1/flows/stream?clusterWide=true", nil))
 
-	resp, err := http.Get(ts.URL + "/api/v1/flows/stream?clusterWide=true")
-	require.NoError(t, err)
-	defer resp.Body.Close()
-
-	assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
+	assert.Equal(t, http.StatusServiceUnavailable, rr.Code)
 
 	var evt apisv1.FlowStreamErrorEvent
-	require.NoError(t, json.NewDecoder(resp.Body).Decode(&evt))
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &evt))
 	assert.Equal(t, StreamErrorCodeResourceExhausted, evt.Code)
 	assert.True(t, evt.Retryable, "the client reconnects off this flag, so it has to reach the client")
 }
@@ -252,17 +245,13 @@ func TestStreamFlowsForbiddenIsA403(t *testing.T) {
 	}
 
 	sseHandler := NewSSEHandler(logger, stub)
-	ts := httptest.NewServer(newTestRouter(sseHandler))
-	defer ts.Close()
+	rr := httptest.NewRecorder()
+	newTestRouter(sseHandler).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v1/flows/stream?clusterWide=true", nil))
 
-	resp, err := http.Get(ts.URL + "/api/v1/flows/stream?clusterWide=true")
-	require.NoError(t, err)
-	defer resp.Body.Close()
-
-	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+	assert.Equal(t, http.StatusForbidden, rr.Code)
 
 	var evt apisv1.FlowStreamErrorEvent
-	require.NoError(t, json.NewDecoder(resp.Body).Decode(&evt))
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &evt))
 	assert.Equal(t, StreamErrorCodeForbidden, evt.Code)
 	assert.False(t, evt.Retryable)
 }
@@ -280,20 +269,16 @@ func TestStreamFlowsUnauthenticatedIsNotA401(t *testing.T) {
 	}
 
 	sseHandler := NewSSEHandler(logger, stub)
-	ts := httptest.NewServer(newTestRouter(sseHandler))
-	defer ts.Close()
+	rr := httptest.NewRecorder()
+	newTestRouter(sseHandler).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v1/flows/stream?clusterWide=true", nil))
 
-	resp, err := http.Get(ts.URL + "/api/v1/flows/stream?clusterWide=true")
-	require.NoError(t, err)
-	defer resp.Body.Close()
-
-	assert.Equal(t, http.StatusBadGateway, resp.StatusCode)
-	assert.NotEqual(t, http.StatusUnauthorized, resp.StatusCode)
+	assert.Equal(t, http.StatusBadGateway, rr.Code)
+	assert.NotEqual(t, http.StatusUnauthorized, rr.Code)
 
 	// The status is deliberately generic, so the code/retryable fields are the only thing that
 	// tells the client this one is not worth retrying.
 	var evt apisv1.FlowStreamErrorEvent
-	require.NoError(t, json.NewDecoder(resp.Body).Decode(&evt))
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &evt))
 	assert.Equal(t, StreamErrorCodeUnauthenticated, evt.Code)
 	assert.False(t, evt.Retryable)
 	assert.Contains(t, evt.Message, "rejected the credential")
@@ -464,14 +449,10 @@ func TestStreamFlowsBadFilter(t *testing.T) {
 	stub := &stubFlowStreamSubscriber{}
 
 	sseHandler := NewSSEHandler(logger, stub)
-	ts := httptest.NewServer(newTestRouter(sseHandler))
-	defer ts.Close()
+	rr := httptest.NewRecorder()
+	newTestRouter(sseHandler).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v1/flows/stream?flowTypes=abc", nil))
 
-	resp, err := http.Get(ts.URL + "/api/v1/flows/stream?flowTypes=abc")
-	require.NoError(t, err)
-	defer resp.Body.Close()
-
-	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	assert.Equal(t, http.StatusBadRequest, rr.Code)
 }
 
 // A stream's scope is what the Flow Aggregator authorizes it against, so every way of failing to
@@ -572,11 +553,7 @@ func TestParseFlowStreamScope(t *testing.T) {
 func TestStreamFlowsRejectsMissingScope(t *testing.T) {
 	stub := &stubFlowStreamSubscriber{}
 	handler := NewSSEHandler(testr.New(t), stub)
-	ts := httptest.NewServer(newTestRouter(handler))
-	defer ts.Close()
-
-	resp, err := http.Get(ts.URL + "/api/v1/flows/stream")
-	require.NoError(t, err)
-	defer resp.Body.Close()
-	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	rr := httptest.NewRecorder()
+	newTestRouter(handler).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v1/flows/stream", nil))
+	assert.Equal(t, http.StatusBadRequest, rr.Code)
 }

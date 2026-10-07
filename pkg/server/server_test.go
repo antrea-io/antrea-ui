@@ -27,11 +27,11 @@ import (
 	"github.com/golang/mock/gomock"
 	"github.com/oauth2-proxy/mockoidc"
 	"github.com/stretchr/testify/require"
-	"k8s.io/client-go/rest"
 
 	"antrea.io/antrea-ui/pkg/auth/session"
 	serverconfig "antrea.io/antrea-ui/pkg/config/server"
 	"antrea.io/antrea-ui/pkg/k8s"
+	k8stesting "antrea.io/antrea-ui/pkg/k8s/testing"
 	passwordtesting "antrea.io/antrea-ui/pkg/password/testing"
 	"antrea.io/antrea-ui/pkg/plugins"
 	cookieutils "antrea.io/antrea-ui/pkg/server/utils/cookie"
@@ -54,7 +54,9 @@ type testServer struct {
 	k8sAPIServer *fakeK8sAPIServer
 }
 
-// fakeK8sAPIServer answers the SelfSubjectReview call that login uses to validate a credential.
+// fakeK8sAPIServer answers the SelfSubjectReview call that login uses to validate a credential. It
+// uses the in-memory network of httptest.NewTestServer and not a loopback socket: see
+// k8stesting.InMemoryServerConfig for how clients reach it.
 type fakeK8sAPIServer struct {
 	*httptest.Server
 	// rejectTokens are the bearer tokens the API server should refuse.
@@ -67,7 +69,7 @@ type fakeK8sAPIServer struct {
 
 func newFakeK8sAPIServer(t *testing.T) *fakeK8sAPIServer {
 	f := &fakeK8sAPIServer{rejectTokens: map[string]bool{}, username: "alice"}
-	f.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	f.Server = httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		token := ""
 		if auth := r.Header.Get("Authorization"); len(auth) > len("Bearer ") {
 			token = auth[len("Bearer "):]
@@ -80,7 +82,6 @@ func newFakeK8sAPIServer(t *testing.T) *fakeK8sAPIServer {
 		w.WriteHeader(http.StatusCreated)
 		_, _ = w.Write([]byte(`{"apiVersion":"authentication.k8s.io/v1","kind":"SelfSubjectReview","status":{"userInfo":{"username":"` + f.username + `"}}}`))
 	}))
-	t.Cleanup(f.Close)
 	return f
 }
 
@@ -169,7 +170,8 @@ func newTestServerWithLogger(t *testing.T, logger logr.Logger, options ...testSe
 	}
 
 	k8sAPIServer := newFakeK8sAPIServer(t)
-	clientFactory, err := k8s.NewClientFactory(&rest.Config{Host: k8sAPIServer.URL}, http.DefaultTransport, session.TransportKeyK8s)
+	k8sConfig, k8sTransport := k8stesting.InMemoryServerConfig(t, k8sAPIServer.Server)
+	clientFactory, err := k8s.NewClientFactory(k8sConfig, k8sTransport, session.TransportKeyK8s)
 	require.NoError(t, err)
 
 	sessionStore := session.NewStore(logger, session.Options{

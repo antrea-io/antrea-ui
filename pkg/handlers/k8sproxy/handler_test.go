@@ -25,7 +25,14 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"antrea.io/antrea-ui/pkg/auth/session"
+	k8stesting "antrea.io/antrea-ui/pkg/k8s/testing"
 )
+
+// upstreamURL is the URL of the fake API server behind the proxy, which uses the in-memory network
+// of httptest.NewTestServer: only the transport of its own client can reach it. It is not
+// example.com, the URL of such a server, as that is also the default host of httptest.NewRequest,
+// which TestK8sProxyHandler must tell apart from the host of the upstream.
+const upstreamURL = k8stesting.InMemoryServerURL
 
 // staticTransport stands in for k8s.ClientFactory.TransportForRequest.
 func staticTransport(rt http.RoundTripper) func(*http.Request) (http.RoundTripper, error) {
@@ -34,16 +41,15 @@ func staticTransport(rt http.RoundTripper) func(*http.Request) (http.RoundTrippe
 
 func TestK8sProxyHandler(t *testing.T) {
 	var capturedReq *http.Request
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	ts := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		capturedReq = r
 		w.WriteHeader(http.StatusOK)
 	}))
-	defer ts.Close()
 
 	logger := testr.New(t)
-	serverURL, err := url.Parse(ts.URL)
+	serverURL, err := url.Parse(upstreamURL)
 	require.NoError(t, err)
-	h := NewK8sProxyHandler(logger, serverURL, staticTransport(http.DefaultTransport))
+	h := NewK8sProxyHandler(logger, serverURL, staticTransport(ts.Client().Transport))
 
 	req := httptest.NewRequest("GET", "/api/v1/pods", nil)
 	req.RemoteAddr = "127.0.0.1:32167"
@@ -93,14 +99,13 @@ func TestK8sProxyHandlerInvalidatesSessionOn401(t *testing.T) {
 	}
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ts := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(tc.upstreamStatus)
 			}))
-			defer ts.Close()
 
-			serverURL, err := url.Parse(ts.URL)
+			serverURL, err := url.Parse(upstreamURL)
 			require.NoError(t, err)
-			h := NewK8sProxyHandler(testr.New(t), serverURL, staticTransport(http.DefaultTransport))
+			h := NewK8sProxyHandler(testr.New(t), serverURL, staticTransport(ts.Client().Transport))
 
 			store := session.NewStore(testr.New(t), session.Options{})
 			sess, err := store.Create(&session.Spec{

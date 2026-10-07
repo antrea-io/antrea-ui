@@ -21,25 +21,24 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"k8s.io/client-go/rest"
 	"k8s.io/client-go/transport"
+
+	k8stesting "antrea.io/antrea-ui/pkg/k8s/testing"
 )
 
 func TestImpersonatedClient(t *testing.T) {
 	var gotHeader http.Header
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	ts := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotHeader = r.Header.Clone()
 	}))
-	defer ts.Close()
-
-	config := &rest.Config{Host: ts.URL}
+	config, baseTransport := k8stesting.InMemoryServerConfig(t, ts)
 	userName := ServiceAccountUserName("kube-system", "antrea-ui-admin")
 
-	httpClient, dynamicClient, err := ImpersonatedClient(config, http.DefaultTransport, userName)
+	httpClient, dynamicClient, err := ImpersonatedClient(config, baseTransport, userName)
 	require.NoError(t, err)
 	require.NotNil(t, dynamicClient)
 
-	resp, err := httpClient.Get(ts.URL)
+	resp, err := httpClient.Get(config.Host)
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
