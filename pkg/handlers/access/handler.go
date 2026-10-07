@@ -105,12 +105,9 @@ func (r *resolver) Run(stopCh <-chan struct{}) {
 	}
 	// informer.Run only returns once its event handlers have finished, so waiting for it
 	// guarantees no handler (and no logging from it) outlives Run.
-	informerDone := make(chan struct{})
-	go func() {
-		defer close(informerDone)
-		informer.Run(stopCh)
-	}()
-	defer func() { <-informerDone }()
+	var wg sync.WaitGroup
+	defer wg.Wait()
+	wg.Go(func() { informer.Run(stopCh) })
 	if !cache.WaitForCacheSync(stopCh, informer.HasSynced) {
 		r.logger.Info("RoleBinding cache did not sync; namespace discovery is unavailable")
 		return
