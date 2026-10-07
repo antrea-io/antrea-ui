@@ -15,22 +15,22 @@
 package server
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/http/httputil"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/go-logr/logr"
+	"github.com/go-logr/logr/funcr"
 	"github.com/go-logr/logr/testr"
 	"github.com/oauth2-proxy/mockoidc"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/tonglil/buflogr"
 
 	cookieutils "antrea.io/antrea-ui/pkg/server/utils/cookie"
 )
@@ -274,7 +274,11 @@ func TestOAuth2DiscoveryURL(t *testing.T) {
 	proxy := httptest.NewServer(httputil.NewSingleHostReverseProxy(issuerURL))
 	defer proxy.Close()
 
-	initProvider := func(logger logr.Logger, issuerURL, discoveryURL string) error {
+	// provider.Init will not spawn any goroutine and will attempt OIDC discovery right away, so
+	// 1s should be more than enough for a first attempt.
+	const initTimeout = 1 * time.Second
+
+	initProvider := func(ctx context.Context, logger logr.Logger, issuerURL, discoveryURL string) error {
 		provider, err := NewOIDCProvider(
 			logger,
 			testServerAddr,
@@ -286,22 +290,30 @@ func TestOAuth2DiscoveryURL(t *testing.T) {
 			nil,
 		)
 		require.NoError(t, err)
-		// provider.Init will not spawn any goroutine and will attempt OIDC discover right
-		// away, so 1s should be more than enough.
-		ctx, cancel := context.WithTimeout(t.Context(), 1*time.Second)
+		ctx, cancel := context.WithTimeout(ctx, initTimeout)
 		defer cancel()
 		return provider.Init(ctx)
 	}
 
 	t.Run("issuer mismatch error", func(t *testing.T) {
-		var buf bytes.Buffer
-		logger := buflogr.NewWithBuffer(&buf)
-		require.Error(t, initProvider(logger, proxy.URL, ""))
-		assert.Contains(t, buf.String(), "did not match the issuer URL returned by provider")
+		// Init retries a failed discovery until its context is done, whatever the error.
+		// The test cancels the context as soon as the expected error has been logged,
+		// instead of waiting out the timeout.
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		logger := funcr.New(func(_, args string) {
+			// So that a failure of the test shows what discovery reported.
+			t.Log(args)
+			if strings.Contains(args, "did not match the issuer URL returned by provider") {
+				cancel()
+			}
+		}, funcr.Options{})
+		// With any other discovery error, it is the timeout which ends Init.
+		require.ErrorIs(t, initProvider(ctx, logger, proxy.URL, ""), context.Canceled)
 	})
 
 	t.Run("with discovery URL", func(t *testing.T) {
 		logger := testr.New(t)
-		require.NoError(t, initProvider(logger, oidcConfig.Issuer, proxy.URL))
+		require.NoError(t, initProvider(t.Context(), logger, oidcConfig.Issuer, proxy.URL))
 	})
 }

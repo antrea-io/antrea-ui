@@ -20,6 +20,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"testing/synctest"
 	"time"
 	"uuid"
 
@@ -153,19 +154,31 @@ func TestTraceflowRequestRateLimiting(t *testing.T) {
 	})
 
 	t.Run("5/s", func(t *testing.T) {
-		ts := newTestServer(t, setMaxTraceflowsPerHour(5*3600))
-		ts.traceflowRequestsHandler.EXPECT().CreateRequest(gomock.Any(), gomock.Any(), &traceflowhandler.Request{
-			Object: tf,
-		}).Return(uuid.New().String(), nil).AnyTimes()
-		rr := sendRequest(ts)
-		assert.Equal(t, http.StatusAccepted, rr.Code)
-		assert.Eventually(t, func() bool {
-			rr := sendRequest(ts)
-			return (rr.Code == http.StatusTooManyRequests)
-		}, time.Second, 10*time.Millisecond)
-		assert.Eventually(t, func() bool {
-			rr := sendRequest(ts)
-			return (rr.Code == http.StatusAccepted)
-		}, time.Second, 100*time.Millisecond)
+		// The rate limiter reads the current time, and nothing here touches the network: in
+		// a bubble, the fake clock makes the burst and the refill exact.
+		synctest.Test(t, func(t *testing.T) {
+			const (
+				// Must match the burst size in AddTraceflowRoutes.
+				burstSize      = 10
+				refillInterval = time.Second / 5
+				// The limiter computes tokens with floating point numbers, so the
+				// assertions stay clear of the exact instant a token is added.
+				margin = time.Millisecond
+			)
+			ts := newTestServer(t, setMaxTraceflowsPerHour(5*3600))
+			ts.traceflowRequestsHandler.EXPECT().CreateRequest(gomock.Any(), gomock.Any(), &traceflowhandler.Request{
+				Object: tf,
+			}).Return(uuid.New().String(), nil).AnyTimes()
+			for i := range burstSize {
+				require.Equalf(t, http.StatusAccepted, sendRequest(ts).Code, "request %d is within the burst", i+1)
+			}
+			assert.Equal(t, http.StatusTooManyRequests, sendRequest(ts).Code, "the burst is used up")
+
+			time.Sleep(refillInterval - margin)
+			assert.Equal(t, http.StatusTooManyRequests, sendRequest(ts).Code, "no token is available yet")
+			time.Sleep(2 * margin)
+			assert.Equal(t, http.StatusAccepted, sendRequest(ts).Code, "a token is available again")
+			assert.Equal(t, http.StatusTooManyRequests, sendRequest(ts).Code, "only one token was added")
+		})
 	})
 }
