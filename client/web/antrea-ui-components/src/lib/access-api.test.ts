@@ -15,14 +15,18 @@
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import {
     accessSummary,
+    namespaceAccessSummaries,
+    MAX_NAMESPACE_ACCESS_NAMES,
     resetAccessSummary,
     can,
+    verdict,
     canNonResource,
     accessibleNamespaces,
     canViewSummary,
     canViewFlows,
     GATE_CONTROLLER_INFO_GET,
     type AccessSummary,
+    type NamespaceAccessSummaryList,
     type SubjectRules,
 } from './access-api';
 import { APIError, setApiBase } from './api';
@@ -132,6 +136,250 @@ describe('accessSummary', () => {
         expect(s.username).toBe('alice');
         // The timer is cleared on settle, so nothing is left pending to fire later.
         expect(vi.getTimerCount()).toBe(0);
+    });
+});
+
+function namespaceList(overrides: Partial<NamespaceAccessSummaryList> = {}): NamespaceAccessSummaryList {
+    return { items: [{ namespace: 'ns-a', evaluationFailed: false, rules: rules() }], ...overrides };
+}
+
+describe('namespaceAccessSummaries', () => {
+    function requestedUrl(fetchMock: { mock: { calls: unknown[][] } }, call = 0): URL {
+        return new URL(String(fetchMock.mock.calls[call][0]), 'http://example.test');
+    }
+
+    test('fetches GET /api/v1/access-summary/namespaces naming each namespace', async () => {
+        const fetchMock = vi.fn().mockResolvedValue(jsonResponse(namespaceList()));
+        vi.stubGlobal('fetch', fetchMock);
+
+        const list = await namespaceAccessSummaries(['ns-b', 'ns-a']);
+
+        expect(list.items.map((i) => i.namespace)).toEqual(['ns-a']);
+        const url = requestedUrl(fetchMock);
+        expect(url.pathname).toBe('/api/v1/access-summary/namespaces');
+        expect(url.searchParams.getAll('namespace')).toEqual(['ns-b', 'ns-a']);
+    });
+
+    test('names a namespace once however often it is given', async () => {
+        const fetchMock = vi.fn().mockResolvedValue(jsonResponse(namespaceList()));
+        vi.stubGlobal('fetch', fetchMock);
+
+        await namespaceAccessSummaries(['ns-a', 'ns-b', 'ns-a']);
+
+        expect(requestedUrl(fetchMock).searchParams.getAll('namespace')).toEqual(['ns-a', 'ns-b']);
+    });
+
+    test('asks nothing about no namespaces', async () => {
+        const fetchMock = vi.fn();
+        vi.stubGlobal('fetch', fetchMock);
+
+        expect(await namespaceAccessSummaries([])).toEqual({ items: [] });
+        expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    test('rejects more namespaces than the backend answers for, without asking', async () => {
+        const fetchMock = vi.fn();
+        vi.stubGlobal('fetch', fetchMock);
+        const names = Array.from({ length: MAX_NAMESPACE_ACCESS_NAMES + 1 }, (_, i) => `ns-${i}`);
+
+        await expect(namespaceAccessSummaries(names)).rejects.toBeInstanceOf(RangeError);
+        expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    test('memoizes the same question: a second call does not re-fetch', async () => {
+        const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse(namespaceList())));
+        vi.stubGlobal('fetch', fetchMock);
+
+        await namespaceAccessSummaries(['ns-a', 'ns-b']);
+        await namespaceAccessSummaries(['ns-a', 'ns-b']);
+
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    test('another set of namespaces, or the same in another order, is another question', async () => {
+        const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse(namespaceList())));
+        vi.stubGlobal('fetch', fetchMock);
+
+        await namespaceAccessSummaries(['ns-a', 'ns-b']);
+        await namespaceAccessSummaries(['ns-a']);
+        await namespaceAccessSummaries(['ns-b', 'ns-a']);
+
+        expect(fetchMock).toHaveBeenCalledTimes(3);
+    });
+
+    test('reuses an answer for 30 seconds and then asks again, so a changed grant shows up', async () => {
+        vi.useFakeTimers();
+        const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse(namespaceList())));
+        vi.stubGlobal('fetch', fetchMock);
+
+        await namespaceAccessSummaries(['ns-a']);
+        await vi.advanceTimersByTimeAsync(29_999);
+        await namespaceAccessSummaries(['ns-a']);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+
+        await vi.advanceTimersByTimeAsync(1);
+        await namespaceAccessSummaries(['ns-a']);
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    test('the 30 seconds run from when the answer arrived, not from when it was asked for', async () => {
+        vi.useFakeTimers();
+        let release: () => void = () => {};
+        const fetchMock = vi.fn().mockImplementation(() => new Promise<Response>((resolve) => {
+            release = () => resolve(jsonResponse(namespaceList()));
+        }));
+        vi.stubGlobal('fetch', fetchMock);
+
+        const pending = namespaceAccessSummaries(['ns-a']);
+        await vi.advanceTimersByTimeAsync(9_000);
+        // Still pending: a second caller joins it, however long it has been out.
+        const joined = namespaceAccessSummaries(['ns-a']);
+        release();
+        await Promise.all([pending, joined]);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+
+        await vi.advanceTimersByTimeAsync(29_000);
+        await namespaceAccessSummaries(['ns-a']);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    test('is a different memo from the cluster-scoped summary', async () => {
+        const fetchMock = vi.fn().mockImplementation((url: string) => Promise.resolve(
+            jsonResponse(String(url).includes('/namespaces') ? namespaceList() : summary())));
+        vi.stubGlobal('fetch', fetchMock);
+
+        await accessSummary();
+        await namespaceAccessSummaries(['ns-a']);
+
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    test('resetAccessSummary() clears the memo, so one session never sees the last one\'s answer', async () => {
+        const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse(namespaceList())));
+        vi.stubGlobal('fetch', fetchMock);
+
+        await namespaceAccessSummaries(['ns-a']);
+        resetAccessSummary();
+        await namespaceAccessSummaries(['ns-a']);
+
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    test('does not memoize a rejection: the next call retries', async () => {
+        const fetchMock = vi.fn()
+            .mockResolvedValueOnce(jsonResponse({ message: 'boom' }, 503))
+            .mockResolvedValueOnce(jsonResponse(namespaceList()));
+        vi.stubGlobal('fetch', fetchMock);
+
+        await expect(namespaceAccessSummaries(['ns-a'])).rejects.toBeInstanceOf(APIError);
+        expect((await namespaceAccessSummaries(['ns-a'])).items).toHaveLength(1);
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    test('does not memoize an answer in which a review failed: the next call asks again', async () => {
+        const failed = namespaceList({
+            items: [{ namespace: 'ns-a', evaluationFailed: true, rules: rules({ incomplete: true }) }],
+        });
+        const fetchMock = vi.fn()
+            .mockResolvedValueOnce(jsonResponse(failed))
+            .mockResolvedValueOnce(jsonResponse(namespaceList()));
+        vi.stubGlobal('fetch', fetchMock);
+
+        expect((await namespaceAccessSummaries(['ns-a'])).items[0].evaluationFailed).toBe(true);
+        expect((await namespaceAccessSummaries(['ns-a'])).items[0].evaluationFailed).toBe(false);
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+        await namespaceAccessSummaries(['ns-a']);
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    test('forgets the whole answer when only some of its reviews failed', async () => {
+        const grantFlows = { apiGroups: ['observability.antrea.io'], resources: ['flows'], verbs: ['watch'] };
+        const mixed = namespaceList({
+            items: [
+                { namespace: 'ns-a', evaluationFailed: false, rules: rules({ resourceRules: [grantFlows] }) },
+                { namespace: 'ns-b', evaluationFailed: true, rules: rules({ incomplete: true }) },
+            ],
+        });
+        const complete = namespaceList({
+            items: [
+                { namespace: 'ns-a', evaluationFailed: false, rules: rules({ resourceRules: [grantFlows] }) },
+                { namespace: 'ns-b', evaluationFailed: false, rules: rules() },
+            ],
+        });
+        const fetchMock = vi.fn()
+            .mockResolvedValueOnce(jsonResponse(mixed))
+            .mockResolvedValueOnce(jsonResponse(complete));
+        vi.stubGlobal('fetch', fetchMock);
+
+        expect((await namespaceAccessSummaries(['ns-a', 'ns-b'])).items[1].evaluationFailed).toBe(true);
+        // The item which succeeded is not served from the memo either: the next call asks for both.
+        expect((await namespaceAccessSummaries(['ns-a', 'ns-b'])).items[1].evaluationFailed).toBe(false);
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+        await namespaceAccessSummaries(['ns-a', 'ns-b']);
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    test('aborts a request that never settles, like the cluster-scoped summary', async () => {
+        vi.useFakeTimers();
+        vi.stubGlobal('fetch', vi.fn().mockImplementation((_url: string, init: RequestInit) => (
+            new Promise((_resolve, reject) => {
+                init.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+            })
+        )));
+
+        const outcome = namespaceAccessSummaries(['ns-a']).then(() => 'resolved', (err: unknown) => err);
+        await vi.advanceTimersByTimeAsync(10_000);
+        await expect(outcome).resolves.toBeInstanceOf(APIError);
+    });
+});
+
+describe('verdict', () => {
+    const query = { group: 'observability.antrea.io', resource: 'flows', verb: 'watch' };
+    const grant = { apiGroups: ['observability.antrea.io'], resources: ['flows'], verbs: ['watch'] };
+
+    test('allowed when a rule matches', () => {
+        expect(verdict(summary({ rules: rules({ resourceRules: [grant] }) }), query)).toBe('allowed');
+    });
+
+    test('allowed when a rule matches even if the list is incomplete', () => {
+        // Rules are additive: a rule that is there is a grant, whatever else is missing.
+        expect(verdict({ rules: rules({ resourceRules: [grant], incomplete: true }) }, query)).toBe('allowed');
+    });
+
+    test('unknown when nothing matches in an incomplete list', () => {
+        expect(verdict({ rules: rules({ incomplete: true, evaluationError: 'boom' }) }, query)).toBe('unknown');
+    });
+
+    test('denied when nothing matches in an exhaustive list', () => {
+        expect(verdict({ rules: rules() }, query)).toBe('denied');
+        expect(verdict({ rules: rules({ resourceRules: [{ ...grant, verbs: ['list'] }] }) }, query)).toBe('denied');
+    });
+
+    test('unknown for null', () => {
+        expect(verdict(null, query)).toBe('unknown');
+    });
+
+    test('unknown for an item whose review failed', () => {
+        // What the backend reports for a Namespace it could not evaluate: no rules, incomplete.
+        const failed = { namespace: 'ns-a', evaluationFailed: true, rules: rules({ incomplete: true }) };
+        expect(verdict(failed, query)).toBe('unknown');
+        expect(can(failed, query)).toBe(true);
+    });
+
+    test('applies to one entry of the per-namespace list', () => {
+        const list = namespaceList({
+            items: [
+                { namespace: 'ns-a', evaluationFailed: false, rules: rules({ resourceRules: [grant] }) },
+                { namespace: 'ns-b', evaluationFailed: false, rules: rules() },
+                { namespace: 'ns-c', evaluationFailed: false, rules: rules({ incomplete: true }) },
+            ],
+        });
+        expect(list.items.map((i) => verdict(i, query))).toEqual(['allowed', 'denied', 'unknown']);
+    });
+
+    test('can() is verdict() with unknown allowed', () => {
+        expect(can({ rules: rules({ incomplete: true }) }, query)).toBe(true);
+        expect(can({ rules: rules() }, query)).toBe(false);
     });
 });
 

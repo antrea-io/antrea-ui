@@ -340,6 +340,81 @@ than reusing a failure.
   comes from the resolver, so a broken resolver cannot lock an operator out of
   the one login used to fix cluster RBAC.
 
+### The same question for several namespaces
+
+`GET /api/v1/access-summary?namespace=<ns>` answers for one namespace. A feature
+that needs an answer for several, such as one that picks a default namespace or
+marks the ones the user may not use, would have to make that request once for
+each. `GET /api/v1/access-summary/namespaces?namespace=<ns>&namespace=<ns>...`
+makes them in one request:
+
+```json
+{
+  "items": [
+    {
+      "namespace": "rbac-test-alpha",
+      "evaluationFailed": false,
+      "rules": {
+        "resourceRules": [{"verbs": ["watch"], "apiGroups": ["observability.antrea.io"], "resources": ["flows"]}],
+        "nonResourceRules": [],
+        "incomplete": false
+      }
+    },
+    {
+      "namespace": "rbac-test-beta",
+      "evaluationFailed": true,
+      "rules": {"resourceRules": [], "nonResourceRules": [], "incomplete": true, "evaluationError": "..."}
+    }
+  ]
+}
+```
+
+Each item is a `SelfSubjectRulesReview` for that namespace, with the same
+meaning as `rules` above, including the grants that apply cluster-wide. The
+identity, `clusterAdmin` and `namespaces` are not repeated, since they do not
+differ between namespaces. The endpoint does not know what a feature will ask
+of the rules: which resource and verb a page needs is the frontend's gate,
+exactly as for the other pages, and every feature shares this one answer.
+
+- **The caller names the namespaces.** The backend does not look for them:
+  Kubernetes has no reverse lookup from a subject to the namespaces it may
+  access, and `namespaces` in the access summary already says what antrea-ui can
+  know (a caller who may list namespaces can list them through the Kubernetes
+  API proxy). A feature asks about the namespaces it is about to offer or act
+  on. There is one item per namespace, in the order they were first named, and a
+  namespace named twice is reviewed once. A request naming none, an invalid
+  name, or more than 10 namespaces is rejected with `400`. A user who may use
+  hundreds of namespaces picks a few from a searchable list and asks about
+  those, rather than about all of them.
+- **Unknown is not denied.** A namespace whose review cannot be evaluated is
+  reported with `rules.incomplete: true`, an `evaluationError` and
+  `evaluationFailed: true`, and the others are still answered. A failed review
+  is not cached, so the next request reviews that namespace again rather than
+  keeping it unknown for the rest of the cache lifetime. `evaluationFailed`
+  tells such a failure, which may clear on its own, from an API server that
+  cannot enumerate its rules, which is stable: the frontend does not keep an
+  answer that contains one. A consumer needs three outcomes: *allowed* when a
+  rule matches, which is safe even when the list is incomplete, since rules are
+  additive; *unknown* when nothing matches in an incomplete list, as with a
+  webhook authorizer the API server cannot enumerate; and *denied* otherwise.
+  Only a denial should hide or mark a namespace. The frontend's `verdict()`
+  returns exactly these. A `401`, or a `403` that says the cluster stripped the
+  self-review grant every authenticated identity has by default, is not about
+  one namespace and fails the request.
+- **Cost.** One review per namespace named, so at most 10. A user who holds the grant cluster-wide has no use for this endpoint,
+  as the grant holds in every namespace and the cluster-scoped summary says so.
+  Each successful review is cached for 30 seconds, per session and namespace,
+  so the same namespaces in another order, or some of those already answered,
+  cost nothing, and only the namespaces not cached are reviewed. Requests
+  authenticated with a bearer token have no session and are not cached. Both access
+  routes are rate limited per user, with one budget shared between them (2
+  requests per second, with a burst of 10); a static-admin session is limited
+  by its own session, as every such login is the user `admin`. The frontend
+  keeps what it fetched for another 30 seconds, so that features asking the same
+  question share it, and then asks again. The two add up, so a grant added or
+  revoked shows up within about a minute, without the user logging out. It has the same ten-second timeout as
+  `access-summary`.
+
 ### The cluster-scope sentinel namespace
 
 `SelfSubjectRulesReview` always requires a namespace, and its response mixes

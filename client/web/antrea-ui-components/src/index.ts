@@ -36,11 +36,24 @@ export {
 } from './lib/auth-api.js';
 export { APIError, setApiBase, getApiBase } from './lib/api.js';
 export { navigateTo } from './lib/navigation.js';
-export type { AccessSummary, ResourceRule, NonResourceRule, SubjectRules, ResourceQuery } from './lib/access-api.js';
+export type {
+    AccessSummary,
+    NamespaceAccessSummary,
+    NamespaceAccessSummaryList,
+    ResourceRule,
+    NonResourceRule,
+    SubjectRules,
+    ResourceQuery,
+    HasRules,
+    Verdict,
+} from './lib/access-api.js';
 export {
     accessSummary,
+    namespaceAccessSummaries,
+    MAX_NAMESPACE_ACCESS_NAMES,
     resetAccessSummary,
     can,
+    verdict,
     canNonResource,
     accessibleNamespaces,
     canViewSummary,

@@ -51,7 +51,53 @@ export interface AccessSummary {
     namespaces: string[]
 }
 
+/** Mirrors apis/v1.NamespaceAccessSummary: what `rules` says about one Namespace. Nothing else
+ * differs between Namespaces, so the identity and the cluster-admin verdict are not repeated. */
+export interface NamespaceAccessSummary {
+    namespace: string
+    /** antrea-ui could not get a review for this Namespace from the API server, and `rules` is a
+     * placeholder: no rules, with `incomplete` set. Unlike an API server that cannot enumerate its
+     * rules, which is stable, a failure may clear on its own: the backend does not cache it, and
+     * neither should a consumer. */
+    evaluationFailed: boolean
+    /** Evaluated for `namespace`, so it includes the grants that apply cluster-wide. When the
+     * review for this Namespace could not be evaluated, `incomplete` is true and
+     * `evaluationError` says so: unknown, not denied. */
+    rules: SubjectRules
+}
+
+/** Mirrors apis/v1.NamespaceAccessSummaryList: AccessSummary's question, for each of the
+ * Namespaces a request named. */
+export interface NamespaceAccessSummaryList {
+    /** One entry per Namespace named, in the order they were named. */
+    items: NamespaceAccessSummary[]
+}
+
+/** How many Namespaces one namespaceAccessSummaries() call can ask about. Mirrors the backend's
+ * limit: each is a review against the API server. */
+export const MAX_NAMESPACE_ACCESS_NAMES = 10;
+
 let inFlight: Promise<AccessSummary> | null = null;
+
+interface NamespaceAccessMemo {
+    promise: Promise<NamespaceAccessSummaryList>
+    /** When the promise fulfilled, or null while it is pending (or if it was rejected, in which
+     * case the memo is gone). */
+    settledAt: number | null
+}
+/** One memo per question: the Namespaces asked about, in order. */
+const namespaceAccessMemos = new Map<string, NamespaceAccessMemo>();
+
+/**
+ * How long namespaceAccessSummaries() reuses a successful answer. It matches the backend's cache:
+ * the answer is what a Namespace selector offers, so a grant added or revoked should show up
+ * without the user logging out, and keeping it any longer here would defeat that. The two
+ * lifetimes add up: the backend can serve a review it cached 29 seconds ago, and this memo then
+ * keeps the answer for another 30, so a change can take up to about a minute to show. What the memo is
+ * for is the features that ask the same question sharing one fetch, not sparing the backend
+ * indefinitely.
+ */
+const NAMESPACE_ACCESS_TTL_MS = 30_000;
 
 /**
  * How long to wait for the access summary before aborting it. The whole shell gates on this one
@@ -63,18 +109,24 @@ let inFlight: Promise<AccessSummary> | null = null;
  */
 const ACCESS_SUMMARY_TIMEOUT_MS = 10_000;
 
+/** GETs path, aborting it after ACCESS_SUMMARY_TIMEOUT_MS. */
+function fetchWithTimeout<T>(path: string): Promise<T> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), ACCESS_SUMMARY_TIMEOUT_MS);
+    const p = apiFetchJSON<T>(path, { signal: controller.signal });
+    // Two-arg then, not finally: finally returns a promise that re-rejects, which would be
+    // unhandled on this branch. The rejection stays handled by the caller either way.
+    p.then(() => clearTimeout(timer), () => clearTimeout(timer));
+    return p;
+}
+
 /**
  * Fetches GET /api/v1/access-summary, memoized so the React shell and every Lit page share one
  * in-flight request. This is the single fetch: nothing else caches the result across calls.
  */
 export function accessSummary(): Promise<AccessSummary> {
     if (!inFlight) {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), ACCESS_SUMMARY_TIMEOUT_MS);
-        const p = apiFetchJSON<AccessSummary>('access-summary', { signal: controller.signal });
-        // Two-arg then, not finally: finally returns a promise that re-rejects, which would be
-        // unhandled on this branch. The rejection stays handled by the caller either way.
-        p.then(() => clearTimeout(timer), () => clearTimeout(timer));
+        const p = fetchWithTimeout<AccessSummary>('access-summary');
         // Memoize successes only. A rejection left in place would disable permission gating for
         // the whole session after one transient failure — silently, since every gate fails open.
         // The catch goes on a separate branch so the rejection stays handled by the caller.
@@ -84,10 +136,63 @@ export function accessSummary(): Promise<AccessSummary> {
     return inFlight;
 }
 
+/**
+ * Fetches GET /api/v1/access-summary/namespaces: the access summary of each Namespace named, in
+ * one request, memoized so that every feature asking about the same Namespaces shares it. Unlike
+ * accessSummary(), a success is only reused for NAMESPACE_ACCESS_TTL_MS: what it says can change
+ * during a session, and it is cheap to ask again.
+ *
+ * Which Namespaces to name is the caller's: the ones it is about to offer or act on, such as the
+ * few a user has picked from a searchable list, and at most MAX_NAMESPACE_ACCESS_NAMES of them
+ * (more rejects, as the backend would). Which resource and verb a feature asks about is its own
+ * gate's business: pass each item to verdict() with it. A caller whose cluster-scoped summary
+ * already grants the gate has no use for this: a cluster-wide grant holds in every Namespace.
+ *
+ * It costs the backend one review per Namespace, so call it when a feature needs the answer, not
+ * at startup.
+ */
+export function namespaceAccessSummaries(namespaces: string[]): Promise<NamespaceAccessSummaryList> {
+    const names = Array.from(new Set(namespaces));
+    if (names.length === 0) return Promise.resolve({ items: [] });
+    if (names.length > MAX_NAMESPACE_ACCESS_NAMES) {
+        return Promise.reject(new RangeError(
+            `at most ${MAX_NAMESPACE_ACCESS_NAMES} namespaces can be asked about at once, got ${names.length}`));
+    }
+    const now = Date.now();
+    for (const [k, m] of namespaceAccessMemos) {
+        if (m.settledAt !== null && now - m.settledAt >= NAMESPACE_ACCESS_TTL_MS) namespaceAccessMemos.delete(k);
+    }
+    // NUL cannot appear in a Namespace name.
+    const key = names.join('\0');
+    const memo = namespaceAccessMemos.get(key);
+    if (memo) return memo.promise;
+
+    const query = new URLSearchParams(names.map(ns => ['namespace', ns]));
+    const entry: NamespaceAccessMemo = {
+        promise: fetchWithTimeout<NamespaceAccessSummaryList>(`access-summary/namespaces?${query}`),
+        settledAt: null,
+    };
+    namespaceAccessMemos.set(key, entry);
+    // A rejection is not memoized, as for accessSummary(), and neither is an answer in which a
+    // review failed: the backend does not cache those either, so that a brief API error does not
+    // last for the whole TTL. Callers already waiting on this promise still share it. The guard is
+    // for a reset that replaced this entry while it was pending.
+    const forget = () => { if (namespaceAccessMemos.get(key) === entry) namespaceAccessMemos.delete(key); };
+    entry.promise.then(
+        list => {
+            if (list.items.some(item => item.evaluationFailed)) forget();
+            else entry.settledAt = Date.now();
+        },
+        forget,
+    );
+    return entry.promise;
+}
+
 /** Clears the memoized fetch, so the next accessSummary() call re-evaluates. Call this on
  * logout/re-login: permissions from a previous session must never leak into a new one. */
 export function resetAccessSummary(): void {
     inFlight = null;
+    namespaceAccessMemos.clear();
 }
 
 export interface ResourceQuery {
@@ -97,20 +202,45 @@ export interface ResourceQuery {
     name?: string
 }
 
+/** What a rule list says about one query. */
+export type Verdict =
+    /** A rule matches. Rules are additive, so this holds even when the list is incomplete. */
+    | 'allowed'
+    /** No rule matches, but the list is not exhaustive (or there is none): not a denial. */
+    | 'unknown'
+    /** No rule matches in an exhaustive list. */
+    | 'denied'
+
+/** Anything with a rule list: an AccessSummary, or one entry of a NamespaceAccessSummaryList. */
+export interface HasRules {
+    rules: SubjectRules
+}
+
 /**
- * Reports whether q is granted by s.rules. Fails open (returns true) when s is null (fetch
- * failed or not loaded yet) or s.rules.incomplete is true (the server's rule list is not
- * exhaustive) — in both cases, absence of a matching rule does not mean denial.
+ * Three-way form of can(), for a caller that must tell "denied" from "cannot tell" — such as one
+ * that marks a Namespace as not authorized, and so must not do it for an API server that cannot
+ * enumerate its rules. A null s (fetch failed or not loaded yet) is unknown.
  */
-export function can(s: AccessSummary | null, q: ResourceQuery): boolean {
-    if (s === null || s.rules.incomplete) return true;
+export function verdict(s: HasRules | null, q: ResourceQuery): Verdict {
+    if (s === null) return 'unknown';
     // ?? []: these marshal to null rather than [] when empty, and an older server may send that.
-    return (s.rules.resourceRules ?? []).some((rule) => {
+    const granted = (s.rules.resourceRules ?? []).some((rule) => {
         if (rule.resourceNames && rule.resourceNames.length > 0) {
             if (!q.name || !rule.resourceNames.includes(q.name)) return false;
         }
         return matches(rule.apiGroups, q.group) && matches(rule.resources, q.resource) && matches(rule.verbs, q.verb);
     });
+    if (granted) return 'allowed';
+    return s.rules.incomplete ? 'unknown' : 'denied';
+}
+
+/**
+ * Reports whether q is granted by s.rules. Fails open (returns true) when s is null (fetch
+ * failed or not loaded yet) or s.rules.incomplete is true (the server's rule list is not
+ * exhaustive) — in both cases, absence of a matching rule does not mean denial.
+ */
+export function can(s: HasRules | null, q: ResourceQuery): boolean {
+    return verdict(s, q) !== 'denied';
 }
 
 export function canNonResource(s: AccessSummary | null, q: { verb: string, url: string }): boolean {

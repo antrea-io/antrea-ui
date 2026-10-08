@@ -45,3 +45,36 @@ type AccessSummary struct {
 	// cannot be worked out at all, the endpoint fails rather than reporting [].
 	Namespaces []string `json:"namespaces"`
 }
+
+// NamespaceAccessSummary is what the logged-in user is allowed to do in one Namespace. It carries
+// only what differs between Namespaces: the identity and the cluster-admin verdict are the same
+// everywhere, so repeating them for every entry would only grow the response. Rules has the same
+// meaning as in AccessSummary, so the same matcher applies.
+type NamespaceAccessSummary struct {
+	Namespace string `json:"namespace"`
+	// Rules is the SelfSubjectRulesReview result for Namespace. It includes grants that apply
+	// cluster-wide, which is what makes it answer "may I do this in Namespace" rather than "does
+	// a RoleBinding in Namespace allow it".
+	//
+	// If Incomplete is true and no rule matches, the answer is unknown, not a denial.
+	//
+	// Incomplete and EvaluationError are the API server's own, unless EvaluationFailed is true:
+	// then antrea-ui filled them in, and EvaluationError is always the same fixed text: "the access
+	// review for this namespace could not be evaluated".
+	Rules authorizationv1.SubjectRulesReviewStatus `json:"rules"`
+	// EvaluationFailed is true when antrea-ui could not get a review for this Namespace from the
+	// API server. Rules is then a placeholder: no rules, and Incomplete set to true.
+	//
+	// Incomplete alone does not say this, because the API server also sets it on a successful
+	// review when an authorizer cannot list its rules. That answer is stable and is cached. A
+	// failed review may succeed on the next request, so antrea-ui does not cache it, and a
+	// consumer should not either.
+	EvaluationFailed bool `json:"evaluationFailed"`
+}
+
+// NamespaceAccessSummaryList answers AccessSummary's question for each of the Namespaces a request
+// names, in one response. It is a rendering hint, never an authorization decision.
+type NamespaceAccessSummaryList struct {
+	// Items has one entry per Namespace named, in the order they were first named. Never null.
+	Items []NamespaceAccessSummary `json:"items"`
+}

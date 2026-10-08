@@ -32,6 +32,7 @@ import (
 	accesshandler "antrea.io/antrea-ui/pkg/handlers/access"
 	"antrea.io/antrea-ui/pkg/server/authn"
 	"antrea.io/antrea-ui/pkg/server/errors"
+	"antrea.io/antrea-ui/pkg/server/ratelimit"
 )
 
 // selfSubjectClusterAdmin reports whether the caller holds a cluster-wide wildcard grant. A
@@ -193,6 +194,40 @@ func (s *Server) namespacesFor(username string, groups []string) ([]string, *err
 	return namespaces, nil
 }
 
+const (
+	// accessRequestsPerSecond and accessRequestsBurst are well above what the frontend needs.
+	accessRequestsPerSecond = 2
+	accessRequestsBurst     = 10
+	// accessRateLimitClients bounds the limiter's memory, at one entry per user or session.
+	accessRateLimitClients = 10000
+)
+
+// accessRateLimitKey is the identity the access routes' rate limit is applied to: the
+// authenticated user, so that opening more sessions does not buy more budget.
+//
+// A static-admin session is keyed by its session ID instead. Every such login authenticates as the
+// same literal "admin", so the Username would make everyone using that password share one budget
+// (see session.perUserCapKey for the same reasoning). A request with no username falls back to
+// its session, and then to the client IP.
+func accessRateLimitKey(req *http.Request) string {
+	ra, ok := session.RequestAuthFrom(req.Context())
+	if !ok {
+		return "ip:" + ratelimit.ClientKeyIP(req)
+	}
+	if ra.Mode != session.ModeAdmin && ra.Username != "" {
+		return "user:" + ra.Username
+	}
+	if id := ra.SessionID(); id != "" {
+		return "session:" + id
+	}
+	return "ip:" + ratelimit.ClientKeyIP(req)
+}
+
 func (s *Server) AddAccessRoutes(r *gin.RouterGroup) {
-	r.GET("/access-summary", s.authenticate(), s.GetAccessSummary)
+	// One budget shared by both routes: the second makes up to maxNamespaceAccessNames Kubernetes
+	// reviews per request, and bearer callers skip its cache.
+	limit := ratelimit.Middleware(ratelimit.NewClientRateLimiterOrDie(
+		fmt.Sprintf("%d/s", accessRequestsPerSecond), accessRequestsBurst, accessRateLimitClients, accessRateLimitKey))
+	r.GET("/access-summary", s.authenticate(), limit, s.GetAccessSummary)
+	r.GET("/access-summary/namespaces", s.authenticate(), limit, s.GetNamespaceAccessSummaries)
 }
