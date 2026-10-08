@@ -292,6 +292,33 @@ describe('namespaceAccessSummaries', () => {
         expect(fetchMock).toHaveBeenCalledTimes(2);
     });
 
+    test('forgets the whole answer when only some of its reviews failed', async () => {
+        const grantFlows = { apiGroups: ['observability.antrea.io'], resources: ['flows'], verbs: ['watch'] };
+        const mixed = namespaceList({
+            items: [
+                { namespace: 'ns-a', evaluationFailed: false, rules: rules({ resourceRules: [grantFlows] }) },
+                { namespace: 'ns-b', evaluationFailed: true, rules: rules({ incomplete: true }) },
+            ],
+        });
+        const complete = namespaceList({
+            items: [
+                { namespace: 'ns-a', evaluationFailed: false, rules: rules({ resourceRules: [grantFlows] }) },
+                { namespace: 'ns-b', evaluationFailed: false, rules: rules() },
+            ],
+        });
+        const fetchMock = vi.fn()
+            .mockResolvedValueOnce(jsonResponse(mixed))
+            .mockResolvedValueOnce(jsonResponse(complete));
+        vi.stubGlobal('fetch', fetchMock);
+
+        expect((await namespaceAccessSummaries(['ns-a', 'ns-b'])).items[1].evaluationFailed).toBe(true);
+        // The item which succeeded is not served from the memo either: the next call asks for both.
+        expect((await namespaceAccessSummaries(['ns-a', 'ns-b'])).items[1].evaluationFailed).toBe(false);
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+        await namespaceAccessSummaries(['ns-a', 'ns-b']);
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
     test('aborts a request that never settles, like the cluster-scoped summary', async () => {
         vi.useFakeTimers();
         vi.stubGlobal('fetch', vi.fn().mockImplementation((_url: string, init: RequestInit) => (
@@ -332,12 +359,19 @@ describe('verdict', () => {
         expect(verdict(null, query)).toBe('unknown');
     });
 
+    test('unknown for an item whose review failed', () => {
+        // What the backend reports for a Namespace it could not evaluate: no rules, incomplete.
+        const failed = { namespace: 'ns-a', evaluationFailed: true, rules: rules({ incomplete: true }) };
+        expect(verdict(failed, query)).toBe('unknown');
+        expect(can(failed, query)).toBe(true);
+    });
+
     test('applies to one entry of the per-namespace list', () => {
         const list = namespaceList({
             items: [
-                { namespace: 'ns-a', rules: rules({ resourceRules: [grant] }) },
-                { namespace: 'ns-b', rules: rules() },
-                { namespace: 'ns-c', rules: rules({ incomplete: true }) },
+                { namespace: 'ns-a', evaluationFailed: false, rules: rules({ resourceRules: [grant] }) },
+                { namespace: 'ns-b', evaluationFailed: false, rules: rules() },
+                { namespace: 'ns-c', evaluationFailed: false, rules: rules({ incomplete: true }) },
             ],
         });
         expect(list.items.map((i) => verdict(i, query))).toEqual(['allowed', 'denied', 'unknown']);

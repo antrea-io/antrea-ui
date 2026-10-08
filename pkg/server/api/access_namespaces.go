@@ -36,10 +36,10 @@ import (
 )
 
 const (
-	// namespaceAccessTTL is how long one session's review of a Namespace is reused. It is short
-	// because the answer is what a Namespace selector offers: a grant added or revoked should
-	// show up without the user logging out. What the TTL is for is collapsing the burst of calls
-	// a page load makes, not sparing the API server indefinitely.
+	// namespaceAccessTTL controls how long a successful rules review is cached
+	// for a given session and Namespace. A short TTL avoids repeated reviews
+	// during a burst of UI requests while allowing RBAC changes to be reflected
+	// without requiring the user to log out.
 	namespaceAccessTTL = 30 * time.Second
 	// namespaceAccessCacheSize bounds the number of cached (session, Namespace) rule reviews.
 	// LRUExpireCache does not proactively remove expired entries, so the TTL limits
@@ -48,10 +48,8 @@ const (
 	// the 30-second TTL. At ~50 KiB per large rule set, this is roughly 5 MiB.
 	// Eviction only causes an additional review on the next request.
 	namespaceAccessCacheSize = 100
-	// maxNamespaceAccessNames caps how many Namespaces one request asks about, so that one
-	// request cannot fan out into more SelfSubjectRulesReviews than a selector has any use for.
-	// A user who may use hundreds of Namespaces picks a few from a searchable list, and asks
-	// about those.
+	// maxNamespaceAccessNames limits the number of distinct Namespaces in a
+	// request to bound the number of SelfSubjectRulesReviews it can trigger.
 	maxNamespaceAccessNames = 10
 )
 
@@ -59,8 +57,9 @@ const (
 // fixed text: the error itself stays in the log, as it can name the API server's address.
 const namespaceAccessEvaluationError = "the access review for this namespace could not be evaluated"
 
-// namespaceAccessCache memoizes one session's review of one Namespace, so that the same
-// Namespaces in another order, or a subset of an earlier request, are answered without a review.
+// namespaceAccessCache stores successful rule reviews per (session, Namespace)
+// pair, allowing results to be reused across requests regardless of the
+// order or combination of Namespaces.
 type namespaceAccessCache struct {
 	// entries holds authorizationv1.SubjectRulesReviewStatus keyed by namespaceAccessKey. A cached
 	// status is shared by every request that reads it and must be treated as immutable.
@@ -77,21 +76,17 @@ func namespaceAccessKey(sessionID, namespace string) string {
 	return sessionID + "\x00" + namespace
 }
 
-// GetNamespaceAccessSummaries handles GET /api/v1/access-summary/namespaces?namespace=<ns>...:
-// what GET /api/v1/access-summary?namespace=<ns> answers, for several Namespaces in one request.
+// GetNamespaceAccessSummaries returns authorization rules for the requested
+// Namespaces, up to maxNamespaceAccessNames per request. The caller provides
+// the Namespaces; this endpoint does not discover them.
 //
-// The caller names the Namespaces, at most maxNamespaceAccessNames of them. Kubernetes has no
-// reverse lookup from a subject to the Namespaces it may access, so this endpoint does not try
-// to find them: the frontend already has what antrea-ui can know (AccessSummary.Namespaces, or
-// a Namespace list for a caller who may list them) and asks about the ones it is about to offer
-// or act on. One SelfSubjectRulesReview is made for each. This endpoint knows nothing about what
-// the caller will ask of the rules: which resource and verb a feature needs is the frontend's
-// gate, so every feature that needs a per-Namespace answer shares this one request.
+// Cached rules are reused for each (session, Namespace) pair. Only cache
+// misses require a SelfSubjectRulesReview. The endpoint does not interpret
+// rules for specific resources or verbs; that is the frontend's responsibility.
 //
-// Like AccessSummary this is a rendering hint and never an authorization decision. It differs in
-// one respect: a Namespace whose review could not be evaluated is reported as unknown rather
-// than failing the request, because the answer for the other Namespaces is still worth having
-// and a consumer already has to handle an incomplete rule list.
+// Like AccessSummary, the response is a UI rendering hint, not an authorization
+// decision. A failed review for one Namespace is reported as unknown without
+// discarding the results for other Namespaces.
 func (s *Server) GetNamespaceAccessSummaries(c *gin.Context) {
 	var list *apisv1.NamespaceAccessSummaryList
 	if sError := func() *errors.ServerError {
@@ -223,10 +218,10 @@ func (s *Server) resolveNamespaceAccess(ctx context.Context, sessionID string, n
 	return list, nil
 }
 
-// isFatalReviewError reports whether a failed review means the whole request has no answer, rather
-// than that one Namespace is unknown. An invalid credential ends the session, a 403 means the
-// cluster stripped the self-review grant that every authenticated identity has by default, and a
-// done context means nobody is waiting; none of those is specific to one Namespace.
+// isFatalReviewError reports whether a review failure should abort the entire
+// request rather than mark one Namespace as unknown. Authentication failures
+// (401), authorization failures (403), and context cancellation are not
+// specific to an individual Namespace.
 func isFatalReviewError(ctx context.Context, err error) bool {
 	return apierrors.IsUnauthorized(err) || apierrors.IsForbidden(err) || ctx.Err() != nil
 }

@@ -36,6 +36,7 @@ import (
 	apisv1 "antrea.io/antrea-ui/apis/v1"
 	"antrea.io/antrea-ui/pkg/auth/session"
 	accesshandlertesting "antrea.io/antrea-ui/pkg/handlers/access/testing"
+	"antrea.io/antrea-ui/pkg/server/ratelimit"
 	cookieutils "antrea.io/antrea-ui/pkg/server/utils/cookie"
 )
 
@@ -284,9 +285,20 @@ func TestGetNamespaceAccessSummariesCacheKeyIsSessionAndNamespace(t *testing.T) 
 	ts, fakeAPIServer := newTestServerForAccess(t, nil)
 	mine := ts.newSession(session.ModeToken)
 	other := ts.newSession(session.ModeToken)
+	// Each Namespace has its own rules, so that a cached answer returned for the wrong Namespace,
+	// or without its rules, is caught.
+	fakeAPIServer.rulesByNamespace = map[string]authorizationv1.SubjectRulesReviewStatus{
+		"ns-a": flowRules("get"),
+		"ns-b": flowRules("watch"),
+		"ns-c": flowRules("list"),
+	}
 	ask := func(cookie *http.Cookie, names ...string) []string {
 		code, list := serveNamespaceAccess(t, ts, namespaceAccessRequest(cookie, names...))
 		require.Equal(t, http.StatusOK, code)
+		for _, item := range list.Items {
+			assert.Equal(t, fakeAPIServer.rulesByNamespace[item.Namespace], item.Rules,
+				"the rules of %s, whether reviewed or cached", item.Namespace)
+		}
 		return namespacesOf(list)
 	}
 
@@ -312,6 +324,7 @@ func TestGetNamespaceAccessSummariesCacheKeyIsSessionAndNamespace(t *testing.T) 
 func TestGetNamespaceAccessSummariesDoesNotCacheUnknownNamespaces(t *testing.T) {
 	ts, fakeAPIServer := newTestServerForAccess(t, nil)
 	fakeAPIServer.rulesByNamespace = map[string]authorizationv1.SubjectRulesReviewStatus{
+		"ns-a": flowRules("get"),
 		"ns-b": flowRules("watch"),
 	}
 	fakeAPIServer.rulesStatusByNamespace = map[string]int{"ns-b": http.StatusInternalServerError}
@@ -327,6 +340,7 @@ func TestGetNamespaceAccessSummariesDoesNotCacheUnknownNamespaces(t *testing.T) 
 	assert.True(t, first.Items[1].Rules.Incomplete)
 	assert.True(t, first.Items[1].EvaluationFailed)
 	assert.False(t, first.Items[0].EvaluationFailed)
+	assert.Equal(t, flowRules("get"), first.Items[0].Rules)
 	assert.Equal(t, 2, fakeAPIServer.reviewCount())
 
 	fakeAPIServer.mu.Lock()
@@ -334,13 +348,20 @@ func TestGetNamespaceAccessSummariesDoesNotCacheUnknownNamespaces(t *testing.T) 
 	fakeAPIServer.mu.Unlock()
 	second := do()
 	require.Len(t, second.Items, 2)
+	assert.Equal(t, flowRules("get"), second.Items[0].Rules)
 	assert.Equal(t, flowRules("watch"), second.Items[1].Rules)
 	assert.False(t, second.Items[1].EvaluationFailed)
 	assert.Equal(t, 3, fakeAPIServer.reviewCount(), "only the failed Namespace is reviewed again")
 
-	// The complete answer is cached: no review for a third request.
-	do()
+	// The complete answer is cached: no review for a third request, and both Namespaces come
+	// back with the rules they were reviewed with.
+	third := do()
 	assert.Equal(t, 3, fakeAPIServer.reviewCount())
+	require.Len(t, third.Items, 2)
+	assert.Equal(t, flowRules("get"), third.Items[0].Rules, "served from the cache")
+	assert.Equal(t, flowRules("watch"), third.Items[1].Rules, "served from the cache")
+	assert.False(t, third.Items[0].EvaluationFailed)
+	assert.False(t, third.Items[1].EvaluationFailed)
 }
 
 // A failed review is reported with empty rule lists, not null ones, as the frontend's SubjectRules
@@ -355,6 +376,81 @@ func TestGetNamespaceAccessSummariesFailedReviewHasEmptyRuleLists(t *testing.T) 
 	require.Equal(t, http.StatusOK, rr.Code)
 	assert.Contains(t, rr.Body.String(), `"resourceRules":[]`)
 	assert.Contains(t, rr.Body.String(), `"nonResourceRules":[]`)
+}
+
+// A failed review is just as unknown for a bearer request, which has no session and so no cache
+// to hold the failure back from: the answer has the same shape.
+func TestGetNamespaceAccessSummariesBearerFailedReviewIsUnknown(t *testing.T) {
+	ts, fakeAPIServer := newTestServerForAccess(t, nil)
+	fakeAPIServer.rulesStatusByNamespace = map[string]int{"ns-a": http.StatusInternalServerError}
+
+	req := httptest.NewRequest("GET", namespaceAccessPath+"?namespace=ns-a", nil)
+	req.Header.Set("Authorization", "Bearer token-one")
+	rr := httptest.NewRecorder()
+	ts.router.ServeHTTP(rr, req)
+	require.Equal(t, http.StatusOK, rr.Code)
+	assert.Contains(t, rr.Body.String(), `"evaluationFailed":true`)
+	assert.Contains(t, rr.Body.String(), `"resourceRules":[]`)
+	assert.Contains(t, rr.Body.String(), `"nonResourceRules":[]`)
+}
+
+// A client which disconnects while the reviews are in flight is not owed a partial list: the
+// request fails as a whole, whatever the other Namespaces would have answered.
+func TestGetNamespaceAccessSummariesCanceledRequestAnswersNoList(t *testing.T) {
+	ts, _ := newTestServerForAccess(t, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	req := namespaceAccessRequest(ts.newSession(session.ModeToken), "ns-a", "ns-b").WithContext(ctx)
+	rr := httptest.NewRecorder()
+	ts.router.ServeHTTP(rr, req)
+
+	assert.NotEqual(t, http.StatusOK, rr.Code)
+	assert.NotContains(t, rr.Body.String(), `"items"`)
+}
+
+// The key the access routes' rate limit is applied to, for each way a request can be identified.
+func TestAccessRateLimitKey(t *testing.T) {
+	ts, _ := newTestServerForAccess(t, nil)
+	newSession := func(mode session.Mode, username string) *session.Session {
+		sess, err := ts.sessionStore.Create(&session.Spec{
+			Mode:       mode,
+			Username:   username,
+			Credential: session.Credential{Kind: session.KindBearer, Token: []byte("user-token")},
+		})
+		require.NoError(t, err)
+		return sess
+	}
+	bearer := session.Credential{Kind: session.KindBearer, Token: []byte("user-token")}
+	tokenSession := newSession(session.ModeToken, "alice")
+	adminSession := newSession(session.ModeAdmin, "admin")
+	anonymousSession := newSession(session.ModeToken, "")
+
+	tests := []struct {
+		name string
+		auth *session.RequestAuth
+		want string
+	}{
+		{"user of a session", session.NewSessionAuth(ts.sessionStore, tokenSession), "user:alice"},
+		{"static admin is keyed by its session", session.NewSessionAuth(ts.sessionStore, adminSession), "session:" + adminSession.ID()},
+		{"session without a username", session.NewSessionAuth(ts.sessionStore, anonymousSession), "session:" + anonymousSession.ID()},
+		{"bearer request with a username", session.NewEphemeralAuth(bearer, "bob"), "user:bob"},
+		{"bearer request without a username", session.NewEphemeralAuth(bearer, ""), ""},
+		{"request without authentication", nil, ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", namespaceAccessPath, nil)
+			if tc.auth != nil {
+				req = req.WithContext(session.WithRequestAuth(req.Context(), tc.auth))
+			}
+			want := tc.want
+			if want == "" {
+				want = "ip:" + ratelimit.ClientKeyIP(req)
+			}
+			assert.Equal(t, want, accessRateLimitKey(req))
+		})
+	}
 }
 
 // The access routes share one budget per user, whatever the session: another session of the same
