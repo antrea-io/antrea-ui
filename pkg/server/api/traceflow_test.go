@@ -158,8 +158,6 @@ func TestTraceflowRequestRateLimiting(t *testing.T) {
 		// a bubble, the fake clock makes the burst and the refill exact.
 		synctest.Test(t, func(t *testing.T) {
 			const (
-				// Must match the burst size in AddTraceflowRoutes.
-				burstSize      = 10
 				refillInterval = time.Second / 5
 				// The limiter computes tokens with floating point numbers, so the
 				// assertions stay clear of the exact instant a token is added.
@@ -169,7 +167,7 @@ func TestTraceflowRequestRateLimiting(t *testing.T) {
 			ts.traceflowRequestsHandler.EXPECT().CreateRequest(gomock.Any(), gomock.Any(), &traceflowhandler.Request{
 				Object: tf,
 			}).Return(uuid.New().String(), nil).AnyTimes()
-			for i := range burstSize {
+			for i := range traceflowBurstSize {
 				require.Equalf(t, http.StatusAccepted, sendRequest(ts).Code, "request %d is within the burst", i+1)
 			}
 			assert.Equal(t, http.StatusTooManyRequests, sendRequest(ts).Code, "the burst is used up")

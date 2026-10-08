@@ -146,8 +146,9 @@ func TestLogin(t *testing.T) {
 					req.SetBasicAuth(username, wrongPassword)
 				}).Code
 			}
-			// The burst size is 1, see loginRateLimitMiddleware.
-			assert.Equal(t, http.StatusUnauthorized, login())
+			for i := range loginBurstSize {
+				require.Equalf(t, http.StatusUnauthorized, login(), "request %d is within the burst", i+1)
+			}
 			assert.Equal(t, http.StatusTooManyRequests, login(), "the burst is used up")
 
 			time.Sleep(refillInterval - margin)

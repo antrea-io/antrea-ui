@@ -18,7 +18,6 @@ import (
 	"context"
 	"testing"
 	"testing/synctest"
-	"time"
 
 	"github.com/go-logr/logr/testr"
 	"github.com/stretchr/testify/assert"
@@ -38,7 +37,7 @@ func roleBinding(name, namespace string, subjects []rbacv1.Subject) *rbacv1.Role
 
 // startAndWaitSynced starts r.Run in a goroutine and returns once the RoleBinding cache has synced.
 // It must be called from a testing/synctest bubble: the informer is backed by a fake clientset and
-// does no real I/O, so the fake clock only advances once it has nothing left to do.
+// does no real I/O, so the bubble can tell when the sync is complete.
 func startAndWaitSynced(t *testing.T, r *resolver) {
 	t.Helper()
 	stopCh := make(chan struct{})
@@ -53,10 +52,9 @@ func startAndWaitSynced(t *testing.T, r *resolver) {
 		close(stopCh)
 		<-done
 	})
-	// Run polls for the sync of the informer (cache.WaitForCacheSync, every 100ms), and its
-	// first check comes before the informer has listed anything. synctest.Wait is therefore
-	// not enough: fake time has to pass, and one second is several polls.
-	synctest.Sleep(time.Second)
+	// Run waits for the sync of the informer without polling (cache.WaitFor), so no fake time
+	// has to pass: once every goroutine in the bubble is blocked, the cache has synced.
+	synctest.Wait()
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	require.True(t, r.synced, "the RoleBinding cache should have synced")
