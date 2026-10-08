@@ -27,6 +27,7 @@ import (
 	"github.com/go-logr/logr"
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	rbaclisters "k8s.io/client-go/listers/rbac/v1"
@@ -108,7 +109,7 @@ func (r *resolver) Run(stopCh <-chan struct{}) {
 	var wg sync.WaitGroup
 	defer wg.Wait()
 	wg.Go(func() { informer.Run(stopCh) })
-	if !cache.WaitForCacheSync(stopCh, informer.HasSynced) {
+	if !cache.WaitFor(wait.ContextForChannel(stopCh), "", informer.HasSyncedChecker()) {
 		r.logger.Info("RoleBinding cache did not sync; namespace discovery is unavailable")
 		return
 	}
@@ -145,7 +146,7 @@ func (r *resolver) handleRoleBindingEvent(obj any) {
 // here would be very hard to diagnose.
 func (r *resolver) recheckClusterScopeProbe() {
 	// Informer event handlers are serialized, but Run also calls this directly after
-	// WaitForCacheSync, so two invocations can overlap. The list and the store have to happen
+	// cache.WaitFor, so two invocations can overlap. The list and the store have to happen
 	// under one write lock: with the list outside it, an older invocation can list an empty
 	// namespace, be overtaken by a newer one that sees a RoleBinding and stores false, then
 	// store true over it. Nothing re-triggers a recheck until the next event in that namespace,

@@ -31,6 +31,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/golang/mock/gomock"
@@ -129,24 +130,33 @@ func TestLogin(t *testing.T) {
 	})
 
 	t.Run("rate limiting 5/s", func(t *testing.T) {
-		ts := newTestServer(t, setMaxLoginsPerSecond(5))
-		ts.passwordStore.EXPECT().Compare(gomock.Any(), []byte(wrongPassword)).Return(fmt.Errorf("bad password")).AnyTimes()
-		rr := sendRequest(ts, func(req *http.Request) {
-			req.SetBasicAuth(username, wrongPassword)
+		// The rate limiter reads the current time, and the fake K8s API server is in
+		// memory: in a bubble, the fake clock makes the refill exact.
+		synctest.Test(t, func(t *testing.T) {
+			const (
+				refillInterval = time.Second / 5
+				// The limiter computes tokens with floating point numbers, so the
+				// assertions stay clear of the exact instant a token is added.
+				margin = time.Millisecond
+			)
+			ts := newTestServer(t, setMaxLoginsPerSecond(5))
+			ts.passwordStore.EXPECT().Compare(gomock.Any(), []byte(wrongPassword)).Return(fmt.Errorf("bad password")).AnyTimes()
+			login := func() int {
+				return sendRequest(ts, func(req *http.Request) {
+					req.SetBasicAuth(username, wrongPassword)
+				}).Code
+			}
+			for i := range loginBurstSize {
+				require.Equalf(t, http.StatusUnauthorized, login(), "request %d is within the burst", i+1)
+			}
+			assert.Equal(t, http.StatusTooManyRequests, login(), "the burst is used up")
+
+			time.Sleep(refillInterval - margin)
+			assert.Equal(t, http.StatusTooManyRequests, login(), "no token is available yet")
+			time.Sleep(2 * margin)
+			assert.Equal(t, http.StatusUnauthorized, login(), "a token is available again")
+			assert.Equal(t, http.StatusTooManyRequests, login(), "only one token was added")
 		})
-		assert.Equal(t, http.StatusUnauthorized, rr.Code)
-		assert.Eventually(t, func() bool {
-			rr := sendRequest(ts, func(req *http.Request) {
-				req.SetBasicAuth(username, wrongPassword)
-			})
-			return rr.Code == http.StatusTooManyRequests
-		}, time.Second, 10*time.Millisecond)
-		assert.Eventually(t, func() bool {
-			rr := sendRequest(ts, func(req *http.Request) {
-				req.SetBasicAuth(username, wrongPassword)
-			})
-			return rr.Code == http.StatusUnauthorized
-		}, time.Second, 100*time.Millisecond)
 	})
 
 	t.Run("basic auth disabled", func(t *testing.T) {

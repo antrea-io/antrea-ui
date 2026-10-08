@@ -24,7 +24,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
+	"testing/synctest"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -66,40 +66,39 @@ func createPluginConfigMap(t *testing.T, ts *testServer, name, pluginName, versi
 	require.NoError(t, err)
 }
 
-// waitForPluginIndex polls GET /api/v1/plugins/index.json until it matches want, since the
-// ConfigMap watch that backs the registry is asynchronous.
+// waitForPluginIndex waits for the ConfigMap watch which backs the registry to catch up with the
+// fake clientset, then asserts that GET /api/v1/plugins/index.json returns want. It must be called
+// from a testing/synctest bubble: the watch is asynchronous, but it does not wait on anything
+// outside of the bubble, so synctest.Wait returns once it is done.
 func waitForPluginIndex(t *testing.T, ts *testServer, want []apisv1.PluginManifest) {
 	t.Helper()
-	require.Eventually(t, func() bool {
-		req := httptest.NewRequest("GET", "/api/v1/plugins/index.json", nil)
-		rr := httptest.NewRecorder()
-		ts.router.ServeHTTP(rr, req)
-		if rr.Code != http.StatusOK {
-			return false
-		}
-		var got []apisv1.PluginManifest
-		if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
-			return false
-		}
-		return assert.ObjectsAreEqual(want, got)
-	}, 5*time.Second, 10*time.Millisecond)
-}
-
-func TestGetPluginsIndex(t *testing.T) {
-	ts := newTestServer(t)
-
+	synctest.Wait()
 	req := httptest.NewRequest("GET", "/api/v1/plugins/index.json", nil)
 	rr := httptest.NewRecorder()
 	ts.router.ServeHTTP(rr, req)
 	require.Equal(t, http.StatusOK, rr.Code)
-	assert.Equal(t, "no-store", rr.Header().Get("Cache-Control"))
-	assert.JSONEq(t, "[]", rr.Body.String())
+	var got []apisv1.PluginManifest
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &got))
+	require.Equal(t, want, got)
+}
 
-	createPluginConfigMap(t, ts, "pod-counter-plugin", "pod-counter", "0.1.0", "index.js", map[string][]byte{
-		"index.js": []byte("console.log('hi')"),
-	})
-	waitForPluginIndex(t, ts, []apisv1.PluginManifest{
-		{Name: "pod-counter", Version: "0.1.0", Entry: "index.js"},
+func TestGetPluginsIndex(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ts := newTestServer(t)
+
+		req := httptest.NewRequest("GET", "/api/v1/plugins/index.json", nil)
+		rr := httptest.NewRecorder()
+		ts.router.ServeHTTP(rr, req)
+		require.Equal(t, http.StatusOK, rr.Code)
+		assert.Equal(t, "no-store", rr.Header().Get("Cache-Control"))
+		assert.JSONEq(t, "[]", rr.Body.String())
+
+		createPluginConfigMap(t, ts, "pod-counter-plugin", "pod-counter", "0.1.0", "index.js", map[string][]byte{
+			"index.js": []byte("console.log('hi')"),
+		})
+		waitForPluginIndex(t, ts, []apisv1.PluginManifest{
+			{Name: "pod-counter", Version: "0.1.0", Entry: "index.js"},
+		})
 	})
 }
 
@@ -107,65 +106,71 @@ func TestGetPluginsIndex(t *testing.T) {
 // end-to-end: a deleted ConfigMap is detected by its absence from the informer's indexer (see
 // processConfigMapQueueItem), not by the object a Delete event happens to carry.
 func TestGetPluginsIndexReflectsConfigMapDeletion(t *testing.T) {
-	ts := newTestServer(t)
+	synctest.Test(t, func(t *testing.T) {
+		ts := newTestServer(t)
 
-	createPluginConfigMap(t, ts, "pod-counter-plugin", "pod-counter", "0.1.0", "index.js", map[string][]byte{
-		"index.js": []byte("console.log('hi')"),
+		createPluginConfigMap(t, ts, "pod-counter-plugin", "pod-counter", "0.1.0", "index.js", map[string][]byte{
+			"index.js": []byte("console.log('hi')"),
+		})
+		waitForPluginIndex(t, ts, []apisv1.PluginManifest{
+			{Name: "pod-counter", Version: "0.1.0", Entry: "index.js"},
+		})
+
+		require.NoError(t, ts.pluginsClientset.CoreV1().ConfigMaps("antrea-ui").Delete(context.Background(), "pod-counter-plugin", metav1.DeleteOptions{}))
+		waitForPluginIndex(t, ts, []apisv1.PluginManifest{})
+
+		req := httptest.NewRequest("GET", "/api/v1/plugins/pod-counter/index.js", nil)
+		rr := httptest.NewRecorder()
+		ts.router.ServeHTTP(rr, req)
+		assert.Equal(t, http.StatusNotFound, rr.Code, "a deleted plugin's files must stop being served")
 	})
-	waitForPluginIndex(t, ts, []apisv1.PluginManifest{
-		{Name: "pod-counter", Version: "0.1.0", Entry: "index.js"},
-	})
-
-	require.NoError(t, ts.pluginsClientset.CoreV1().ConfigMaps("antrea-ui").Delete(context.Background(), "pod-counter-plugin", metav1.DeleteOptions{}))
-	waitForPluginIndex(t, ts, []apisv1.PluginManifest{})
-
-	req := httptest.NewRequest("GET", "/api/v1/plugins/pod-counter/index.js", nil)
-	rr := httptest.NewRecorder()
-	ts.router.ServeHTTP(rr, req)
-	assert.Equal(t, http.StatusNotFound, rr.Code, "a deleted plugin's files must stop being served")
 }
 
 func TestGetPluginFile(t *testing.T) {
-	ts := newTestServer(t)
-	createPluginConfigMap(t, ts, "pod-counter-plugin", "pod-counter", "0.1.0", "index.js", map[string][]byte{
-		"index.js": []byte("console.log('hi')"),
-	})
-	waitForPluginIndex(t, ts, []apisv1.PluginManifest{
-		{Name: "pod-counter", Version: "0.1.0", Entry: "index.js"},
-	})
+	synctest.Test(t, func(t *testing.T) {
+		ts := newTestServer(t)
+		createPluginConfigMap(t, ts, "pod-counter-plugin", "pod-counter", "0.1.0", "index.js", map[string][]byte{
+			"index.js": []byte("console.log('hi')"),
+		})
+		waitForPluginIndex(t, ts, []apisv1.PluginManifest{
+			{Name: "pod-counter", Version: "0.1.0", Entry: "index.js"},
+		})
 
-	req := httptest.NewRequest("GET", "/api/v1/plugins/pod-counter/index.js", nil)
-	rr := httptest.NewRecorder()
-	ts.router.ServeHTTP(rr, req)
-	require.Equal(t, http.StatusOK, rr.Code)
-	assert.Equal(t, "application/javascript", rr.Header().Get("Content-Type"))
-	assert.Equal(t, "no-store", rr.Header().Get("Cache-Control"))
-	assert.Equal(t, "nosniff", rr.Header().Get("X-Content-Type-Options"))
-	assert.Equal(t, "sandbox", rr.Header().Get("Content-Security-Policy"))
-	assert.Empty(t, rr.Header().Get("Content-Encoding"))
-	b, err := io.ReadAll(rr.Result().Body)
-	require.NoError(t, err)
-	assert.Equal(t, "console.log('hi')", string(b))
+		req := httptest.NewRequest("GET", "/api/v1/plugins/pod-counter/index.js", nil)
+		rr := httptest.NewRecorder()
+		ts.router.ServeHTTP(rr, req)
+		require.Equal(t, http.StatusOK, rr.Code)
+		assert.Equal(t, "application/javascript", rr.Header().Get("Content-Type"))
+		assert.Equal(t, "no-store", rr.Header().Get("Cache-Control"))
+		assert.Equal(t, "nosniff", rr.Header().Get("X-Content-Type-Options"))
+		assert.Equal(t, "sandbox", rr.Header().Get("Content-Security-Policy"))
+		assert.Empty(t, rr.Header().Get("Content-Encoding"))
+		b, err := io.ReadAll(rr.Result().Body)
+		require.NoError(t, err)
+		assert.Equal(t, "console.log('hi')", string(b))
+	})
 }
 
 func TestGetPluginFileNestedPath(t *testing.T) {
-	ts := newTestServer(t)
-	createPluginConfigMap(t, ts, "pod-counter-plugin", "pod-counter", "0.1.0", "index.js", map[string][]byte{
-		"index.js":        []byte("console.log('hi')"),
-		"assets/logo.png": []byte("fake-png-bytes"),
-	})
-	waitForPluginIndex(t, ts, []apisv1.PluginManifest{
-		{Name: "pod-counter", Version: "0.1.0", Entry: "index.js"},
-	})
+	synctest.Test(t, func(t *testing.T) {
+		ts := newTestServer(t)
+		createPluginConfigMap(t, ts, "pod-counter-plugin", "pod-counter", "0.1.0", "index.js", map[string][]byte{
+			"index.js":        []byte("console.log('hi')"),
+			"assets/logo.png": []byte("fake-png-bytes"),
+		})
+		waitForPluginIndex(t, ts, []apisv1.PluginManifest{
+			{Name: "pod-counter", Version: "0.1.0", Entry: "index.js"},
+		})
 
-	req := httptest.NewRequest("GET", "/api/v1/plugins/pod-counter/assets/logo.png", nil)
-	rr := httptest.NewRecorder()
-	ts.router.ServeHTTP(rr, req)
-	require.Equal(t, http.StatusOK, rr.Code)
-	assert.Equal(t, "image/png", rr.Header().Get("Content-Type"))
-	b, err := io.ReadAll(rr.Result().Body)
-	require.NoError(t, err)
-	assert.Equal(t, "fake-png-bytes", string(b))
+		req := httptest.NewRequest("GET", "/api/v1/plugins/pod-counter/assets/logo.png", nil)
+		rr := httptest.NewRecorder()
+		ts.router.ServeHTTP(rr, req)
+		require.Equal(t, http.StatusOK, rr.Code)
+		assert.Equal(t, "image/png", rr.Header().Get("Content-Type"))
+		b, err := io.ReadAll(rr.Result().Body)
+		require.NoError(t, err)
+		assert.Equal(t, "fake-png-bytes", string(b))
+	})
 }
 
 func TestPluginFileContentType(t *testing.T) {
@@ -194,26 +199,28 @@ func TestPluginFileContentType(t *testing.T) {
 }
 
 func TestGetPluginFileGzipped(t *testing.T) {
-	ts := newTestServer(t)
-	var gzipped bytes.Buffer
-	gw := gzip.NewWriter(&gzipped)
-	_, err := gw.Write([]byte("console.log('hi')"))
-	require.NoError(t, err)
-	require.NoError(t, gw.Close())
+	synctest.Test(t, func(t *testing.T) {
+		ts := newTestServer(t)
+		var gzipped bytes.Buffer
+		gw := gzip.NewWriter(&gzipped)
+		_, err := gw.Write([]byte("console.log('hi')"))
+		require.NoError(t, err)
+		require.NoError(t, gw.Close())
 
-	createPluginConfigMap(t, ts, "pod-counter-plugin", "pod-counter", "0.1.0", "index.js", map[string][]byte{
-		"index.js": gzipped.Bytes(),
-	})
-	waitForPluginIndex(t, ts, []apisv1.PluginManifest{
-		{Name: "pod-counter", Version: "0.1.0", Entry: "index.js"},
-	})
+		createPluginConfigMap(t, ts, "pod-counter-plugin", "pod-counter", "0.1.0", "index.js", map[string][]byte{
+			"index.js": gzipped.Bytes(),
+		})
+		waitForPluginIndex(t, ts, []apisv1.PluginManifest{
+			{Name: "pod-counter", Version: "0.1.0", Entry: "index.js"},
+		})
 
-	req := httptest.NewRequest("GET", "/api/v1/plugins/pod-counter/index.js", nil)
-	rr := httptest.NewRecorder()
-	ts.router.ServeHTTP(rr, req)
-	require.Equal(t, http.StatusOK, rr.Code)
-	assert.Equal(t, "gzip", rr.Header().Get("Content-Encoding"))
-	assert.Equal(t, gzipped.Bytes(), rr.Body.Bytes())
+		req := httptest.NewRequest("GET", "/api/v1/plugins/pod-counter/index.js", nil)
+		rr := httptest.NewRecorder()
+		ts.router.ServeHTTP(rr, req)
+		require.Equal(t, http.StatusOK, rr.Code)
+		assert.Equal(t, "gzip", rr.Header().Get("Content-Encoding"))
+		assert.Equal(t, gzipped.Bytes(), rr.Body.Bytes())
+	})
 }
 
 func TestGetPluginFileNotFound(t *testing.T) {

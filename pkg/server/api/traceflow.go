@@ -151,6 +151,10 @@ func (s *Server) DeleteTraceflowRequest(c *gin.Context) {
 	c.Status(http.StatusOK)
 }
 
+// traceflowBurstSize is the number of Traceflow requests that can be created back to back before
+// the rate limit applies.
+const traceflowBurstSize = 10
+
 func (s *Server) AddTraceflowRoutes(r *gin.RouterGroup) {
 	r = r.Group("/traceflow")
 	r.Use(s.authenticate())
@@ -158,7 +162,7 @@ func (s *Server) AddTraceflowRoutes(r *gin.RouterGroup) {
 	if s.config.MaxTraceflowsPerHour >= 0 {
 		burstSize := 0
 		if s.config.MaxTraceflowsPerHour > 0 {
-			burstSize = 10
+			burstSize = traceflowBurstSize
 		}
 		tfRateLimiter := ratelimit.NewGlobalRateLimiterOrDie(fmt.Sprintf("%d/h", s.config.MaxTraceflowsPerHour), burstSize)
 		createTfHandlers = append(createTfHandlers, ratelimit.Middleware(tfRateLimiter))

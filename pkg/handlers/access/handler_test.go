@@ -17,7 +17,7 @@ package access
 import (
 	"context"
 	"testing"
-	"time"
+	"testing/synctest"
 
 	"github.com/go-logr/logr/testr"
 	"github.com/stretchr/testify/assert"
@@ -35,8 +35,9 @@ func roleBinding(name, namespace string, subjects []rbacv1.Subject) *rbacv1.Role
 	}
 }
 
-// startAndWaitSynced starts r.Run in a goroutine and blocks until the RoleBinding cache has
-// synced (or the test times out).
+// startAndWaitSynced starts r.Run in a goroutine and returns once the RoleBinding cache has synced.
+// It must be called from a testing/synctest bubble: the informer is backed by a fake clientset and
+// does no real I/O, so the bubble can tell when the sync is complete.
 func startAndWaitSynced(t *testing.T, r *resolver) {
 	t.Helper()
 	stopCh := make(chan struct{})
@@ -51,48 +52,52 @@ func startAndWaitSynced(t *testing.T, r *resolver) {
 		close(stopCh)
 		<-done
 	})
-	require.Eventually(t, func() bool {
-		r.mu.RLock()
-		defer r.mu.RUnlock()
-		return r.synced
-	}, 5*time.Second, 10*time.Millisecond)
+	// Run waits for the sync of the informer without polling (cache.WaitFor), so no fake time
+	// has to pass: once every goroutine in the bubble is blocked, the cache has synced.
+	synctest.Wait()
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	require.True(t, r.synced, "the RoleBinding cache should have synced")
 }
 
 func TestNamespacesFor(t *testing.T) {
-	clientset := k8sfake.NewSimpleClientset(
-		roleBinding("rb-user", "ns-user", []rbacv1.Subject{{Kind: rbacv1.UserKind, Name: "alice"}}),
-		roleBinding("rb-group", "ns-group", []rbacv1.Subject{{Kind: rbacv1.GroupKind, Name: "team-a"}}),
-		roleBinding("rb-sa", "ns-sa", []rbacv1.Subject{{Kind: rbacv1.ServiceAccountKind, Name: "bot", Namespace: "ns-sa"}}),
-		// No Namespace on the subject: Kubernetes defaults it to the RoleBinding's own
-		// namespace, and binding a local ServiceAccount unqualified like this is common.
-		roleBinding("rb-sa-implicit", "ns-sa-implicit", []rbacv1.Subject{{Kind: rbacv1.ServiceAccountKind, Name: "bot"}}),
-		roleBinding("rb-other", "ns-other", []rbacv1.Subject{{Kind: rbacv1.UserKind, Name: "bob"}}),
-		roleBinding("rb-dup-1", "ns-dup", []rbacv1.Subject{{Kind: rbacv1.UserKind, Name: "alice"}}),
-		roleBinding("rb-dup-2", "ns-dup", []rbacv1.Subject{{Kind: rbacv1.GroupKind, Name: "team-a"}}),
-	)
-	r := NewResolver(testr.New(t), clientset)
-	startAndWaitSynced(t, r)
+	synctest.Test(t, func(t *testing.T) {
+		clientset := k8sfake.NewSimpleClientset(
+			roleBinding("rb-user", "ns-user", []rbacv1.Subject{{Kind: rbacv1.UserKind, Name: "alice"}}),
+			roleBinding("rb-group", "ns-group", []rbacv1.Subject{{Kind: rbacv1.GroupKind, Name: "team-a"}}),
+			roleBinding("rb-sa", "ns-sa", []rbacv1.Subject{{Kind: rbacv1.ServiceAccountKind, Name: "bot", Namespace: "ns-sa"}}),
+			// No Namespace on the subject: Kubernetes defaults it to the RoleBinding's
+			// own namespace, and binding a local ServiceAccount unqualified like this
+			// is common.
+			roleBinding("rb-sa-implicit", "ns-sa-implicit", []rbacv1.Subject{{Kind: rbacv1.ServiceAccountKind, Name: "bot"}}),
+			roleBinding("rb-other", "ns-other", []rbacv1.Subject{{Kind: rbacv1.UserKind, Name: "bob"}}),
+			roleBinding("rb-dup-1", "ns-dup", []rbacv1.Subject{{Kind: rbacv1.UserKind, Name: "alice"}}),
+			roleBinding("rb-dup-2", "ns-dup", []rbacv1.Subject{{Kind: rbacv1.GroupKind, Name: "team-a"}}),
+		)
+		r := NewResolver(testr.New(t), clientset)
+		startAndWaitSynced(t, r)
 
-	namespaces, err := r.NamespacesFor("alice", []string{"team-a"})
-	require.NoError(t, err)
-	assert.Equal(t, []string{"ns-dup", "ns-group", "ns-user"}, namespaces)
+		namespaces, err := r.NamespacesFor("alice", []string{"team-a"})
+		require.NoError(t, err)
+		assert.Equal(t, []string{"ns-dup", "ns-group", "ns-user"}, namespaces)
 
-	namespaces, err = r.NamespacesFor("system:serviceaccount:ns-sa:bot", nil)
-	require.NoError(t, err)
-	assert.Equal(t, []string{"ns-sa"}, namespaces)
+		namespaces, err = r.NamespacesFor("system:serviceaccount:ns-sa:bot", nil)
+		require.NoError(t, err)
+		assert.Equal(t, []string{"ns-sa"}, namespaces)
 
-	namespaces, err = r.NamespacesFor("system:serviceaccount:ns-sa-implicit:bot", nil)
-	require.NoError(t, err)
-	assert.Equal(t, []string{"ns-sa-implicit"}, namespaces)
+		namespaces, err = r.NamespacesFor("system:serviceaccount:ns-sa-implicit:bot", nil)
+		require.NoError(t, err)
+		assert.Equal(t, []string{"ns-sa-implicit"}, namespaces)
 
-	// The unqualified subject must not match the same SA name in another namespace.
-	namespaces, err = r.NamespacesFor("system:serviceaccount:ns-other:bot", nil)
-	require.NoError(t, err)
-	assert.Empty(t, namespaces)
+		// The unqualified subject must not match the same SA name in another namespace.
+		namespaces, err = r.NamespacesFor("system:serviceaccount:ns-other:bot", nil)
+		require.NoError(t, err)
+		assert.Empty(t, namespaces)
 
-	namespaces, err = r.NamespacesFor("carol", nil)
-	require.NoError(t, err)
-	assert.Empty(t, namespaces)
+		namespaces, err = r.NamespacesFor("carol", nil)
+		require.NoError(t, err)
+		assert.Empty(t, namespaces)
+	})
 }
 
 func TestNamespacesForUnsynced(t *testing.T) {
@@ -109,29 +114,33 @@ func TestClusterScopeProbeUsable(t *testing.T) {
 	})
 
 	t.Run("usable when the probe namespace is empty", func(t *testing.T) {
-		clientset := k8sfake.NewSimpleClientset(
-			roleBinding("rb", "some-other-namespace", []rbacv1.Subject{{Kind: rbacv1.UserKind, Name: "alice"}}),
-		)
-		r := NewResolver(testr.New(t), clientset)
-		startAndWaitSynced(t, r)
-		assert.True(t, r.ClusterScopeProbeUsable())
+		synctest.Test(t, func(t *testing.T) {
+			clientset := k8sfake.NewSimpleClientset(
+				roleBinding("rb", "some-other-namespace", []rbacv1.Subject{{Kind: rbacv1.UserKind, Name: "alice"}}),
+			)
+			r := NewResolver(testr.New(t), clientset)
+			startAndWaitSynced(t, r)
+			assert.True(t, r.ClusterScopeProbeUsable())
+		})
 	})
 
 	t.Run("becomes unusable once a RoleBinding is added to the probe namespace", func(t *testing.T) {
-		clientset := k8sfake.NewSimpleClientset()
-		r := NewResolver(testr.New(t), clientset)
-		startAndWaitSynced(t, r)
-		require.True(t, r.ClusterScopeProbeUsable())
+		synctest.Test(t, func(t *testing.T) {
+			clientset := k8sfake.NewSimpleClientset()
+			r := NewResolver(testr.New(t), clientset)
+			startAndWaitSynced(t, r)
+			require.True(t, r.ClusterScopeProbeUsable())
 
-		_, err := clientset.RbacV1().RoleBindings(ClusterScopeProbeNamespace).Create(
-			context.Background(),
-			roleBinding("probe-canary", ClusterScopeProbeNamespace, []rbacv1.Subject{{Kind: rbacv1.UserKind, Name: "mallory"}}),
-			metav1.CreateOptions{},
-		)
-		require.NoError(t, err)
+			_, err := clientset.RbacV1().RoleBindings(ClusterScopeProbeNamespace).Create(
+				context.Background(),
+				roleBinding("probe-canary", ClusterScopeProbeNamespace, []rbacv1.Subject{{Kind: rbacv1.UserKind, Name: "mallory"}}),
+				metav1.CreateOptions{},
+			)
+			require.NoError(t, err)
 
-		require.Eventually(t, func() bool {
-			return !r.ClusterScopeProbeUsable()
-		}, 5*time.Second, 10*time.Millisecond)
+			// The informer delivers the event without any timer involved.
+			synctest.Wait()
+			assert.False(t, r.ClusterScopeProbeUsable())
+		})
 	})
 }

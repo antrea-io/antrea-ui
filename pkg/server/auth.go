@@ -274,6 +274,10 @@ func (s *Server) Logout(c *gin.Context) {
 	}
 }
 
+// loginBurstSize is the number of login requests a client can send back to back before the rate
+// limit applies.
+const loginBurstSize = 1
+
 // loginRateLimitMiddleware builds the rate-limit middleware shared by every login endpoint. All of
 // them accept attacker-controlled credential material, and the token and kubeconfig endpoints each
 // make a SelfSubjectReview call to the API server, so an unlimited endpoint would be both a
@@ -289,7 +293,7 @@ func (s *Server) loginRateLimitMiddleware() gin.HandlerFunc {
 	const clientCacheSize = 10000
 	burstSize := 0
 	if s.config.MaxLoginsPerSecond > 0 {
-		burstSize = 1
+		burstSize = loginBurstSize
 	}
 	loginRateLimiter := ratelimit.NewClientRateLimiterOrDie(
 		fmt.Sprintf("%d/s", s.config.MaxLoginsPerSecond), burstSize, clientCacheSize, ratelimit.ClientKeyIP)
