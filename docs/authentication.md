@@ -353,6 +353,7 @@ makes them in one request:
   "items": [
     {
       "namespace": "rbac-test-alpha",
+      "evaluationFailed": false,
       "rules": {
         "resourceRules": [{"verbs": ["watch"], "apiGroups": ["observability.antrea.io"], "resources": ["flows"]}],
         "nonResourceRules": [],
@@ -400,18 +401,18 @@ exactly as for the other pages, and every feature shares this one answer.
   returns exactly these. A `401`, or a `403` that says the cluster stripped the
   self-review grant every authenticated identity has by default, is not about
   one namespace and fails the request.
-- **Cost.** One review per namespace named, so at most 10, and at most eight at
-  a time. A user who holds the grant cluster-wide has no use for this endpoint,
+- **Cost.** One review per namespace named, so at most 10. A user who holds the grant cluster-wide has no use for this endpoint,
   as the grant holds in every namespace and the cluster-scoped summary says so.
   Each successful review is cached for 30 seconds, per session and namespace,
   so the same namespaces in another order, or some of those already answered,
-  cost nothing, and only the namespaces not cached are reviewed. Both access
+  cost nothing, and only the namespaces not cached are reviewed. Requests
+  authenticated with a bearer token have no session and are not cached. Both access
   routes are rate limited per user, with one budget shared between them (2
   requests per second, with a burst of 10); a static-admin session is limited
   by its own session, as every such login is the user `admin`. The frontend
-  keeps what it fetched for the same 30 seconds, so that features asking the same
-  question share it, and then asks again: a grant added or revoked shows up
-  without the user logging out. It has the same ten-second timeout as
+  keeps what it fetched for another 30 seconds, so that features asking the same
+  question share it, and then asks again. The two add up, so a grant added or
+  revoked shows up within about a minute, without the user logging out. It has the same ten-second timeout as
   `access-summary`.
 
 ### The cluster-scope sentinel namespace

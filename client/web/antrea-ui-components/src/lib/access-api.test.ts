@@ -140,7 +140,7 @@ describe('accessSummary', () => {
 });
 
 function namespaceList(overrides: Partial<NamespaceAccessSummaryList> = {}): NamespaceAccessSummaryList {
-    return { items: [{ namespace: 'ns-a', rules: rules() }], ...overrides };
+    return { items: [{ namespace: 'ns-a', evaluationFailed: false, rules: rules() }], ...overrides };
 }
 
 describe('namespaceAccessSummaries', () => {
@@ -286,7 +286,7 @@ describe('namespaceAccessSummaries', () => {
         vi.stubGlobal('fetch', fetchMock);
 
         expect((await namespaceAccessSummaries(['ns-a'])).items[0].evaluationFailed).toBe(true);
-        expect((await namespaceAccessSummaries(['ns-a'])).items[0].evaluationFailed).toBeUndefined();
+        expect((await namespaceAccessSummaries(['ns-a'])).items[0].evaluationFailed).toBe(false);
         expect(fetchMock).toHaveBeenCalledTimes(2);
         await namespaceAccessSummaries(['ns-a']);
         expect(fetchMock).toHaveBeenCalledTimes(2);

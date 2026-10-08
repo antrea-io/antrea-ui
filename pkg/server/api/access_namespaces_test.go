@@ -15,7 +15,9 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
+	goerrors "errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -28,6 +30,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	authorizationv1 "k8s.io/api/authorization/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	apisv1 "antrea.io/antrea-ui/apis/v1"
 	"antrea.io/antrea-ui/pkg/auth/session"
@@ -130,7 +134,7 @@ func TestGetNamespaceAccessSummariesDoesNotRepeatIdentity(t *testing.T) {
 	for k := range raw.Items[0] {
 		keys = append(keys, k)
 	}
-	assert.ElementsMatch(t, []string{"namespace", "rules"}, keys)
+	assert.ElementsMatch(t, []string{"namespace", "rules", "evaluationFailed"}, keys)
 }
 
 // The caller says which Namespaces it is about, and at most as many as a selector has use for: one
@@ -191,8 +195,42 @@ func TestGetNamespaceAccessSummariesFailedReviewIsUnknown(t *testing.T) {
 	require.Len(t, list.Items, 2)
 	assert.Equal(t, flowRules("watch"), list.Items[0].Rules)
 	assert.True(t, list.Items[1].Rules.Incomplete)
-	assert.NotEmpty(t, list.Items[1].Rules.EvaluationError)
+	// The error itself stays in the log, as it can name the API server's address.
+	assert.Equal(t, namespaceAccessEvaluationError, list.Items[1].Rules.EvaluationError)
 	assert.Empty(t, list.Items[1].Rules.ResourceRules)
+}
+
+// A review that fails because the request is over is not an unknown Namespace: nobody is waiting
+// for an answer. Only a failure that is not about the request is downgraded to unknown.
+func TestIsFatalReviewError(t *testing.T) {
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	unauthorized := apierrors.NewUnauthorized("")
+	forbidden := apierrors.NewForbidden(schema.GroupResource{}, "", goerrors.New("forbidden"))
+	other := goerrors.New("connection refused")
+
+	assert.True(t, isFatalReviewError(context.Background(), unauthorized))
+	assert.True(t, isFatalReviewError(context.Background(), forbidden))
+	assert.False(t, isFatalReviewError(context.Background(), other))
+	assert.True(t, isFatalReviewError(canceled, other), "a done context fails the request")
+}
+
+// A request without a session, authenticated with a bearer token, must never read another
+// token's cached answer: each pays for its own reviews, whatever the Namespaces.
+func TestGetNamespaceAccessSummariesBearerRequestsAreNotCached(t *testing.T) {
+	ts, fakeAPIServer := newTestServerForAccess(t, nil)
+	ask := func(token string) {
+		req := httptest.NewRequest("GET", namespaceAccessPath+"?namespace=ns-a", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		code, _ := serveNamespaceAccess(t, ts, req)
+		require.Equal(t, http.StatusOK, code)
+	}
+
+	ask("token-one")
+	ask("token-two")
+	assert.Equal(t, 2, fakeAPIServer.reviewCount(), "another token never reads this token's answer")
+	ask("token-one")
+	assert.Equal(t, 3, fakeAPIServer.reviewCount(), "a bearer request is not cached for itself either")
 }
 
 // A 403 is not about one Namespace: the cluster stripped the self-review grant every authenticated
@@ -305,7 +343,9 @@ func TestGetNamespaceAccessSummariesDoesNotCacheUnknownNamespaces(t *testing.T) 
 	assert.Equal(t, 3, fakeAPIServer.reviewCount())
 }
 
-// A failed review is reported with empty rule lists, not null ones, as the type says.
+// A failed review is reported with empty rule lists, not null ones, as the frontend's SubjectRules
+// type declares them. A review that succeeds is passed through as the API server returned it, which
+// can be null for an identity with no rules.
 func TestGetNamespaceAccessSummariesFailedReviewHasEmptyRuleLists(t *testing.T) {
 	ts, fakeAPIServer := newTestServerForAccess(t, nil)
 	fakeAPIServer.rulesStatusByNamespace = map[string]int{"ns-a": http.StatusInternalServerError}

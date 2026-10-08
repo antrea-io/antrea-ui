@@ -41,30 +41,23 @@ const (
 	// show up without the user logging out. What the TTL is for is collapsing the burst of calls
 	// a page load makes, not sparing the API server indefinitely.
 	namespaceAccessTTL = 30 * time.Second
-	// namespaceAccessCacheSize bounds the cache, at one entry per (session, Namespace). The TTL
-	// bounds how stale an answer can be, not how much memory the cache uses: LRUExpireCache has no
-	// background expiry, so an expired entry is only removed when its key is read again or when
-	// the cap evicts it. Entries of ended sessions, and of Namespaces a session no longer asks
-	// about, stay until the LRU pushes them out, so a long-running server settles at this many
-	// entries. A request is bounded by maxNamespaceAccessNames, but what a session adds over
-	// successive requests is bounded only by the access routes' rate limit. Evicting an entry only
-	// costs a review, so the cap is sized for the live working set, a few Namespaces for each of
-	// the sessions that are in use (session.DefaultMaxSessions at most), rather than for every
-	// session at its limit. An entry holds a rule list: about 2 KiB in memory for a user with a
-	// handful of grants, and about 50 KiB for one with 150 rules, so the cache takes a few MiB
-	// typically, and tens of MiB if a tenth of the entries are of the second kind.
-	namespaceAccessCacheSize = 2000
+	// namespaceAccessCacheSize bounds the number of cached (session, Namespace) rule reviews.
+	// LRUExpireCache does not proactively remove expired entries, so the TTL limits
+	// staleness while this cap bounds memory usage.
+	// 100 entries cover, for example, 10 sessions querying 10 Namespaces each within
+	// the 30-second TTL. At ~50 KiB per large rule set, this is roughly 5 MiB.
+	// Eviction only causes an additional review on the next request.
+	namespaceAccessCacheSize = 100
 	// maxNamespaceAccessNames caps how many Namespaces one request asks about, so that one
 	// request cannot fan out into more SelfSubjectRulesReviews than a selector has any use for.
 	// A user who may use hundreds of Namespaces picks a few from a searchable list, and asks
 	// about those.
 	maxNamespaceAccessNames = 10
-	// namespaceAccessConcurrency is how many reviews are in flight at once. The reviews are
-	// independent and the API server answers each from its in-memory authorization state, so the
-	// cost is round trips; a handful in parallel keeps them from serializing into a noticeable
-	// wait without making this call look like a load generator.
-	namespaceAccessConcurrency = 8
 )
+
+// namespaceAccessEvaluationError is the EvaluationError of a Namespace whose review failed. It is
+// fixed text: the error itself stays in the log, as it can name the API server's address.
+const namespaceAccessEvaluationError = "the access review for this namespace could not be evaluated"
 
 // namespaceAccessCache memoizes one session's review of one Namespace, so that the same
 // Namespaces in another order, or a subset of an earlier request, are answered without a review.
@@ -106,9 +99,11 @@ func (s *Server) GetNamespaceAccessSummaries(c *gin.Context) {
 		if sError != nil {
 			return sError
 		}
-		// The authenticate middleware sets this on every request that gets here. If it were ever
-		// missing the request is evaluated without the cache, which is correct and only slower,
-		// so it is not worth failing over; a bearer request without a session takes the same path.
+		// The authentication middleware sets RequestAuth for every request reaching
+		// this handler. Session-based requests use the session ID to scope cache
+		// entries, while bearer-token requests have no session ID and bypass the cache.
+		// If RequestAuth is missing, KubernetesClientForRequest rejects the request
+		// as unauthenticated.
 		var sessionID string
 		if ra, ok := authn.RequestAuthFromGin(c); ok {
 			sessionID = ra.SessionID()
@@ -195,7 +190,6 @@ func (s *Server) resolveNamespaceAccess(ctx context.Context, sessionID string, n
 		return nil, fmt.Errorf("failed to build K8s client for request: %w", err)
 	}
 	g, gCtx := errgroup.WithContext(ctx)
-	g.SetLimit(namespaceAccessConcurrency)
 	for _, i := range misses {
 		item := &list.Items[i]
 		g.Go(func() error {
@@ -217,7 +211,7 @@ func (s *Server) resolveNamespaceAccess(ctx context.Context, sessionID string, n
 					ResourceRules:    []authorizationv1.ResourceRule{},
 					NonResourceRules: []authorizationv1.NonResourceRule{},
 					Incomplete:       true,
-					EvaluationError:  "the access review for this namespace could not be evaluated",
+					EvaluationError:  namespaceAccessEvaluationError,
 				}
 			}
 			return nil

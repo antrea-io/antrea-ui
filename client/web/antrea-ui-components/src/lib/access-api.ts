@@ -55,10 +55,11 @@ export interface AccessSummary {
  * differs between Namespaces, so the identity and the cluster-admin verdict are not repeated. */
 export interface NamespaceAccessSummary {
     namespace: string
-    /** The review for this Namespace failed, and `rules` is the unknown answer. Unlike an API
-     * server that cannot enumerate its rules, which is stable, a failure may clear on its own:
-     * the backend does not cache it, and neither should a consumer. */
-    evaluationFailed?: boolean
+    /** antrea-ui could not get a review for this Namespace from the API server, and `rules` is a
+     * placeholder: no rules, with `incomplete` set. Unlike an API server that cannot enumerate its
+     * rules, which is stable, a failure may clear on its own: the backend does not cache it, and
+     * neither should a consumer. */
+    evaluationFailed: boolean
     /** Evaluated for `namespace`, so it includes the grants that apply cluster-wide. When the
      * review for this Namespace could not be evaluated, `incomplete` is true and
      * `evaluationError` says so: unknown, not denied. */
@@ -90,7 +91,9 @@ const namespaceAccessMemos = new Map<string, NamespaceAccessMemo>();
 /**
  * How long namespaceAccessSummaries() reuses a successful answer. It matches the backend's cache:
  * the answer is what a Namespace selector offers, so a grant added or revoked should show up
- * without the user logging out, and keeping it any longer here would defeat that. What the memo is
+ * without the user logging out, and keeping it any longer here would defeat that. The two
+ * lifetimes add up: the backend can serve a review it cached 29 seconds ago, and this memo then
+ * keeps the answer for another 30, so a change can take up to about a minute to show. What the memo is
  * for is the features that ask the same question sharing one fetch, not sparing the backend
  * indefinitely.
  */

@@ -56,15 +56,20 @@ type NamespaceAccessSummary struct {
 	// cluster-wide, which is what makes it answer "may I do this in Namespace" rather than "does
 	// a RoleBinding in Namespace allow it".
 	//
-	// When the review for this Namespace could not be evaluated, Incomplete is true and
-	// EvaluationError says why: an unknown answer, which a consumer must tell apart from a
-	// denial, exactly as it does for an API server that cannot enumerate its rules.
+	// If Incomplete is true and no rule matches, the answer is unknown, not a denial.
+	//
+	// Incomplete and EvaluationError are the API server's own, unless EvaluationFailed is true:
+	// then antrea-ui filled them in, and EvaluationError is always the same fixed text: "the access
+	// review for this namespace could not be evaluated".
 	Rules authorizationv1.SubjectRulesReviewStatus `json:"rules"`
-	// EvaluationFailed is true when the review for this Namespace failed, and Rules is the
-	// unknown answer described above. It tells a failure that may clear on its own apart from an
-	// API server that cannot enumerate its rules, which is stable: the server does not cache the
-	// former, and a consumer should not either.
-	EvaluationFailed bool `json:"evaluationFailed,omitempty"`
+	// EvaluationFailed is true when antrea-ui could not get a review for this Namespace from the
+	// API server. Rules is then a placeholder: no rules, and Incomplete set to true.
+	//
+	// Incomplete alone does not say this, because the API server also sets it on a successful
+	// review when an authorizer cannot list its rules. That answer is stable and is cached. A
+	// failed review may succeed on the next request, so antrea-ui does not cache it, and a
+	// consumer should not either.
+	EvaluationFailed bool `json:"evaluationFailed"`
 }
 
 // NamespaceAccessSummaryList answers AccessSummary's question for each of the Namespaces a request
