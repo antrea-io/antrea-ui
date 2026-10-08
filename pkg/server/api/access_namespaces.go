@@ -37,9 +37,10 @@ import (
 
 const (
 	// namespaceAccessTTL controls how long a successful rules review is cached
-	// for a given session and Namespace. A short TTL avoids repeated reviews
-	// during a burst of UI requests while allowing RBAC changes to be reflected
-	// without requiring the user to log out.
+	// for a given session and Namespace. It lets a request reuse the review made
+	// by an earlier request which has completed, as when a page asks again about
+	// the same Namespaces, while being short enough for RBAC changes to be
+	// reflected without requiring the user to log out.
 	namespaceAccessTTL = 30 * time.Second
 	// namespaceAccessCacheSize bounds the number of cached (session, Namespace) rule reviews.
 	// LRUExpireCache does not proactively remove expired entries, so the TTL limits
