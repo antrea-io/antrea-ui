@@ -137,4 +137,17 @@ func TestRequestsHandler(t *testing.T) {
 		_, _, err := handler.Request(t.Context(), "GET", "/foo", nil)
 		assert.ErrorContains(t, err, "not authenticated")
 	})
+
+	t.Run("connection info", func(t *testing.T) {
+		host, serverName, caBundle, err := handler.ConnInfo()
+		require.NoError(t, err)
+		assert.Equal(t, url.Host, host)
+		assert.Equal(t, antreaSvcAddr, serverName)
+		assert.Equal(t, ca.PublicKey(), caBundle)
+
+		// Must be last: it leaves the handler without a host.
+		handler.setHost("")
+		_, _, _, err = handler.ConnInfo()
+		assert.ErrorContains(t, err, "not ready")
+	})
 }

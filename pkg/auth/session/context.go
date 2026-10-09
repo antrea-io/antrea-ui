@@ -144,16 +144,18 @@ func (ra *RequestAuth) ConnFor(key string, build ConnBuilder) (*grpc.ClientConn,
 }
 
 // KeepAlive re-resolves the session the way an ordinary request would, and reports whether it is
-// still valid. A long-running request (the flow SSE stream) calls this periodically: it stops the
-// stream from idling out its own session, and it tells the stream when the session ended (logout
-// in another tab, the absolute lifetime cap, a credential that can no longer be renewed).
+// still valid. A long-running request (the flow SSE stream, a metrics tap) calls this periodically:
+// it stops the stream from idling out its own session, and it tells the stream when the session
+// ended (logout in another tab, the absolute lifetime cap, a credential that can no longer be
+// renewed).
 //
 // An attached stream keeps its session alive whether or not the browser tab is in the foreground.
-// That is a deliberate exception, and the only one: everywhere else, "idle" means "no visible tab",
-// because the frontend's own keepalive (useSessionKeepalive in App.tsx) pings /auth/session only
-// while document.visibilityState is "visible". A flow-visibility tab is something people background
-// on purpose and expect to still be collecting when they come back, so the stream extends the
-// session on its own. The absolute lifetime cap still applies, and so does the credential's.
+// That is a deliberate exception, made for these two streams only: everywhere else, "idle" means
+// "no visible tab", because the frontend's own keepalive (useSessionKeepalive in App.tsx) pings
+// /auth/session only while document.visibilityState is "visible". A flow-visibility tab or a
+// metrics tap is something people background on purpose and expect to still be collecting when
+// they come back, so the stream extends the session on its own. The absolute lifetime cap still
+// applies, and so does the credential's.
 //
 // It goes through Store.Get, which refreshes the credential on the way, and that is the whole
 // reason the exception is safe to make. A tick that only bumped last-seen would let a backgrounded
@@ -167,9 +169,10 @@ func (ra *RequestAuth) ConnFor(key string, build ConnBuilder) (*grpc.ClientConn,
 // An ephemeral bearer request has no session, so there is nothing to keep alive - but its
 // credential still has to bound the request. Nothing else does: a bearer token is checked when the
 // request is authenticated, and the flow stream then runs for hours without presenting it to
-// anything. Credential.ExpiresAt is trustworthy here because the token was validated against the
-// API server first (see authn.Resolve); an opaque token with no expiry claim has none to enforce,
-// and is bounded only by the client disconnecting.
+// anything. (A metrics tap does present it, for its periodic access review.) Credential.ExpiresAt
+// is trustworthy here because the token was validated against the API server first (see
+// authn.Resolve); an opaque token with no expiry claim has none to enforce, and is bounded only by
+// the client disconnecting.
 func (ra *RequestAuth) KeepAlive(ctx context.Context) bool {
 	if ra.session == nil {
 		if ra.ephemeralCredential.ExpiresAt.IsZero() {

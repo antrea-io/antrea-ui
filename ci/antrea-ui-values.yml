@@ -60,3 +60,7 @@ plugins:
         configMap:
           name: antrea-ui-plugin-keys
           key: public-key.asc
+# The e2e tests which use the admin token are a single user, and make more requests in a row than
+# the rate limit of the metrics routes allows one user. The limit itself is covered by unit tests.
+metrics:
+  maxRequestsPerSecond: -1

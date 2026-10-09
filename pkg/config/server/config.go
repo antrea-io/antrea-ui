@@ -39,7 +39,36 @@ const (
 	DefaultMaxDirectoryPlugins = 10
 
 	DefaultMaxBundleBytes = 10 * 1024 * 1024 // 10MiB
+
+	DefaultMetricsMinScrapeInterval    = 5 * time.Second
+	DefaultMetricsMaxTaps              = 50
+	DefaultMetricsMaxTargetsPerTap     = 20
+	DefaultMetricsMaxRequestsPerSecond = 2
+
+	// MetricsMaxScrapeInterval is the longest interval a metrics tap can ask for, and therefore
+	// also the upper bound of Metrics.MinScrapeInterval.
+	MetricsMaxScrapeInterval = 5 * time.Minute
 )
+
+// MetricsConfig configures the live metrics taps (/api/v1/metrics) and the backend's own /metrics
+// endpoint. See docs/metrics.md.
+type MetricsConfig struct {
+	// Enabled turns on the tap API and the exposition of the backend's own metrics at /metrics.
+	// The backend instruments itself either way.
+	Enabled bool
+	// MinScrapeInterval is the shortest scrape interval a tap can ask for. It also bounds how
+	// often the backend scrapes any one target, however many taps are open: at most once per
+	// half of this interval.
+	MinScrapeInterval time.Duration
+	// MaxTaps bounds the number of taps open at once, across all users.
+	MaxTaps int
+	// MaxTargetsPerTap bounds the number of targets one tap can scrape.
+	MaxTargetsPerTap int
+	// MaxRequestsPerSecond bounds, per user, the requests which list targets, list metric
+	// families or open a tap. A negative value disables the limit, as for the other rate limits
+	// (see Limits): this is meant for test environments.
+	MaxRequestsPerSecond int
+}
 
 type FlowAggregatorConfig struct {
 	Enabled bool
@@ -75,6 +104,7 @@ type Config struct {
 	LogVerbosity    int
 	AntreaNamespace string
 	Plugins         PluginsConfig
+	Metrics         MetricsConfig
 }
 
 type PluginsConfig struct {
@@ -279,6 +309,24 @@ func validateConfig(config *Config) error {
 		}
 	}
 
+	if config.Metrics.Enabled {
+		if config.Metrics.MinScrapeInterval < time.Second {
+			return fmt.Errorf("metrics.minScrapeInterval must be >= 1s")
+		}
+		if config.Metrics.MinScrapeInterval > MetricsMaxScrapeInterval {
+			return fmt.Errorf("metrics.minScrapeInterval must be <= %s", MetricsMaxScrapeInterval)
+		}
+		if config.Metrics.MaxTaps <= 0 {
+			return fmt.Errorf("metrics.maxTaps must be positive")
+		}
+		if config.Metrics.MaxTargetsPerTap <= 0 {
+			return fmt.Errorf("metrics.maxTargetsPerTap must be positive")
+		}
+		if config.Metrics.MaxRequestsPerSecond == 0 {
+			return fmt.Errorf("metrics.maxRequestsPerSecond must be positive, or negative to disable the limit")
+		}
+	}
+
 	return nil
 }
 
@@ -343,6 +391,11 @@ func LoadConfig() (*Config, error) {
 	v.SetDefault("flowAggregator.namespace", "flow-aggregator")
 	v.SetDefault("flowAggregator.serverName", "")
 	v.SetDefault("flowAggregator.insecureSkipVerify", false)
+	v.SetDefault("metrics.enabled", true)
+	v.SetDefault("metrics.minScrapeInterval", DefaultMetricsMinScrapeInterval)
+	v.SetDefault("metrics.maxTaps", DefaultMetricsMaxTaps)
+	v.SetDefault("metrics.maxTargetsPerTap", DefaultMetricsMaxTargetsPerTap)
+	v.SetDefault("metrics.maxRequestsPerSecond", DefaultMetricsMaxRequestsPerSecond)
 
 	// By default, look for a file named config (any supported extension) in the working directory.
 	v.AddConfigPath(".")

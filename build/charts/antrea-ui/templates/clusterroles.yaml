@@ -18,8 +18,8 @@ rules:
       - antrea-ca
   # Namespace discovery for GET /api/v1/access-summary: Kubernetes has no self-service API for
   # "which namespaces can I see", so antrea-ui watches RoleBindings and reports the ones naming the
-  # user as a subject. This is a cluster-wide read of RBAC topology; it is the only privileged read
-  # antrea-ui performs on the user's behalf.
+  # user as a subject. This is a cluster-wide read of RBAC topology. Along with the discovery of
+  # Antrea Agents below, it is the only privileged read antrea-ui performs on the user's behalf.
   - apiGroups:
       - rbac.authorization.k8s.io
     resources:
@@ -27,7 +27,45 @@ rules:
     verbs:
       - list
       - watch
+{{- if .Values.metrics.enabled }}
+  # Live metrics taps: antrea-ui knows the Antrea Agents, with the API port and CA bundle
+  # (AntreaAgentInfo) and the address (Node) it scrapes them at, as itself. It watches both, so
+  # that what a user selects costs the kube-apiserver nothing. A user only gets there after
+  # antrea-ui has checked, as that user, the metrics.ui.antrea.io grant below.
+  - apiGroups:
+      - crd.antrea.io
+    resources:
+      - antreaagentinfos
+    verbs:
+      - list
+      - watch
+  - apiGroups:
+      - ""
+    resources:
+      - nodes
+    verbs:
+      - list
+      - watch
+{{- end }}
 ---
+{{- if .Values.metrics.enabled }}
+# antrea-ui-metrics-scraper is all the ServiceAccount of the same name can do: read /metrics. This
+# is what the Antrea components check, through delegated authorization, before serving their
+# metrics. The same rule also opens the /metrics endpoint of the kube-apiserver and of every other
+# component which delegates authorization the same way, hence the short-lived tokens.
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: antrea-ui-metrics-scraper
+  labels:
+    app: antrea-ui
+rules:
+  - nonResourceURLs:
+      - /metrics
+    verbs:
+      - get
+---
+{{- end }}
 # antrea-ui-admin holds every permission needed to serve K8s API requests made on behalf of the
 # UI user (as opposed to antrea-ui's own operations, see the antrea-ui ClusterRole above), e.g.
 # the K8s API proxy and Traceflow CRUD. antrea-ui impersonates this ServiceAccount for those
@@ -122,3 +160,15 @@ rules:
     verbs:
       - list
       - watch
+  # Live metrics taps. metrics.ui.antrea.io is a virtual resource: no API server serves it, and
+  # antrea-ui itself checks this rule, as the user, before it scrapes anything for them. The
+  # resource name is the name of a target group (antrea-controller, antrea-agent, antrea-ui,
+  # flow-aggregator), so a role of your own can grant some of them only with resourceNames.
+  # Like the flows rule above, it is granted whether or not metrics.enabled is set: it does
+  # nothing when the feature is off, and the rule list of this role stays independent of values.
+  - apiGroups:
+      - ui.antrea.io
+    resources:
+      - metrics
+    verbs:
+      - get
