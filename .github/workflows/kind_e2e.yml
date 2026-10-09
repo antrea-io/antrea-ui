@@ -110,7 +110,8 @@ jobs:
         kubectl rollout status -n kube-system deployment/antrea-ui --timeout=5m
     # Installs both the signed pod-counter plugin and one carrying no signature that must be
     # rejected, as labeled ConfigMaps in the dedicated plugins namespace - the same mechanism a
-    # real deployment uses (see docs/plugins.md).
+    # real deployment uses (see docs/plugins.md). Also deploys a stub aggregated API server and
+    # two manifest-only plugins whose bundles are downloaded from it through kube-apiserver.
     - name: Create plugin ConfigMaps
       run: ci/e2e-plugins.sh create-plugins
     # For e2e tests, Antrea UI should be installed first

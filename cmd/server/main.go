@@ -158,6 +158,12 @@ func run() error {
 	if len(signatureVerifiers) > 0 {
 		logger.Info("Plugin signature verification enabled", "trustedKeys", len(signatureVerifiers))
 	}
+	// Authenticates as the antrea-ui ServiceAccount, not antrea-ui-admin, which is reserved for
+	// requests made on behalf of users.
+	bundleFetcher, err := pluginregistry.NewAPIServerBundleFetcher(k8sRESTConfig)
+	if err != nil {
+		return fmt.Errorf("failed to create plugin bundle fetcher: %w", err)
+	}
 	pluginRegistry := pluginregistry.NewRegistry(pluginregistry.Options{
 		Logger:    logger,
 		Clientset: k8sClientset,
@@ -169,6 +175,8 @@ func run() error {
 		MaxDirectoryPlugins: config.Plugins.MaxDirectoryPlugins,
 		MaxBundleBytes:      config.Plugins.MaxBundleBytes,
 		SignatureVerifiers:  signatureVerifiers,
+		BundleFetcher:       bundleFetcher,
+		HTTPBundleFetcher:   pluginregistry.NewHTTPBundleFetcher(),
 	})
 	accessResolver := accesshandler.NewResolver(logger, k8sClientset)
 
