@@ -45,3 +45,15 @@ rules:
     verbs:
       - "create"
 {{- end }}
+{{- if .Values.metrics.enabled }}
+  # Lets antrea-ui mint short-lived tokens for antrea-ui-metrics-scraper, which is the credential
+  # it scrapes its targets with (see serviceaccounts.yaml).
+  - apiGroups:
+      - ""
+    resources:
+      - "serviceaccounts/token"
+    resourceNames:
+      - "antrea-ui-metrics-scraper"
+    verbs:
+      - "create"
+{{- end }}

@@ -155,6 +155,9 @@ else:
 - `list` and `watch` on `flows.observability.antrea.io`, the virtual resource
   the Flow Aggregator authorizes flow streams against (see [Flow data is
   per-user](#flow-data-is-per-user))
+- `get` on `metrics.ui.antrea.io`, the virtual resource Antrea UI authorizes
+  live metrics taps against (see [Metrics are authorized by Antrea UI
+  itself](#metrics-are-authorized-by-antrea-ui-itself))
 
 Its rule list is static: it only ever changes when you upgrade the chart, and
 you can read exactly what it grants in
@@ -244,6 +247,37 @@ access to it, and holding a credential FA accepts, can read flow data
 directly (subject to FA's own RBAC check), regardless of what Antrea UI's
 frontend shows or hides.
 
+### Metrics are authorized by Antrea UI itself
+
+Everywhere else, Antrea UI forwards the user's own credential and lets the
+component which holds the data decide: the kube-apiserver, the Antrea
+Controller, the Flow Aggregator. Live metrics taps (see
+[metrics.md](metrics.md)) are the one exception. Antrea UI scrapes its targets
+with the token of a dedicated ServiceAccount, `antrea-ui-metrics-scraper`,
+which can read `/metrics` and nothing else, and never with the user's
+credential. An Antrea Agent is reached at an address, and verified against a
+CA, which any agent can rewrite, so a user's credential sent there could be
+captured and replayed against the kube-apiserver.
+
+The targets therefore never see the user, and cannot authorize them. Antrea UI
+does it instead: before any scrape, it asks the kube-apiserver, as the user,
+with a `SelfSubjectAccessReview`, whether they hold `get` on the virtual
+resource `metrics.ui.antrea.io` with the name of the target group as the
+resource name (`antrea-controller`, `antrea-agent`, `antrea-ui`,
+`flow-aggregator`). The answer is still Kubernetes RBAC, and the rule is still
+yours to grant, but Antrea UI is what enforces it. What this means in practice:
+
+- The review carries no namespace, so only a cluster-wide grant (a ClusterRole
+  bound with a ClusterRoleBinding) satisfies it.
+- `resourceNames` lets a role of your own grant some target groups only.
+- The check is repeated every minute for as long as a tap is open, so a tap
+  ends at the first check after its grant is removed. See
+  [metrics.md](metrics.md#trust-model) for when that check is made.
+- The rule gives access to nothing outside of Antrea UI: no API server serves
+  this resource. In particular it does not open the `/metrics` endpoint of the
+  kube-apiserver through the Kubernetes API proxy of Antrea UI, which a rule on
+  the `/metrics` non-resource URL in `antrea-ui-admin-core` would have done.
+
 ### The plugin trade-off
 
 The flip side: a user bound to `antrea-ui-admin-core`, or to your own role
@@ -319,11 +353,16 @@ than reusing a failure.
   in-memory by antrea-ui using its own ServiceAccount: the namespaces where a
   RoleBinding names the user, or one of their groups, as a subject. Kubernetes
   has no self-service API for "which namespaces can I see", so this is a
-  heuristic and may under-report; it is never used to block access. This is the
-  only privileged read antrea-ui performs on the user's behalf, and it is why
-  the `antrea-ui` ClusterRole (antrea-ui's own operations role, not
+  heuristic and may under-report; it is never used to block access. This is
+  one of the two privileged reads antrea-ui performs on the user's behalf, and
+  it is why the `antrea-ui` ClusterRole (antrea-ui's own operations role, not
   `antrea-ui-admin`) grants `list`/`watch` on
-  `rolebindings.rbac.authorization.k8s.io` cluster-wide.
+  `rolebindings.rbac.authorization.k8s.io` cluster-wide. The other one is the
+  discovery of Antrea Agents for live metrics taps, when `metrics.enabled` is
+  set: antrea-ui watches AntreaAgentInfos and Nodes as itself, and answers from
+  what it knows for users it has first checked the `metrics.ui.antrea.io` grant
+  of (see [Metrics are authorized by Antrea UI
+  itself](#metrics-are-authorized-by-antrea-ui-itself)).
 
   The scan sees RoleBindings only, so it cannot see a **ClusterRoleBinding**: a
   user granted namespaced access cluster-wide is the subject of no RoleBinding
@@ -480,13 +519,18 @@ minutes, so "idle" means "no open visible tab" rather than "no clicks". The
 trade-off is that an unattended but visible tab holds its session for the full
 12 hours.
 
-An attached flow visibility stream is the one exception: it keeps its session
-alive whether or not the tab is in the foreground, because a flow page is
-something people background on purpose and expect to still be collecting when
+An attached flow visibility stream is the first of two exceptions: it keeps its
+session alive whether or not the tab is in the foreground, because a flow page
+is something people background on purpose and expect to still be collecting when
 they come back. This applies only while the flow page is the open route —
 navigating to another page closes the stream, after which the ordinary
 visible-tab rule applies again. The absolute cap still bounds such a session,
 and so does its credential.
+
+An open metrics tap is the second exception, for the same reason and with the
+same bounds: the stream of a tap (`POST /api/v1/metrics/taps`) keeps its
+session alive for as long as it stays open, in a background tab too, and ends
+with it.
 
 For OIDC sessions the backend renews the id_token with the refresh token shortly
 before it expires, so the session can outlive the token, up to the absolute cap.

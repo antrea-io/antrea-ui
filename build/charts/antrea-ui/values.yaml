@@ -121,6 +121,30 @@ flowAggregator:
   # learns the viewer's identity and can serve fake flow data.
   insecureSkipVerify: false
 
+# Metrics: live taps on the Prometheus metrics of the Antrea components, and the exposition of
+# the backend's own metrics at /metrics. See docs/metrics.md.
+metrics:
+  # -- When true, users holding the `get` verb on the `metrics.ui.antrea.io` virtual resource can
+  # open live metrics taps, and the backend exposes its own metrics at `/metrics`. This creates
+  # the antrea-ui-metrics-scraper ServiceAccount, whose short-lived tokens the backend presents to
+  # the targets it scrapes, lets the backend mint those tokens and watch AntreaAgentInfos and
+  # Nodes, and makes the backend connect to the Antrea Agent API on Node addresses.
+  enabled: true
+  # -- Shortest scrape interval a tap can ask for, between 1s and 5m. It also bounds how often
+  # the backend scrapes any one target, however many taps are open: at most once per half of
+  # this interval.
+  minScrapeInterval: 5s
+  # -- Maximum number of taps open at once, across all users.
+  maxTaps: 50
+  # -- Maximum number of targets one tap can scrape. An Antrea Agent is one target, so this is
+  # also how many Nodes a single tap can cover.
+  maxTargetsPerTap: 20
+  # -- Maximum number of requests per second, per user, to the routes which list targets, list
+  # metric families or open a tap, with a burst of 10. A negative value disables the limit, which
+  # is meant for test environments: the limit is what keeps one user from making the backend
+  # scrape at will.
+  maxRequestsPerSecond: 2
+
 security:
   # -- (bool) Set the Secure attribute for Antrea UI cookies. The attribute is set by default when HTTPS is
   # enabled in Antrea UI (by setting https.enable to true). When using an Ingress to terminate TLS,
