@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -759,6 +760,104 @@ func TestOpenMetricsTapEndsWithClient(t *testing.T) {
 		synctest.Wait()
 		assert.Error(t, opening.ctx.Err(), "a client which goes away must end its tap")
 	})
+}
+
+// pipeListener hands out one connection: the server end of a net.Pipe.
+type pipeListener struct {
+	conns  chan net.Conn
+	closed chan struct{}
+}
+
+func (l *pipeListener) Accept() (net.Conn, error) {
+	select {
+	case conn := <-l.conns:
+		return conn, nil
+	case <-l.closed:
+		return nil, net.ErrClosed
+	}
+}
+
+func (l *pipeListener) Close() error   { close(l.closed); return nil }
+func (l *pipeListener) Addr() net.Addr { return &net.UnixAddr{Name: "pipe", Net: "pipe"} }
+
+// A client which holds its connection open and does not read must not keep its tap: the write
+// which blocks on it is given up after metricsWriteTimeout, and the tap ends.
+//
+// The connection is a net.Pipe, which has no buffer: a write blocks until the client reads it. The
+// in-memory network of httptest cannot play this part, its buffers have no limit.
+func TestOpenMetricsTapUnreadStream(t *testing.T) {
+	testCases := []struct {
+		name string
+		// readHeaders is whether the client reads the headers of the response before it
+		// stops reading. The write which blocks is the one of the headers otherwise.
+		readHeaders bool
+		// sendEvent is whether the tap then has an event to send, before the first
+		// keepalive: the write which blocks is the one of this event.
+		sendEvent bool
+		// expectedDuration is how long the tap then lasts: from the event when there is one,
+		// from the moment the client stops reading otherwise.
+		expectedDuration time.Duration
+	}{
+		{name: "headers", expectedDuration: metricsWriteTimeout},
+		{name: "keepalive", readHeaders: true, expectedDuration: metricsKeepAliveInterval + metricsWriteTimeout},
+		{name: "event", readHeaders: true, sendEvent: true, expectedDuration: metricsWriteTimeout},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				ts, manager, fakeAPIServer := newTestServerForMetrics(t)
+				fakeAPIServer.allow("antrea-agent", "antrea-controller")
+				events, opened := expectOpen(manager, "antrea-agent", "antrea-controller")
+
+				serverConn, clientConn := net.Pipe()
+				listener := &pipeListener{conns: make(chan net.Conn, 1), closed: make(chan struct{})}
+				listener.conns <- serverConn
+				// ReadHeaderTimeout is for the linter (gosec G112): the request is sent at
+				// once.
+				srv := &http.Server{Handler: ts.router, ReadHeaderTimeout: time.Minute}
+				go func() { _ = srv.Serve(listener) }()
+				t.Cleanup(func() {
+					srv.Close()
+					clientConn.Close()
+				})
+
+				req, err := http.NewRequest("POST", "http://antrea-ui/api/v1/metrics/taps", strings.NewReader(testTapRequest))
+				require.NoError(t, err)
+				bearer("good")(req)
+				require.NoError(t, req.Write(clientConn))
+				opening := <-opened
+				if tc.readHeaders {
+					resp, err := http.ReadResponse(bufio.NewReader(clientConn), req)
+					require.NoError(t, err)
+					require.Equal(t, http.StatusOK, resp.StatusCode)
+				}
+
+				// From here on the client reads nothing. A tap which does not end makes the
+				// test fail on stillOpen, where it would otherwise not end either.
+				start := time.Now()
+				stillOpen := time.After(2 * (metricsKeepAliveInterval + metricsWriteTimeout))
+				if tc.sendEvent {
+					// Not at once: the deadline of the headers must not be the
+					// one which applies to the write of the event.
+					time.Sleep(metricsKeepAliveInterval / 2)
+					start = time.Now()
+					select {
+					case events <- metricstap.Event{Name: metricstap.EventScrapeError, Data: apisv1.MetricsScrapeErrorEvent{
+						Target: "antrea-controller", Code: metricstap.ErrorCodeUnreachable, Message: "failed to connect to the target",
+					}}:
+					case <-stillOpen:
+						require.FailNow(t, "the handler does not take the events of its tap")
+					}
+				}
+				select {
+				case <-opening.ctx.Done():
+				case <-stillOpen:
+					require.FailNow(t, "the tap of a client which does not read is still open")
+				}
+				assert.Equal(t, tc.expectedDuration, time.Since(start))
+			})
+		})
+	}
 }
 
 // A tap keeps its session alive for as long as it is open, and ends with it.

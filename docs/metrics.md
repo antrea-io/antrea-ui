@@ -296,9 +296,13 @@ The `code` of a terminal `error` is one of:
 | `authorization_unavailable` | Yes | Access could not be verified for several minutes in a row |
 
 The stream also ends, without an `error` event, when the session of the caller
-ends (logout, expiry). A comment line, `: keepalive`, is sent every 5 seconds
-when there is nothing else to send. An open tap keeps its session alive, in a
-background tab too: see [authentication.md](authentication.md#sessions).
+ends (logout, expiry), and when the backend has waited 30s for the client to
+take in one message. This is what disconnects a client which keeps its
+connection open and stops reading, once the buffers of the connection are
+full, and its tap is then closed. A comment line, `: keepalive`, is sent every
+5 seconds when there is nothing else to send. An open tap keeps its session
+alive, in a background tab too: see
+[authentication.md](authentication.md#sessions).
 
 Errors before the stream starts:
 
@@ -355,6 +359,7 @@ client which authenticates with a bearer token, as the same user.
 | Samples per `scrape` event | 5000 | |
 | Duration of a scrape | 10s, and a tap does not wait for one target longer than its own interval | |
 | Size of the response of a target | 10MiB | |
+| Wait for the client to take in one message of the stream of a tap | 30s | |
 
 Everyone who logs in with the admin password is the same user, so each of
 these sessions has its own allowance for the two limits per user. Only
@@ -390,10 +395,12 @@ when a tap is opened, when its selection is updated, and every minute for as
 long as it is open: a tap ends with a `forbidden` error at the first check
 after the grant is removed. A check which is due waits for the tick in
 progress, which lasts 10s at most, and comes before the scrapes of the next
-one. It is not made while the client does not read its stream, during which
-the tap scrapes nothing either. If the check itself fails, the tap keeps the
-last answer for up to three checks in a row and is then closed with a
-retryable error.
+one. It is not made while the tap waits for the client to read its stream,
+during which the tap scrapes nothing either. The backend waits 30s at most for
+one message to be taken in, then closes the tap (see [Limits](#limits)), so
+only a client which keeps reading, slowly, can delay a check for longer. If
+the check itself fails, the tap keeps the last answer for up to three checks
+in a row and is then closed with a retryable error.
 
 **Who scrapes.** Antrea UI, as the `antrea-ui-metrics-scraper` ServiceAccount,
 with tokens it mints for 10 minutes at a time. That ServiceAccount can `get` the

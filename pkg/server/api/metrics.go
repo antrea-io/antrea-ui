@@ -55,6 +55,13 @@ const (
 	// its session.
 	metricsKeepAliveInterval = 5 * time.Second
 
+	// metricsWriteTimeout is how long a tap stream waits for the client to take in one
+	// message. A client which holds its connection open and does not read would otherwise
+	// block the handler for good: its session would no longer be checked, and its tap would
+	// outlive it. A write only waits once the buffers of the connection are full, and the
+	// timeout is for the whole message, however much of it the client has taken in.
+	metricsWriteTimeout = 30 * time.Second
+
 	// maxMetricsRequestBytes bounds the body of the requests which carry a selection.
 	maxMetricsRequestBytes = 1 << 20
 
@@ -350,8 +357,8 @@ func bindMetricsRequest(c *gin.Context, obj any) *errors.ServerError {
 }
 
 // OpenMetricsTap handles POST /api/v1/metrics/taps. The response is an SSE stream which lasts for
-// as long as the tap: the tap ends when the client disconnects, when its session ends, or when it
-// is no longer authorized.
+// as long as the tap: the tap ends when the client disconnects or no longer reads the stream, when
+// its session ends, or when it is no longer authorized.
 func (s *Server) OpenMetricsTap(c *gin.Context) {
 	// Canceled when this handler returns for any reason, which is what ends the tap.
 	ctx, cancel := context.WithCancel(c.Request.Context())
@@ -406,6 +413,28 @@ func (s *Server) OpenMetricsTap(c *gin.Context) {
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
 	c.Header("X-Accel-Buffering", "no")
+
+	rc := http.NewResponseController(c.Writer)
+	// setWriteDeadline gives the client metricsWriteTimeout to take in what is written next.
+	// It is called before every write of the stream, the one of the headers included: the tap
+	// is open already when they are sent. A write which is not taken in then fails, which
+	// makes net/http cancel the context of the request. This is what ends the stream, and the
+	// tap, of a client which holds its connection open and does not read.
+	setWriteDeadline := func() bool {
+		if err := rc.SetWriteDeadline(time.Now().Add(metricsWriteTimeout)); err != nil {
+			// Not an error once the context is canceled: net/http may have closed the
+			// connection already, after a write to it failed.
+			if ctx.Err() == nil {
+				s.logger.Error(err, "Closing metrics tap: failed to set a write deadline on its stream")
+			}
+			return false
+		}
+		return true
+	}
+
+	if !setWriteDeadline() {
+		return
+	}
 	c.Writer.Flush()
 
 	keepAlive := time.NewTicker(metricsKeepAliveInterval)
@@ -420,6 +449,9 @@ func (s *Server) OpenMetricsTap(c *gin.Context) {
 			// tab too, and must end with it: see RequestAuth.KeepAlive.
 			if !ra.KeepAlive(ctx) {
 				s.logger.V(2).Info("Closing metrics tap: session is no longer valid")
+				return false
+			}
+			if !setWriteDeadline() {
 				return false
 			}
 			if _, err := w.Write([]byte(": keepalive\n\n")); err != nil {
@@ -438,6 +470,9 @@ func (s *Server) OpenMetricsTap(c *gin.Context) {
 			if err != nil {
 				s.logger.Error(err, "Failed to marshal metrics tap event", "event", event.Name)
 				return true
+			}
+			if !setWriteDeadline() {
+				return false
 			}
 			c.SSEvent(event.Name, string(data))
 			return true
