@@ -63,6 +63,29 @@ server {
             {{- end }}
         }
 
+        # A metrics tap is an SSE stream too, and one which lasts for as long as its page is open.
+        # This prefix also covers the request which updates the selection of a tap, which is an
+        # ordinary request: the settings below do it no harm.
+        location /api/v1/metrics/taps {
+            proxy_http_version 1.1;
+            proxy_pass_request_headers on;
+            proxy_hide_header Access-Control-Allow-Origin;
+            proxy_set_header Host $forwarded_host;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header Connection '';
+            proxy_buffering off;
+            proxy_read_timeout 86400s;
+            proxy_send_timeout 86400s;
+            proxy_pass http://127.0.0.1:{{ .Values.backend.port }};
+            {{- $secure := include "cookieSecure" . -}}
+            {{- if eq $secure "true" }}
+            proxy_cookie_flags ~ httponly secure;
+            {{- else }}
+            proxy_cookie_flags ~ httponly;
+            {{- end }}
+        }
+
         location /api {
             proxy_http_version 1.1;
             proxy_pass_request_headers on;
@@ -84,6 +107,22 @@ server {
             proxy_hide_header Access-Control-Allow-Origin;
             proxy_pass http://127.0.0.1:{{ .Values.backend.port }};
             # ensure the correct flags are set, even though the api server should already be setting them
+            {{- $secure := include "cookieSecure" . -}}
+            {{- if eq $secure "true" }}
+            proxy_cookie_flags ~ httponly secure;
+            {{- else }}
+            proxy_cookie_flags ~ httponly;
+            {{- end }}
+        }
+
+        # The backend's own metrics, for a Prometheus server (see docs/metrics.md). Always
+        # proxied, whether or not metrics.enabled is set: the backend then answers 404, where
+        # the location below would have answered with index.html.
+        location = /metrics {
+            proxy_http_version 1.1;
+            proxy_pass_request_headers on;
+            proxy_hide_header Access-Control-Allow-Origin;
+            proxy_pass http://127.0.0.1:{{ .Values.backend.port }};
             {{- $secure := include "cookieSecure" . -}}
             {{- if eq $secure "true" }}
             proxy_cookie_flags ~ httponly secure;

@@ -36,6 +36,7 @@ func buildFrontendSettingsFromConfig(config *serverconfig.Config) *apisv1.Fronte
 		},
 		Features: apisv1.FrontendFeatureSettings{
 			FlowVisibilityEnabled: config.FlowAggregator.Enabled,
+			MetricsEnabled:        config.Metrics.Enabled,
 		},
 	}
 }

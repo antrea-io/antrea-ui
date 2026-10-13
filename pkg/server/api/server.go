@@ -21,14 +21,17 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/go-logr/logr"
+	"github.com/prometheus/client_golang/prometheus"
 
 	apisv1 "antrea.io/antrea-ui/apis/v1"
 	serverconfig "antrea.io/antrea-ui/pkg/config/server"
 	accesshandler "antrea.io/antrea-ui/pkg/handlers/access"
 	"antrea.io/antrea-ui/pkg/handlers/antreasvc"
 	"antrea.io/antrea-ui/pkg/handlers/flowstream"
+	"antrea.io/antrea-ui/pkg/handlers/metricstap"
 	"antrea.io/antrea-ui/pkg/handlers/traceflow"
 	"antrea.io/antrea-ui/pkg/k8s"
+	"antrea.io/antrea-ui/pkg/metrics"
 	"antrea.io/antrea-ui/pkg/password"
 	"antrea.io/antrea-ui/pkg/plugins"
 	"antrea.io/antrea-ui/pkg/server/authn"
@@ -38,7 +41,8 @@ import (
 
 type serverConfig struct {
 	// keep all fields exported, so the config struct can be logged
-	MaxTraceflowsPerHour int
+	MaxTraceflowsPerHour        int
+	MaxMetricsRequestsPerSecond int
 }
 
 // Options are the dependencies of the API server.
@@ -58,6 +62,12 @@ type Options struct {
 	// AccessResolver answers namespace-discovery and cluster-scope-probe questions for
 	// GET /api/v1/access-summary.
 	AccessResolver accesshandler.Resolver
+	// MetricsManager serves the live metrics taps (/api/v1/metrics). Nil when metrics are
+	// disabled.
+	MetricsManager metricstap.Manager
+	// MetricsGatherer holds the backend's own metrics, which GET /metrics exposes when metrics
+	// are enabled.
+	MetricsGatherer prometheus.Gatherer
 }
 
 type Server struct {
@@ -73,6 +83,9 @@ type Server struct {
 	frontendSettings         *apisv1.FrontendSettings
 	pluginRegistry           *plugins.Registry
 	accessResolver           accesshandler.Resolver
+	metricsManager           metricstap.Manager
+	// backendMetricsHandler serves the backend's own metrics. Nil when metrics are disabled.
+	backendMetricsHandler http.Handler
 	// namespaceAccess memoizes each session's SelfSubjectRulesReview of a Namespace, for
 	// GET /api/v1/access-summary/namespaces.
 	namespaceAccess *namespaceAccessCache
@@ -80,12 +93,17 @@ type Server struct {
 
 func NewServer(o Options) *Server {
 	c := serverConfig{
-		MaxTraceflowsPerHour: o.Config.Limits.MaxTraceflowsPerHour,
+		MaxTraceflowsPerHour:        o.Config.Limits.MaxTraceflowsPerHour,
+		MaxMetricsRequestsPerSecond: o.Config.Metrics.MaxRequestsPerSecond,
 	}
 	o.Logger.Info("Created API server config", "config", c)
 	var flowSSEHandler *flowstream.SSEHandler
 	if o.FlowStreamSubscriber != nil {
 		flowSSEHandler = flowstream.NewSSEHandler(o.Logger, o.FlowStreamSubscriber)
+	}
+	var backendMetricsHandler http.Handler
+	if o.Config.Metrics.Enabled && o.MetricsGatherer != nil {
+		backendMetricsHandler = metrics.HandlerFor(o.MetricsGatherer)
 	}
 	return &Server{
 		logger:                   o.Logger,
@@ -100,6 +118,8 @@ func NewServer(o Options) *Server {
 		frontendSettings:         buildFrontendSettingsFromConfig(o.Config),
 		pluginRegistry:           o.PluginRegistry,
 		accessResolver:           o.AccessResolver,
+		metricsManager:           o.MetricsManager,
+		backendMetricsHandler:    backendMetricsHandler,
 		namespaceAccess:          newNamespaceAccessCache(),
 	}
 }
@@ -132,6 +152,7 @@ func (s *Server) AddRoutes(r *gin.RouterGroup) {
 	apiv1.GET("/featuregates", s.authenticate(), s.GetFeatureGates)
 	s.AddFlowStreamRoutes(apiv1)
 	s.AddAccessRoutes(apiv1)
+	s.AddMetricsRoutes(r, apiv1)
 }
 
 func (s *Server) AddFlowStreamRoutes(r *gin.RouterGroup) {

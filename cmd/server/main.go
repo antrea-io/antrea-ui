@@ -41,13 +41,16 @@ import (
 	antreasvchandler "antrea.io/antrea-ui/pkg/handlers/antreasvc"
 	"antrea.io/antrea-ui/pkg/handlers/flowstream"
 	"antrea.io/antrea-ui/pkg/handlers/k8sproxy"
+	"antrea.io/antrea-ui/pkg/handlers/metricstap"
 	traceflowhandler "antrea.io/antrea-ui/pkg/handlers/traceflow"
 	"antrea.io/antrea-ui/pkg/k8s"
+	"antrea.io/antrea-ui/pkg/metrics"
 	"antrea.io/antrea-ui/pkg/password"
 	passwordhasher "antrea.io/antrea-ui/pkg/password/hasher"
 	passwordrw "antrea.io/antrea-ui/pkg/password/readwriter"
 	pluginregistry "antrea.io/antrea-ui/pkg/plugins"
 	"antrea.io/antrea-ui/pkg/server"
+	"antrea.io/antrea-ui/pkg/server/api"
 	"antrea.io/antrea-ui/pkg/signals"
 	"antrea.io/antrea-ui/pkg/version"
 )
@@ -280,6 +283,31 @@ func run() error {
 		flowStreamSubscriber = grpcSubscriber
 	}
 
+	// The backend instruments itself whether or not metrics are enabled: the setting only decides
+	// whether anything can read the result.
+	backendMetrics := metrics.New()
+	var metricsManager metricstap.Manager
+	var metricsRegistry *metricstap.Registry
+	if config.Metrics.Enabled {
+		logger.Info("Metrics enabled", "minScrapeInterval", config.Metrics.MinScrapeInterval.String(), "maxTaps", config.Metrics.MaxTaps, "maxTargetsPerTap", config.Metrics.MaxTargetsPerTap)
+		metricsRegistry = metricstap.NewBuiltinRegistry(metricstap.BuiltinConfig{
+			KubeClient:    k8sClientset,
+			DynamicClient: k8sDynamicClient,
+			Controller:    antreaSvcHandler,
+			// k8sClientset authenticates as antrea-ui's own ServiceAccount, which
+			// build/charts/antrea-ui/templates/role.yaml allows to mint these tokens.
+			ScraperTokens: flowstream.NewAdminTokenSource(k8sClientset, env.GetNamespace(), metricstap.ScraperServiceAccountName),
+			Self:          backendMetrics.Gatherer(),
+		})
+		metricsManager = metricstap.NewManager(logger, metricsRegistry, metricstap.ManagerOptions{
+			MinScrapeInterval: config.Metrics.MinScrapeInterval,
+			MaxScrapeInterval: serverconfig.MetricsMaxScrapeInterval,
+			MaxTaps:           config.Metrics.MaxTaps,
+			MaxTargetsPerTap:  config.Metrics.MaxTargetsPerTap,
+			Observer:          backendMetrics,
+		})
+	}
+
 	s, err := server.NewServer(server.Options{
 		Logger:                   logger,
 		Config:                   config,
@@ -294,18 +322,24 @@ func run() error {
 		PluginRegistry:           pluginRegistry,
 		AdminUserName:            antreaUIAdminUser,
 		AccessResolver:           accessResolver,
+		MetricsManager:           metricsManager,
+		MetricsGatherer:          backendMetrics.Gatherer(),
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create server: %w", err)
 	}
 
+	// The instrumentation comes before gin.Recovery: it then also counts the request of a
+	// handler which panics, with the 500 that Recovery answers it with.
+	instrumentation := backendMetrics.GinMiddleware(api.FlowStreamRoute, api.MetricsTapsRoute)
 	var router *gin.Engine
 	if env.IsDevelopmentEnv() {
-		router = gin.Default()
+		router = gin.New()
+		router.Use(instrumentation, gin.Logger(), gin.Recovery())
 	} else {
 		gin.SetMode(gin.ReleaseMode)
 		router = gin.New()
-		router.Use(ginLogger(logger, 2), gin.Recovery())
+		router.Use(instrumentation, ginLogger(logger, 2), gin.Recovery())
 	}
 	if env.IsDevelopmentEnv() {
 		corsConfig := cors.DefaultConfig()
@@ -335,6 +369,9 @@ func run() error {
 		logger.Info("No plugin source configured, plugins are disabled")
 	}
 	go accessResolver.Run(stopCh)
+	if metricsRegistry != nil {
+		go metricsRegistry.Run(stopCh)
+	}
 
 	// Initializing the server in a goroutine so that
 	// it won't block the graceful shutdown handling below

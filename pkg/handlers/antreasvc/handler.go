@@ -144,6 +144,23 @@ func (h *requestsHandler) getHost() (string, error) {
 	return h.host, nil
 }
 
+// ConnInfo returns what it takes to reach the Antrea Service without going through Request: the
+// host to connect to, the name the server certificate is issued for and the current CA bundle. It
+// is for callers which authenticate as something other than the end user, such as the metrics
+// scraper. Nothing here is cached by the caller, so the rotation of the Antrea CA and a restarted
+// port forward are picked up on the next call.
+func (h *requestsHandler) ConnInfo() (string, string, []byte, error) {
+	host, err := h.getHost()
+	if err != nil {
+		return "", "", nil, err
+	}
+	caBundle := h.clientProvider.caContentProvider.CurrentCABundleContent()
+	if len(caBundle) == 0 {
+		return "", "", nil, fmt.Errorf("the Antrea CA bundle is not available yet")
+	}
+	return host, h.clientProvider.serverName, caBundle, nil
+}
+
 // Request forwards a request to the Antrea Service as the end user behind ctx. ctx must carry the
 // identity resolved by the authentication middleware.
 //

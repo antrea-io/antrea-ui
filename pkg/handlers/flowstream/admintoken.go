@@ -26,9 +26,9 @@ import (
 	"k8s.io/client-go/kubernetes"
 )
 
-// adminTokenExpiration is how long a minted antrea-ui-admin token is valid for. It only has to
-// outlive one flow-stream call: KeepAlive never presents this token again, so nothing depends on
-// it surviving for the life of a long-running stream.
+// adminTokenExpiration is how long a minted token is valid for. It only has to outlive the call
+// it is minted for, a flow-stream call or a metrics scrape: KeepAlive never presents this token
+// again, so nothing depends on it surviving for the life of a long-running stream.
 const adminTokenExpiration = 10 * time.Minute
 
 // adminTokenRenewBefore is how far ahead of expiry a cached token is treated as stale, so a call
@@ -39,15 +39,19 @@ const adminTokenRenewBefore = time.Minute
 // wedged API server would block the leader - and every follower riding the same call - forever.
 const adminTokenMintTimeout = 10 * time.Second
 
-// AdminTokenSource mints short-lived, self-issued tokens for the antrea-ui-admin ServiceAccount
-// via the TokenRequest API, and caches them until they are close to expiry.
+// AdminTokenSource mints short-lived, self-issued tokens for one ServiceAccount via the
+// TokenRequest API, and caches them until they are close to expiry.
 //
-// It exists because FlowStreamService accepts a bearer token or a client certificate and nothing
-// else - no impersonation header - so the admin-password login mode (session.KindImpersonate),
-// which normally reaches the API server by impersonating antrea-ui-admin, has no credential it
-// can hand to the Flow Aggregator. Minting a real token for that same ServiceAccount gives it one,
-// scoped to this one call: every other K8s call made in admin-password mode keeps using
-// impersonation.
+// It is named after its first use, with the antrea-ui-admin ServiceAccount: FlowStreamService
+// accepts a bearer token or a client certificate and nothing else - no impersonation header - so
+// the admin-password login mode (session.KindImpersonate), which normally reaches the API server
+// by impersonating antrea-ui-admin, has no credential it can hand to the Flow Aggregator. Minting
+// a real token for that same ServiceAccount gives it one, scoped to this one call: every other K8s
+// call made in admin-password mode keeps using impersonation.
+//
+// It is not tied to that account: metrics scrapes (pkg/handlers/metricstap) use another instance,
+// which mints tokens for the antrea-ui-metrics-scraper ServiceAccount and never for
+// antrea-ui-admin.
 type AdminTokenSource struct {
 	clientset kubernetes.Interface
 	namespace string
@@ -75,8 +79,8 @@ func NewAdminTokenSource(clientset kubernetes.Interface, namespace, saName strin
 	}
 }
 
-// Token returns a bearer token for the antrea-ui-admin ServiceAccount, minting (or renewing) one
-// if the cached one is missing or close to expiry.
+// Token returns a bearer token for the ServiceAccount of the source, minting (or renewing) one if
+// the cached one is missing or close to expiry.
 func (a *AdminTokenSource) Token(ctx context.Context) (string, error) {
 	if token, ok := a.cached(); ok {
 		return token, nil

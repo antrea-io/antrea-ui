@@ -122,6 +122,7 @@ func newTestServer(t *testing.T, options ...testServerOptions) *testServer {
 	config := &serverconfig.Config{}
 	// disable rate limiting by default
 	config.Limits.MaxTraceflowsPerHour = -1
+	config.Metrics.MaxRequestsPerSecond = -1
 	config.Auth.Basic.Enabled = true
 	config.Auth.Token.Enabled = true
 	config.Auth.BearerToken.Enabled = true

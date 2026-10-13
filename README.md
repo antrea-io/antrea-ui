@@ -36,3 +36,7 @@ Started](docs/getting-started.md) document.
 Antrea UI also supports loading frontend plugins at runtime, without
 rebuilding the image. Refer to the [Plugins](docs/plugins.md) document for
 how it works and how to build one.
+
+The Antrea UI backend can read the Prometheus metrics of the Antrea components
+live, and exposes its own. Refer to the [Metrics](docs/metrics.md) document for
+the API and for the access it requires.

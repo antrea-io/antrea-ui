@@ -19,12 +19,14 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/go-logr/logr"
+	"github.com/prometheus/client_golang/prometheus"
 
 	"antrea.io/antrea-ui/pkg/auth/session"
 	serverconfig "antrea.io/antrea-ui/pkg/config/server"
 	accesshandler "antrea.io/antrea-ui/pkg/handlers/access"
 	"antrea.io/antrea-ui/pkg/handlers/antreasvc"
 	"antrea.io/antrea-ui/pkg/handlers/flowstream"
+	"antrea.io/antrea-ui/pkg/handlers/metricstap"
 	"antrea.io/antrea-ui/pkg/handlers/traceflow"
 	"antrea.io/antrea-ui/pkg/k8s"
 	"antrea.io/antrea-ui/pkg/password"
@@ -69,6 +71,10 @@ type Options struct {
 	// AccessResolver answers namespace-discovery and cluster-scope-probe questions for
 	// GET /api/v1/access-summary.
 	AccessResolver accesshandler.Resolver
+	// MetricsManager serves the live metrics taps. Nil when metrics are disabled.
+	MetricsManager metricstap.Manager
+	// MetricsGatherer holds the backend's own metrics.
+	MetricsGatherer prometheus.Gatherer
 }
 
 type Server struct {
@@ -115,6 +121,8 @@ func NewServer(o Options) (*Server, error) {
 			Authenticator:            authenticator,
 			ClientFactory:            o.ClientFactory,
 			AccessResolver:           o.AccessResolver,
+			MetricsManager:           o.MetricsManager,
+			MetricsGatherer:          o.MetricsGatherer,
 		}),
 		passwordStore: o.PasswordStore,
 		sessionStore:  o.SessionStore,

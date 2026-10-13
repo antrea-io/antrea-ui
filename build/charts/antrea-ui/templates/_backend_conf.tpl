@@ -52,4 +52,12 @@ flowAggregator:
   serverName: {{ .Values.flowAggregator.serverName | quote }}
   insecureSkipVerify: {{ .Values.flowAggregator.insecureSkipVerify }}
 {{- end }}
+metrics:
+  enabled: {{ .Values.metrics.enabled }}
+{{- if .Values.metrics.enabled }}
+  minScrapeInterval: {{ .Values.metrics.minScrapeInterval | quote }}
+  maxTaps: {{ .Values.metrics.maxTaps }}
+  maxTargetsPerTap: {{ .Values.metrics.maxTargetsPerTap }}
+  maxRequestsPerSecond: {{ .Values.metrics.maxRequestsPerSecond }}
+{{- end }}
 {{- end }}
