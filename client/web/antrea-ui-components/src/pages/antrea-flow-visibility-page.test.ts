@@ -161,17 +161,14 @@ function jsonResponse(body: unknown, status = 200): Response {
 
 /** What the selector's options are meant to be, in the terms the tests think in. The default
  * offers the namespace the fixtures' flows are in, so a test that does not care about the
- * selector still gets a stream. `mount` turns it into the two access summaries the page derives
- * them from. */
+ * selector still gets a stream. `mount` turns it into the access summary the page derives them
+ * from. */
 interface FlowAccessFixture {
-    /** `unknown`: the API server could not enumerate its rules for this namespace, so no rule
-     * matches but nothing is denied either. */
-    namespaces: { namespace: string; canObserve: boolean; unknown?: boolean }[]
-    clusterWide: boolean
-    /** There are more namespaces than one request asks about. */
-    incomplete: boolean
-    /** The per-namespace request fails. */
-    namespacesFail?: boolean
+    /** The namespaces the summary names, from the caller's RoleBindings. */
+    namespaces: string[]
+    /** `unknown`: no rule grants flows cluster-wide but the API server could not enumerate its
+     * rules, as with a webhook authorizer. */
+    clusterWide: 'allowed' | 'unknown' | 'denied'
     /** The caller may list namespaces, so the summary names none ("*") and the page lists them
      * itself: `names` are what that returns, or it fails. */
     lister?: { names: string[] } | 'fails'
@@ -181,10 +178,8 @@ function flowAccessFixture(
     opts: Partial<FlowAccessFixture> = {},
 ): FlowAccessFixture {
     return {
-        namespaces: opts.namespaces ?? [{ namespace: 'default', canObserve: true }],
-        clusterWide: opts.clusterWide ?? false,
-        incomplete: opts.incomplete ?? false,
-        namespacesFail: opts.namespacesFail,
+        namespaces: opts.namespaces ?? ['default'],
+        clusterWide: opts.clusterWide ?? 'denied',
         lister: opts.lister,
     };
 }
@@ -192,37 +187,16 @@ function flowAccessFixture(
 const FLOWS_WATCH_RULE = { verbs: ['watch'], apiGroups: ['observability.antrea.io'], resources: ['flows'] };
 
 /** GET /api/v1/access-summary: the cluster-scoped one, which holds the grant for a cluster-wide
- * caller and names the namespaces the page asks about. An incomplete fixture has more of them than
- * one request asks about, after the ones it names. */
+ * caller and names the namespaces the page offers. */
 function accessSummaryResponse(f: FlowAccessFixture): Response {
-    const filler = f.incomplete ? Array.from({ length: 11 }, (_, i) => `zz-filler-${i}`) : [];
     return jsonResponse({
         username: 'alice', groups: [], clusterAdmin: false,
-        namespaces: f.lister ? ['*'] : [...f.namespaces.map(n => n.namespace), ...filler],
+        namespaces: f.lister ? ['*'] : f.namespaces,
         rules: {
-            resourceRules: f.clusterWide ? [FLOWS_WATCH_RULE] : [],
+            resourceRules: f.clusterWide === 'allowed' ? [FLOWS_WATCH_RULE] : [],
             nonResourceRules: [],
-            incomplete: false,
+            incomplete: f.clusterWide === 'unknown',
         },
-    });
-}
-
-/** GET /api/v1/access-summary/namespaces?namespace=...: one entry for each namespace asked about,
- * whose rules grant watch on flows where the fixture says it may be observed. */
-function namespaceAccessResponse(f: FlowAccessFixture, asked: string[]): Response {
-    if (f.namespacesFail) return jsonResponse({ message: 'boom' }, 503);
-    return jsonResponse({
-        items: asked.map(namespace => {
-            const n = f.namespaces.find(x => x.namespace === namespace);
-            return {
-                namespace,
-                rules: {
-                    resourceRules: n?.canObserve ? [FLOWS_WATCH_RULE] : [],
-                    nonResourceRules: [],
-                    incomplete: n?.unknown ?? false,
-                },
-            };
-        }),
     });
 }
 
@@ -249,11 +223,7 @@ async function mount(
                 : jsonResponse({ items: lister.names.map(name => ({ metadata: { name } })) });
         }
         if (typeof url === 'string' && url.includes('/api/v1/access-summary')) {
-            const fixture = (opts.flowAccess ?? flowAccessFixture)();
-            const u = new URL(url, 'http://example.test');
-            return u.pathname.endsWith('/access-summary/namespaces')
-                ? namespaceAccessResponse(fixture, u.searchParams.getAll('namespace'))
-                : accessSummaryResponse(fixture);
+            return accessSummaryResponse((opts.flowAccess ?? flowAccessFixture)());
         }
         return fetchImpl(url, init);
     }));
@@ -338,7 +308,7 @@ describe('AntreaFlowVisibilityPage — observed-namespace selector', () => {
         const page = await mount(fetchMock, {
             search: '/',
             flowAccess: () => flowAccessFixture({
-                namespaces: [{ namespace: 'ns-b', canObserve: true }, { namespace: 'ns-a', canObserve: true }],
+                namespaces: ['ns-b', 'ns-a'],
             }),
         });
 
@@ -360,7 +330,7 @@ describe('AntreaFlowVisibilityPage — observed-namespace selector', () => {
         const fetchMock = vi.fn(async () => sseResponse([]));
         const page = await mount(fetchMock, {
             search: '/',
-            flowAccess: () => flowAccessFixture({ clusterWide: true }),
+            flowAccess: () => flowAccessFixture({ clusterWide: 'allowed' }),
         });
 
         const params = new URL(streamCalls(fetchMock)[0][0] as string, 'http://example.test').searchParams;
@@ -378,7 +348,7 @@ describe('AntreaFlowVisibilityPage — observed-namespace selector', () => {
         const fetchMock = vi.fn(async () => sseResponse([]));
         const page = await mount(fetchMock, {
             search: '/?clusterWide=true',
-            flowAccess: () => flowAccessFixture({ clusterWide: false }),
+            flowAccess: () => flowAccessFixture({ clusterWide: 'denied' }),
         });
 
         const params = new URL(streamCalls(fetchMock)[0][0] as string, 'http://example.test').searchParams;
@@ -388,18 +358,14 @@ describe('AntreaFlowVisibilityPage — observed-namespace selector', () => {
         expect(window.location.search).not.toContain('clusterWide');
     });
 
-    // The response's canObserve verdicts come from SelfSubjectAccessReviews - the same question
-    // the Flow Aggregator will ask - so a denied namespace is known to be refused, unlike one the
-    // list merely never mentioned.
-    test('a namespace the user cannot observe is still restored from the URL, and refused by the stream', async () => {
+    // Access is not checked here: whether the user may observe the namespace is the Flow
+    // Aggregator's to say, when the stream opens.
+    test('a namespace in the URL is restored and offered like any other', async () => {
         const fetchMock = vi.fn(async () => sseResponse([]));
         const page = await mount(fetchMock, {
             search: '/?observedNamespace=flow-c',
             flowAccess: () => flowAccessFixture({
-                namespaces: [
-                    { namespace: 'flow-a', canObserve: true },
-                    { namespace: 'flow-c', canObserve: false },
-                ],
+                namespaces: ['flow-a', 'flow-c'],
             }),
         });
 
@@ -414,7 +380,7 @@ describe('AntreaFlowVisibilityPage — observed-namespace selector', () => {
         const fetchMock = vi.fn(async () => sseResponse([]));
         await mount(fetchMock, {
             search: '/?observedNamespace=ns-unlisted',
-            flowAccess: () => flowAccessFixture({ incomplete: true }),
+            flowAccess: () => flowAccessFixture({ lister: 'fails' }),
         });
 
         expect(new URL(streamCalls(fetchMock)[0][0] as string, 'http://example.test').searchParams
@@ -425,7 +391,7 @@ describe('AntreaFlowVisibilityPage — observed-namespace selector', () => {
         const fetchMock = vi.fn(async () => sseResponse([]));
         const page = await mount(fetchMock, {
             search: '/',
-            flowAccess: () => flowAccessFixture({ namespaces: [], clusterWide: false }),
+            flowAccess: () => flowAccessFixture({ namespaces: [], clusterWide: 'denied' }),
         });
 
         expect(streamCalls(fetchMock)).toHaveLength(0);
@@ -439,7 +405,7 @@ describe('AntreaFlowVisibilityPage — observed-namespace selector', () => {
         const fetchMock = vi.fn(async () => sseResponse([]));
         const page = await mount(fetchMock, {
             search: '/',
-            flowAccess: () => flowAccessFixture({ namespaces: [], clusterWide: false }),
+            flowAccess: () => flowAccessFixture({ namespaces: [], clusterWide: 'denied' }),
         });
         page.viewMode = 'map';
         await page.updateComplete;
@@ -454,7 +420,7 @@ describe('AntreaFlowVisibilityPage — observed-namespace selector', () => {
         const page = await mount(fetchMock, {
             search: '/?observedNamespace=default',
             flowAccess: () => flowAccessFixture({
-                namespaces: [{ namespace: 'default', canObserve: true }, { namespace: 'ns-b', canObserve: true }],
+                namespaces: ['default', 'ns-b'],
             }),
         });
         expect(streamCalls(fetchMock)).toHaveLength(1);
@@ -472,13 +438,13 @@ describe('AntreaFlowVisibilityPage — observed-namespace selector', () => {
     test('cluster scope is offered only when the backend says the user holds it', async () => {
         const page = await mount(async () => sseResponse([]), {
             search: '/',
-            flowAccess: () => flowAccessFixture({ clusterWide: false }),
+            flowAccess: () => flowAccessFixture({ clusterWide: 'denied' }),
         });
         expect((await scopeMenu(page)).map(o => o.value)).not.toContain('__cluster_wide__');
 
         const withCluster = await mount(async () => sseResponse([]), {
             search: '/',
-            flowAccess: () => flowAccessFixture({ clusterWide: true }),
+            flowAccess: () => flowAccessFixture({ clusterWide: 'allowed' }),
         });
         const clusterOption = (await scopeMenu(withCluster)).find(o => o.value === '__cluster_wide__');
         expect(clusterOption).toBeDefined();
@@ -491,7 +457,7 @@ describe('AntreaFlowVisibilityPage — observed-namespace selector', () => {
         const fetchMock = vi.fn(async () => sseResponse([]));
         const page = await mount(fetchMock, {
             search: '/?observedNamespace=default',
-            flowAccess: () => flowAccessFixture({ clusterWide: true }),
+            flowAccess: () => flowAccessFixture({ clusterWide: 'allowed' }),
         });
 
         await chooseScope(page, '__cluster_wide__');
@@ -506,17 +472,12 @@ describe('AntreaFlowVisibilityPage — observed-namespace selector', () => {
         expect(window.location.search).toContain('clusterWide=true');
     });
 
-    // The API server could not enumerate its rules for a namespace (a webhook authorizer, say):
-    // that is not a denial, so the selector offers it, but it is not a scope worth defaulting to,
-    // since the stream there may well be refused.
-    test('the default is the first namespace offered, whatever the rules say of it', async () => {
+    // Nothing is checked, so the default is only the first namespace the user's bindings name.
+    test('the default is the first namespace offered', async () => {
         const page = await mount(async () => sseResponse([]), {
             search: '/',
             flowAccess: () => flowAccessFixture({
-                namespaces: [
-                    { namespace: 'ns-a', canObserve: false, unknown: true },
-                    { namespace: 'ns-b', canObserve: true },
-                ],
+                namespaces: ['ns-a', 'ns-b'],
             }),
         });
         expect(scopeValue(page)).toBe('ns-a');
@@ -525,14 +486,13 @@ describe('AntreaFlowVisibilityPage — observed-namespace selector', () => {
         expect(offered!.text).not.toContain('not authorized');
     });
 
-    // The per-namespace summary is one more request than a cluster-wide caller used to depend on.
-    // Their grant comes from the cluster-scoped summary, so its failure must not take their scope
-    // away - or leave anyone without a way to choose one.
+    // A cluster-wide caller's grant comes from the cluster-scoped summary, so failing to list the
+    // namespaces must not take their scope away - or leave anyone without a way to choose one.
     test('a failed namespace list still offers cluster scope, and a way to name a namespace', async () => {
         const page = await mount(async () => sseResponse([]), {
             search: '/',
             flowAccess: () => flowAccessFixture({
-                namespaces: [{ namespace: 'ns-a', canObserve: true }], clusterWide: true, lister: 'fails',
+                namespaces: ['ns-a'], clusterWide: 'allowed', lister: 'fails',
             }),
         });
         expect(scopeValue(page)).toBe('__cluster_wide__');
@@ -544,7 +504,7 @@ describe('AntreaFlowVisibilityPage — observed-namespace selector', () => {
     test('an empty namespace list is an explanation, not an error', async () => {
         const page = await mount(async () => sseResponse([]), {
             search: '/',
-            flowAccess: () => flowAccessFixture({ namespaces: [], clusterWide: false }),
+            flowAccess: () => flowAccessFixture({ namespaces: [], clusterWide: 'denied' }),
         });
 
         expect(page.shadowRoot!.querySelector('antrea-alert[status="danger"]')).toBeNull();
@@ -558,12 +518,12 @@ describe('AntreaFlowVisibilityPage — observed-namespace selector', () => {
     test('an empty list that may be short does not claim the user is not authorized', async () => {
         const page = await mount(async () => sseResponse([]), {
             search: '/',
-            flowAccess: () => flowAccessFixture({ namespaces: [], clusterWide: false, lister: 'fails' }),
+            flowAccess: () => flowAccessFixture({ namespaces: [], clusterWide: 'denied', lister: 'fails' }),
         });
 
         expect(page.shadowRoot!.querySelector('antrea-alert[status="danger"]')).toBeNull();
         expect(page.shadowRoot!.textContent).not.toContain('not authorized to observe flows in any namespace');
-        expect(page.shadowRoot!.textContent).toContain('may be incomplete');
+        expect(page.shadowRoot!.textContent).toContain('could not be loaded');
         expect(page.shadowRoot!.textContent).toContain('Namespace not listed');
     });
 
@@ -599,7 +559,7 @@ describe('AntreaFlowVisibilityPage — observed-namespace selector', () => {
         const page = await mount(async () => sseResponse([]), {
             search: '/?observedNamespace=default',
             flowAccess: () => flowAccessFixture({
-                namespaces: [{ namespace: 'default', canObserve: true }, { namespace: 'other', canObserve: true }],
+                namespaces: ['default', 'other'],
             }),
         });
         const seen: ScopeChangeDetail[] = [];
@@ -650,11 +610,11 @@ describe('AntreaFlowVisibilityPage — observed-namespace selector', () => {
 
     // A summary that could not be fetched is not a denial. A cluster-wide holder following a link
     // to their cluster scope must not lose it to a failed request, and has to be able to see it.
-    test('a cluster scope in the URL is honoured when the answer is incomplete', async () => {
+    test('a cluster scope in the URL is honoured when the answer is unknown', async () => {
         const fetchMock = vi.fn(async () => sseResponse([]));
         const page = await mount(fetchMock, {
             search: '/?clusterWide=true',
-            flowAccess: () => flowAccessFixture({ namespaces: [], lister: 'fails' }),
+            flowAccess: () => flowAccessFixture({ clusterWide: 'unknown' }),
         });
 
         const params = new URL(streamCalls(fetchMock)[0][0] as string, 'http://example.test').searchParams;
@@ -662,11 +622,31 @@ describe('AntreaFlowVisibilityPage — observed-namespace selector', () => {
         expect(scopeValue(page)).toBe('__cluster_wide__');
     });
 
+    // A grant that cannot be seen in the rules, as with a webhook authorizer, is not a denial: the
+    // caller may choose the cluster scope, and the Flow Aggregator decides. It is not the default.
+    test('the cluster scope is offered, but not the default, when the grant is unknown', async () => {
+        const page = await mount(async () => sseResponse([]), {
+            search: '/',
+            flowAccess: () => flowAccessFixture({ namespaces: ['team-a'], clusterWide: 'unknown' }),
+        });
+        expect(scopeValue(page)).toBe('team-a');
+        expect((await scopeMenu(page))[0]).toEqual({ value: '__cluster_wide__', text: 'All namespaces' });
+    });
+
+    test('an unknown cluster-wide grant with no namespaces is not told there is nothing to observe', async () => {
+        const page = await mount(async () => sseResponse([]), {
+            search: '/',
+            flowAccess: () => flowAccessFixture({ namespaces: [], clusterWide: 'unknown' }),
+        });
+        expect(page.shadowRoot!.textContent).not.toContain('not authorized to observe flows in any namespace');
+        expect((await scopeMenu(page))[0]).toEqual({ value: '__cluster_wide__', text: 'All namespaces' });
+    });
+
     test('a cluster scope in the URL is not honoured when the user is known not to hold it', async () => {
         const fetchMock = vi.fn(async () => sseResponse([]));
         await mount(fetchMock, {
             search: '/?clusterWide=true',
-            flowAccess: () => flowAccessFixture({ clusterWide: false }),
+            flowAccess: () => flowAccessFixture({ clusterWide: 'denied' }),
         });
 
         const params = new URL(streamCalls(fetchMock)[0][0] as string, 'http://example.test').searchParams;
@@ -678,7 +658,7 @@ describe('AntreaFlowVisibilityPage — observed-namespace selector', () => {
         // cannot observe, so the box could only invite a request that will be refused.
         const page = await mount(async () => sseResponse([]), {
             search: '/',
-            flowAccess: () => flowAccessFixture({ incomplete: false }),
+            flowAccess: () => flowAccessFixture(),
         });
 
         expect(page.shadowRoot!.querySelector('#observed-ns-by-name')).toBeNull();
@@ -692,7 +672,7 @@ describe('AntreaFlowVisibilityPage — observed-namespace selector', () => {
         test('a cluster admin is offered all namespaces, then the first ten, and can search the rest', async () => {
             const page = await mount(async () => sseResponse([]), {
                 search: '/',
-                flowAccess: () => flowAccessFixture({ clusterWide: true, lister: { names: [...many, 'xray'] } }),
+                flowAccess: () => flowAccessFixture({ clusterWide: 'allowed', lister: { names: [...many, 'xray'] } }),
             });
             expect(scopeValue(page)).toBe('__cluster_wide__');
             expect((await scopeMenu(page))[0]).toEqual({ value: '__cluster_wide__', text: 'All namespaces' });
@@ -704,23 +684,37 @@ describe('AntreaFlowVisibilityPage — observed-namespace selector', () => {
             expect(await menu(page)).toEqual(['xray']);
         });
 
-        test('a user with more than ten candidates is shown the first ten, denied or not', async () => {
-            const allowed = [many[3], many[14], many[22]];
+        test('a user with more than ten candidates is shown the first ten', async () => {
             const page = await mount(async () => sseResponse([]), {
                 search: '/',
-                flowAccess: () => flowAccessFixture({
-                    namespaces: many.map(namespace => ({ namespace, canObserve: allowed.includes(namespace) })),
-                }),
+                flowAccess: () => flowAccessFixture({ namespaces: many }),
             });
             expect(await menu(page)).toEqual(many.slice(0, 10));
             await typeScope(page, 'team-2');
             expect(await menu(page)).toEqual(many.filter(n => n.startsWith('team-2')).slice(0, 10));
         });
 
+        // The options follow what is typed at once, so Enter acts on the current query rather than
+        // the previous one.
+        test('Enter right after retyping selects from the new query', async () => {
+            const fetchMock = vi.fn(async () => sseResponse([]));
+            const page = await mount(fetchMock, {
+                search: '/?observedNamespace=other',
+                flowAccess: () => flowAccessFixture({ namespaces: ['dev', 'other', 'prod'] }),
+            });
+            const input = scopeInput(page);
+            input.value = 'd';
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+            input.value = 'p';
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+            await pressInScope(page, 'Enter');
+            expect(scopeValue(page)).toBe('prod');
+        });
+
         test('says so when nothing matches', async () => {
             const page = await mount(async () => sseResponse([]), {
                 search: '/',
-                flowAccess: () => flowAccessFixture({ clusterWide: true, lister: { names: many } }),
+                flowAccess: () => flowAccessFixture({ clusterWide: 'allowed', lister: { names: many } }),
             });
             await typeScope(page, 'nope');
             expect(page.shadowRoot!.querySelector('.combobox-empty')?.textContent).toContain('No matching');
@@ -729,7 +723,7 @@ describe('AntreaFlowVisibilityPage — observed-namespace selector', () => {
         test('shows the scope in force while closed and what is typed while open', async () => {
             const page = await mount(async () => sseResponse([]), {
                 search: '/?observedNamespace=team-03',
-                flowAccess: () => flowAccessFixture({ clusterWide: true, lister: { names: many } }),
+                flowAccess: () => flowAccessFixture({ clusterWide: 'allowed', lister: { names: many } }),
             });
             expect(scopeInput(page).value).toBe('team-03');
             await openScope(page);
@@ -740,7 +734,7 @@ describe('AntreaFlowVisibilityPage — observed-namespace selector', () => {
             const fetchMock = vi.fn(async () => sseResponse([]));
             const page = await mount(fetchMock, {
                 search: '/?observedNamespace=team-00',
-                flowAccess: () => flowAccessFixture({ clusterWide: true, lister: { names: many } }),
+                flowAccess: () => flowAccessFixture({ clusterWide: 'allowed', lister: { names: many } }),
             });
             await openScope(page);
             await pressInScope(page, 'ArrowDown');
@@ -763,7 +757,7 @@ describe('AntreaFlowVisibilityPage — observed-namespace selector', () => {
         test('Enter on a single match picks it, and on nothing typed picks nothing', async () => {
             const page = await mount(async () => sseResponse([]), {
                 search: '/?observedNamespace=team-00',
-                flowAccess: () => flowAccessFixture({ clusterWide: true, lister: { names: [...many, 'xray'] } }),
+                flowAccess: () => flowAccessFixture({ clusterWide: 'allowed', lister: { names: [...many, 'xray'] } }),
             });
             await openScope(page);
             await pressInScope(page, 'Enter');
@@ -778,7 +772,7 @@ describe('AntreaFlowVisibilityPage — observed-namespace selector', () => {
         test('a click outside closes the menu', async () => {
             const page = await mount(async () => sseResponse([]), {
                 search: '/',
-                flowAccess: () => flowAccessFixture({ clusterWide: true, lister: { names: many } }),
+                flowAccess: () => flowAccessFixture({ clusterWide: 'allowed', lister: { names: many } }),
             });
             await openScope(page);
             expect(page.shadowRoot!.querySelector('#observed-ns-list')).not.toBeNull();
@@ -810,7 +804,7 @@ describe('AntreaFlowVisibilityPage — observed-namespace selector', () => {
         const fetchMock = vi.fn(async () => sseResponse([]));
         const page = await mount(fetchMock, {
             search: '/?observedNamespace=ns-unlisted',
-            flowAccess: () => flowAccessFixture({ namespaces: [], incomplete: true }),
+            flowAccess: () => flowAccessFixture({ namespaces: [], lister: 'fails' }),
         });
 
         expect(streamCalls(fetchMock)).toHaveLength(1);
@@ -822,7 +816,7 @@ describe('AntreaFlowVisibilityPage — observed-namespace selector', () => {
         const page = await mount(async () => sseResponse([]), {
             search: '/',
             flowAccess: () => flowAccessFixture({
-                namespaces: [{ namespace: 'default', canObserve: true }, { namespace: 'locked', canObserve: false }],
+                namespaces: ['default', 'locked'],
             }),
         });
         const values = (await scopeMenu(page)).map(o => o.value);
@@ -1196,7 +1190,7 @@ describe('AntreaFlowVisibilityPage — returning to a refused scope', () => {
         const page = await mount(fetchMock, {
             search: '/?observedNamespace=ns-a',
             flowAccess: () => flowAccessFixture({
-                namespaces: [{ namespace: 'ns-a', canObserve: true }, { namespace: 'ns-b', canObserve: true }],
+                namespaces: ['ns-a', 'ns-b'],
             }),
         });
         await vi.advanceTimersByTimeAsync(0);
@@ -1289,7 +1283,7 @@ describe('AntreaFlowVisibilityPage — a scope change and the applied peer filte
         const page = await mount(fetchMock, {
             search: '/?observedNamespace=default',
             flowAccess: () => flowAccessFixture({
-                namespaces: [{ namespace: 'default', canObserve: true }, { namespace: 'ns-x', canObserve: true }],
+                namespaces: ['default', 'ns-x'],
             }),
         });
         (page as unknown as { _applyFilter(filter: FlowStreamFilter): void })
@@ -1311,7 +1305,7 @@ describe('AntreaFlowVisibilityPage — a scope change and the applied peer filte
         const page = await mount(fetchMock, {
             search: '/?observedNamespace=default',
             flowAccess: () => flowAccessFixture({
-                namespaces: [{ namespace: 'default', canObserve: true }, { namespace: 'ns-x', canObserve: true }],
+                namespaces: ['default', 'ns-x'],
             }),
         });
         (page as unknown as { _applyFilter(filter: FlowStreamFilter): void })

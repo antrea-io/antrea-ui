@@ -124,12 +124,10 @@ const NO_OBSERVABLE_NAMESPACES_MESSAGE =
     'the "flows" resource in API group observability.antrea.io, in the namespace you want to ' +
     'observe (see antrea-ui/docs/authentication.md).';
 
-// Shown when the list of namespaces may be short, in which case a namespace's absence from it is
-// not proof the user cannot observe flows in it.
-//
-// Says what to do about it. The list is incomplete when the backend truncated the candidates (it
-// caps how many namespaces one call reviews) or when it could not be fetched at all. It is
-// deliberately not shown merely because the candidates were derived from RoleBindings: that
+// Shown when the namespaces are not known: the access summary could not be fetched, or it said
+// "*" (the caller may list namespaces) and listing them failed. A namespace's absence from the
+// selector is then no proof the user cannot observe flows in it, so this says what to do instead.
+// It is deliberately not shown merely because the candidates were derived from RoleBindings: that
 // derivation is exhaustive for RBAC, since group subjects are resolved against the caller's own
 // groups (matchesSubject) and the bindings are read with antrea-ui's credential rather than the
 // caller's. Neither group membership nor a namespace the caller cannot list is a gap; do not
@@ -137,8 +135,8 @@ const NO_OBSERVABLE_NAMESPACES_MESSAGE =
 //
 // The escape hatch is real: _restoreScopeFromURL honours a namespace from the URL whether or not
 // it is listed, because the Flow Aggregator authorizes the stream either way.
-const INCOMPLETE_NAMESPACES_NOTE =
-    'The list of namespaces may be incomplete, so some you can observe may be missing from it. ' +
+const UNKNOWN_NAMESPACES_NOTE =
+    'The list of namespaces could not be loaded, so the selector cannot offer them. ' +
     'Use the "Namespace not listed" box to name one directly.';
 
 // A pseudo-option in the peer-namespace menu, filtered client-side. It contains a space, so it
@@ -149,8 +147,6 @@ const INCOMPLETE_NAMESPACES_NOTE =
 const UNIDENTIFIED_PEERS_OPTION = 'Unidentified peers';
 interface ScopeItem { value: string; label: string }
 const ALL_NAMESPACES_LABEL = 'All namespaces';
-/** How long the scope search waits after the last keystroke. */
-const SCOPE_SEARCH_DELAY_MS = 250;
 
 // Said on the two controls that match on an identity the Flow tier clears. Not a limitation to
 // engineer around: filters run on the redacted record, which is also what stops them being an
@@ -775,9 +771,9 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
     // these is ever set, and neither being set is the initial state - see _scope.
     @state() private _observedNs = '';
     @state() private _clusterWide = false;
-    // The selector's options, derived from the access summaries. Null until it resolves; a fetch
-    // that fails resolves to an incomplete answer rather than to null, so the page is never left
-    // without a way to choose a scope.
+    // The selector's options, derived from the access summary. Null until it resolves; a fetch
+    // that fails resolves to an answer with no candidates rather than to null, so the page is never
+    // left without a way to choose a scope.
     @state() private _flowAccess: FlowAccess | null = null;
     @state() private _flowAccessLoaded = false;
     // What the selector offers: the namespaces matching what was typed in its search box, at most
@@ -787,10 +783,6 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
     @state() private _scopeOpen = false;
     // Which item of the open menu the keyboard is on, or -1 for none.
     @state() private _scopeActive = -1;
-    private _scopeSearchTimer: ReturnType<typeof setTimeout> | null = null;
-    // Which search the options belong to, so a slow answer for an earlier query cannot replace the
-    // answer for the current one.
-    private _scopeSearchSeq = 0;
 
     // Stream
     @state() private _entries: FlowEntry[] = [];
@@ -927,7 +919,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
      */
     private _selectInitialScope() {
         if (this._restoreScopeFromURL()) return;
-        if (this._flowAccess?.clusterWide) {
+        if (this._flowAccess?.clusterWide === 'allowed') {
             this._clusterWide = true;
         } else {
             const first = this._flowAccess?.candidates?.[0];
@@ -940,17 +932,15 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
     }
 
     /** Restores the scope a refresh or a shared link carries, reporting whether it found one. A
-     * namespace is honoured even when it is not in the list, since the list can be incomplete and
-     * the Flow Aggregator authorizes the stream anyway. Cluster scope is honoured when this user
-     * is known to hold it, and likewise when the answer is incomplete - a summary that could not
-     * be fetched is not a denial, and a cluster-wide holder must not lose their scope to it. A
-     * link naming a cluster scope this user is known not to hold falls through to the default
-     * rather than landing on nothing - the selector and the URL then both show what is in force,
-     * which is a clearer answer than an empty page. */
+     * namespace is honoured even when it is not in the list, since the list can be short and the
+     * Flow Aggregator authorizes the stream anyway. Cluster scope is honoured unless this user is
+     * known not to hold it (see _mayHoldClusterWide). A link naming a cluster scope this user is
+     * known not to hold falls through to the default rather than landing on nothing - the
+     * selector and the URL then both show what is in force, which is a clearer answer than an
+     * empty page. */
     private _restoreScopeFromURL(): boolean {
         const params = new URLSearchParams(window.location.search);
-        if (params.get(CLUSTER_WIDE_PARAM) === 'true'
-            && (this._flowAccess?.clusterWide || this._flowAccess?.incomplete)) {
+        if (params.get(CLUSTER_WIDE_PARAM) === 'true' && this._mayHoldClusterWide) {
             this._clusterWide = true;
             return true;
         }
@@ -983,6 +973,13 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         }));
     }
 
+    /** Whether the cluster scope is worth offering and honouring: unless the user is known not to
+     * hold it. A grant that cannot be seen in the rules, as with a webhook authorizer, is 'unknown'
+     * and not a denial. Only 'allowed' makes it the default. */
+    private get _mayHoldClusterWide(): boolean {
+        return (this._flowAccess?.clusterWide ?? 'unknown') !== 'denied';
+    }
+
     /** The selected scope, or null when none is: the state in which this page deliberately opens
      * no stream at all rather than falling back to observing everything. */
     private get _scope(): FlowStreamScope | null {
@@ -1002,7 +999,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
     private get _scopeItems(): ScopeItem[] {
         const typed = this._scopeQuery.trim();
         const items: ScopeItem[] = [];
-        if (!typed && (this._flowAccess?.clusterWide || this._clusterWide)) {
+        if (!typed && (this._mayHoldClusterWide || this._clusterWide)) {
             items.push({ value: SCOPE_CLUSTER_WIDE, label: ALL_NAMESPACES_LABEL });
         }
         // The URL may name a namespace the search did not return (see _restoreScopeFromURL), and
@@ -1014,23 +1011,10 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         return items;
     }
 
-    /** Searches the namespaces by prefix, after a pause in typing: each search can cost the
-     * backend a review per namespace it has not yet been asked about. */
+    /** Searches the namespaces by prefix. Local, so the options always match what is typed. */
     private _onScopeSearch(value: string) {
         this._scopeQuery = value;
-        this._scopeActive = -1;
-        if (this._scopeSearchTimer) clearTimeout(this._scopeSearchTimer);
-        const seq = ++this._scopeSearchSeq;
-        this._scopeSearchTimer = setTimeout(() => {
-            this._scopeSearchTimer = null;
-            void this._runScopeSearch(value, seq);
-        }, SCOPE_SEARCH_DELAY_MS);
-    }
-
-    private async _runScopeSearch(value: string, seq: number) {
-        const options = searchFlowNamespaces(this._flowAccess, value);
-        if (seq !== this._scopeSearchSeq) return;
-        this._scopeOptions = options;
+        this._scopeOptions = searchFlowNamespaces(this._flowAccess, value);
         // The highlighted row indexed the list that was just replaced, and may be past the end
         // of this one.
         this._scopeActive = -1;
@@ -1041,11 +1025,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         this._scopeOpen = true;
         this._scopeActive = -1;
         // A menu that was last left narrowed starts from the whole list again.
-        if (this._scopeQuery !== '') {
-            this._scopeQuery = '';
-            if (this._scopeSearchTimer) { clearTimeout(this._scopeSearchTimer); this._scopeSearchTimer = null; }
-            void this._runScopeSearch('', ++this._scopeSearchSeq);
-        }
+        if (this._scopeQuery !== '') this._onScopeSearch('');
     }
 
     private _chooseScope(value: string) {
@@ -1086,7 +1066,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         }
     }
 
-        private _onScopeChange(value: string) {
+    private _onScopeChange(value: string) {
         const clusterWide = value === SCOPE_CLUSTER_WIDE;
         const observedNs = clusterWide ? '' : value;
         if (clusterWide === this._clusterWide && observedNs === this._observedNs) return;
@@ -1124,7 +1104,6 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         this._simulation?.stop();
         this._ro?.disconnect();
         if (this._refreshTimer) { clearInterval(this._refreshTimer); this._refreshTimer = null; }
-        if (this._scopeSearchTimer) { clearTimeout(this._scopeSearchTimer); this._scopeSearchTimer = null; }
         window.removeEventListener('pointerdown', this._handleDocClick);
     }
 
@@ -1868,10 +1847,10 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         // Only when the candidates are known and there are none: unknown candidates are not proof
         // the user holds nothing.
         const none = this._flowAccess !== null && this._flowAccess.candidates?.length === 0
-            && !this._flowAccess.clusterWide;
+            && this._flowAccess.clusterWide === 'denied';
         return html`
             <p class="text-muted">${none ? NO_OBSERVABLE_NAMESPACES_MESSAGE : SELECT_SCOPE_MESSAGE}</p>
-            ${this._flowAccess?.incomplete ? html`<p class="text-muted">${INCOMPLETE_NAMESPACES_NOTE}</p>` : nothing}
+            ${this._flowAccess?.candidates === null ? html`<p class="text-muted">${UNKNOWN_NAMESPACES_NOTE}</p>` : nothing}
         `;
     }
 

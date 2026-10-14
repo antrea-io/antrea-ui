@@ -209,8 +209,8 @@ const hiddenPolicyActionLabel: Record<NetworkPolicyRuleAction, string> = {
  * | empty | NoAction     | any  | no policy matched at all          | `` (the caller renders -) |
  *
  * `disclosure` is the tier of the endpoint this policy was evaluated on - the destination for an
- * ingress policy, the source for an egress one. Omitting it assumes the name was withheld, which
- * is the conservative reading for a caller that cannot say.
+ * ingress policy, the source for an egress one. Omitting it reads as Full, as endpointRedacted
+ * does: nothing was withheld.
  *
  * The last row is not a redaction artefact and must not be marked as one: a policy that matched
  * always carries an action, so an empty name with NoAction was already empty before redaction
@@ -228,7 +228,7 @@ export function formatPolicyInfo(
     // may simply never have had the name - its own proto warns that an endpoint can lack a field
     // while still reporting full disclosure - and calling that "hidden" would blame redaction
     // for a gap it did not cause. The action is still worth showing either way.
-    const withheld = disclosure === undefined || endpointRedacted(disclosure);
+    const withheld = endpointRedacted(disclosure);
     const hidden = hiddenPolicyActionLabel[action];
     if (!hidden) return "";
     return withheld ? `${hidden} (policy hidden)` : hidden;

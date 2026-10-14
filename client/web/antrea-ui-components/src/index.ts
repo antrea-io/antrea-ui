@@ -65,6 +65,8 @@ export {
     canNonResource,
     accessibleNamespaces,
     canViewSummary,
+    canViewFlows,
+    holdsFlowsClusterWide,
     canViewOverview,
     holdsOverviewResources,
     GATE_TRACEFLOW_CREATE,
@@ -83,11 +85,5 @@ export {
     GATE_ANTREA_NETWORKPOLICIES_LIST,
     GATE_EVENTS_LIST,
 } from './lib/access-api.js';
-export type { FlowAccess, FlowNamespaceAccess } from './lib/flow-access.js';
-export {
-    flowAccess,
-    flowAccessForGate,
-    flowAccessFrom,
-    observableNamespaces,
-    canViewFlows,
-} from './lib/flow-access.js';
+export type { FlowAccess } from './lib/flow-access.js';
+export { flowAccess } from './lib/flow-access.js';

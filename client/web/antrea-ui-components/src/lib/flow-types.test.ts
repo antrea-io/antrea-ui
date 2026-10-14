@@ -255,9 +255,9 @@ describe('formatPolicyInfo', () => {
         expect(formatPolicyInfo('', NetworkPolicyRuleAction.Drop, EndpointDisclosure.Identity)).toBe('Dropped');
     });
 
-    // A caller that cannot say assumes withheld, which is the conservative reading.
-    test('an omitted tier assumes the name was withheld', () => {
-        expect(formatPolicyInfo('', NetworkPolicyRuleAction.Drop)).toBe('Dropped (policy hidden)');
+    // A caller that cannot say reads as Full, as endpointRedacted does.
+    test('an omitted tier is read as Full', () => {
+        expect(formatPolicyInfo('', NetworkPolicyRuleAction.Drop)).toBe('Dropped');
     });
 
     // The genuinely absent policy, which is not a redaction artefact and must not be marked as
