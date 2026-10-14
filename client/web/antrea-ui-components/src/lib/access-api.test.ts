@@ -24,6 +24,8 @@ import {
     accessibleNamespaces,
     canViewSummary,
     canViewFlows,
+    canViewOverview,
+    holdsOverviewResources,
     GATE_CONTROLLER_INFO_GET,
     type AccessSummary,
     type NamespaceAccessSummaryList,
@@ -562,5 +564,37 @@ describe('canViewFlows', () => {
 
     test('fails open on a null summary, like the can() gates', () => {
         expect(canViewFlows(null)).toBe(true);
+    });
+});
+
+describe('canViewOverview', () => {
+    const listOn = (resource: string, apiGroup = '') =>
+        rules({ resourceRules: [{ apiGroups: [apiGroup], resources: [resource], verbs: ['list'] }] });
+
+    test('true on a list grant for any inventory resource', () => {
+        expect(canViewOverview(summary({ rules: listOn('pods') }))).toBe(true);
+        expect(canViewOverview(summary({ rules: listOn('events') }))).toBe(true);
+    });
+
+    // Which a user who can list namespaces, with workload access only through RoleBindings, needs:
+    // for them summary.namespaces is ["*"], so nothing else shows the page might have something.
+    test('true on a Namespaces grant, which says nothing about RoleBindings', () => {
+        expect(canViewOverview(summary({ rules: listOn('namespaces'), namespaces: ['*'] }))).toBe(true);
+    });
+
+    test('a Namespaces grant is not enough to land on the Overview first', () => {
+        expect(holdsOverviewResources(summary({ rules: listOn('namespaces'), namespaces: ['*'] }))).toBe(false);
+    });
+
+    test('true for a user with namespaced grants only, who has no cluster-wide rules', () => {
+        expect(canViewOverview(summary({ namespaces: ['team-a'] }))).toBe(true);
+    });
+
+    test('false for a user with no grants at all', () => {
+        expect(canViewOverview(summary())).toBe(false);
+    });
+
+    test('fails open on a null summary', () => {
+        expect(canViewOverview(null)).toBe(true);
     });
 });

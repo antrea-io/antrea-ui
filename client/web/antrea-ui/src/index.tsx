@@ -21,10 +21,10 @@ import { RouterProvider } from 'react-router/dom';
 import { setApiBase } from '@antrea/ui-components';
 import './index.css';
 import App from './App';
-import { SummaryPage, TraceflowPage, FlowVisibilityPage, SettingsPage, PluginPage, HomeRedirect } from './pages';
+import { OverviewPage, SummaryPage, TraceflowPage, FlowVisibilityPage, SettingsPage, PluginPage, HomeRedirect } from './pages';
 import reportWebVitals from './reportWebVitals';
 import config from './config';
-import { loadPlugins, getPluginRoutes, getPluginSidebarEntries } from './plugins';
+import { loadPlugins, getPluginRoutes, getPluginSidebarEntries, getLandingPageTabs } from './plugins';
 
 async function main() {
     // Lets antrea-ui-components' fetch calls (login, refresh, settings, data pages) reach the
@@ -39,6 +39,10 @@ async function main() {
     // so the registry is only complete once every plugin's import() has resolved.
     await loadPlugins();
 
+    // Resolved once here, like the routes and sidebar entries: the registry is complete after
+    // loadPlugins() and never changes afterward.
+    const landingPageTabs = getLandingPageTabs();
+
     const router = createBrowserRouter([
         {
             path: "/",
@@ -47,6 +51,10 @@ async function main() {
                 {
                     index: true,
                     element: <HomeRedirect />,
+                },
+                {
+                    path: "overview",
+                    element: <OverviewPage pluginTabs={landingPageTabs} />,
                 },
                 {
                     path: "summary",

@@ -158,6 +158,18 @@ else:
 - `get` on `metrics.ui.antrea.io`, the virtual resource Antrea UI authorizes
   live metrics taps against (see [Metrics are authorized by Antrea UI
   itself](#metrics-are-authorized-by-antrea-ui-itself))
+- `list` on `pods`, `services` and `events`
+- `list` on `deployments`, `statefulsets` and `daemonsets`
+- `list` on `networkpolicies` (both `networking.k8s.io` and `crd.antrea.io`)
+  and on `clusternetworkpolicies`
+
+The reads from `list` onwards (from `pods` on) are what the Overview page
+counts, plus its Recent Events panel. They are read-only and deliberately
+enumerated rather than granted as a wildcard: Kubernetes RBAC has no deny
+rules, so "everything except Secrets" cannot be expressed, and the K8s proxy
+applies no path allowlist of its own (RBAC is its only guard). A wildcard
+here would therefore let anyone holding the admin password read every Secret
+in the cluster.
 
 Its rule list is static: it only ever changes when you upgrade the chart, and
 you can read exactly what it grants in
@@ -301,6 +313,46 @@ kubectl create clusterrolebinding antrea-ui-network-operators \
 Granting less is fine and expected — a user bound only to a namespace-scoped
 subset simply sees less. The UI hides what a partially-authorized user cannot
 do, described next, rather than letting them hit a page and get a 403.
+
+A second, concrete example: an application-developer group that should see
+what is running, but not how it is network-segmented — NetworkPolicy stays a
+platform/security team's concern. Kubernetes ships no built-in ClusterRole
+for this split (`view` and `edit` both grant `list`/`watch` on
+NetworkPolicies and ClusterNetworkPolicies alongside every workload type), so
+it has to be written by hand:
+
+```yaml
+# antrea-ui-app-developers: Overview's workload tiles (Pods, Services,
+# Deployments, StatefulSets, DaemonSets) and their counts, but none of the
+# three NetworkPolicy kinds (Kubernetes NetworkPolicy, Antrea NetworkPolicy and
+# Antrea ClusterNetworkPolicy) — canViewOverview() still passes on the
+# workload grants alone, so the page renders, just with the three
+# NetworkPolicy tiles missing, and no Recent Events panel either since this
+# role grants no events, and the same "some information is not shown" notice
+# a 403 on any other tile produces.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: antrea-ui-app-developers
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["list"]
+  - apiGroups: [""]
+    resources: ["pods", "services"]
+    verbs: ["list"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets", "daemonsets"]
+    verbs: ["list"]
+  # Deliberately absent: networking.k8s.io/networkpolicies,
+  # crd.antrea.io/{networkpolicies,clusternetworkpolicies}, and events.
+```
+
+```bash
+kubectl apply -f antrea-ui-app-developers-clusterrole.yaml
+kubectl create clusterrolebinding antrea-ui-app-developers \
+  --clusterrole=antrea-ui-app-developers --group=app-developers
+```
 
 ## What the frontend knows about your permissions
 

@@ -316,3 +316,44 @@ export function canViewFlows(s: AccessSummary | null): boolean {
 export function canViewSummary(s: AccessSummary | null): boolean {
     return can(s, GATE_AGENT_INFO_LIST) || can(s, GATE_CONTROLLER_INFO_GET) || canNonResource(s, GATE_FEATUREGATES);
 }
+
+// Gates for the Overview landing page's inventory tiles — one per Kubernetes resource type it
+// reads, following the same "one predicate per page" convention as the gates above.
+export const GATE_NAMESPACES_LIST = { group: '', resource: 'namespaces', verb: 'list' };
+export const GATE_PODS_LIST = { group: '', resource: 'pods', verb: 'list' };
+export const GATE_SERVICES_LIST = { group: '', resource: 'services', verb: 'list' };
+export const GATE_DEPLOYMENTS_LIST = { group: 'apps', resource: 'deployments', verb: 'list' };
+export const GATE_STATEFULSETS_LIST = { group: 'apps', resource: 'statefulsets', verb: 'list' };
+export const GATE_DAEMONSETS_LIST = { group: 'apps', resource: 'daemonsets', verb: 'list' };
+export const GATE_K8S_NETWORKPOLICIES_LIST = { group: 'networking.k8s.io', resource: 'networkpolicies', verb: 'list' };
+export const GATE_ANTREA_CLUSTERNETWORKPOLICIES_LIST = { group: 'crd.antrea.io', resource: 'clusternetworkpolicies', verb: 'list' };
+export const GATE_ANTREA_NETWORKPOLICIES_LIST = { group: 'crd.antrea.io', resource: 'networkpolicies', verb: 'list' };
+export const GATE_EVENTS_LIST = { group: '', resource: 'events', verb: 'list' };
+
+// Whether the cluster-scoped summary grants a resource the Overview counts. GATE_NAMESPACES_LIST
+// is deliberately not part of this predicate: a Namespaces-only grant (e.g. a role copied from the
+// old antrea-ui-admin-core) would otherwise send the user from a Summary page they can use to an
+// Overview with a single tile. This is the test for sending a user to the Overview first (see
+// HomeRedirect): it is evaluated cluster-scoped, so it only passes on a cluster-wide grant, and it
+// fails open like every can() gate. canViewOverview is what adds the Namespaces grant back, for
+// whether the page is worth offering at all.
+export function holdsOverviewResources(s: AccessSummary | null): boolean {
+    return can(s, GATE_PODS_LIST) || can(s, GATE_SERVICES_LIST) ||
+        can(s, GATE_DEPLOYMENTS_LIST) || can(s, GATE_STATEFULSETS_LIST) || can(s, GATE_DAEMONSETS_LIST) ||
+        can(s, GATE_K8S_NETWORKPOLICIES_LIST) || can(s, GATE_ANTREA_CLUSTERNETWORKPOLICIES_LIST) ||
+        can(s, GATE_ANTREA_NETWORKPOLICIES_LIST) || can(s, GATE_EVENTS_LIST);
+}
+
+// Whether the Overview is worth offering to this user at all, for the nav entry and the route
+// guard. Wider than holdsOverviewResources in two ways. A user with no cluster-wide grant but
+// RoleBindings in specific namespaces (a non-empty summary.namespaces) gets the page, which
+// re-evaluates their access per selected namespace; that list is the RoleBinding-subject
+// heuristic, a superset of what the user can actually see - it ignores what each binding grants -
+// so it says the page may have something for them, not that it does. And a user who may list
+// namespaces cluster-wide gets it too: for them summary.namespaces is ["*"], which says nothing
+// about RoleBindings, so their workload grants would otherwise be unreachable. The page shows
+// them the Namespaces tile and the full picker. The price is that a user whose only grant is
+// listing namespaces gets an entry with a single tile, since the two cannot be told apart.
+export function canViewOverview(s: AccessSummary | null): boolean {
+    return holdsOverviewResources(s) || can(s, GATE_NAMESPACES_LIST) || Boolean(accessibleNamespaces(s)?.length);
+}

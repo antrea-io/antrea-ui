@@ -65,6 +65,7 @@ declare global {
             // Page components take no auth prop: they authenticate with the session cookie,
             // which the browser attaches by itself.
             'antrea-summary-page': React.HTMLAttributes<HTMLElement> & React.ClassAttributes<HTMLElement>;
+            'antrea-overview-page': React.HTMLAttributes<HTMLElement> & React.ClassAttributes<HTMLElement>;
             'antrea-settings-page': React.HTMLAttributes<HTMLElement> & React.ClassAttributes<HTMLElement>;
             'antrea-traceflow-page': React.HTMLAttributes<HTMLElement> & React.ClassAttributes<HTMLElement>;
             'antrea-flow-visibility-page': React.HTMLAttributes<HTMLElement> & React.ClassAttributes<HTMLElement> & {

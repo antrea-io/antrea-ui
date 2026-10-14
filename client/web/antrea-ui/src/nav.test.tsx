@@ -228,6 +228,7 @@ describe('NavTab — permission gating', () => {
         mockUseAccess.mockReturnValue({ summary: null, loaded: false });
         render(<NavTab pluginSidebarEntries={[]} />, { wrapper: MemoryRouter });
 
+        expect(document.querySelector('a[href="/overview"]')).toBeNull();
         expect(document.querySelector('a[href="/summary"]')).toBeNull();
         expect(document.querySelector('a[href="/traceflow"]')).toBeNull();
         // Flows is gated the same way as Summary/Traceflow now, so it is also hidden on load.
@@ -240,6 +241,7 @@ describe('NavTab — permission gating', () => {
         mockUseAccess.mockReturnValue({ summary: null, loaded: true });
         render(<NavTab pluginSidebarEntries={[]} />, { wrapper: MemoryRouter });
 
+        expect(document.querySelector('a[href="/overview"]')).not.toBeNull();
         expect(document.querySelector('a[href="/summary"]')).not.toBeNull();
         expect(document.querySelector('a[href="/traceflow"]')).not.toBeNull();
         expect(document.querySelector('a[href="/flows/list"]')).not.toBeNull();
@@ -304,5 +306,38 @@ describe('NavTab — permission gating', () => {
         render(<NavTab pluginSidebarEntries={[]} />, { wrapper: MemoryRouter });
 
         expect(document.querySelector('a[href="/summary"]')).toBeNull();
+    });
+
+    // Same promotion as the gated-off Traceflow case above: plugins.ts accepts 'flows' as a parent
+    // unconditionally, so a child registered under it must not disappear with the parent.
+    test('a plugin entry nested under a denied Flow Visibility renders at top level', () => {
+        mockUseAccess.mockReturnValue({ summary: summaryAllowing(), loaded: true });
+        const childEntry: PluginSidebarEntry = { label: 'Extra Flows Page', path: '/plugin/extra-flows', parentPath: 'flows' };
+        render(<NavTab pluginSidebarEntries={[childEntry]} />, { wrapper: MemoryRouter });
+
+        expect(document.querySelector('a[href="/flows/list"]')).toBeNull();
+        const childLink = document.querySelector('a[href="/plugin/extra-flows"]');
+        expect(childLink).not.toBeNull();
+        expect(childLink!.closest('antrea-nav-group')).toBeNull();
+    });
+
+    test('Overview shows when the user can list Pods, even without Summary permissions', () => {
+        mockUseAccess.mockReturnValue({
+            summary: summaryAllowing({
+                resourceRules: [{ apiGroups: [''], resources: ['pods'], verbs: ['list'] }],
+            }),
+            loaded: true,
+        });
+        render(<NavTab pluginSidebarEntries={[]} />, { wrapper: MemoryRouter });
+
+        expect(document.querySelector('a[href="/overview"]')).not.toBeNull();
+        expect(document.querySelector('a[href="/summary"]')).toBeNull();
+    });
+
+    test('Overview is hidden when none of its inventory gates is granted', () => {
+        mockUseAccess.mockReturnValue({ summary: summaryAllowing(), loaded: true });
+        render(<NavTab pluginSidebarEntries={[]} />, { wrapper: MemoryRouter });
+
+        expect(document.querySelector('a[href="/overview"]')).toBeNull();
     });
 });
