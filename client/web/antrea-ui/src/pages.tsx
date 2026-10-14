@@ -18,8 +18,8 @@ import React, { useRef, useCallback, useMemo } from 'react';
 import { useSelector } from 'react-redux';
 import '@antrea/ui-components';
 import {
-    can, canViewSummary, canViewOverview, holdsOverviewResources, canViewFlows, sessionIdentity,
-    GATE_TRACEFLOW_CREATE, SCOPE_CHANGE_EVENT,
+    can, canViewSummary, canViewOverview, holdsOverviewResources, canViewFlows, holdsFlowsClusterWide,
+    sessionIdentity, GATE_TRACEFLOW_CREATE, SCOPE_CHANGE_EVENT,
 } from '@antrea/ui-components';
 import type { ScopeChangeDetail } from '@antrea/ui-components';
 import { Navigate, useSearchParams } from 'react-router';
@@ -39,15 +39,17 @@ import type { RootState } from './store';
 // access to anything the Overview lists, so that case ranks after those: still before Settings,
 // since the page may have something for them, which they can find by picking a namespace.
 export function HomeRedirect() {
-    const { summary, flowAccess, loaded } = useAccess();
+    const { summary, loaded } = useAccess();
     if (!loaded) return null;
     if (holdsOverviewResources(summary)) return <Navigate to="/overview" replace />;
     if (canViewSummary(summary)) return <Navigate to="/summary" replace />;
     if (can(summary, GATE_TRACEFLOW_CREATE)) return <Navigate to="/traceflow" replace />;
-    // canViewFlows (flow-access.ts) is a rendering hint drawn from the access summaries, not a
-    // stand-in for the Flow Aggregator's authorization decision - it fails open, so it can only
-    // hide the page from a caller FA would refuse, never grant a stream FA would refuse.
-    if (canViewFlows(flowAccess)) return <Navigate to="/flows/list" replace />;
+    // holdsFlowsClusterWide is a rendering hint fed by the same RBAC the Flow Aggregator itself
+    // checks (see access-api.ts), not a stand-in for its authorization decision - it can only ever
+    // agree with FA's own answer or be more conservative, never grant a stream FA would refuse.
+    // Only the cluster-wide holder lands here: canViewFlows is wider, and a user who merely has a
+    // RoleBinding may be refused by FA, so that case falls through to canViewOverview.
+    if (holdsFlowsClusterWide(summary)) return <Navigate to="/flows/list" replace />;
     if (canViewOverview(summary)) return <Navigate to="/overview" replace />;
     // A user permitted none of these lands on Settings, which needs no permission at all - the
     // floor everyone can reach.
@@ -186,7 +188,7 @@ export function TraceflowPage() {
 // string between the two sub-pages) never go stale.
 export function FlowVisibilityPage({ view }: { view: 'list' | 'map' }) {
     const { ref: litRef } = useLitPage();
-    const { flowAccess, loaded } = useAccess();
+    const { summary, loaded } = useAccess();
     const [, setSearchParams] = useSearchParams();
     const attachedTo = useRef<HTMLElement | null>(null);
     const onScopeChange = useCallback((e: Event) => {
@@ -202,7 +204,7 @@ export function FlowVisibilityPage({ view }: { view: 'list' | 'map' }) {
         el?.addEventListener(SCOPE_CHANGE_EVENT, onScopeChange);
     }, [litRef, onScopeChange]);
     return (
-        <RequirePermission allowed={canViewFlows(flowAccess)} loaded={loaded}>
+        <RequirePermission allowed={canViewFlows(summary)} loaded={loaded}>
             <antrea-flow-visibility-page
                 ref={ref}
                 viewMode={view}

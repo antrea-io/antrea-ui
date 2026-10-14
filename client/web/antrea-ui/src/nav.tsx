@@ -115,14 +115,14 @@ function renderPluginNavItem(entry: PluginSidebarEntry, pathname: string) {
 
 export default function NavTab({ pluginSidebarEntries }: { pluginSidebarEntries: PluginSidebarEntry[] }) {
     const { pathname, search } = useLocation();
-    const { summary, flowAccess, loaded } = useAccess();
+    const { summary, loaded } = useAccess();
 
     // While the access summary hasn't loaded yet, render no core items: entries popping in once
     // loaded reads better than entries vanishing if the answer turns out to restrict something.
     const showOverview = loaded && canViewOverview(summary);
     const showSummary = loaded && canViewSummary(summary);
     const showTraceflow = loaded && can(summary, GATE_TRACEFLOW_CREATE);
-    const showFlows = loaded && canViewFlows(flowAccess);
+    const showFlows = loaded && canViewFlows(summary);
 
     // Plugin entries with a parentPath (already resolved/normalized by plugins.ts's
     // resolveParentPaths — always a leading-slash-stripped path, whether that path belongs to a

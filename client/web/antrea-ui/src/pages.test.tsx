@@ -113,6 +113,14 @@ describe('FlowVisibilityPage — route guard', () => {
         expect(document.querySelector('antrea-flow-visibility-page')).toBeNull();
     });
 
+    // The gate reads the cluster-scoped summary alone, so a RoleBinding is enough to show the page;
+    // whether the user holds flows in that namespace is the Flow Aggregator's to say.
+    test('renders the page for a user named in a RoleBinding', async () => {
+        renderPage(summaryWith({ namespaces: ['team-a'] }));
+        await waitFor(() => expect(document.querySelector('antrea-flow-visibility-page')).not.toBeNull());
+        expect(document.querySelector('antrea-alert')).toBeNull();
+    });
+
     test('renders the page for a user granted the flows watch gate', async () => {
         renderPage(summaryWith({
             rules: { resourceRules: [{ apiGroups: ['observability.antrea.io'], resources: ['flows'], verbs: ['watch'] }], nonResourceRules: [], incomplete: false },
@@ -300,7 +308,7 @@ describe('FlowVisibilityPage — scope in the URL', () => {
 
     test('the router adopts the query string the page announces', async () => {
         const store = setupStore({ session: 'authenticated' });
-        // Every fetch fails, so the access answers fail open and the page renders.
+        // Every fetch fails, so the access answer fails open and the page renders.
         vi.stubGlobal('fetch', vi.fn(async (url: string) => {
             throw new Error(`unexpected fetch to ${url}`);
         }));
