@@ -157,6 +157,9 @@ https:
   # -- Enable HTTPS (only) for accessing the web UI. When using an Ingress to terminate TLS, you do
   # not need to enable HTTPS here.
   enable: false
+  # -- Enable HTTP/2 on the HTTPS listener. Browsers only negotiate HTTP/2 over TLS, so this has no
+  # effect unless https.enable is true. Clients that do not support HTTP/2 fall back to HTTP/1.1.
+  http2: true
   # -- Method for generating the TLS certificate for the web server. We support "auto", "user",
   # "userCA", and "secret". With "auto", Helm will generate a new self-signed certificate every time
   # the template function is executed. With "user", the user is responsible for providing a
