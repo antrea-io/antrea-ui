@@ -85,10 +85,15 @@ export interface FlowTableColumn {
  * columns — modeled on Headlamp's `registerResourceTableColumnsProcessor`. */
 export type FlowTableColumnsProcessor = (columns: FlowTableColumn[]) => FlowTableColumn[];
 
-const FLOW_VISIBILITY_FORBIDDEN_MESSAGE =
+// Where the RBAC a user needs for flows is documented, for the messages that tell them they lack it.
+const FLOW_AUTHORIZATION_DOCS_URL =
+    'https://github.com/antrea-io/antrea-ui/blob/main/docs/authentication.md#flow-data-is-per-user';
+const flowAuthorizationDocsLink = () => html`(see <a href=${FLOW_AUTHORIZATION_DOCS_URL} target="_blank" rel="noopener noreferrer">the authorization docs</a>)`;
+
+const FLOW_VISIBILITY_FORBIDDEN_MESSAGE = () => html`${
     'You are not authorized to observe flows in this scope. The Flow Aggregator authorizes each ' +
     'flow stream with Kubernetes RBAC, against the "flows" resource in API group ' +
-    'observability.antrea.io (see antrea-ui/docs/authentication.md).';
+    'observability.antrea.io'} ${flowAuthorizationDocsLink()}.`;
 
 // The observed-namespace selector's value for cluster scope. Not a namespace name, so it cannot
 // collide with one: a namespace may not contain an underscore.
@@ -119,10 +124,10 @@ const SELECT_SCOPE_MESSAGE =
 
 // Shown once the namespace list has resolved and turned out to be empty: a real answer, not a
 // failure, so it is an explanation rather than an error toast.
-const NO_OBSERVABLE_NAMESPACES_MESSAGE =
+const NO_OBSERVABLE_NAMESPACES_MESSAGE = () => html`${
     'You are not authorized to observe flows in any namespace. Flow visibility needs "watch" on ' +
     'the "flows" resource in API group observability.antrea.io, in the namespace you want to ' +
-    'observe (see antrea-ui/docs/authentication.md).';
+    'observe'} ${flowAuthorizationDocsLink()}.`;
 
 // Shown when the namespaces are not known: the access summary could not be fetched, or it said
 // "*" (the caller may list namespaces) and listing them failed. A namespace's absence from the
@@ -787,7 +792,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
     // Stream
     @state() private _entries: FlowEntry[] = [];
     @state() private _connected = false;
-    @state() private _error: string | null = null;
+    @state() private _error: string | TemplateResult | null = null;
     // Set on 501: Flow Aggregator integration is off for this deployment, a fixed fact about the
     // server that no filter or scope change on this page can affect. Terminal for the session,
     // and must keep _startStream from re-opening the stream on any later filter change.
@@ -1185,7 +1190,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
                 this._forbiddenFilterKey = this._filterKey;
                 this._client = null;
                 this._connected = false;
-                this._error = FLOW_VISIBILITY_FORBIDDEN_MESSAGE;
+                this._error = FLOW_VISIBILITY_FORBIDDEN_MESSAGE();
             },
         });
         this._client.start();
@@ -1849,7 +1854,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         const none = this._flowAccess !== null && this._flowAccess.candidates?.length === 0
             && this._flowAccess.clusterWide === 'denied';
         return html`
-            <p class="text-muted">${none ? NO_OBSERVABLE_NAMESPACES_MESSAGE : SELECT_SCOPE_MESSAGE}</p>
+            <p class="text-muted">${none ? NO_OBSERVABLE_NAMESPACES_MESSAGE() : SELECT_SCOPE_MESSAGE}</p>
             ${this._flowAccess?.candidates === null ? html`<p class="text-muted">${UNKNOWN_NAMESPACES_NOTE}</p>` : nothing}
         `;
     }

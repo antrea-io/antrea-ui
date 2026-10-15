@@ -509,6 +509,7 @@ describe('AntreaFlowVisibilityPage — observed-namespace selector', () => {
 
         expect(page.shadowRoot!.querySelector('antrea-alert[status="danger"]')).toBeNull();
         expect(page.shadowRoot!.textContent).toContain('not authorized to observe flows in any namespace');
+        expect(page.shadowRoot!.querySelector('p.text-muted a')?.getAttribute('href')).toBe('https://github.com/antrea-io/antrea-ui/blob/main/docs/authentication.md#flow-data-is-per-user');
         expect(page.shadowRoot!.textContent).not.toContain('Namespace not listed');
     });
 
@@ -1122,6 +1123,9 @@ describe('AntreaFlowVisibilityPage — forbidden', () => {
 
         expect(page.shadowRoot!.querySelector('antrea-alert[status="danger"]')?.textContent)
             .toContain('not authorized to observe flows in this scope');
+        // The docs it points to are a link, not a path to look up.
+        expect(page.shadowRoot!.querySelector('antrea-alert[status="danger"] a')?.getAttribute('href'))
+            .toBe('https://github.com/antrea-io/antrea-ui/blob/main/docs/authentication.md#flow-data-is-per-user');
 
         expect(streamCalls(fetchMock)).toHaveLength(1);
         await vi.advanceTimersByTimeAsync(60_000);
