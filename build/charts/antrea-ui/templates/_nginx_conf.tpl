@@ -28,6 +28,10 @@ server {
     {{- if .Values.https.enable }}
     ssl_certificate /app/ssl/tls.crt;
     ssl_certificate_key /app/ssl/tls.key;
+    {{- if .Values.https.http2 }}
+    # Browsers only negotiate HTTP/2 over TLS (via ALPN), so it is only enabled with HTTPS.
+    http2 on;
+    {{- end }}
     {{- end }}
 
     location / {
