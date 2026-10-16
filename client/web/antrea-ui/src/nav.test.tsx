@@ -284,8 +284,8 @@ describe('NavTab — permission gating', () => {
         expect(document.querySelector('a[href="/flows/list"]')).not.toBeNull();
     });
 
-    // The grant has to be cluster-wide: Flow Visibility can only ever request clusterWide=true
-    // today, so a namespaced Role granting flows authorizes nothing it would ask for.
+    // A summary evaluated for one namespace shows a namespaced Role's grant, which is not the
+    // cluster-wide grant the gate reads from the cluster-scoped summary.
     test('Flows is hidden when the flows grant is only namespace-scoped', () => {
         mockUseAccess.mockReturnValue({
             summary: {
@@ -299,6 +299,54 @@ describe('NavTab — permission gating', () => {
         render(<NavTab pluginSidebarEntries={[]} />, { wrapper: MemoryRouter });
 
         expect(document.querySelector('a[href="/flows/list"]')).toBeNull();
+    });
+
+    // The gate is decided from the cluster-scoped summary alone: a RoleBinding may carry a flows
+    // grant, which only a per-namespace review would say, so the entry is offered.
+    test('Flows shows for a caller named in a RoleBinding', () => {
+        mockUseAccess.mockReturnValue({ summary: { ...summaryAllowing(), namespaces: ['team-a'] }, loaded: true });
+        render(<NavTab pluginSidebarEntries={[]} />, { wrapper: MemoryRouter });
+
+        expect(document.querySelector('a[href="/flows/list"]')).not.toBeNull();
+    });
+
+    test('Flows shows for a caller who may list namespaces', () => {
+        mockUseAccess.mockReturnValue({
+            summary: {
+                ...summaryAllowing({
+                    resourceRules: [{ apiGroups: [''], resources: ['namespaces'], verbs: ['list'] }],
+                }),
+                namespaces: ['*'],
+            },
+            loaded: true,
+        });
+        render(<NavTab pluginSidebarEntries={[]} />, { wrapper: MemoryRouter });
+
+        expect(document.querySelector('a[href="/flows/list"]')).not.toBeNull();
+    });
+
+    // The flow page's observed namespace lives in the query string, and switching sub-page
+    // remounts the page, so a link that dropped the query string would silently reset the scope.
+    test('the flow sub-page links keep the current query string', () => {
+        render(
+            <MemoryRouter initialEntries={['/flows/list?observedNamespace=ns-a']}>
+                <NavTab pluginSidebarEntries={[]} />
+            </MemoryRouter>
+        );
+
+        expect(document.querySelector('a[href="/flows/map?observedNamespace=ns-a"]')).not.toBeNull();
+        expect(document.querySelectorAll('a[href="/flows/list?observedNamespace=ns-a"]')).toHaveLength(2);
+    });
+
+    // ...but only while already on a flow page: another page's query string means nothing here.
+    test('an unrelated page\'s query string is not carried into the flow links', () => {
+        render(
+            <MemoryRouter initialEntries={['/summary?tab=nodes']}>
+                <NavTab pluginSidebarEntries={[]} />
+            </MemoryRouter>
+        );
+
+        expect(document.querySelector('a[href="/flows/map"]')).not.toBeNull();
     });
 
     test('Summary is hidden when none of its three gates is granted', () => {

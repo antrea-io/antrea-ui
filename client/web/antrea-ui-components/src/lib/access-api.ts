@@ -296,21 +296,28 @@ export const GATE_FEATUREGATES = { verb: 'get', url: '/featuregates' };
 // the Flow Aggregator checks for one.
 export const GATE_FLOWS_WATCH = { group: 'observability.antrea.io', resource: 'flows', verb: 'watch' };
 
-// Whether the caller may view flow data. TEMPORARY: while the observed-Namespace selector does
-// not exist yet, clusterWide=true is the only scope Flow Visibility can ever request, so the only
-// two outcomes reachable are a fully disclosed stream (for a caller holding flows cluster-wide)
-// or a 403. Showing the page to the first group only is exactly what a cluster-wide watch grant
-// partitions. Revisit once the selector lands and a caller can request their own Namespace's
-// scope instead, at which point a namespaced grant becomes worth rendering for.
+// Whether the caller holds watch on flows cluster-wide, the one scope in which nothing is redacted.
+// Fails open like every can() gate.
 //
 // Hence the s.namespace guard: a namespace-scoped summary can show a namespaced Role's grant on
 // flows too, which authorizes nothing cluster-wide, so trusting can() alone would read a caller's
 // own-Namespace grant as if it were cluster-wide. Checked here rather than left to the caller,
 // since a summary is cluster-scoped by default (accessSummary() takes no namespace) and this is
 // exactly the check that would silently do the wrong thing the one time that stops being true.
-export function canViewFlows(s: AccessSummary | null): boolean {
+export function holdsFlowsClusterWide(s: AccessSummary | null): boolean {
     if (s?.namespace) return false;
     return can(s, GATE_FLOWS_WATCH);
+}
+
+// Whether Flow Visibility is worth offering to this caller at all, for the nav entry and the route
+// guard. Decided from the cluster-scoped summary alone, as canViewOverview is. Wider than
+// holdsFlowsClusterWide: a caller with RoleBindings in specific namespaces (a non-empty
+// summary.namespaces, the RoleBinding-subject heuristic) may hold flows in one of them, which only
+// a per-namespace review would say, and a caller who may list namespaces (summary.namespaces is
+// ["*"]) may hold it in any. The price is that a caller with a RoleBinding but no flows grant sees
+// the entry and gets the Flow Aggregator's 403 on the page.
+export function canViewFlows(s: AccessSummary | null): boolean {
+    return holdsFlowsClusterWide(s) || can(s, GATE_NAMESPACES_LIST) || Boolean(accessibleNamespaces(s)?.length);
 }
 
 export function canViewSummary(s: AccessSummary | null): boolean {

@@ -114,7 +114,7 @@ function renderPluginNavItem(entry: PluginSidebarEntry, pathname: string) {
 }
 
 export default function NavTab({ pluginSidebarEntries }: { pluginSidebarEntries: PluginSidebarEntry[] }) {
-    const { pathname } = useLocation();
+    const { pathname, search } = useLocation();
     const { summary, loaded } = useAccess();
 
     // While the access summary hasn't loaded yet, render no core items: entries popping in once
@@ -185,6 +185,8 @@ export default function NavTab({ pluginSidebarEntries }: { pluginSidebarEntries:
         );
     }
 
+    const flowsSearch = pathStartsWith(pathname, '/flows') ? search : '';
+
     return (
         <antrea-nav>
             {withNestedChildren('overview', showOverview, (
@@ -211,9 +213,14 @@ export default function NavTab({ pluginSidebarEntries }: { pluginSidebarEntries:
                     </Link>
                 </antrea-nav-item>
             ))}
+            {/* The two flow sub-pages keep the current query string, which is where the flow
+                page's observed namespace lives: switching between Flow List and Service Map
+                remounts the page, so dropping the query string would silently reset the scope
+                and leave the two views disagreeing about what is being observed. Only carried
+                while already under /flows, so an unrelated page's query string is not. */}
             {withNestedChildren('flows', showFlows, (
                 <antrea-nav-item {...(pathStartsWith(pathname, '/flows') ? { active: true } : {})}>
-                    <Link to="/flows/list">
+                    <Link to={`/flows/list${flowsSearch}`}>
                         <EyeIcon />
                         <span className="nav-label">Flow Visibility</span>
                     </Link>
@@ -223,7 +230,7 @@ export default function NavTab({ pluginSidebarEntries }: { pluginSidebarEntries:
                     path: '/flows/list',
                     node: (
                         <antrea-nav-item key="/flows/list" {...(pathEquals(pathname, '/flows/list') ? { active: true } : {})}>
-                            <Link to="/flows/list">
+                            <Link to={`/flows/list${flowsSearch}`}>
                                 <span className="nav-label">Flow List</span>
                             </Link>
                         </antrea-nav-item>
@@ -233,7 +240,7 @@ export default function NavTab({ pluginSidebarEntries }: { pluginSidebarEntries:
                     path: '/flows/map',
                     node: (
                         <antrea-nav-item key="/flows/map" {...(pathEquals(pathname, '/flows/map') ? { active: true } : {})}>
-                            <Link to="/flows/map">
+                            <Link to={`/flows/map${flowsSearch}`}>
                                 <span className="nav-label">Service Map</span>
                             </Link>
                         </antrea-nav-item>
