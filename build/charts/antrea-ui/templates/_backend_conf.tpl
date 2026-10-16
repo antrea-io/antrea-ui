@@ -33,6 +33,9 @@ plugins:
   maxConfigMapPlugins: {{ .Values.plugins.maxConfigMapPlugins }}
   maxDirectoryPlugins: {{ .Values.plugins.maxDirectoryPlugins }}
   maxBundleBytes: {{ .Values.plugins.maxBundleBytes }}
+  bundleSource:
+    http:
+      enabled: {{ .Values.plugins.bundleSource.http.enabled }}
 {{- if .Values.plugins.signature.enabled }}
 {{- include "antrea-ui.validatePluginTrustedKeys" . }}
   signature:

@@ -110,6 +110,66 @@ func TestPluginWithoutSignatureIsRejected(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
 }
 
+// TestPluginBundleDownload covers a plugin whose ConfigMap carries only a signed manifest.json:
+// ci/e2e-plugins.sh installs remote-plugin that way, with its bundle served by a stub aggregated
+// API server registered with an APIService. For it to load, the backend's request has to go
+// through kube-apiserver's aggregation layer, be authorized there for the antrea-ui ServiceAccount
+// (the ClusterRole the script creates, shaped as docs/plugins.md describes), and come back as a
+// bundle matching the digest in the signed manifest.
+func TestPluginBundleDownload(t *testing.T) {
+	ctx := t.Context()
+
+	require.NoError(t,
+		waitForBackendLogLine(ctx, "Loaded plugin from ConfigMap", remotePluginName),
+		"the backend never loaded the %s ConfigMap", remotePluginName)
+
+	manifests, body := pluginIndex(ctx, t)
+	var found bool
+	for _, m := range manifests {
+		if m.Name == remotePluginName {
+			found = true
+			assert.NotEmpty(t, m.BundleSha256)
+		}
+	}
+	assert.True(t, found, "expected to find %s in the plugin index: %s", remotePluginName, body)
+
+	resp, err := Request(ctx, host, "GET", "api/v1/plugins/"+remotePluginName+"/index.js", nil)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+// TestPluginBundleDownloadOverHTTP is the same for the "http" transport: http-plugin's ConfigMap
+// names, under bundleURL, a plain HTTP URL on the stub server's Service, and the backend fetches
+// the bundle from there directly, with no kube-apiserver and no RBAC involved.
+func TestPluginBundleDownloadOverHTTP(t *testing.T) {
+	ctx := t.Context()
+
+	require.NoError(t,
+		waitForBackendLogLine(ctx, "Loaded plugin from ConfigMap", httpPluginName),
+		"the backend never loaded the %s ConfigMap", httpPluginName)
+
+	manifests, body := pluginIndex(ctx, t)
+	var found bool
+	for _, m := range manifests {
+		if m.Name == httpPluginName {
+			found = true
+		}
+	}
+	assert.True(t, found, "expected to find %s in the plugin index: %s", httpPluginName, body)
+
+	resp, err := Request(ctx, host, "GET", "api/v1/plugins/"+httpPluginName+"/index.js", nil)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+// The ConfigMap and manifest names of the plugins ci/e2e-plugins.sh installs to be downloaded.
+const (
+	remotePluginName = "remote-plugin"
+	httpPluginName   = "http-plugin"
+)
+
 // pluginManifest is the subset of apis/v1.PluginManifest these tests assert on.
 type pluginManifest struct {
 	Name         string `json:"name"`

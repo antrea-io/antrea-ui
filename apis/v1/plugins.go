@@ -45,6 +45,40 @@ type PluginManifest struct {
 	// through this digest. Required when plugins.signature.trustedKeys is non-empty; optional
 	// otherwise, but always verified when present.
 	BundleSha256 string `json:"bundleSha256,omitempty"`
+
+	// BundleSource tells the backend where to download the plugin's bundle.zip from, for a
+	// plugin whose ConfigMap carries only manifest.json and its signature (a bundle too large
+	// for a ConfigMap's ~1MiB limit). Nil for a plugin whose bundle.zip ships in the ConfigMap
+	// or the plugin directory. It is only supported for ConfigMap plugins and requires
+	// BundleSha256: the digest is what pins the bytes accepted, wherever they come from.
+	BundleSource *PluginBundleSource `json:"bundleSource,omitempty"`
+}
+
+// PluginBundleSource is where a plugin's bundle.zip is downloaded from. Exactly one transport
+// must be set.
+type PluginBundleSource struct {
+	// APIServer downloads the bundle through the Kubernetes API server, from an aggregated API
+	// server (a service the plugin's provider runs).
+	APIServer *PluginBundleAPIServer `json:"apiServer,omitempty"`
+
+	// HTTP downloads the bundle from an HTTP(S) URL, which the plugin's ConfigMap carries under
+	// the data key "bundleURL" rather than the manifest, as it depends on where the plugin is
+	// installed (e.g. the namespace of the Service serving the bundle). The request is
+	// unauthenticated; the digest in the manifest is what makes the response trustworthy.
+	HTTP *PluginBundleHTTP `json:"http,omitempty"`
+}
+
+// PluginBundleHTTP selects the HTTP transport for a plugin's bundle. It has no settings: the URL
+// is in the ConfigMap, not the manifest.
+type PluginBundleHTTP struct{}
+
+// PluginBundleAPIServer locates a bundle served by an aggregated API server.
+type PluginBundleAPIServer struct {
+	// Path is the base path of the aggregated API group serving the bundle, which must be
+	// exactly "/apis/<group>/<version>", e.g. "/apis/ui.example/v1". The backend requests
+	// "<Path>/uipluginbundles/<bundleSha256>/download" from the API server it is configured
+	// with: the manifest picks the group and version, never the host nor the resource.
+	Path string `json:"path"`
 }
 
 // PluginFederation is the plugin's federation remote entry file, plus the
