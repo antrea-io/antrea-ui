@@ -135,6 +135,9 @@ type Registry struct {
 	// parseRemotePluginConfigMap). Nil leaves such plugins unloadable.
 	bundleFetcher     BundleFetcher
 	httpBundleFetcher BundleFetcher
+	// httpBundleSourceDisabled rejects every manifest that selects bundleSource.http, whatever
+	// httpBundleFetcher is.
+	httpBundleSourceDisabled bool
 	// downloadBackoff paces the retries of a failing bundle download, per ConfigMap key.
 	downloadBackoff workqueue.TypedRateLimiter[string]
 
@@ -187,23 +190,27 @@ type Options struct {
 	// BundleFetcher and HTTPBundleFetcher map to the Registry fields of the same names.
 	BundleFetcher     BundleFetcher
 	HTTPBundleFetcher BundleFetcher
+	// DisableHTTPBundleSource maps to httpBundleSourceDisabled. It is negated so that the zero
+	// value keeps bundleSource.http enabled.
+	DisableHTTPBundleSource bool
 }
 
 func NewRegistry(opts Options) *Registry {
 	return &Registry{
-		logger:              opts.Logger,
-		clientset:           opts.Clientset,
-		namespace:           opts.Namespace,
-		labelSelector:       opts.LabelSelector,
-		maxConfigMapPlugins: opts.MaxConfigMapPlugins,
-		maxDirectoryPlugins: opts.MaxDirectoryPlugins,
-		maxBundleBytes:      opts.MaxBundleBytes,
-		signatureVerifiers:  opts.SignatureVerifiers,
-		bundleFetcher:       opts.BundleFetcher,
-		httpBundleFetcher:   opts.HTTPBundleFetcher,
-		downloadBackoff:     newRetryRateLimiter(),
-		plugins:             make(map[string]pluginEntry),
-		diskPlugins:         make(map[string]pluginEntry),
+		logger:                   opts.Logger,
+		clientset:                opts.Clientset,
+		namespace:                opts.Namespace,
+		labelSelector:            opts.LabelSelector,
+		maxConfigMapPlugins:      opts.MaxConfigMapPlugins,
+		maxDirectoryPlugins:      opts.MaxDirectoryPlugins,
+		maxBundleBytes:           opts.MaxBundleBytes,
+		signatureVerifiers:       opts.SignatureVerifiers,
+		bundleFetcher:            opts.BundleFetcher,
+		httpBundleFetcher:        opts.HTTPBundleFetcher,
+		httpBundleSourceDisabled: opts.DisableHTTPBundleSource,
+		downloadBackoff:          newRetryRateLimiter(),
+		plugins:                  make(map[string]pluginEntry),
+		diskPlugins:              make(map[string]pluginEntry),
 	}
 }
 

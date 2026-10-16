@@ -164,35 +164,10 @@ func TestPluginBundleDownloadOverHTTP(t *testing.T) {
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 }
 
-// TestPluginBundleDownloadWithoutRBAC is the other side: remote-plugin-denied names a resource of
-// the same API group that the antrea-ui ServiceAccount has no RBAC for, so kube-apiserver refuses
-// the download. That is a failure outside the ConfigMap, so the backend keeps retrying rather
-// than giving up, and the plugin is never served.
-//
-// As in TestPluginWithoutSignatureIsRejected, the assertions are absences, so the test first
-// waits for the log line showing that the backend tried and was refused.
-func TestPluginBundleDownloadWithoutRBAC(t *testing.T) {
-	ctx := t.Context()
-
-	require.NoError(t,
-		waitForBackendLogLine(ctx, "failed to download plugin bundle, will retry", deniedRemotePluginName, "403"),
-		"the backend never logged a refused download for the %s ConfigMap", deniedRemotePluginName)
-
-	manifests, body := pluginIndex(ctx, t)
-	for _, m := range manifests {
-		assert.NotEqual(t, deniedRemotePluginName, m.Name, "a plugin whose bundle was refused must not be served: %s", body)
-	}
-	resp, err := Request(ctx, host, "GET", "api/v1/plugins/"+deniedRemotePluginName+"/index.js", nil)
-	require.NoError(t, err)
-	defer resp.Body.Close()
-	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
-}
-
 // The ConfigMap and manifest names of the plugins ci/e2e-plugins.sh installs to be downloaded.
 const (
-	remotePluginName       = "remote-plugin"
-	httpPluginName         = "http-plugin"
-	deniedRemotePluginName = "remote-plugin-denied"
+	remotePluginName = "remote-plugin"
+	httpPluginName   = "http-plugin"
 )
 
 // pluginManifest is the subset of apis/v1.PluginManifest these tests assert on.

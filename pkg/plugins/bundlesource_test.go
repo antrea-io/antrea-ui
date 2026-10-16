@@ -37,7 +37,10 @@ import (
 	"k8s.io/client-go/util/workqueue"
 )
 
-const testBundlePath = "/apis/ui.example.com/v1/uipluginbundles"
+const testBundlePath = "/apis/ui.example.com/v1"
+
+// testBundleRequestPrefix is what the backend appends the digest and "/download" to.
+const testBundleRequestPrefix = testBundlePath + "/uipluginbundles"
 
 func TestValidateBundleAPIServerPath(t *testing.T) {
 	tests := []struct {
@@ -45,8 +48,18 @@ func TestValidateBundleAPIServerPath(t *testing.T) {
 		wantErr bool
 	}{
 		{path: testBundlePath},
-		{path: testBundlePath + "/"},
-		{path: "/x"},
+		{path: "/apis/ui.example.com/v1beta2"},
+		{path: "/apis/ui.example.com/v2alpha1"},
+		{path: "/apis/ui.example.com/v1/", wantErr: true},
+		{path: "/apis/ui.example.com/v1/uipluginbundles", wantErr: true},
+		{path: "/apis/ui.example.com", wantErr: true},
+		{path: "/apis/ui.example.com/1", wantErr: true},
+		{path: "/apis/ui.example.com/v0", wantErr: true},
+		{path: "/apis/UI.example.com/v1", wantErr: true},
+		{path: "/api/v1", wantErr: true},
+		{path: "/api/v1/namespaces/ns/services/svc/proxy", wantErr: true},
+		{path: "/apis/ui.example.com/v1/proxy", wantErr: true},
+		{path: "/x", wantErr: true},
 		{path: "", wantErr: true},
 		{path: "apis/x", wantErr: true},
 		{path: "//evil.example/apis/x", wantErr: true},
@@ -55,6 +68,7 @@ func TestValidateBundleAPIServerPath(t *testing.T) {
 		{path: "/apis/x#frag", wantErr: true},
 		{path: "/apis/../api/v1/secrets", wantErr: true},
 		{path: "/apis/./x", wantErr: true},
+		{path: "/apis/ui.example.com/..", wantErr: true},
 		{path: "/apis//x", wantErr: true},
 		{path: "/apis/%2e%2e/x", wantErr: true},
 		{path: `/apis\x`, wantErr: true},
@@ -74,10 +88,9 @@ func TestValidateBundleAPIServerPath(t *testing.T) {
 
 func TestBundleRequestPath(t *testing.T) {
 	digest := bundleDigest([]byte("x"))
-	assert.Equal(t, testBundlePath+"/"+digest+"/download", bundleRequestPath(testBundlePath, digest))
-	assert.Equal(t, testBundlePath+"/"+digest+"/download", bundleRequestPath(testBundlePath+"/", digest))
+	assert.Equal(t, testBundleRequestPrefix+"/"+digest+"/download", bundleRequestPath(testBundlePath, digest))
 	// Resource names are lowercase.
-	assert.Equal(t, testBundlePath+"/abc/download", bundleRequestPath(testBundlePath, "ABC"))
+	assert.Equal(t, testBundleRequestPrefix+"/abc/download", bundleRequestPath(testBundlePath, "ABC"))
 }
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -212,12 +225,30 @@ func TestRemoteBundleLoads(t *testing.T) {
 
 	require.Len(t, r.Index(), 1)
 	assert.Equal(t, "1.0.0", r.Index()[0].Version)
-	assert.Equal(t, []string{testBundlePath + "/" + bundleDigest(bundle) + "/download"}, fetcher.requestPaths())
+	assert.Equal(t, []string{testBundleRequestPrefix + "/" + bundleDigest(bundle) + "/download"}, fetcher.requestPaths())
 	file, _, ok := r.File("pod-counter", "index.js")
 	require.True(t, ok)
 	assert.Equal(t, "console.log('hi')", readAll(t, file))
 	entry, _ := r.getConfigMapPlugin("pod-counter-cm")
 	assert.Equal(t, "trusted", entry.verifiedBy)
+}
+
+// Without signature verification a manifest loads unsigned, as one with an inline bundle.zip
+// does: the path is constrained, and the digest decides what is accepted.
+func TestRemoteBundleLoadsWithoutSignatureVerification(t *testing.T) {
+	bundle := buildZip(t, podCounterBundle())
+	fetcher := &fakeFetcher{body: bundle}
+	r := newRemoteTestRegistry(t, testSigner(), fetcher, 0)
+	r.signatureVerifiers = nil
+	cm := remoteConfigMap(t, testSigner(), remoteManifest("1.0.0", bundle))
+	delete(cm.Data, openPGPSignatureFileName)
+
+	require.Equal(t, upsertDone, r.handleUpsert(t.Context(), cm))
+
+	require.Len(t, r.Index(), 1)
+	assert.Equal(t, []string{testBundleRequestPrefix + "/" + bundleDigest(bundle) + "/download"}, fetcher.requestPaths())
+	entry, _ := r.getConfigMapPlugin("pod-counter-cm")
+	assert.Empty(t, entry.verifiedBy)
 }
 
 func TestRemoteBundleRejections(t *testing.T) {
@@ -231,7 +262,6 @@ func TestRemoteBundleRejections(t *testing.T) {
 		name string
 		// cm builds the ConfigMap; nil uses a correctly signed manifest for bundle.
 		cm        func(t *testing.T) *corev1.ConfigMap
-		noVerify  bool
 		maxBytes  int64
 		served    []byte
 		fetchErr  error
@@ -260,11 +290,17 @@ func TestRemoteBundleRejections(t *testing.T) {
 			},
 			want: upsertRejected,
 		},
-		{name: "signature verification disabled", noVerify: true, want: upsertRejected},
 		{
 			name: "no digest",
 			cm: func(t *testing.T) *corev1.ConfigMap {
 				return signedCM(t, fmt.Sprintf(`{"name":"pod-counter","entry":"index.js","bundleSource":{"apiServer":{"path":%q}}}`, testBundlePath))
+			},
+			want: upsertRejected,
+		},
+		{
+			name: "path of another shape",
+			cm: func(t *testing.T) *corev1.ConfigMap {
+				return signedCM(t, fmt.Sprintf(`{"name":"pod-counter","entry":"index.js","bundleSha256":%q,"bundleSource":{"apiServer":{"path":"/api/v1/namespaces/ns/services/svc/proxy"}}}`, bundleDigest(bundle)))
 			},
 			want: upsertRejected,
 		},
@@ -309,9 +345,6 @@ func TestRemoteBundleRejections(t *testing.T) {
 			}
 			fetcher := &fakeFetcher{body: served, err: tt.fetchErr}
 			r := newRemoteTestRegistry(t, testSigner(), fetcher, tt.maxBytes)
-			if tt.noVerify {
-				r.signatureVerifiers = nil
-			}
 			cm := remoteConfigMap(t, testSigner(), remoteManifest("1.0.0", bundle))
 			if tt.cm != nil {
 				cm = tt.cm(t)

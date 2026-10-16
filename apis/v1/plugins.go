@@ -50,9 +50,7 @@ type PluginManifest struct {
 	// plugin whose ConfigMap carries only manifest.json and its signature (a bundle too large
 	// for a ConfigMap's ~1MiB limit). Nil for a plugin whose bundle.zip ships in the ConfigMap
 	// or the plugin directory. It is only supported for ConfigMap plugins and requires
-	// BundleSha256: the digest is what pins the bytes accepted, wherever they come from. An
-	// "apiServer" source also requires plugin signature verification to be enabled, so the
-	// location is covered by the manifest's signature.
+	// BundleSha256: the digest is what pins the bytes accepted, wherever they come from.
 	BundleSource *PluginBundleSource `json:"bundleSource,omitempty"`
 }
 
@@ -76,11 +74,10 @@ type PluginBundleHTTP struct{}
 
 // PluginBundleAPIServer locates a bundle served by an aggregated API server.
 type PluginBundleAPIServer struct {
-	// Path is the server-relative path of the bundle resource, e.g.
-	// "/apis/ui.example/v1/uipluginbundles". The backend requests
-	// "<Path>/<bundleSha256>/download" from the API server it is configured with: the manifest
-	// picks the path, never the host. It must start with a single "/" and must not hold a query,
-	// a fragment, or "." / ".." segments.
+	// Path is the base path of the aggregated API group serving the bundle, which must be
+	// exactly "/apis/<group>/<version>", e.g. "/apis/ui.example/v1". The backend requests
+	// "<Path>/uipluginbundles/<bundleSha256>/download" from the API server it is configured
+	// with: the manifest picks the group and version, never the host nor the resource.
 	Path string `json:"path"`
 }
 

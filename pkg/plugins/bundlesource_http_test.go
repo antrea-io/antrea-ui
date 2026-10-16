@@ -75,6 +75,28 @@ func TestValidateBundleSourceTransports(t *testing.T) {
 	}))
 }
 
+// With bundleSource.http disabled, a manifest selecting it is rejected without a request, and the
+// error names the option; the apiServer transport is unaffected.
+func TestHTTPBundleSourceDisabled(t *testing.T) {
+	bundle := buildZip(t, podCounterBundle())
+	httpFetcher := &fakeFetcher{body: bundle}
+	apiServer := &fakeFetcher{body: bundle}
+	r := newRemoteTestRegistry(t, testSigner(), apiServer, testMaxBundleBytes)
+	r.httpBundleFetcher = httpFetcher
+	r.httpBundleSourceDisabled = true
+
+	cm := httpConfigMap(t, testSigner(), httpManifest("1.0.0", bundle), testBundleURL)
+	_, err := r.parseRemotePluginConfigMap(t.Context(), cm, t.TempDir(), pluginEntry{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "plugins.bundleSource.http.enabled")
+	assert.Equal(t, upsertRejected, r.handleUpsert(t.Context(), cm))
+	assert.Empty(t, httpFetcher.requestPaths())
+	assert.Empty(t, r.Index())
+
+	require.Equal(t, upsertDone, r.handleUpsert(t.Context(), remoteConfigMap(t, testSigner(), remoteManifest("1.0.0", bundle))))
+	assert.Len(t, r.Index(), 1)
+}
+
 func TestHTTPFetcher(t *testing.T) {
 	respond := func(status int, body string) *http.Response {
 		return &http.Response{StatusCode: status, Status: fmt.Sprintf("%d %s", status, http.StatusText(status)), Body: io.NopCloser(bytes.NewReader([]byte(body))), Header: http.Header{}}
@@ -193,8 +215,8 @@ func TestHTTPBundleLoads(t *testing.T) {
 		verifiedBy string
 	}{
 		{name: "signed", signer: testSigner(), verifiedBy: "trusted"},
-		// The request carries no credentials and the digest decides what is accepted, so no
-		// signature verification being configured is not an obstacle, unlike for an API server.
+		// The digest decides what is accepted, so no signature verification being configured is
+		// not an obstacle.
 		{name: "signature verification disabled"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -352,6 +374,6 @@ func TestRemoteBundleTransportsUseTheirOwnFetcher(t *testing.T) {
 	other := buildZip(t, map[string]string{"index.js": "other"})
 	apiServer.set(other, nil)
 	require.Equal(t, upsertDone, r.handleUpsert(t.Context(), remoteConfigMap(t, testSigner(), remoteManifest("2.0.0", other))))
-	assert.Equal(t, []string{testBundlePath + "/" + bundleDigest(other) + "/download"}, apiServer.requestPaths())
+	assert.Equal(t, []string{testBundleRequestPrefix + "/" + bundleDigest(other) + "/download"}, apiServer.requestPaths())
 	assert.Len(t, httpFetcher.requestPaths(), 1)
 }

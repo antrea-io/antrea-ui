@@ -180,6 +180,8 @@ func run() error {
 		SignatureVerifiers:  signatureVerifiers,
 		BundleFetcher:       bundleFetcher,
 		HTTPBundleFetcher:   pluginregistry.NewHTTPBundleFetcher(),
+
+		DisableHTTPBundleSource: !config.Plugins.BundleSource.HTTP.Enabled,
 	})
 	accessResolver := accesshandler.NewResolver(logger, k8sClientset)
 

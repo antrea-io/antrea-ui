@@ -414,7 +414,7 @@ lives inside `bundle.zip`:
 | `version` | yes | Informational only. |
 | `entry` | yes | Plugin's JS module filename; must be an entry in the same plugin's `bundle.zip`. Always eagerly `import()`-ed by the host at startup, for whatever page-extension registration the plugin's code performs (see below) — independent of `federation`. Required even for a plugin whose only page(s) are a `federation` remote with no other page-extension registration; such a plugin still needs a real ES module here, distinct from `federation.remoteEntry` — see below. |
 | `bundleSha256` | no* | Hex SHA-256 of the plugin's `bundle.zip` as delivered (64 characters, compared case-insensitively). Verified whenever present, and **required** when the backend is configured with a plugin signing key — it is what makes the signature over `manifest.json` cover the bundle too. See "Signature verification" above. |
-| `bundleSource` | no | `{"apiServer": {"path": "<server-relative path>"}}` or `{"http": {}}` (with the URL in the ConfigMap's `bundleURL` key) — where the backend downloads `bundle.zip` from, for a ConfigMap that ships no `bundle.zip` (see "Downloading the bundle" below). Requires `bundleSha256`; `apiServer` also requires plugin signature verification. Not supported for the plugin directory source. |
+| `bundleSource` | no | `{"apiServer": {"path": "/apis/<group>/<version>"}}` or `{"http": {}}` (with the URL in the ConfigMap's `bundleURL` key) — where the backend downloads `bundle.zip` from, for a ConfigMap that ships no `bundle.zip` (see "Downloading the bundle" below). Requires `bundleSha256`. `http` can be turned off with `plugins.bundleSource.http.enabled`. Not supported for the plugin directory source. |
 | `federation` | no | `{remoteEntry, routes: [{path, sidebarLabel, icon?, exposedModule, kind?}]}` — a [Native Federation](https://www.npmjs.com/package/@angular-architects/native-federation) remote (its own entry in `bundle.zip`, separate from `entry`) plus the whole-page routes/sidebar entries it serves, as data instead of registering them in code (see below). Antrea UI's own frontend has no module federation loader and ignores this field entirely (see `plugins.ts`); it's consumed by a separate, out-of-tree Angular-based host, which lazily loads a route's `exposedModule` out of `remoteEntry`, only once that route is actually visited. `kind` is `"component"` (the default) or `"routes"` — any other value is rejected, dropping the whole plugin (see below): `"component"` expects `exposedModule` to export a single page component; `"routes"` expects it to export a whole route tree the plugin owns end to end, letting it nest its own sub-paths and register its own route-level providers without the host knowing anything about them. Since a `"routes"` route owns every sub-path under its own `path`, no other route in the same manifest may fall under it (rejected the same way two routes with an identical `path` are); a route nested under it in a *different*, already-installed plugin's manifest is resolved the same way an identical `path` across plugins is (see below). |
 
 `bundle.zip`'s own internal layout is entirely up to the plugin — a flat set
@@ -524,9 +524,8 @@ signed:
 
 | | `apiServer` | `http` |
 |---|---|---|
-| Destination | the API server the backend is configured with; the manifest picks only the path | the URL in the ConfigMap's `bundleURL` key |
-| Credentials sent | the **antrea-ui ServiceAccount**'s | none |
-| Signature verification | required (`plugins.signature`) | verified when enabled, optional otherwise |
+| Destination | the API server the backend is configured with; the manifest picks only the API group and version | the URL in the ConfigMap's `bundleURL` key |
+| Credentials sent | the **antrea-ui ServiceAccount**'s token, to kube-apiserver only, which forwards the authenticated identity to the aggregated API server | none |
 | Needs RBAC for antrea-ui | yes, for the bundle resource | no |
 
 ```json
@@ -537,7 +536,7 @@ signed:
   "bundleSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
   "bundleSource": {
     "apiServer": {
-      "path": "/apis/ui.example.com/v1/uipluginbundles"
+      "path": "/apis/ui.example.com/v1"
     }
   }
 }
@@ -578,18 +577,20 @@ When the ConfigMap appears or changes, the backend:
 
 1. Verifies the signature over the manifest, when signature verification is
    enabled (`plugins.signature`). A missing or invalid signature means nothing
-   is downloaded. A manifest with `bundleSource.apiServer` is rejected
-   outright when verification is not enabled: the path it names is where the
-   backend sends its own credentials, and nothing else would authenticate it.
+   is downloaded. Without verification, the manifest loads unsigned, as a
+   plugin with an inline `bundle.zip` does.
 2. Validates the manifest. `bundleSha256` is required, and exactly one of
-   `apiServer` and `http` must be set. An `apiServer` `path` must be
-   server-relative (a single leading `/`; no query, fragment, `.` or `..`
-   segment). The request always goes to the API server the backend is
-   configured with: the manifest picks the path, never the host. For `http`,
-   the ConfigMap's `bundleURL` is validated as above.
-3. Sends a `GET`. For `apiServer` that is `GET <path>/<bundleSha256>/download`
-   to kube-apiserver, as the **antrea-ui ServiceAccount**; the digest is
-   appended by the backend, so it appears once, covered by the signature. For
+   `apiServer` and `http` must be set. An `apiServer` `path` must be exactly
+   `/apis/<group>/<version>`, so the backend can only request the `download`
+   subresource of a `uipluginbundles` object of an aggregated API group. The
+   request always goes to the API server the backend is configured with: the
+   manifest picks the group and version, never the host. For `http`, the
+   ConfigMap's `bundleURL` is validated as above, and the manifest is rejected
+   if `plugins.bundleSource.http.enabled` is false.
+3. Sends a `GET`. For `apiServer` that is
+   `GET <path>/uipluginbundles/<bundleSha256>/download` to kube-apiserver, as
+   the **antrea-ui ServiceAccount**; the resource and the digest are appended
+   by the backend, so the digest appears once. For
    `http` it is `GET <bundleURL>`, with no credentials of any kind. Redirects
    are not followed in either case, and the request has a deadline of two
    minutes.
@@ -619,17 +620,19 @@ antrea-ui restart the plugin is absent until its first download succeeds.
 ### Who can make the backend send a request
 
 Whoever can write ConfigMaps in the plugin namespace decides where the backend
-sends a bundle request: no destination is off limits for `http`, and
-`apiServer` can reach any path of the API server the ServiceAccount's RBAC
-allows. Neither the digest nor the signature changes that, as they decide what
-is accepted, not whether a request is sent. In particular, `bundleURL` is not
+sends a bundle request: no destination is off limits for `http`, while
+`apiServer` is limited to the `download` subresource of `uipluginbundles` in an
+aggregated API group, a path the ServiceAccount's RBAC must allow. Neither the
+digest nor the signature changes that, as they decide what is accepted, not
+whether a request is sent. Where `http` is not needed, turn it off with
+`plugins.bundleSource.http.enabled: false`. In particular, `bundleURL` is not
 signed, so even with signature verification on, a writer can point an
 existing, validly signed manifest at a different destination, though not make
 the backend accept a bundle other than the one the manifest's digest names. So
 keep write access to the plugin namespace to trusted installers, and use
 network policy to limit what antrea-ui can reach where that matters. A
-manifest with `apiServer` has the path covered by the signature, which an
-`http` URL cannot offer.
+manifest with `apiServer` has the group and version covered by the signature,
+which an `http` URL cannot offer.
 
 Plain `http` is enough for the integrity of what is installed, as the digest
 reaches the backend through the Kubernetes API and the whole response is
@@ -648,9 +651,11 @@ ingress from antrea-ui.
 
 ### What the aggregated API server has to provide
 
-- A bundle resource named by digest. `GET <path>/<sha256>` returns a standard
-  Kubernetes object, the resource supports `LIST`, and its `download`
-  subresource, `GET <path>/<sha256>/download`, returns `bundle.zip` (or 404 if
+- A `uipluginbundles` resource in the manifest's group and version, with
+  objects named by digest. `GET <path>/uipluginbundles/<sha256>` returns a
+  standard Kubernetes object, the resource supports `LIST`, and its `download`
+  subresource, `GET <path>/uipluginbundles/<sha256>/download`, returns
+  `bundle.zip` (or 404 if
   the replica does not have that digest). The resource must accept a
   64-character hexadecimal name. The bundle is a subresource because resources
   exposed through aggregation have to be standard Kubernetes objects.

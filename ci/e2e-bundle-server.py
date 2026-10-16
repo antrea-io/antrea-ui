@@ -18,11 +18,11 @@ It is registered with an APIService (see ci/e2e-plugins.sh), so kube-apiserver p
 for /apis/ui.e2e.antrea.io/v1 to it, over TLS on port 8443. It answers only what the aggregation
 layer and the backend ask for:
 
-  GET /apis/ui.e2e.antrea.io/v1                            the group's discovery document, which
-                                                           kube-apiserver needs for the APIService
-                                                           to become Available
-  GET /apis/ui.e2e.antrea.io/v1/<resource>/<sha>/download  the bundle, whatever <sha> is: the
-                                                           backend verifies the digest itself
+  GET /apis/ui.e2e.antrea.io/v1                                 the group's discovery document,
+                                                                which kube-apiserver needs for the
+                                                                APIService to become Available
+  GET /apis/ui.e2e.antrea.io/v1/uipluginbundles/<sha>/download  the bundle, whatever <sha> is: the
+                                                                backend verifies the digest itself
 
 The same bundle is also served over plain HTTP on port 8080, for a plugin whose manifest selects
 the http transport:
@@ -38,7 +38,6 @@ import ssl
 import threading
 
 GROUP_VERSION = "ui.e2e.antrea.io/v1"
-PREFIX = "/apis/" + GROUP_VERSION
 
 with open("/bundle/bundle.zip", "rb") as f:
     BUNDLE = f.read()
@@ -55,16 +54,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         path = self.path.split("?")[0]
         parts = path.strip("/").split("/")
-        if path.rstrip("/") == PREFIX:
+        group_version = "/".join(parts[1:3]) if parts[:1] == ["apis"] else None
+        if len(parts) == 3 and group_version == GROUP_VERSION:
             body = json.dumps({
                 "kind": "APIResourceList",
                 "apiVersion": "v1",
-                "groupVersion": GROUP_VERSION,
+                "groupVersion": group_version,
                 "resources": [],
             }).encode()
             self._send(200, "application/json", body)
-        elif (path.startswith(PREFIX + "/") and len(parts) == 6 and parts[5] == "download") or (
-                len(parts) == 2 and parts[0] == "bundles"):
+        elif (len(parts) == 6 and group_version == GROUP_VERSION and parts[3] == "uipluginbundles"
+                and parts[5] == "download") or (len(parts) == 2 and parts[0] == "bundles"):
             self._send(200, "application/zip", BUNDLE)
         else:
             self._send(404, "application/json", b'{"kind":"Status","apiVersion":"v1","status":"Failure","code":404}')

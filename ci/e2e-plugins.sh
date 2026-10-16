@@ -23,17 +23,13 @@
 #   - no-signature-plugin:  structurally valid but carrying no manifest.json.asc, and expected to
 #                           be rejected (TestPluginWithoutSignatureIsRejected)
 #
-# Three more cover a plugin whose bundle is downloaded instead of shipped in its ConfigMap (see
+# Two more cover a plugin whose bundle is downloaded instead of shipped in its ConfigMap (see
 # "Downloading the bundle" in docs/plugins.md). A stub bundle server (ci/e2e-bundle-server.py)
 # serves the bundle two ways. Over TLS it is an aggregated API server registered with an
 # APIService, so requests go through kube-apiserver for real, and the backend's ServiceAccount is
-# granted - or, for the denied plugin, not granted - access to its bundles. Over plain HTTP it is
-# an ordinary Service:
+# granted access to its bundles. Over plain HTTP it is an ordinary Service:
 #
 #   - remote-plugin:         through kube-apiserver, expected to load (TestPluginBundleDownload)
-#   - remote-plugin-denied:  the same, but the ServiceAccount has no RBAC for the resource it
-#                            names, so kube-apiserver refuses with a 403 and the backend keeps
-#                            retrying (TestPluginBundleDownloadWithoutRBAC)
 #   - http-plugin:           over plain HTTP to the Service, the URL being in the ConfigMap,
 #                            expected to load (TestPluginBundleDownloadOverHTTP)
 #
@@ -82,9 +78,7 @@ KEY_CONFIGMAP_KEY="public-key.asc"
 # share. It lives in the plugins namespace, which is deleted by clean.
 BUNDLE_API_GROUP="ui.e2e.antrea.io"
 BUNDLE_SERVER="e2e-bundle-server"
-BUNDLE_PATH="/apis/${BUNDLE_API_GROUP}/v1/uipluginbundles"
-# A resource of the same group the ServiceAccount is not granted access to.
-DENIED_BUNDLE_PATH="/apis/${BUNDLE_API_GROUP}/v1/deniedbundles"
+BUNDLE_PATH="/apis/${BUNDLE_API_GROUP}/v1"
 
 function log() {
     echo "[e2e-plugins] $*"
@@ -215,7 +209,7 @@ spec:
     namespace: ${PLUGINS_NAMESPACE}
     port: 443
 ---
-# What docs/plugins.md tells a plugin provider's chart to ship. Deliberately nothing for deniedbundles.
+# What docs/plugins.md tells a plugin provider's chart to ship.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -314,15 +308,12 @@ function create_plugins() {
     kubectl apply -f "${ROOT_DIR}/plugins/examples/pod-counter/clusterrole.yaml"
 
     create_bundle_server
-    # The ConfigMap names are matched by TestPluginBundleDownload,
-    # TestPluginBundleDownloadOverHTTP and TestPluginBundleDownloadWithoutRBAC in
-    # test/e2e/plugin_test.go.
+    # The ConfigMap names are matched by TestPluginBundleDownload and
+    # TestPluginBundleDownloadOverHTTP in test/e2e/plugin_test.go.
     log "Creating the remote-plugin ConfigMap (bundle downloaded, expected to load)"
     create_remote_plugin remote-plugin "${BUNDLE_PATH}"
     log "Creating the http-plugin ConfigMap (bundle downloaded over plain HTTP)"
     create_http_plugin http-plugin
-    log "Creating the remote-plugin-denied ConfigMap (download refused by RBAC)"
-    create_remote_plugin remote-plugin-denied "${DENIED_BUNDLE_PATH}"
 }
 
 function clean() {

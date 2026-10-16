@@ -72,6 +72,13 @@ plugins:
   # received, independently of the decompressed size. 0 means unbounded, except that a plugin
   # whose bundle is downloaded is refused unless this is positive.
   maxBundleBytes: 10485760
+  bundleSource:
+    http:
+      # -- Whether a plugin manifest may select bundleSource.http, which makes the backend send an
+      # unauthenticated request to the URL in the plugin's ConfigMap (see bundleSource in
+      # docs/plugins.md). When false, such a manifest is rejected. Deployments that don't deliver
+      # plugin bundles over HTTP(S) can turn it off.
+      enabled: true
   signature:
     # -- When true, every plugin must ship a signature that verifies against at least one of
     # trustedKeys below, and a manifest bundleSha256 matching its bundle.zip. Plugins that fail

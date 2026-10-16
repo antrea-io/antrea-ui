@@ -511,14 +511,14 @@ func reuseExtractedBundle(manifest *apisv1.PluginManifest, existing pluginEntry,
 // its manifest's bundleSource says where to download it from. Everything is checked in the order
 // that keeps an untrusted request or byte from going any further than it has earned:
 //
-//  1. The manifest's signature, when verification is enabled, before anything is read from it. A
-//     bundleSource.apiServer manifest is rejected when it is not: nothing would then
-//     authenticate the path it names, which is the location the backend sends its own
-//     credentials to. A bundleSource.http manifest has no such need - its request carries no
-//     credentials, and the digest decides what is accepted - so it loads unsigned when no
-//     verification is configured, as an inline bundle does.
-//  2. The manifest itself, including its source and the digest it requires, a positive
-//     maxBundleBytes to bound the download with, and for an http source the URL in the ConfigMap.
+//  1. The manifest's signature, when verification is enabled, before anything is read from it.
+//     With none configured, the manifest loads unsigned, as an inline bundle does: whoever
+//     writes the ConfigMap already chooses the bundle, and the digest decides which bytes are
+//     accepted from a download.
+//  2. The manifest itself, including its source (an apiServer path is constrained to
+//     /apis/<group>/<version>, so the request can only be for a bundle download) and the digest
+//     it requires, a positive maxBundleBytes to bound the download with, and for an http source
+//     that it is enabled and the URL in the ConfigMap.
 //  3. The download, unless existing already holds a bundle with this digest, bounded by
 //     maxBundleBytes, into a private file.
 //  4. The digest of those exact bytes, then the zip's central directory, then the extraction -
@@ -561,12 +561,12 @@ func (r *Registry) parseRemotePluginConfigMap(ctx context.Context, cm *corev1.Co
 	var target string
 	switch {
 	case manifest.BundleSource.APIServer != nil:
-		if !requireSignature(r.signatureVerifiers) {
-			return nil, errors.New("a manifest with 'bundleSource.apiServer' is only supported when plugin signature verification is enabled (plugins.signature)")
-		}
 		fetcher = r.bundleFetcher
 		target = bundleRequestPath(manifest.BundleSource.APIServer.Path, manifest.BundleSha256)
 	default:
+		if r.httpBundleSourceDisabled {
+			return nil, errors.New("a manifest with 'bundleSource.http' is rejected because plugins.bundleSource.http.enabled is false")
+		}
 		if target, err = validateBundleURL(cm.Data[bundleURLKey]); err != nil {
 			return nil, err
 		}

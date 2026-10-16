@@ -21,10 +21,12 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/rest"
 
 	apisv1 "antrea.io/antrea-ui/apis/v1"
@@ -34,6 +36,10 @@ import (
 // It is install-specific, so it is not in the signed manifest: changing it needs no signing key,
 // and cannot change which bundle bytes are accepted, as the digest is.
 const bundleURLKey = "bundleURL"
+
+// bundleResource is the aggregated API resource a bundleSource.apiServer bundle is downloaded
+// from, under the manifest's /apis/<group>/<version>.
+const bundleResource = "uipluginbundles"
 
 // bundleDownloadTimeout bounds a single bundle download, connection to last byte. Longer than
 // kube-apiserver's own default request timeout (60s), which is what actually bounds a proxied
@@ -181,28 +187,34 @@ func validateBundleURL(raw string) (string, error) {
 	return raw, nil
 }
 
+// apiVersionRegexp matches a Kubernetes API version: v1, v1beta2, v2alpha1...
+var apiVersionRegexp = regexp.MustCompile(`^v[1-9][0-9]*((alpha|beta)[1-9][0-9]*)?$`)
+
+// validateBundleAPIServerPath checks that p is exactly /apis/<group>/<version>. The backend
+// appends "/uipluginbundles/<sha256>/download" to it, so a manifest can only make it request the
+// download subresource of a uipluginbundles object of an aggregated API group: no core "/api/..."
+// path, no "../" traversal, no ".../proxy" subresource, no query.
 func validateBundleAPIServerPath(p string) error {
 	if p == "" {
 		return errors.New("manifest's 'bundleSource.apiServer.path' is missing")
 	}
-	// "//host/x" is a scheme-relative URL: left to URL parsing it would name another host.
-	if !strings.HasPrefix(p, "/") || strings.HasPrefix(p, "//") {
-		return fmt.Errorf("manifest's 'bundleSource.apiServer.path' %q must be a server-relative path starting with a single '/'", p)
+	parts := strings.Split(p, "/")
+	if len(parts) != 4 || parts[0] != "" || parts[1] != "apis" {
+		return fmt.Errorf("manifest's 'bundleSource.apiServer.path' %q must be of the form /apis/<group>/<version>", p)
 	}
-	if strings.ContainsAny(p, "?#%\\") {
-		return fmt.Errorf("manifest's 'bundleSource.apiServer.path' %q must not contain '?', '#', '%%' or '\\'", p)
+	if errs := validation.IsDNS1123Subdomain(parts[2]); len(errs) > 0 {
+		return fmt.Errorf("manifest's 'bundleSource.apiServer.path' %q has an invalid group %q: %s", p, parts[2], strings.Join(errs, "; "))
 	}
-	for seg := range strings.SplitSeq(strings.Trim(p, "/"), "/") {
-		if seg == "" || seg == "." || seg == ".." {
-			return fmt.Errorf("manifest's 'bundleSource.apiServer.path' %q must not contain empty, '.' or '..' segments", p)
-		}
+	if !apiVersionRegexp.MatchString(parts[3]) {
+		return fmt.Errorf("manifest's 'bundleSource.apiServer.path' %q has an invalid version %q", p, parts[3])
 	}
 	return nil
 }
 
-// bundleRequestPath builds the path a bundle is requested from: the manifest's path, then the
-// digest as the resource name (lowercase, as a Kubernetes resource name must be), then the
-// "download" subresource. The digest is written only once - by the backend, never the manifest.
+// bundleRequestPath builds the path a bundle is requested from: the manifest's
+// /apis/<group>/<version>, then the "uipluginbundles" resource, the digest as its name
+// (lowercase, as a Kubernetes resource name must be), and the "download" subresource.
+// Everything but the group and version is written by the backend, never the manifest.
 func bundleRequestPath(apiServerPath, bundleSha256 string) string {
-	return strings.TrimSuffix(apiServerPath, "/") + "/" + strings.ToLower(bundleSha256) + "/download"
+	return apiServerPath + "/" + bundleResource + "/" + strings.ToLower(bundleSha256) + "/download"
 }
