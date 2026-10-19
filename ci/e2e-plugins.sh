@@ -163,7 +163,7 @@ spec:
     spec:
       containers:
       - name: server
-        image: python:3.13-alpine
+        image: python:3.15-slim-trixie
         command: ["python", "-u", "/script/e2e-bundle-server.py"]
         ports:
         - containerPort: 8443
