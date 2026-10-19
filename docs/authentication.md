@@ -390,7 +390,9 @@ this endpoint existed. Successful responses are cached for the session, failed
 ones are not, so the next page to ask for the summary re-requests it rather
 than reusing a failure.
 
-- `rules` is the raw `SelfSubjectRulesReview` result. Rules are additive: a
+- `rules` is the raw `SelfSubjectRulesReview` result, except when the cluster-scope
+  probe is unusable (see below), in which case it is an empty, incomplete
+  placeholder. Rules are additive: a
   rule appearing there means the user definitely has that permission, but a
   rule *not* appearing only means "not allowed" when `rules.incomplete` is
   `false`. When `incomplete` is `true` — the API server saying its rule list is
@@ -524,7 +526,8 @@ into every user's cluster-scoped result.
 **Administrators should not create RoleBindings in
 `antrea-ui-cluster-scope-probe`.** antrea-ui detects it if they do — the same
 RoleBinding watch behind `namespaces` above also watches this one namespace —
-and reacts by marking `rules.incomplete: true` for cluster-scoped queries
+and reacts by emptying `rules` and marking `rules.incomplete: true` for
+cluster-scoped queries
 (namespaced `?namespace=` queries are unaffected, since the probe is irrelevant
 to them) until the offending RoleBinding is removed. The UI then falls back to
 showing everything, exactly as if the endpoint were unavailable. This is

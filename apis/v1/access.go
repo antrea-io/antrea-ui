@@ -32,10 +32,16 @@ type AccessSummary struct {
 	// omitempty: when Namespace is "", the field is absent from the JSON, not present as "".
 	// The frontend type reflects this (namespace?: string).
 	Namespace string `json:"namespace,omitempty"`
-	// Rules is the SelfSubjectRulesReview result. Rules are additive, so a rule appearing here
-	// means the user definitely has that permission; a rule *not* appearing only means "not
-	// allowed" when Incomplete is false. EvaluationError is also omitempty upstream, so it too
-	// is absent rather than "" when there is no error.
+	// Rules is the SelfSubjectRulesReview result, with one exception: for a cluster-scoped query
+	// while the cluster-scope probe is unusable (a RoleBinding exists in its namespace, see
+	// docs/authentication.md), it is a placeholder with no rules and Incomplete set to true. The
+	// API server's rules may then include grants that do not apply cluster-wide, so they are
+	// discarded, along with its EvaluationError.
+	//
+	// Rules are additive, so a rule appearing here means the user definitely has that permission; a
+	// rule *not* appearing only means "not allowed" when Incomplete is false, and otherwise the
+	// answer is unknown, not a denial. EvaluationError is also omitempty upstream, so it too is
+	// absent rather than "" when there is no error.
 	Rules authorizationv1.SubjectRulesReviewStatus `json:"rules"`
 	// Namespaces the user may have access to, or ["*"] if they can list namespaces
 	// cluster-wide. A heuristic: Kubernetes has no self-service API for this, so it is derived

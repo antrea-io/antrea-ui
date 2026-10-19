@@ -175,7 +175,7 @@ func (r *resolver) recheckClusterScopeProbe() {
 			names = append(names, rb.Name)
 		}
 		r.logger.Error(nil, "RoleBinding(s) found in the cluster-scope probe namespace; "+
-			"cluster-scoped access-summary results are now marked incomplete",
+			"cluster-scoped access-summary rules are now emptied and marked incomplete",
 			"namespace", ClusterScopeProbeNamespace, "roleBindings", names)
 	}
 }
