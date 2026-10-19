@@ -122,13 +122,31 @@ func TestAPIServerFetcher(t *testing.T) {
 		assert.Equal(t, "Bearer sa-token", got.Header.Get("Authorization"))
 	})
 
-	for _, status := range []int{http.StatusNotFound, http.StatusForbidden, http.StatusInternalServerError, http.StatusFound} {
+	for _, status := range []int{http.StatusNotFound, http.StatusForbidden, http.StatusInternalServerError} {
 		t.Run(fmt.Sprintf("status %d", status), func(t *testing.T) {
 			f := newFetcher(t, func(*http.Request) (*http.Response, error) { return respond(status, "nope"), nil })
 			_, err := f.Fetch(t.Context(), testBundlePath+"/abc/download")
 			assert.Error(t, err)
 		})
 	}
+
+	// client-go's bearer token round tripper adds the ServiceAccount token to every request that
+	// goes through the transport, redirect hops included, so a followed redirect would send the
+	// token to the Location host. The response needs a Location header for the client to even
+	// consider a redirect.
+	t.Run("redirect is not followed", func(t *testing.T) {
+		var requests []*http.Request
+		f := newFetcher(t, func(r *http.Request) (*http.Response, error) {
+			requests = append(requests, r)
+			resp := respond(http.StatusFound, "nope")
+			resp.Header.Set("Location", "https://elsewhere.example/b")
+			return resp, nil
+		})
+		_, err := f.Fetch(t.Context(), testBundlePath+"/abc/download")
+		assert.Error(t, err)
+		require.Len(t, requests, 1)
+		assert.Equal(t, "apiserver.example:6443", requests[0].URL.Host)
+	})
 
 	t.Run("base path prefix", func(t *testing.T) {
 		var got *http.Request

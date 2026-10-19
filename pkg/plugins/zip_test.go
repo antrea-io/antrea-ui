@@ -117,3 +117,39 @@ func TestExtractZipErrorsTellAnInvalidArchiveFromAFailingFilesystem(t *testing.T
 	require.Error(t, err)
 	assert.NotErrorIs(t, err, errInvalidArchive)
 }
+
+// Entry names that cannot be laid out on a filesystem are the same on every download, so they are
+// errInvalidArchive too, unlike a failure that says nothing about the archive.
+func TestExtractZipEntryNamesThatCannotBeLaidOutAreAnInvalidArchive(t *testing.T) {
+	longName := strings.Repeat("a", 300)
+	for name, zr := range map[string]*zip.Reader{
+		"file and directory of the same name": openZipEntries(t, []string{"lib", "lib/a.js"}),
+		"directory then file of that name":    openZipEntries(t, []string{"lib/a.js", "lib"}),
+		"entry naming the root":               openZipEntries(t, []string{"."}),
+		"entry naming a parent":               openZipEntries(t, []string{"a/.."}),
+		"name too long":                       openZipEntries(t, []string{longName}),
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := extractZip(zr, filepath.Join(t.TempDir(), "plugin"), 1000)
+			require.Error(t, err)
+			assert.ErrorIs(t, err, errInvalidArchive)
+		})
+	}
+}
+
+// openZipEntries is openZip for entry names in a given order, which a map does not keep.
+func openZipEntries(t *testing.T, names []string) *zip.Reader {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for _, name := range names {
+		w, err := zw.Create(name)
+		require.NoError(t, err)
+		_, err = w.Write([]byte("x"))
+		require.NoError(t, err)
+	}
+	require.NoError(t, zw.Close())
+	zr, err := zip.NewReader(bytes.NewReader(buf.Bytes()), int64(buf.Len()))
+	require.NoError(t, err)
+	return zr
+}

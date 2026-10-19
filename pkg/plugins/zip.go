@@ -24,6 +24,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"syscall"
 )
 
 // errDestGone marks an extractZip failure that happened after it already removed the previous
@@ -35,11 +36,21 @@ import (
 var errDestGone = errors.New("previous extraction removed")
 
 // errInvalidArchive marks an extractZip failure caused by the archive itself - an entry that
-// cannot be opened or decompressed, or one that decompresses past the size budget - as opposed to
-// the local filesystem failing (a full disk, say). Only the former cannot change without the
+// cannot be opened or decompressed, one that decompresses past the size budget, or entry names
+// that cannot be laid out on a filesystem - as opposed to the local filesystem failing (a full
+// disk, say). Only the former cannot change without the
 // bundle changing; a caller that downloads the bundle (parseRemotePluginConfigMap) retries the
 // latter.
 var errInvalidArchive = errors.New("invalid archive")
+
+// archiveLayoutError reports whether err, from creating the directory or file for an entry, is
+// one only the archive's entry names can cause. Extraction goes into a fresh private directory, so
+// a file "lib" next to an entry "lib/a.js" (ENOTDIR), an entry named "." or "a/.." (EISDIR) and a
+// name longer than the filesystem allows (ENAMETOOLONG) are the same on every download. Other
+// errors (ENOSPC, EIO, EROFS, EMFILE...) say nothing about the archive, so they are not matched.
+func archiveLayoutError(err error) bool {
+	return errors.Is(err, syscall.ENOTDIR) || errors.Is(err, syscall.EISDIR) || errors.Is(err, syscall.ENAMETOOLONG)
+}
 
 // archiveReader marks a read error of the archive's decompressed stream as errInvalidArchive, so
 // extractZipFile can tell it apart from the error of the write on the other side of the copy.
@@ -135,6 +146,9 @@ func extractZip(zr *zip.Reader, dest string, maxBundleBytes int64) (string, erro
 		// "zip slip" vulnerability class, on the write side instead of the read side.
 		target := safeJoin(tmpDest, f.Name)
 		if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+			if archiveLayoutError(err) {
+				return "", fmt.Errorf("failed to create directory for %q: %w: %w", f.Name, errInvalidArchive, err)
+			}
 			return "", fmt.Errorf("failed to create directory for %q: %w", f.Name, err)
 		}
 		n, err := extractZipFile(f, target, budgetTotal-written)
@@ -171,6 +185,9 @@ func extractZipFile(f *zip.File, target string, budget int64) (int64, error) {
 	defer rc.Close()
 	out, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
+		if archiveLayoutError(err) {
+			return 0, fmt.Errorf("failed to create %q: %w: %w", target, errInvalidArchive, err)
+		}
 		return 0, fmt.Errorf("failed to create %q: %w", target, err)
 	}
 	// budget can be math.MaxInt64 (unbounded case) - budget+1 would overflow, so instead of
