@@ -780,8 +780,9 @@ an entry that is itself nested is invalid, and the host drops the nesting
 
 `overview`, `summary`, `traceflow` and `flows` are themselves gated by
 per-user RBAC (see [authentication.md](authentication.md)) and simply don't
-render for a user who fails that gate; `flows` requires a cluster-wide
-`watch` grant on `flows.observability.antrea.io`. Nesting under any of them
+render for a user who fails that gate; `flows` is shown to a user who holds
+`watch` on `flows.observability.antrea.io` cluster-wide, may list namespaces, or
+is named in any RoleBinding. Nesting under any of them
 still falls back to a top-level entry for such a user, same as the
 invalid-nesting case above — but silently, per user, and without dropping
 anything: the entry itself is always valid, it just isn't always nested.

@@ -22,6 +22,10 @@ import type { AccessSummary } from '@antrea/ui-components';
 import { useAccess } from './access';
 
 vi.mock('./access', () => ({ useAccess: vi.fn() }));
+// The nav only reads the signed-in username, which keys the last scope chosen.
+vi.mock('react-redux', () => ({
+    useSelector: (selector: (state: unknown) => unknown) => selector({ sessionInfo: { username: 'alice' } }),
+}));
 const mockUseAccess = vi.mocked(useAccess);
 
 const podCounterEntry: PluginSidebarEntry = { label: 'Pod Counter', path: '/plugin/pod-counter' };
@@ -224,6 +228,10 @@ describe('NavTab — nested plugin entries', () => {
 });
 
 describe('NavTab — permission gating', () => {
+    beforeEach(() => {
+        sessionStorage.clear();
+    });
+
     test('while unloaded, renders no core items', () => {
         mockUseAccess.mockReturnValue({ summary: null, loaded: false });
         render(<NavTab pluginSidebarEntries={[]} />, { wrapper: MemoryRouter });
@@ -325,20 +333,63 @@ describe('NavTab — permission gating', () => {
         expect(document.querySelector('a[href="/flows/list"]')).not.toBeNull();
     });
 
-    // The flow page's observed namespace lives in the query string, and switching sub-page
-    // remounts the page, so a link that dropped the query string would silently reset the scope.
-    test('the flow sub-page links keep the current query string', () => {
+    // The flow page keeps its scope in the query string. Switching sub-page does not remount the
+    // page, which follows its URL, so a link that dropped the scope would reset it.
+    test('the flow sub-page links keep the scope in the URL', () => {
         render(
-            <MemoryRouter initialEntries={['/flows/list?observedNamespace=ns-a']}>
+            <MemoryRouter initialEntries={['/flows/list?namespace=ns-a']}>
                 <NavTab pluginSidebarEntries={[]} />
             </MemoryRouter>
         );
 
-        expect(document.querySelector('a[href="/flows/map?observedNamespace=ns-a"]')).not.toBeNull();
-        expect(document.querySelectorAll('a[href="/flows/list?observedNamespace=ns-a"]')).toHaveLength(2);
+        expect(document.querySelector('a[href="/flows/map?namespace=ns-a"]')).not.toBeNull();
+        expect(document.querySelectorAll('a[href="/flows/list?namespace=ns-a"]')).toHaveLength(2);
     });
 
-    // ...but only while already on a flow page: another page's query string means nothing here.
+    // ...but only the scope: another parameter on the flow page means nothing to the other view.
+    test('only the scope is carried between the flow sub-pages', () => {
+        render(
+            <MemoryRouter initialEntries={['/flows/list?namespace=_all&other=1']}>
+                <NavTab pluginSidebarEntries={[]} />
+            </MemoryRouter>
+        );
+
+        expect(document.querySelector('a[href="/flows/map?namespace=_all"]')).not.toBeNull();
+    });
+
+    // While on the page, the entries carry its URL's scope or none, and not the last scope chosen:
+    // a page that took a default has none, and switching views must not invent one.
+    test('a flow page with no scope in its URL carries none, whatever was chosen last', () => {
+        sessionStorage.setItem('antrea-ui:last-scope', JSON.stringify({ user: 'alice', scope: 'ns-last' }));
+        render(
+            <MemoryRouter initialEntries={['/flows/list']}>
+                <NavTab pluginSidebarEntries={[]} />
+            </MemoryRouter>
+        );
+
+        expect(document.querySelector('a[href="/flows/map"]')).not.toBeNull();
+    });
+
+    // Off the flow pages the entries carry the last scope chosen.
+    test('the flow links carry the last scope chosen from another page', () => {
+        sessionStorage.setItem('antrea-ui:last-scope', JSON.stringify({ user: 'alice', scope: 'ns-last' }));
+        render(
+            <MemoryRouter initialEntries={['/summary?tab=nodes']}>
+                <NavTab pluginSidebarEntries={[]} />
+            </MemoryRouter>
+        );
+
+        expect(document.querySelector('a[href="/flows/map?namespace=ns-last"]')).not.toBeNull();
+    });
+
+    test('another user\'s last scope is not carried', () => {
+        sessionStorage.setItem('antrea-ui:last-scope', JSON.stringify({ user: 'bob', scope: 'ns-last' }));
+        render(<NavTab pluginSidebarEntries={[]} />, { wrapper: MemoryRouter });
+
+        expect(document.querySelector('a[href="/flows/map"]')).not.toBeNull();
+    });
+
+    // An unrelated page's query string means nothing to the flow page.
     test('an unrelated page\'s query string is not carried into the flow links', () => {
         render(
             <MemoryRouter initialEntries={['/summary?tab=nodes']}>

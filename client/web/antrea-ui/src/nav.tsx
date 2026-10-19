@@ -15,12 +15,15 @@
  */
 
 import React from 'react';
+import { useSelector } from 'react-redux';
 import { useLocation } from 'react-router';
 import { Link } from 'react-router';
 import '@antrea/ui-components';
 import { can, canViewSummary, canViewFlows, canViewOverview, GATE_TRACEFLOW_CREATE } from '@antrea/ui-components';
 import type { PluginSidebarEntry } from './plugins';
 import { useAccess } from './access';
+import { getLastScope, scopeSearch } from './lastScope';
+import type { RootState } from './store';
 
 function OverviewIcon() {
     return (
@@ -115,6 +118,7 @@ function renderPluginNavItem(entry: PluginSidebarEntry, pathname: string) {
 
 export default function NavTab({ pluginSidebarEntries }: { pluginSidebarEntries: PluginSidebarEntry[] }) {
     const { pathname, search } = useLocation();
+    const user = useSelector((state: RootState) => state.sessionInfo?.username ?? '');
     const { summary, loaded } = useAccess();
 
     // While the access summary hasn't loaded yet, render no core items: entries popping in once
@@ -185,7 +189,12 @@ export default function NavTab({ pluginSidebarEntries }: { pluginSidebarEntries:
         );
     }
 
-    const flowsSearch = pathStartsWith(pathname, '/flows') ? search : '';
+    // The scope the flow entries carry: the one in the page's URL while on it (or none, when the
+    // page has none), so switching between its views keeps a scope the user chose, and otherwise
+    // the last scope chosen. Only `namespace`, so an unrelated query parameter is not carried.
+    const flowsSearch = scopeSearch(pathStartsWith(pathname, '/flows')
+        ? new URLSearchParams(search).get('namespace')
+        : getLastScope(user));
 
     return (
         <antrea-nav>
@@ -213,11 +222,10 @@ export default function NavTab({ pluginSidebarEntries }: { pluginSidebarEntries:
                     </Link>
                 </antrea-nav-item>
             ))}
-            {/* The two flow sub-pages keep the current query string, which is where the flow
-                page's observed namespace lives: switching between Flow List and Service Map
-                remounts the page, so dropping the query string would silently reset the scope
-                and leave the two views disagreeing about what is being observed. Only carried
-                while already under /flows, so an unrelated page's query string is not. */}
+            {/* The flow entries carry the scope (see flowsSearch). Switching between Flow List and
+                Service Map does not remount the page, which follows its URL instead, so dropping
+                the scope here would reset it, and a link that kept it lets Back and Forward
+                bring the page to the scope the URL names. */}
             {withNestedChildren('flows', showFlows, (
                 <antrea-nav-item {...(pathStartsWith(pathname, '/flows') ? { active: true } : {})}>
                     <Link to={`/flows/list${flowsSearch}`}>

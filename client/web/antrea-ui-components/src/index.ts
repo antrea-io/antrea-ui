@@ -28,8 +28,9 @@ export type {
     FlowTableColumn,
     FlowTableColumnsProcessor,
     ScopeChangeDetail,
+    ScopeChosenDetail,
 } from './pages/antrea-flow-visibility-page.js';
-export { SCOPE_CHANGE_EVENT } from './pages/antrea-flow-visibility-page.js';
+export { SCOPE_CHANGE_EVENT, SCOPE_CHOSEN_EVENT } from './pages/antrea-flow-visibility-page.js';
 export type { FlowEntry } from './lib/flow-store.js';
 export { AntreaLoginPage } from './pages/antrea-login-page.js';
 export { SessionAwarePage } from './lib/session-aware-page.js';

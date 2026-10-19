@@ -16,7 +16,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { resetAccessSummary } from './access-api.js';
 import type { AccessSummary, SubjectRules } from './access-api.js';
 import { setApiBase } from './api.js';
-import { flowAccess, searchFlowNamespaces } from './flow-access.js';
+import {
+    flowAccess, searchFlowNamespaces, mayNameNamespace, namespaceExists, isValidNamespaceName, LIST_SAFEGUARD,
+} from './flow-access.js';
 import type { FlowAccess } from './flow-access.js';
 
 const watchFlows = {
@@ -32,26 +34,62 @@ function summary(over: Partial<AccessSummary> = {}): AccessSummary {
 }
 
 function access(over: Partial<FlowAccess> = {}): FlowAccess {
-    return { clusterWide: 'denied', candidates: [], ...over };
+    return { clusterWide: 'denied', candidates: [], mayList: false, cut: false, ...over };
 }
 
 describe('searchFlowNamespaces', () => {
     const names = (n: number) => Array.from({ length: n }, (_, i) => `ns-${String(i).padStart(2, '0')}`);
 
-    it('offers the first page of the candidates', () => {
-        expect(searchFlowNamespaces(access({ clusterWide: 'allowed', candidates: names(25) }), '')).toEqual(names(10));
-        expect(searchFlowNamespaces(access({ candidates: names(25) }), '')).toEqual(names(10));
+    it('offers the first page of the candidates, and says there are more', () => {
+        expect(searchFlowNamespaces(access({ clusterWide: 'allowed', candidates: names(25) }), ''))
+            .toEqual({ items: names(10), more: true });
+        expect(searchFlowNamespaces(access({ candidates: names(25) }), '')).toEqual({ items: names(10), more: true });
+    });
+
+    it('does not say there are more when a page holds them all', () => {
+        expect(searchFlowNamespaces(access({ candidates: names(10) }), '')).toEqual({ items: names(10), more: false });
     });
 
     it('matches by prefix, ignoring case and surrounding space', () => {
         const candidates = ['alpha', 'beta', 'betamax', 'gamma'];
         expect(searchFlowNamespaces(access({ clusterWide: 'allowed', candidates }), ' BETA '))
-            .toEqual(['beta', 'betamax']);
+            .toEqual({ items: ['beta', 'betamax'], more: false });
+    });
+
+    it('searches the whole list, not the page that was offered', () => {
+        expect(searchFlowNamespaces(access({ candidates: names(25) }), 'ns-2')).toEqual({
+            items: ['ns-20', 'ns-21', 'ns-22', 'ns-23', 'ns-24'], more: false,
+        });
     });
 
     it('has nothing to search when the candidates are not known', () => {
-        expect(searchFlowNamespaces(access({ candidates: null }), '')).toEqual([]);
-        expect(searchFlowNamespaces(null, '')).toEqual([]);
+        expect(searchFlowNamespaces(access({ candidates: null }), '')).toEqual({ items: [], more: false });
+        expect(searchFlowNamespaces(null, '')).toEqual({ items: [], more: false });
+    });
+});
+
+describe('mayNameNamespace', () => {
+    it('is true for an empty, unknown or cut list, and false for a complete one', () => {
+        expect(mayNameNamespace(access({ candidates: [] }))).toBe(true);
+        expect(mayNameNamespace(access({ candidates: null }))).toBe(true);
+        expect(mayNameNamespace(access({ candidates: ['a'], cut: true }))).toBe(true);
+        expect(mayNameNamespace(access({ candidates: ['a'] }))).toBe(false);
+    });
+
+    it('is false while the access is not loaded', () => {
+        expect(mayNameNamespace(null)).toBe(false);
+    });
+});
+
+describe('isValidNamespaceName', () => {
+    it('accepts an RFC 1123 label', () => {
+        for (const n of ['a', 'dev', 'ns-1', '1a', 'a'.repeat(63)]) expect(isValidNamespaceName(n)).toBe(true);
+    });
+
+    it('rejects anything else', () => {
+        for (const n of ['', '_all', 'Dev', '-a', 'a-', 'a_b', 'a.b', 'a b', 'a'.repeat(64)]) {
+            expect(isValidNamespaceName(n)).toBe(false);
+        }
     });
 });
 
@@ -76,7 +114,9 @@ describe('flowAccess', () => {
 
     it('takes the candidates from the summary, sorted, and reviews no namespace', async () => {
         const f = stubFetch({ summary: json(summary({ namespaces: ['ns-b', 'ns-a'] })) });
-        expect(await flowAccess()).toEqual({ clusterWide: 'denied', candidates: ['ns-a', 'ns-b'] });
+        expect(await flowAccess()).toEqual({
+            clusterWide: 'denied', candidates: ['ns-a', 'ns-b'], mayList: false, cut: false,
+        });
         expect(calls(f, '/access-summary/namespaces')).toBe(0);
     });
 
@@ -104,17 +144,64 @@ describe('flowAccess', () => {
             summary: json(summary({ namespaces: ['*'] })),
             k8s: json({ items: [{ metadata: { name: 'ns-b' } }, { metadata: { name: 'ns-a' } }] }),
         });
-        expect((await flowAccess()).candidates).toEqual(['ns-a', 'ns-b']);
+        const got = await flowAccess();
+        expect(got.candidates).toEqual(['ns-a', 'ns-b']);
+        expect(got.mayList).toBe(true);
+        expect(got.cut).toBe(false);
         expect(calls(f, '/k8s/api/v1/namespaces')).toBe(1);
+    });
+
+    // Not capped, but with a safeguard: a response that says there is more is a cut list.
+    it('asks for at most the safeguard, and treats a continue token as a cut list', async () => {
+        const f = stubFetch({
+            summary: json(summary({ namespaces: ['*'] })),
+            k8s: json({ items: [{ metadata: { name: 'ns-a' } }], metadata: { continue: 'next' } }),
+        });
+        const got = await flowAccess();
+        expect(got.cut).toBe(true);
+        expect(got.candidates).toEqual(['ns-a']);
+        expect(String(f.mock.calls.find(c => String(c[0]).includes('/k8s/api/v1/namespaces'))![0]))
+            .toContain(`limit=${LIST_SAFEGUARD}`);
+    });
+
+    // The summary's own list is used as it is, whatever the rules say: they may be incomplete
+    // for every user of a webhook authorizer.
+    it('uses the summary\'s namespaces as they are when the rules are incomplete', async () => {
+        stubFetch({ summary: json(summary({ rules: rules({ incomplete: true }), namespaces: ['ns-b', 'ns-a'] })) });
+        expect((await flowAccess()).candidates).toEqual(['ns-a', 'ns-b']);
+    });
+
+    it('has an empty list when the summary names no namespace', async () => {
+        stubFetch({ summary: json(summary({ rules: rules({ incomplete: true }), namespaces: [] })) });
+        expect((await flowAccess()).candidates).toEqual([]);
     });
 
     it('has no candidates when that list cannot be fetched', async () => {
         stubFetch({ summary: json(summary({ namespaces: ['*'] })), k8s: () => new Response('{}', { status: 500 }) });
-        expect(await flowAccess()).toEqual({ clusterWide: 'denied', candidates: null });
+        expect(await flowAccess()).toEqual({ clusterWide: 'denied', candidates: null, mayList: true, cut: false });
     });
 
     it('never rejects: a summary that could not be fetched leaves everything unknown', async () => {
         stubFetch({});
-        expect(await flowAccess()).toEqual({ clusterWide: 'unknown', candidates: null });
+        expect(await flowAccess()).toEqual({ clusterWide: 'unknown', candidates: null, mayList: false, cut: false });
+    });
+});
+
+describe('namespaceExists', () => {
+    afterEach(() => {
+        vi.unstubAllGlobals();
+        setApiBase('');
+    });
+
+    it('is true when the namespace can be read, false on a 404, and null when it cannot be told', async () => {
+        const fetchMock = vi.fn()
+            .mockResolvedValueOnce(new Response('{}', { status: 200 }))
+            .mockResolvedValueOnce(new Response('{}', { status: 404 }))
+            .mockResolvedValueOnce(new Response('{}', { status: 500 }));
+        vi.stubGlobal('fetch', fetchMock);
+        expect(await namespaceExists('ns-a')).toBe(true);
+        expect(await namespaceExists('ns-a')).toBe(false);
+        expect(await namespaceExists('ns-a')).toBeNull();
+        expect(String(fetchMock.mock.calls[0][0])).toContain('/k8s/api/v1/namespaces/ns-a');
     });
 });

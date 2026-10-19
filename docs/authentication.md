@@ -219,14 +219,28 @@ asks for the whole cluster or for a single Namespace, and the `flows` rule alone
 is enough — `flows/identity` is only for being recognizable in records the
 caller receives through some other Namespace. A request naming no scope, or
 both, is rejected before it ever reaches FA. The frontend picks the scope from
-an observed-Namespace selector, which offers the cluster-wide option unless the
-caller is known not to hold it. It defaults to cluster-wide where the caller
-holds it, since that is the only scope in which nothing is redacted, and
-otherwise to the first candidate Namespace, unchecked. It opens no stream at all
-where there is no scope to choose: the caller has no candidate and no
-cluster-wide grant, or the access summary could not be fetched and the URL names
-no scope. It never opens one without a scope. The scope is kept in the page's
-URL, so a reload or a shared link keeps it.
+a Namespace selector, which offers All Namespaces (the `clusterWide` scope)
+unless the caller is known not to hold it. The page's URL carries the scope the
+user chose as `?namespace=<name>`, or `?namespace=_all` for All Namespaces, so a
+reload or a shared link keeps it. The scope in the URL is used as given: the
+stream opens on it without waiting for the Namespace list, it is not checked
+against the list, and it is not replaced by a default even when it is All
+Namespaces and the caller is known not to hold it. FA then answers, and the page
+shows the refusal. An invalid value (one that is neither `_all` nor a valid
+Namespace name, an empty value, or `namespace` given more than once) is reported
+on the page and nothing is selected. The page follows its URL when it changes,
+as with Back and Forward or a switch between Flow List and Service Map.
+
+Only a scope the user chose is written to the URL, in place, without a history
+entry: a pick, a typed name or a link followed. When the URL names none, the page
+takes a default, once the Namespace list and the verdict are known: All
+Namespaces where the caller is known to hold `watch` on `flows` cluster-wide,
+since that is the only scope in which nothing is redacted, and an *unknown*
+verdict never makes it the default; otherwise the first Namespace of the list,
+unchecked. The default is not written to the URL, so a reload runs it again. The
+page opens no stream at all where there is no scope to choose: the caller has no
+Namespace in the list and no cluster-wide grant, or the URL scope is invalid. It
+never opens one without a scope.
 
 Antrea UI performs no RBAC decision of its own here and must not: a wrong
 answer on antrea-ui's side would either hide flow data a caller is entitled to
@@ -272,24 +286,47 @@ holds `watch` on `flows` cluster-wide, which is *allowed* when a rule grants it,
 *denied* when none does in a rule list the API server says is exhaustive, and
 *unknown* when none does but the API server could not enumerate its rules, as
 with a webhook authorizer, or the summary could not be fetched. The selector
-offers the cluster-wide scope and honours `?clusterWide=true` unless the verdict
-is *denied*, so a caller granted `flows` cluster-wide by a webhook can choose
-it; only *allowed* makes it the default.
+offers All Namespaces unless the verdict is *denied*, so a caller granted `flows`
+cluster-wide by a webhook can choose it; only *allowed* makes it the default. The
+scope in force always appears in the selector as selected, even one it would not
+otherwise offer, such as All Namespaces on a *denied* page reached through a link.
 
 The selector's candidates are the Namespaces the access summary derived from
-RoleBindings naming the caller or their groups. The selector does not review
-them. It offers each of them, whether or not the caller may observe flows there,
-and says nothing about access in the list. A Namespace the caller may not observe
-is refused by FA with a 403 when they open it, and the page shows that error.
+RoleBindings naming the caller or their groups, as the summary has them, whatever
+`rules.incomplete` says: with a webhook authorizer the rules are incomplete for
+every caller, and a caller with RoleBindings must still get their list. The
+selector does not review the candidates. It offers each of them, whether or not
+the caller may observe flows there, and says nothing about access in the list. A
+Namespace the caller may not observe is refused by FA with a 403 when they open
+it, and the page shows that error.
 
 A caller who may list namespaces has none named in the access summary (it says
 `"*"`), so the page lists them itself through the Kubernetes API proxy, with the
-caller's own credentials. The selector is a combobox that offers at most 10
-candidates at a time and matches what is typed against namespace names by prefix.
+caller's own credentials. The list is not capped, but as a safeguard the request
+asks for at most 10,000 Namespaces, and a response that says there are more
+(a `continue` token) marks the list as cut. The selector is a combobox: with
+nothing typed it offers All Namespaces and then the first 10 Namespaces of the
+list, and typing searches the whole list by name prefix, ignoring case and
+surrounding spaces. It shows at most 10 matches and says when there are more ("Showing the
+first 10 - type to search" with nothing typed, "More matches, keep typing"
+otherwise), and hides All Namespaces while something is typed.
 
-When the candidates themselves are not known, because the summary could not be
-fetched or a caller who may list namespaces could not list them, the selector
-lets a caller name a Namespace directly instead, and FA authorizes it either way.
+When the list is empty, not known, or cut, the selector lets a caller name a
+Namespace directly instead, and FA authorizes it either way. The list is empty
+for a caller a webhook authorizer grants `flows` in a Namespace that no
+RoleBinding names; it is not known when the summary could not be fetched or a
+caller who may list namespaces could not list them. A typed name, in the
+combobox or in that box, must be a valid Namespace name (an RFC 1123 label) and
+is rejected otherwise.
+
+When the selected Namespace is not in a complete, non-empty list, the page still
+opens the stream, and adds a note, since a caller who holds `flows` cluster-wide
+gets an empty stream rather than a 403 for a misspelled or deleted Namespace. For
+a caller who may list namespaces the note says the Namespace does not exist, once
+a fresh `GET` of that one Namespace confirms it, as it may have been created
+after the list was loaded; for any other caller it says the Namespace is not in
+their list, so it may not exist or they may not have access. There is no note when
+the list is empty, not known, or cut.
 
 To turn the integration off entirely, deploy with `flowAggregator.enabled=false`
 (the chart default). The endpoint then returns 501 for every user, including
