@@ -93,8 +93,7 @@ the first of these that applies:
    who may list Namespaces, or when the access summary could not be fetched (rule 9). A default
    of All Namespaces is skipped on a page whose verdict is *denied*, and the page moves to the
    next step. A default Namespace is always used, even if the user has lost access to it since.
-3. **All Namespaces**, if the page's verdict is *allowed*. An *unknown* verdict never makes All
-   Namespaces the default.
+3. **All Namespaces**, if the page's verdict is *allowed*, not when it is *unknown*.
 4. **The first starred Namespace that is still in the list**, or the first starred Namespace if
    the list is empty, unknown or cut (the cases where stars can be typed); or
    else the first Namespace of the list.
@@ -107,13 +106,14 @@ A scope chosen by steps 2 to 5 is not written to the URL (rule 12).
 
 No Namespace is checked before the user selects it, and none is hidden or marked because of such
 a check. Once a scope is selected, the page loads its content for that scope and shows what the
-API allows. A page made of several parts may leave out a part whose verdict in the selected
-scope is *denied*, and says that something is hidden; when that leaves out every part, it says
-that nothing on the page is available to the user in that scope. A page never refuses a whole
-scope based on a verdict: it makes its requests, and a refusal comes from the API.
+API allows. A page made of several parts, such as Overview, may leave out a part whose verdict
+in the selected scope is *denied*: it makes no requests for that part, and says that something
+is hidden. When that leaves out every part, it says that nothing on the page is available to the
+user in that scope, and the scope and the picker stay as they are. Every part that is not left
+out makes its requests, and a refusal comes from the API.
 
-For example, Flow Visibility opens a stream for the scope and reports a refusal; Overview looks
-at the verdicts for the selected Namespace and leaves out the parts they deny.
+For example, Flow Visibility always opens a stream for the scope and reports a refusal; Overview
+looks at the verdicts for the selected Namespace and leaves out the parts they deny.
 
 When the selected Namespace is not in a complete, non-empty list, the page still loads it, and
 adds a note: "Namespace X does not exist" for a user who may list Namespaces, once a fresh check
@@ -143,6 +143,9 @@ user can name a Namespace, and the API's answer decides what is shown.
 The selected scope is never changed or removed automatically, even if the user's permissions
 change. A scope that is no longer accessible is reported by the page when it loads it
 (rule 6).
+
+The Namespace list and the verdicts can become out of date during a session, and a reload
+refreshes them.
 
 ## 11. Plugin pages
 
