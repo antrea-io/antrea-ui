@@ -108,11 +108,15 @@ func (s *Server) GetAccessSummary(c *gin.Context) {
 			return s.k8sError(c, err, "error when evaluating access summary")
 		}
 		result.Rules = ssrr.Status
-		// Incomplete is normally the API server's own verdict (a webhook authorizer it cannot
-		// enumerate). It is also set here when the cluster-scope probe is unusable, because the
-		// rules then conflate cluster-scoped and namespaced grants.
+		// An unusable cluster-scope probe may include Namespace-scoped grants. Merely setting
+		// Incomplete still lets matching rules produce allowed verdicts, so discard the entire
+		// rules result. Otherwise, preserve the API server's rules and Incomplete status.
 		if ns == "" && !s.accessResolver.ClusterScopeProbeUsable() {
-			result.Rules.Incomplete = true
+			result.Rules = authorizationv1.SubjectRulesReviewStatus{
+				ResourceRules:    []authorizationv1.ResourceRule{},
+				NonResourceRules: []authorizationv1.NonResourceRule{},
+				Incomplete:       true,
+			}
 		}
 
 		// Step 3: cluster-admin.

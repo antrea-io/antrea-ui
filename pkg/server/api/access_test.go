@@ -31,6 +31,7 @@ import (
 	authorizationv1 "k8s.io/api/authorization/v1"
 	"k8s.io/client-go/rest"
 
+	apisv1 "antrea.io/antrea-ui/apis/v1"
 	"antrea.io/antrea-ui/pkg/auth/session"
 	accesshandler "antrea.io/antrea-ui/pkg/handlers/access"
 	accesshandlertesting "antrea.io/antrea-ui/pkg/handlers/access/testing"
@@ -346,40 +347,67 @@ type assertError struct{}
 
 func (assertError) Error() string { return "boom" }
 
-func TestGetAccessSummaryClusterScopeProbeUnusable(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	resolver := accesshandlertesting.NewMockResolver(ctrl)
-	resolver.EXPECT().ClusterScopeProbeUsable().Return(false)
-	resolver.EXPECT().NamespacesFor(gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
-	ts, _ := newTestServerForAccess(t, resolver)
+func TestGetAccessSummaryProbeRules(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		namespace  string
+		usable     bool
+		incomplete bool
+	}{
+		{name: "unusable probe"},
+		{name: "unusable probe with incomplete rules", incomplete: true},
+		{name: "usable probe", usable: true},
+		{name: "usable probe with incomplete rules", usable: true, incomplete: true},
+		{name: "namespace query", namespace: "rbac-test-alpha"},
+		{name: "namespace query with incomplete rules", namespace: "rbac-test-alpha", incomplete: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			resolver := accesshandlertesting.NewMockResolver(ctrl)
+			rulesNamespace := tt.namespace
+			if tt.namespace == "" {
+				resolver.EXPECT().ClusterScopeProbeUsable().Return(tt.usable)
+				rulesNamespace = accesshandler.ClusterScopeProbeNamespace
+			}
+			// Namespace queries must not consult ClusterScopeProbeUsable.
+			resolver.EXPECT().NamespacesFor("alice", []string{"system:authenticated"}).Return([]string{"ns-a"}, nil)
+			ts, fakeAPIServer := newTestServerForAccess(t, resolver)
+			fakeAPIServer.clusterAdmin = true
+			fakeAPIServer.rules = authorizationv1.SubjectRulesReviewStatus{
+				ResourceRules: []authorizationv1.ResourceRule{{
+					Verbs: []string{"get", "list"}, APIGroups: []string{""}, Resources: []string{"pods"},
+				}},
+				NonResourceRules: []authorizationv1.NonResourceRule{{
+					Verbs: []string{"get"}, NonResourceURLs: []string{"/healthz"},
+				}},
+				Incomplete: tt.incomplete,
+			}
+			if tt.incomplete {
+				fakeAPIServer.rules.EvaluationError = "authorizer could not enumerate rules"
+			}
+			wantRules := fakeAPIServer.rules
+			if tt.namespace == "" && !tt.usable {
+				wantRules = authorizationv1.SubjectRulesReviewStatus{
+					ResourceRules:    []authorizationv1.ResourceRule{},
+					NonResourceRules: []authorizationv1.NonResourceRule{},
+					Incomplete:       true,
+				}
+			}
 
-	req := httptest.NewRequest("GET", "/api/v1/access-summary", nil)
-	ts.authorizeRequestAs(req, session.ModeToken)
-	rr := httptest.NewRecorder()
-	ts.router.ServeHTTP(rr, req)
-	require.Equal(t, http.StatusOK, rr.Code)
+			req := httptest.NewRequest("GET", "/api/v1/access-summary?namespace="+tt.namespace, nil)
+			ts.authorizeRequestAs(req, session.ModeToken)
+			rr := httptest.NewRecorder()
+			ts.router.ServeHTTP(rr, req)
+			require.Equal(t, http.StatusOK, rr.Code)
 
-	var summary map[string]any
-	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &summary))
-	rules := summary["rules"].(map[string]any)
-	assert.Equal(t, true, rules["incomplete"])
-}
-
-func TestGetAccessSummaryClusterScopeProbeIrrelevantForNamespacedQuery(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	resolver := accesshandlertesting.NewMockResolver(ctrl)
-	resolver.EXPECT().NamespacesFor(gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
-	// ClusterScopeProbeUsable must not even be consulted for a ?namespace= query.
-	ts, _ := newTestServerForAccess(t, resolver)
-
-	req := httptest.NewRequest("GET", "/api/v1/access-summary?namespace=rbac-test-alpha", nil)
-	ts.authorizeRequestAs(req, session.ModeToken)
-	rr := httptest.NewRecorder()
-	ts.router.ServeHTTP(rr, req)
-	require.Equal(t, http.StatusOK, rr.Code)
-
-	var summary map[string]any
-	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &summary))
-	rules := summary["rules"].(map[string]any)
-	assert.NotEqual(t, true, rules["incomplete"])
+			var summary apisv1.AccessSummary
+			require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &summary))
+			assert.Equal(t, apisv1.AccessSummary{
+				Username: "alice", Groups: []string{"system:authenticated"},
+				ClusterAdmin: true, Namespaces: []string{"ns-a"},
+				Namespace: tt.namespace, Rules: wantRules,
+			}, summary)
+			assert.Equal(t, rulesNamespace, fakeAPIServer.lastRulesNamespace)
+		})
+	}
 }
