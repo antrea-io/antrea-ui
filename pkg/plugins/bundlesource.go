@@ -25,7 +25,6 @@ import (
 	"strings"
 	"time"
 
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/rest"
 
@@ -72,11 +71,14 @@ func NewAPIServerBundleFetcher(config *rest.Config) (BundleFetcher, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to create HTTP client: %w", err)
 	}
+	// A config that needs no TLS, no auth and no timeout makes HTTPClientFor return
+	// http.DefaultClient itself, which is shared by the whole process: copy it before changing it.
+	c := *client
+	client = &c
 	// A redirect would let the API server (or something proxied behind it) send the
 	// ServiceAccount-authenticated request elsewhere, and none is expected.
 	client.CheckRedirect = noRedirect
-	hasCA := len(config.CAData) > 0 || len(config.CAFile) > 0
-	base, _, err := rest.DefaultServerURL(config.Host, config.APIPath, schema.GroupVersion{}, hasCA || config.Insecure)
+	base, _, err := rest.DefaultServerUrlFor(config)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse API server address %q: %w", config.Host, err)
 	}

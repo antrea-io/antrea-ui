@@ -37,7 +37,7 @@ var errDestGone = errors.New("previous extraction removed")
 
 // errInvalidArchive marks an extractZip failure caused by the archive itself - an entry that
 // cannot be opened or decompressed, one that decompresses past the size budget, or entry names
-// that cannot be laid out on a filesystem - as opposed to the local filesystem failing (a full
+// that cannot be laid out on a filesystem (including a NUL byte) - as opposed to the local filesystem failing (a full
 // disk, say). Only the former cannot change without the
 // bundle changing; a caller that downloads the bundle (parseRemotePluginConfigMap) retries the
 // latter.
@@ -114,6 +114,14 @@ func zipEntryNames(zr *zip.Reader) map[string]bool {
 // itself then fails, dest is left gone (or partly gone) rather than restored to the previous
 // extraction - see errDestGone.
 func extractZip(zr *zip.Reader, dest string, maxBundleBytes int64) (string, error) {
+	// A NUL byte in a name fails with EINVAL wherever it is created, which is too generic an
+	// error to tell apart from the local filesystem failing, so it is rejected up front, before
+	// anything is created.
+	for _, f := range zr.File {
+		if strings.ContainsRune(f.Name, 0) {
+			return "", fmt.Errorf("entry name %q in %s holds a NUL byte: %w", f.Name, bundleFileName, errInvalidArchive)
+		}
+	}
 	parent := filepath.Dir(dest)
 	if err := os.MkdirAll(parent, 0o700); err != nil {
 		return "", fmt.Errorf("failed to create %q: %w", parent, err)

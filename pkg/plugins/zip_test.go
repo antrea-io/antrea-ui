@@ -128,6 +128,8 @@ func TestExtractZipEntryNamesThatCannotBeLaidOutAreAnInvalidArchive(t *testing.T
 		"entry naming the root":               openZipEntries(t, []string{"."}),
 		"entry naming a parent":               openZipEntries(t, []string{"a/.."}),
 		"name too long":                       openZipEntries(t, []string{longName}),
+		"NUL in a file name":                  openZipEntries(t, []string{"a\x00b.js"}),
+		"NUL in a directory name":             openZipEntries(t, []string{"d\x00/a.js"}),
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := extractZip(zr, filepath.Join(t.TempDir(), "plugin"), 1000)

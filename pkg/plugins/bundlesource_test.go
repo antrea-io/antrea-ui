@@ -97,6 +97,17 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
+// A config that needs no TLS, no auth and no timeout (a kubeconfig for kubectl proxy) makes
+// rest.HTTPClientFor return http.DefaultClient itself, which must not lose its redirect handling.
+func TestNewAPIServerBundleFetcherLeavesDefaultClientAlone(t *testing.T) {
+	f, err := NewAPIServerBundleFetcher(&rest.Config{Host: "http://127.0.0.1:8001"})
+	require.NoError(t, err)
+
+	assert.Nil(t, http.DefaultClient.CheckRedirect)
+	assert.NotSame(t, http.DefaultClient, f.(*apiServerFetcher).client)
+	assert.NotNil(t, f.(*apiServerFetcher).client.CheckRedirect)
+}
+
 func TestAPIServerFetcher(t *testing.T) {
 	respond := func(status int, body string) *http.Response {
 		return &http.Response{StatusCode: status, Status: http.StatusText(status), Body: io.NopCloser(bytes.NewReader([]byte(body))), Header: http.Header{}}
