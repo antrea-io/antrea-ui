@@ -48,6 +48,7 @@ import (
 
 	"github.com/go-logr/logr"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/util/workqueue"
 )
 
 const (
@@ -129,6 +130,16 @@ type Registry struct {
 	// rather than testing this field directly, and that function documents why empty means
 	// "disabled" rather than "reject everything".
 	signatureVerifiers []SignatureVerifier
+	// bundleFetcher and httpBundleFetcher download the bundle of a ConfigMap plugin whose
+	// manifest names a bundleSource.apiServer or bundleSource.http respectively (see
+	// parseRemotePluginConfigMap). Nil leaves such plugins unloadable.
+	bundleFetcher     BundleFetcher
+	httpBundleFetcher BundleFetcher
+	// httpBundleSourceDisabled rejects every manifest that selects bundleSource.http, whatever
+	// httpBundleFetcher is.
+	httpBundleSourceDisabled bool
+	// downloadBackoff paces the retries of a failing bundle download, per ConfigMap key.
+	downloadBackoff workqueue.TypedRateLimiter[string]
 
 	mu          sync.RWMutex
 	plugins     map[string]pluginEntry // keyed by the backing ConfigMap's name
@@ -176,20 +187,30 @@ type Options struct {
 	MaxDirectoryPlugins int
 	MaxBundleBytes      int64
 	SignatureVerifiers  []SignatureVerifier
+	// BundleFetcher and HTTPBundleFetcher map to the Registry fields of the same names.
+	BundleFetcher     BundleFetcher
+	HTTPBundleFetcher BundleFetcher
+	// DisableHTTPBundleSource maps to httpBundleSourceDisabled. It is negated so that the zero
+	// value keeps bundleSource.http enabled.
+	DisableHTTPBundleSource bool
 }
 
 func NewRegistry(opts Options) *Registry {
 	return &Registry{
-		logger:              opts.Logger,
-		clientset:           opts.Clientset,
-		namespace:           opts.Namespace,
-		labelSelector:       opts.LabelSelector,
-		maxConfigMapPlugins: opts.MaxConfigMapPlugins,
-		maxDirectoryPlugins: opts.MaxDirectoryPlugins,
-		maxBundleBytes:      opts.MaxBundleBytes,
-		signatureVerifiers:  opts.SignatureVerifiers,
-		plugins:             make(map[string]pluginEntry),
-		diskPlugins:         make(map[string]pluginEntry),
+		logger:                   opts.Logger,
+		clientset:                opts.Clientset,
+		namespace:                opts.Namespace,
+		labelSelector:            opts.LabelSelector,
+		maxConfigMapPlugins:      opts.MaxConfigMapPlugins,
+		maxDirectoryPlugins:      opts.MaxDirectoryPlugins,
+		maxBundleBytes:           opts.MaxBundleBytes,
+		signatureVerifiers:       opts.SignatureVerifiers,
+		bundleFetcher:            opts.BundleFetcher,
+		httpBundleFetcher:        opts.HTTPBundleFetcher,
+		httpBundleSourceDisabled: opts.DisableHTTPBundleSource,
+		downloadBackoff:          newRetryRateLimiter(),
+		plugins:                  make(map[string]pluginEntry),
+		diskPlugins:              make(map[string]pluginEntry),
 	}
 }
 

@@ -142,8 +142,24 @@ type PluginsConfig struct {
 	// extracting it (see copyBundleForVerification): an archive whose compressed size already
 	// exceeds this is rejected up front. Zero means unbounded.
 	MaxBundleBytes int64
+	// BundleSource configures how a plugin whose ConfigMap carries no bundle.zip may have it
+	// downloaded (see bundleSource in docs/plugins.md).
+	BundleSource BundleSourceConfig
 	// Signature configures cryptographic provenance for plugins from either source.
 	Signature SignatureConfig
+}
+
+// BundleSourceConfig configures the transports a plugin manifest's bundleSource may select.
+type BundleSourceConfig struct {
+	HTTP BundleSourceHTTPConfig
+}
+
+// BundleSourceHTTPConfig configures bundleSource.http.
+type BundleSourceHTTPConfig struct {
+	// Enabled allows a manifest to select bundleSource.http, which makes the backend send an
+	// unauthenticated request to a URL read from the plugin's ConfigMap. When false, such a
+	// manifest is rejected. Defaults to true.
+	Enabled bool
 }
 
 // SignatureConfig configures signature verification for plugin bundles.
@@ -385,6 +401,7 @@ func LoadConfig() (*Config, error) {
 	v.SetDefault("plugins.maxConfigMapPlugins", DefaultMaxConfigMapPlugins)
 	v.SetDefault("plugins.maxDirectoryPlugins", DefaultMaxDirectoryPlugins)
 	v.SetDefault("plugins.maxBundleBytes", DefaultMaxBundleBytes)
+	v.SetDefault("plugins.bundleSource.http.enabled", true)
 	v.SetDefault("flowAggregator.enabled", false)
 	v.SetDefault("flowAggregator.address", "flow-aggregator.flow-aggregator.svc:14740")
 	v.SetDefault("flowAggregator.caConfigMap", "flow-aggregator-ca")

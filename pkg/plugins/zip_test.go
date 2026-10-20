@@ -100,3 +100,58 @@ func TestExtractZipRejectsCombinedEntriesPastTheDecompressedSizeLimit(t *testing
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "zip bomb")
 }
+
+// TestExtractZipErrorsTellAnInvalidArchiveFromAFailingFilesystem checks the distinction a
+// downloaded bundle's retry policy rests on: an archive that cannot be extracted however many times
+// it is downloaded is errInvalidArchive, a failure of the local disk is not.
+func TestExtractZipErrorsTellAnInvalidArchiveFromAFailingFilesystem(t *testing.T) {
+	zr := openZip(t, map[string]string{"index.js": strings.Repeat("x", 200)})
+
+	_, err := extractZip(zr, filepath.Join(t.TempDir(), "plugin"), 100)
+	require.ErrorIs(t, err, errInvalidArchive)
+
+	// The parent of dest is a file, so creating it fails.
+	notADir := filepath.Join(t.TempDir(), "file")
+	require.NoError(t, os.WriteFile(notADir, nil, 0o600))
+	_, err = extractZip(zr, filepath.Join(notADir, "plugin"), 1000)
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, errInvalidArchive)
+}
+
+// Entry names that cannot be laid out on a filesystem are the same on every download, so they are
+// errInvalidArchive too, unlike a failure that says nothing about the archive.
+func TestExtractZipEntryNamesThatCannotBeLaidOutAreAnInvalidArchive(t *testing.T) {
+	longName := strings.Repeat("a", 300)
+	for name, zr := range map[string]*zip.Reader{
+		"file and directory of the same name": openZipEntries(t, []string{"lib", "lib/a.js"}),
+		"directory then file of that name":    openZipEntries(t, []string{"lib/a.js", "lib"}),
+		"entry naming the root":               openZipEntries(t, []string{"."}),
+		"entry naming a parent":               openZipEntries(t, []string{"a/.."}),
+		"name too long":                       openZipEntries(t, []string{longName}),
+		"NUL in a file name":                  openZipEntries(t, []string{"a\x00b.js"}),
+		"NUL in a directory name":             openZipEntries(t, []string{"d\x00/a.js"}),
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := extractZip(zr, filepath.Join(t.TempDir(), "plugin"), 1000)
+			require.Error(t, err)
+			assert.ErrorIs(t, err, errInvalidArchive)
+		})
+	}
+}
+
+// openZipEntries is openZip for entry names in a given order, which a map does not keep.
+func openZipEntries(t *testing.T, names []string) *zip.Reader {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for _, name := range names {
+		w, err := zw.Create(name)
+		require.NoError(t, err)
+		_, err = w.Write([]byte("x"))
+		require.NoError(t, err)
+	}
+	require.NoError(t, zw.Close())
+	zr, err := zip.NewReader(bytes.NewReader(buf.Bytes()), int64(buf.Len()))
+	require.NoError(t, err)
+	return zr
+}

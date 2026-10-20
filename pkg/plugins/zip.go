@@ -24,6 +24,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"syscall"
 )
 
 // errDestGone marks an extractZip failure that happened after it already removed the previous
@@ -33,6 +34,35 @@ import (
 // wrapped with errors.Is, not returned as a distinct type, so every other caller can keep
 // treating extractZip's error as opaque.
 var errDestGone = errors.New("previous extraction removed")
+
+// errInvalidArchive marks an extractZip failure caused by the archive itself - an entry that
+// cannot be opened or decompressed, one that decompresses past the size budget, or entry names
+// that cannot be laid out on a filesystem (including a NUL byte) - as opposed to the local filesystem failing (a full
+// disk, say). Only the former cannot change without the
+// bundle changing; a caller that downloads the bundle (parseRemotePluginConfigMap) retries the
+// latter.
+var errInvalidArchive = errors.New("invalid archive")
+
+// archiveLayoutError reports whether err, from creating the directory or file for an entry, is
+// one only the archive's entry names can cause. Extraction goes into a fresh private directory, so
+// a file "lib" next to an entry "lib/a.js" (ENOTDIR), an entry named "." or "a/.." (EISDIR) and a
+// name longer than the filesystem allows (ENAMETOOLONG) are the same on every download. Other
+// errors (ENOSPC, EIO, EROFS, EMFILE...) say nothing about the archive, so they are not matched.
+func archiveLayoutError(err error) bool {
+	return errors.Is(err, syscall.ENOTDIR) || errors.Is(err, syscall.EISDIR) || errors.Is(err, syscall.ENAMETOOLONG)
+}
+
+// archiveReader marks a read error of the archive's decompressed stream as errInvalidArchive, so
+// extractZipFile can tell it apart from the error of the write on the other side of the copy.
+type archiveReader struct{ r io.Reader }
+
+func (a archiveReader) Read(p []byte) (int, error) {
+	n, err := a.r.Read(p)
+	if err != nil && err != io.EOF {
+		err = fmt.Errorf("%w: %w", errInvalidArchive, err)
+	}
+	return n, err
+}
 
 // safeJoin joins root and name the way net/http.Dir does: name is treated as rooted (as if it
 // had a leading "/") before being cleaned, so any number of ".." segments collapse instead of
@@ -84,6 +114,14 @@ func zipEntryNames(zr *zip.Reader) map[string]bool {
 // itself then fails, dest is left gone (or partly gone) rather than restored to the previous
 // extraction - see errDestGone.
 func extractZip(zr *zip.Reader, dest string, maxBundleBytes int64) (string, error) {
+	// A NUL byte in a name fails with EINVAL wherever it is created, which is too generic an
+	// error to tell apart from the local filesystem failing, so it is rejected up front, before
+	// anything is created.
+	for _, f := range zr.File {
+		if strings.ContainsRune(f.Name, 0) {
+			return "", fmt.Errorf("entry name %q in %s holds a NUL byte: %w", f.Name, bundleFileName, errInvalidArchive)
+		}
+	}
 	parent := filepath.Dir(dest)
 	if err := os.MkdirAll(parent, 0o700); err != nil {
 		return "", fmt.Errorf("failed to create %q: %w", parent, err)
@@ -116,6 +154,9 @@ func extractZip(zr *zip.Reader, dest string, maxBundleBytes int64) (string, erro
 		// "zip slip" vulnerability class, on the write side instead of the read side.
 		target := safeJoin(tmpDest, f.Name)
 		if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+			if archiveLayoutError(err) {
+				return "", fmt.Errorf("failed to create directory for %q: %w: %w", f.Name, errInvalidArchive, err)
+			}
 			return "", fmt.Errorf("failed to create directory for %q: %w", f.Name, err)
 		}
 		n, err := extractZipFile(f, target, budgetTotal-written)
@@ -147,17 +188,20 @@ func extractZip(zr *zip.Reader, dest string, maxBundleBytes int64) (string, erro
 func extractZipFile(f *zip.File, target string, budget int64) (int64, error) {
 	rc, err := f.Open()
 	if err != nil {
-		return 0, fmt.Errorf("failed to open %q in %s: %w", f.Name, bundleFileName, err)
+		return 0, fmt.Errorf("failed to open %q in %s: %w: %w", f.Name, bundleFileName, errInvalidArchive, err)
 	}
 	defer rc.Close()
 	out, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
+		if archiveLayoutError(err) {
+			return 0, fmt.Errorf("failed to create %q: %w: %w", target, errInvalidArchive, err)
+		}
 		return 0, fmt.Errorf("failed to create %q: %w", target, err)
 	}
 	// budget can be math.MaxInt64 (unbounded case) - budget+1 would overflow, so instead of
 	// io.CopyN(out, rc, budget+1) copy exactly budget bytes, then peek one more to tell "exactly
 	// budget bytes" apart from "more remained".
-	written, err := io.Copy(out, io.LimitReader(rc, budget))
+	written, err := io.Copy(out, io.LimitReader(archiveReader{rc}, budget))
 	if err != nil {
 		out.Close()
 		return 0, fmt.Errorf("failed to write %q: %w", target, err)
@@ -170,14 +214,14 @@ func extractZipFile(f *zip.File, target string, budget int64) (int64, error) {
 			n, err := rc.Read(extra[:])
 			if n > 0 {
 				out.Close()
-				return 0, fmt.Errorf("%q decompresses past this plugin's bundle size budget, refusing to extract further (possible zip bomb)", f.Name)
+				return 0, fmt.Errorf("%q decompresses past this plugin's bundle size budget, refusing to extract further (possible zip bomb): %w", f.Name, errInvalidArchive)
 			}
 			if err == io.EOF {
 				break
 			}
 			if err != nil {
 				out.Close()
-				return 0, fmt.Errorf("failed to read %q past its size budget: %w", f.Name, err)
+				return 0, fmt.Errorf("failed to read %q past its size budget: %w: %w", f.Name, errInvalidArchive, err)
 			}
 		}
 	}

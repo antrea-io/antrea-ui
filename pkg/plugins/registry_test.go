@@ -30,7 +30,7 @@ import (
 func TestRegistryIndexIncludesFederation(t *testing.T) {
 	r := newTestRegistry(t)
 
-	r.handleUpsert(&corev1.ConfigMap{
+	r.handleUpsert(t.Context(), &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{Name: "policy-management-plugin", Namespace: "antrea-ui"},
 		Data: map[string]string{
 			"manifest.json": `{
@@ -95,9 +95,9 @@ func federationConfigMap(t *testing.T, cmName, pluginName, entry string, routes 
 func TestRegistryIndexDropsPluginWhenAllFederationRoutesCollide(t *testing.T) {
 	r := newTestRegistry(t)
 
-	r.handleUpsert(federationConfigMap(t, "b-configmap", "b-plugin", "index.js",
+	r.handleUpsert(t.Context(), federationConfigMap(t, "b-configmap", "b-plugin", "index.js",
 		`[{"path": "//policies/", "sidebarLabel": "Policies", "exposedModule": "./Page"}]`))
-	r.handleUpsert(federationConfigMap(t, "a-configmap", "a-plugin", "index.js",
+	r.handleUpsert(t.Context(), federationConfigMap(t, "a-configmap", "a-plugin", "index.js",
 		`[{"path": "/policies", "sidebarLabel": "Policies", "exposedModule": "./Page"}]`))
 
 	manifests := r.Index()
@@ -112,9 +112,9 @@ func TestRegistryIndexDropsPluginWhenAllFederationRoutesCollide(t *testing.T) {
 func TestRegistryIndexFiltersCollidingFederationRouteKeepsRestOfPlugin(t *testing.T) {
 	r := newTestRegistry(t)
 
-	r.handleUpsert(federationConfigMap(t, "a-configmap", "a-plugin", "a.js",
+	r.handleUpsert(t.Context(), federationConfigMap(t, "a-configmap", "a-plugin", "a.js",
 		`[{"path": "/policies", "sidebarLabel": "Policies", "exposedModule": "./Page"}]`))
-	r.handleUpsert(federationConfigMap(t, "b-configmap", "b-plugin", "b.js",
+	r.handleUpsert(t.Context(), federationConfigMap(t, "b-configmap", "b-plugin", "b.js",
 		`[
 			{"path": "/policies", "sidebarLabel": "Policies Again", "exposedModule": "./OtherPage"},
 			{"path": "/other", "sidebarLabel": "Other", "exposedModule": "./OtherPage"}
@@ -140,9 +140,9 @@ func TestRegistryIndexFiltersCollidingFederationRouteKeepsRestOfPlugin(t *testin
 func TestRegistryIndexFiltersFederationRouteUnderEarlierPluginsRouteTree(t *testing.T) {
 	r := newTestRegistry(t)
 
-	r.handleUpsert(federationConfigMap(t, "a-configmap", "a-plugin", "a.js",
+	r.handleUpsert(t.Context(), federationConfigMap(t, "a-configmap", "a-plugin", "a.js",
 		`[{"path": "/policies", "sidebarLabel": "Policies", "exposedModule": "./Page", "kind": "routes"}]`))
-	r.handleUpsert(federationConfigMap(t, "b-configmap", "b-plugin", "b.js",
+	r.handleUpsert(t.Context(), federationConfigMap(t, "b-configmap", "b-plugin", "b.js",
 		`[
 			{"path": "/policies/audit", "sidebarLabel": "Policy Audit", "exposedModule": "./AuditPage"},
 			{"path": "/other", "sidebarLabel": "Other", "exposedModule": "./OtherPage"}
@@ -169,9 +169,9 @@ func TestRegistryIndexFiltersFederationRouteUnderEarlierPluginsRouteTree(t *test
 func TestRegistryIndexFiltersRouteTreeRouteThatWouldClaimAnAlreadyClaimedPath(t *testing.T) {
 	r := newTestRegistry(t)
 
-	r.handleUpsert(federationConfigMap(t, "a-configmap", "a-plugin", "a.js",
+	r.handleUpsert(t.Context(), federationConfigMap(t, "a-configmap", "a-plugin", "a.js",
 		`[{"path": "/policies/audit", "sidebarLabel": "Policy Audit", "exposedModule": "./AuditPage"}]`))
-	r.handleUpsert(federationConfigMap(t, "b-configmap", "b-plugin", "b.js",
+	r.handleUpsert(t.Context(), federationConfigMap(t, "b-configmap", "b-plugin", "b.js",
 		`[
 			{"path": "/policies", "sidebarLabel": "Policies", "exposedModule": "./Page", "kind": "routes"},
 			{"path": "/other", "sidebarLabel": "Other", "exposedModule": "./OtherPage"}
@@ -201,13 +201,13 @@ func TestRegistryIndexFiltersRouteTreeRouteThatWouldClaimAnAlreadyClaimedPath(t 
 func TestRegistryIndexAndFileStayConsistentWhenAllRoutesCollide(t *testing.T) {
 	r := newTestRegistry(t)
 
-	r.handleUpsert(federationConfigMap(t, "a-configmap", "aaa", "a.js",
+	r.handleUpsert(t.Context(), federationConfigMap(t, "a-configmap", "aaa", "a.js",
 		`[{"path": "/policies", "sidebarLabel": "Policies", "exposedModule": "./Page"}]`))
 	// b-configmap sorts before c-configmap, and claims the "dup" name first;
 	// its one route collides with aaa's, so the whole manifest is dropped.
-	r.handleUpsert(federationConfigMap(t, "b-configmap", "dup", "b.js",
+	r.handleUpsert(t.Context(), federationConfigMap(t, "b-configmap", "dup", "b.js",
 		`[{"path": "/policies", "sidebarLabel": "Policies", "exposedModule": "./Page"}]`))
-	r.handleUpsert(federationConfigMap(t, "c-configmap", "dup", "c.js",
+	r.handleUpsert(t.Context(), federationConfigMap(t, "c-configmap", "dup", "c.js",
 		`[{"path": "/other", "sidebarLabel": "Other", "exposedModule": "./Page"}]`))
 
 	manifests := r.Index()
@@ -227,7 +227,7 @@ func TestRegistryIndexMergesBothSources(t *testing.T) {
 
 	r := NewRegistry(Options{Logger: testr.New(t), Clientset: nil, Namespace: "antrea-ui", LabelSelector: "ui.antrea.io/plugin=true", MaxConfigMapPlugins: 0, MaxDirectoryPlugins: 0, MaxBundleBytes: 0})
 	t.Cleanup(r.Close)
-	r.handleUpsert(configMap(t, "cm-plugin", "cm-plugin", "0.1.0", "index.js", map[string]string{"index.js": "x"}))
+	r.handleUpsert(t.Context(), configMap(t, "cm-plugin", "cm-plugin", "0.1.0", "index.js", map[string]string{"index.js": "x"}))
 
 	startDirectoryWatch(t, r, dir)
 
@@ -237,8 +237,8 @@ func TestRegistryIndexMergesBothSources(t *testing.T) {
 func TestRegistryDuplicatePluginNameKeepsLowerConfigMapName(t *testing.T) {
 	r := newTestRegistry(t)
 
-	r.handleUpsert(configMap(t, "b-configmap", "pod-counter", "2.0.0", "index.js", map[string]string{"index.js": "b"}))
-	r.handleUpsert(configMap(t, "a-configmap", "pod-counter", "1.0.0", "index.js", map[string]string{"index.js": "a"}))
+	r.handleUpsert(t.Context(), configMap(t, "b-configmap", "pod-counter", "2.0.0", "index.js", map[string]string{"index.js": "b"}))
+	r.handleUpsert(t.Context(), configMap(t, "a-configmap", "pod-counter", "1.0.0", "index.js", map[string]string{"index.js": "a"}))
 
 	assert.Equal(t, []apisv1.PluginManifest{
 		{Name: "pod-counter", Version: "1.0.0", Entry: "index.js"},
@@ -254,7 +254,7 @@ func TestRegistryDuplicatePluginNameKeepsConfigMapOverDirectory(t *testing.T) {
 
 	r := NewRegistry(Options{Logger: testr.New(t), Clientset: nil, Namespace: "antrea-ui", LabelSelector: "ui.antrea.io/plugin=true", MaxConfigMapPlugins: 0, MaxDirectoryPlugins: 0, MaxBundleBytes: 0})
 	t.Cleanup(r.Close)
-	r.handleUpsert(configMap(t, "shared-name", "shared", "from-configmap", "index.js", map[string]string{"index.js": "x"}))
+	r.handleUpsert(t.Context(), configMap(t, "shared-name", "shared", "from-configmap", "index.js", map[string]string{"index.js": "x"}))
 
 	startDirectoryWatch(t, r, dir)
 
