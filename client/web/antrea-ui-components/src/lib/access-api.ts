@@ -193,6 +193,15 @@ export function namespaceAccessSummaries(namespaces: string[]): Promise<Namespac
 export function resetAccessSummary(): void {
     inFlight = null;
     namespaceAccessMemos.clear();
+    resetHooks.forEach(hook => hook());
+}
+
+const resetHooks: (() => void)[] = [];
+
+/** Registers a memo of something else the session's permissions shape, to be cleared along with
+ * the access summary by resetAccessSummary(). */
+export function onAccessSummaryReset(hook: () => void): void {
+    resetHooks.push(hook);
 }
 
 export interface ResourceQuery {
@@ -214,6 +223,10 @@ export type Verdict =
 /** Anything with a rule list: an AccessSummary, or one entry of a NamespaceAccessSummaryList. */
 export interface HasRules {
     rules: SubjectRules
+    /** Set on an AccessSummary: the user may do everything in the cluster, whatever the rules
+     * (which a webhook authorizer, or a RoleBinding in the probe Namespace, can leave incomplete)
+     * show. Absent on one entry of a NamespaceAccessSummaryList. */
+    clusterAdmin?: boolean
 }
 
 /**
@@ -223,6 +236,7 @@ export interface HasRules {
  */
 export function verdict(s: HasRules | null, q: ResourceQuery): Verdict {
     if (s === null) return 'unknown';
+    if (s.clusterAdmin) return 'allowed';
     // ?? []: these marshal to null rather than [] when empty, and an older server may send that.
     const granted = (s.rules.resourceRules ?? []).some((rule) => {
         if (rule.resourceNames && rule.resourceNames.length > 0) {

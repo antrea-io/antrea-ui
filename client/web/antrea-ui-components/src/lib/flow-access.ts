@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { accessSummary, verdict, GATE_FLOWS_WATCH } from './access-api.js';
+import { accessSummary, onAccessSummaryReset, verdict, GATE_FLOWS_WATCH } from './access-api.js';
 import type { AccessSummary, Verdict } from './access-api.js';
 import { apiFetchJSON, APIError } from './api.js';
 
@@ -69,9 +69,23 @@ function mayListNamespaces(summary: AccessSummary | null): boolean {
     return !!all && all.length === 1 && all[0] === '*';
 }
 
+let namespaceList: Promise<{ names: string[], cut: boolean }> | null = null;
+onAccessSummaryReset(() => { namespaceList = null; });
+
 /** Every namespace's name, sorted, up to LIST_SAFEGUARD of them. Needs the caller to be allowed to
- * list namespaces. */
-async function listNamespaceNames(): Promise<{ names: string[], cut: boolean }> {
+ * list namespaces. Memoized like the access summary: the list is the one the user had when they
+ * signed in or last reloaded the UI, and does not change from one visit to a page to the next. A
+ * failure is not kept. */
+function listNamespaceNames(): Promise<{ names: string[], cut: boolean }> {
+    if (!namespaceList) {
+        const p = fetchNamespaceNames();
+        namespaceList = p;
+        p.catch(() => { if (namespaceList === p) namespaceList = null; });
+    }
+    return namespaceList;
+}
+
+async function fetchNamespaceNames(): Promise<{ names: string[], cut: boolean }> {
     const res = await apiFetchJSON<{
         items: { metadata: { name: string } }[]
         metadata?: { continue?: string }
@@ -108,7 +122,7 @@ export function isValidNamespaceName(name: string): boolean {
  * cluster scope 'unknown' and the candidates null, and the page still lets the user name a
  * namespace.
  *
- * The summary is memoized, so the shell's gate and the page share one fetch.
+ * The summary and the namespace list are memoized, so the shell's gate and the pages share one fetch.
  */
 export async function flowAccess(): Promise<FlowAccess> {
     const summary = await accessSummary().catch(() => null);

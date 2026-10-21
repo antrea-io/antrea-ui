@@ -813,9 +813,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
     @state() private _flowAccessLoaded = false;
     // What the selector offers: the namespaces matching what was typed in its search box, at most
     // one page of them. See searchFlowNamespaces.
-    @state() private _scopeOptions: string[] = [];
     // Whether more namespaces matched than the menu shows.
-    @state() private _scopeMore = false;
     @state() private _scopeQuery = '';
     @state() private _scopeOpen = false;
     // Which item of the open menu the keyboard is on, or -1 for none.
@@ -928,16 +926,17 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
     /** Loads the selector's options, then settles on a default scope if the URL named none. */
     private async _loadFlowAccess() {
         const access = await flowAccess();
-        const options = searchFlowNamespaces(access, '');
         // The page may have been left while this loaded, after disconnectedCallback already tore
         // the stream down: going on would rewrite the URL of whatever page is current and open a
         // stream nothing will ever close.
         if (!this.isConnected) return;
         this._flowAccess = access;
-        this._scopeOptions = options.items;
-        this._scopeMore = options.more;
         this._flowAccessLoaded = true;
-        this._applyScopeFromURL();
+        // The items the highlighted row indexed were the ones before the list loaded.
+        this._scopeActive = -1;
+        // The URL the page last took or wrote, not the location prop: a scope picked while the
+        // list loaded is in the former, and the router may not have delivered it to the latter.
+        this._applyScopeFromURL(this._appliedSearch);
     }
 
     /** The query string the page's scope is read from. */
@@ -955,7 +954,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         const search = this._search;
         if (!this._sessionStarted || search === this._appliedSearch) return;
         this._appliedSearch = search;
-        this._applyScopeFromURL();
+        this._applyScopeFromURL(search);
     }
 
     /**
@@ -968,8 +967,8 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
      * hide what the link asked for; the Flow Aggregator's 403 is the answer, and picking another
      * scope replaces it. An invalid one is reported and nothing is selected.
      */
-    private _applyScopeFromURL() {
-        const parsed = this._parseScopeParam(this._search);
+    private _applyScopeFromURL(search: string = this._search) {
+        const parsed = this._parseScopeParam(search);
         if (parsed.kind === 'invalid') {
             this._scopeError = parsed.message;
             this._setScope('');
@@ -1147,19 +1146,21 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         if (!typed && (this._mayHoldClusterWide || this._clusterWide)) {
             items.push({ value: SCOPE_CLUSTER_WIDE, label: ALL_NAMESPACES_LABEL });
         }
-        // Only while nothing is typed: a menu narrowed to a prefix should hold what matches it.
-        const ns = new Set(this._scopeOptions);
-        if (!typed && this._observedNs) ns.add(this._observedNs);
+        // The scope in force is kept among the matches, whether or not the list holds it.
+        const ns = new Set(this._scopeSearch.items);
+        if (this._observedNs && this._observedNs.startsWith(typed.toLowerCase())) ns.add(this._observedNs);
         for (const n of Array.from(ns).sort()) items.push({ value: n, label: n });
         return items;
     }
 
-    /** Searches the namespaces by prefix. Local, so the options always match what is typed. */
+    /** The namespaces matching what is typed, derived rather than stored so that they cannot
+     * drift from the query or from the list. */
+    private get _scopeSearch(): { items: string[], more: boolean } {
+        return searchFlowNamespaces(this._flowAccess, this._scopeQuery);
+    }
+
     private _onScopeSearch(value: string) {
         this._scopeQuery = value;
-        const result = searchFlowNamespaces(this._flowAccess, value);
-        this._scopeOptions = result.items;
-        this._scopeMore = result.more;
         // The highlighted row indexed the list that was just replaced, and may be past the end
         // of this one.
         this._scopeActive = -1;
@@ -1170,7 +1171,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         this._scopeOpen = true;
         this._scopeActive = -1;
         // A menu that was last left narrowed starts from the whole list again.
-        if (this._scopeQuery !== '') this._onScopeSearch('');
+        this._scopeQuery = '';
     }
 
     private _chooseScope(value: string) {
@@ -1194,7 +1195,9 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         case 'Enter': {
             e.preventDefault();
             const typed = this._scopeQuery.trim();
-            if (this._scopeActive >= 0) this._chooseScope(items[this._scopeActive].value);
+            if (this._scopeActive >= 0 && this._scopeActive < items.length) this._chooseScope(items[this._scopeActive].value);
+            // A name typed in full is the one meant, even when it also starts another Namespace.
+            else if (typed && items.some(i => i.value === typed.toLowerCase())) this._chooseScope(typed.toLowerCase());
             // A single match is the one meant; and where the list is empty, unknown or cut there
             // may be nothing to match against, so the typed name is the scope (FA authorizes it).
             else if (typed && items.length === 1) this._chooseScope(items[0].value);
@@ -1247,6 +1250,16 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
     override willUpdate(changed: Map<string, unknown>) {
         super.willUpdate(changed);
         if (changed.has('locationSearch')) this._onLocationChange();
+    }
+
+    override firstUpdated(changed: Map<string, unknown>) {
+        super.firstUpdated(changed);
+        // The scope taken from the URL at mount was dispatched before the host could listen: the
+        // element is connected before its listeners are attached. Say it again once mounted.
+        if (this._sessionStarted) {
+            const parsed = this._parseScopeParam(this._appliedSearch);
+            if (parsed.kind === 'scope') this._dispatchScopeChosen(parsed.value);
+        }
     }
 
     override updated(changed: Map<string, unknown>) {
@@ -1874,7 +1887,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
     ) {
         const displayText = selected.length === 0 ? 'All' : selected.length <= 2 ? selected.join(', ') : `${selected.slice(0, 2).join(', ')} +${selected.length - 2}`;
         return html`
-            <div class="multiselect" @pointerdown=${(e: Event) => e.stopPropagation()}>
+            <div class="multiselect">
                 <span class="multiselect-label">${label}</span>
                 <button type="button" class="multiselect-btn" title=${hint ?? nothing} @click=${onToggleOpen}>
                     ${displayText}
@@ -1925,8 +1938,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         const items = this._scopeItems;
         const open = this._scopeOpen;
         return html`
-            <div class="field-group scope-select combobox" style="min-width:220px"
-                @pointerdown=${(e: Event) => e.stopPropagation()}>
+            <div class="field-group scope-select combobox" style="min-width:220px">
                 <label class="field-label" for="observed-ns">Observed namespace</label>
                 <input id="observed-ns" class="field-input" type="text" role="combobox" autocomplete="off"
                     placeholder="Select a namespace…"
@@ -1948,7 +1960,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
                                 @mousedown=${(e: Event) => e.preventDefault()}
                                 @click=${() => this._chooseScope(item.value)}>${item.label}</li>
                         `)}
-                        ${this._scopeMore ? html`<li class="combobox-empty">${this._scopeQuery.trim() ? 'More matches, keep typing' : 'Showing the first 10 - type to search'}</li>` : nothing}
+                        ${this._scopeSearch.more ? html`<li class="combobox-empty">${this._scopeQuery.trim() ? 'More matches, keep typing' : 'Showing the first 10 - type to search'}</li>` : nothing}
                     </ul>
                 ` : nothing}
                 ${this._scopeNote ? html`<p class="text-muted" data-testid="scope-note">${this._scopeNote}</p>` : nothing}
@@ -2013,9 +2025,9 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
             <div class="filter-bar">
                 <div class="filter-row">
                     ${this._renderScopeSelect()}
-                    ${this._renderMultiSelect('Peer namespace', this._availableNs, this._pendingNs, this._nsOpen, () => { this._nsOpen = !this._nsOpen; this._podOpen = false; this._svcOpen = false; }, v => { this._pendingNs = this._toggleNamespaceSelection(this._pendingNs, v); }, PEER_NAMESPACE_HINT)}
-                    ${this._renderMultiSelect('Pod Names', this._availablePods, this._pendingPods, this._podOpen, () => { this._podOpen = !this._podOpen; this._nsOpen = false; this._svcOpen = false; }, v => { this._pendingPods = this._toggleSelection(this._pendingPods, v); }, IDENTIFIED_ONLY_HINT)}
-                    ${this._renderMultiSelect('Service Names', this._availableServices, this._pendingServices, this._svcOpen, () => { this._svcOpen = !this._svcOpen; this._nsOpen = false; this._podOpen = false; }, v => { this._pendingServices = this._toggleSelection(this._pendingServices, v); })}
+                    ${this._renderMultiSelect('Peer namespace', this._availableNs, this._pendingNs, this._nsOpen, () => { this._nsOpen = !this._nsOpen; this._podOpen = false; this._svcOpen = false; this._scopeOpen = false; }, v => { this._pendingNs = this._toggleNamespaceSelection(this._pendingNs, v); }, PEER_NAMESPACE_HINT)}
+                    ${this._renderMultiSelect('Pod Names', this._availablePods, this._pendingPods, this._podOpen, () => { this._podOpen = !this._podOpen; this._nsOpen = false; this._svcOpen = false; this._scopeOpen = false; }, v => { this._pendingPods = this._toggleSelection(this._pendingPods, v); }, IDENTIFIED_ONLY_HINT)}
+                    ${this._renderMultiSelect('Service Names', this._availableServices, this._pendingServices, this._svcOpen, () => { this._svcOpen = !this._svcOpen; this._nsOpen = false; this._podOpen = false; this._scopeOpen = false; }, v => { this._pendingServices = this._toggleSelection(this._pendingServices, v); })}
 
                     <div class="field-group" style="min-width:140px">
                         <label class="field-label">Flow Type</label>

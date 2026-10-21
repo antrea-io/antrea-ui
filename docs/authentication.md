@@ -282,8 +282,8 @@ RoleBinding lands on Overview instead of a page that may be refused.
 That question is answered from the access summary described in [What the
 frontend knows about your permissions](#what-the-frontend-knows-about-your-permissions),
 with nothing flow-specific on the backend. The summary says whether the caller
-holds `watch` on `flows` cluster-wide, which is *allowed* when a rule grants it,
-*denied* when none does in a rule list the API server says is exhaustive, and
+holds `watch` on `flows` cluster-wide, which is *allowed* when a rule grants it
+or `clusterAdmin` is true, *denied* when none does in a rule list the API server says is exhaustive, and
 *unknown* when none does but the API server could not enumerate its rules, as
 with a webhook authorizer, or the summary could not be fetched. The selector
 offers All Namespaces unless the verdict is *denied*, so a caller granted `flows`
@@ -480,7 +480,9 @@ than reusing a failure.
   today's pre-access-summary behaviour.
 - `clusterAdmin` is computed from a `SelfSubjectAccessReview` for `*` verb, `*`
   group, `*` resource, which is true for any wildcard ClusterRole (not only one
-  literally named `cluster-admin`).
+  literally named `cluster-admin`). The frontend counts it as granting every
+  query, whatever `rules` shows, since the rules of such a user may be
+  incomplete.
 - `namespaces` is `["*"]` when the user can `list` namespaces cluster-wide.
   Otherwise it is derived from a cluster-wide watch on RoleBindings, kept
   in-memory by antrea-ui using its own ServiceAccount: the namespaces where a

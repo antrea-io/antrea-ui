@@ -25,7 +25,8 @@ type AccessSummary struct {
 	Username string   `json:"username"`
 	Groups   []string `json:"groups"`
 	// ClusterAdmin is true if the user is allowed every verb on every resource in every API
-	// group. Informational; the UI gates on Rules, not on this.
+	// group. The UI treats it as allowing everything, whatever Rules shows, since Rules may be
+	// incomplete for such a user.
 	ClusterAdmin bool `json:"clusterAdmin"`
 	// Namespace is what Rules was evaluated for. Empty means cluster scope.
 	//

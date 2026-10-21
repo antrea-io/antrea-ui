@@ -132,6 +132,19 @@ describe('flowAccess', () => {
         expect((await flowAccess()).clusterWide).toBe('unknown');
     });
 
+    it('lists the namespaces once for as many calls', async () => {
+        const f = stubFetch({
+            summary: json(summary({ namespaces: ['*'] })),
+            k8s: json({ items: [{ metadata: { name: 'ns-a' } }] }),
+        });
+        await flowAccess();
+        await flowAccess();
+        expect(calls(f, '/k8s/api/v1/namespaces')).toBe(1);
+        resetAccessSummary();
+        await flowAccess();
+        expect(calls(f, '/k8s/api/v1/namespaces')).toBe(2);
+    });
+
     it('does not take a namespaced summary for a cluster-wide one', async () => {
         stubFetch({
             summary: json(summary({ namespace: 'ns-a', rules: rules({ resourceRules: [watchFlows] }) })),

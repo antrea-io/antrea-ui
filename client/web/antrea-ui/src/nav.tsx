@@ -192,8 +192,10 @@ export default function NavTab({ pluginSidebarEntries }: { pluginSidebarEntries:
     // The scope the flow entries carry: the one in the page's URL while on it (or none, when the
     // page has none), so switching between its views keeps a scope the user chose, and otherwise
     // the last scope chosen. Only `namespace`, so an unrelated query parameter is not carried.
+    // A URL that gives `namespace` more than once names no scope, as on the page.
+    const pageScopes = new URLSearchParams(search).getAll('namespace');
     const flowsSearch = scopeSearch(pathStartsWith(pathname, '/flows')
-        ? new URLSearchParams(search).get('namespace')
+        ? (pageScopes.length === 1 ? pageScopes[0] : null)
         : getLastScope(user));
 
     return (

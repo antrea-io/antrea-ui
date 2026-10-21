@@ -358,6 +358,10 @@ describe('verdict', () => {
         expect(verdict({ rules: rules({ resourceRules: [{ ...grant, verbs: ['list'] }] }) }, query)).toBe('denied');
     });
 
+    test('allowed for a cluster admin whose rules are incomplete', () => {
+        expect(verdict(summary({ clusterAdmin: true, rules: rules({ incomplete: true }) }), query)).toBe('allowed');
+    });
+
     test('unknown for null', () => {
         expect(verdict(null, query)).toBe('unknown');
     });
