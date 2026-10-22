@@ -593,16 +593,16 @@ function sortValue(entry: FlowEntry, field: SortField): string | number {
     switch (field) {
         case 'lastSeen': return new Date(flow.endTs).getTime();
         // The text the cell shows, so the order matches what the user reads: a withheld endpoint
-        // shows "ns/<hidden>", not its address.
+        // shows "ns/<hidden>", not its address, and a policy that was withheld shows its action.
         case 'source': return endpointView(flow.k8s.sourceDisclosure, flow.k8s.sourcePodNamespace, flow.k8s.sourcePodName, flow.ip.source, flow.k8s.flowType as FlowType === FlowType.FromExternal).text;
         case 'destination': return endpointView(flow.k8s.destinationDisclosure, flow.k8s.destinationPodNamespace, flow.k8s.destinationPodName, flow.ip.destination, flow.k8s.flowType as FlowType === FlowType.ToExternal).text;
-        case 'destinationService': return destinationK8sServiceFilterKey(flow.k8s.destinationServicePortName) || flow.k8s.destinationServicePortName;
+        case 'destinationService': return destinationServiceView(flow.k8s.destinationDisclosure, flow.k8s.destinationServicePortName, flow.k8s.flowType as FlowType === FlowType.ToExternal).text;
         case 'protocol': return flow.transport.protocolNumber;
         case 'destPort': return flow.transport.destinationPort;
         case 'bytesFwd': return flow.stats.octetTotalCount;
         case 'bytesRev': return flow.reverseStats.octetTotalCount;
-        case 'ingressPolicy': return flow.k8s.ingressNetworkPolicyName;
-        case 'egressPolicy': return flow.k8s.egressNetworkPolicyName;
+        case 'ingressPolicy': return formatPolicyInfo(flow.k8s.ingressNetworkPolicyName, flow.k8s.ingressNetworkPolicyRuleAction, flow.k8s.destinationDisclosure) || '-';
+        case 'egressPolicy': return formatPolicyInfo(flow.k8s.egressNetworkPolicyName, flow.k8s.egressNetworkPolicyRuleAction, flow.k8s.sourceDisclosure) || '-';
         case 'flowType': return flow.k8s.flowType;
     }
 }
@@ -1137,16 +1137,17 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
 
     /** The items the picker offers. The scope in force always appears among them, even one the
      * list would not offer (see _applyScopeFromURL): All Namespaces on a page where the user is
-     * known not to hold it, or a namespace the search did not return. */
+     * known not to hold it, or a namespace the list does not return. Only while nothing is typed:
+     * a search only filters the list, so what is typed never offers a name the list lacks. */
     private get _scopeItems(): ScopeItem[] {
         const typed = this._scopeQuery.trim();
         const items: ScopeItem[] = [];
         if (!typed && (this._mayHoldClusterWide || this._clusterWide)) {
             items.push({ value: SCOPE_CLUSTER_WIDE, label: ALL_NAMESPACES_LABEL });
         }
-        // The scope in force is kept among the matches, whether or not the list holds it.
+        // The scope in force is kept among the options, whether or not the list holds it.
         const ns = new Set(this._scopeSearch.items);
-        if (this._observedNs && this._observedNs.startsWith(typed.toLowerCase())) ns.add(this._observedNs);
+        if (!typed && this._observedNs) ns.add(this._observedNs);
         for (const n of Array.from(ns).sort()) items.push({ value: n, label: n });
         return items;
     }
@@ -1175,6 +1176,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
     private _chooseScope(value: string) {
         this._scopeOpen = false;
         this._scopeQuery = '';
+        this._scopeActive = -1;
         this._onScopeChange(value);
     }
 
@@ -1193,7 +1195,9 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         case 'Enter': {
             e.preventDefault();
             const typed = this._scopeQuery.trim();
-            if (this._scopeActive >= 0 && this._scopeActive < items.length) this._chooseScope(items[this._scopeActive].value);
+            // The highlighted row only counts while the menu is open: once closed it indexes a list
+            // the user is no longer looking at.
+            if (this._scopeOpen && this._scopeActive >= 0 && this._scopeActive < items.length) this._chooseScope(items[this._scopeActive].value);
             // A name typed in full is the one meant, even when it also starts another Namespace.
             else if (typed && items.some(i => i.value === typed.toLowerCase())) this._chooseScope(typed.toLowerCase());
             // A single match is the one meant; and where the list is empty, unknown or cut there
@@ -1205,6 +1209,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         case 'Escape':
             this._scopeOpen = false;
             this._scopeQuery = '';
+            this._scopeActive = -1;
             break;
         case 'Tab':
             this._scopeOpen = false;

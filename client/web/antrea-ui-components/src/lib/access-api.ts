@@ -223,7 +223,7 @@ export type Verdict =
 /** Anything with a rule list: an AccessSummary, or one entry of a NamespaceAccessSummaryList. */
 export interface HasRules {
     rules: SubjectRules
-    /** Set on an AccessSummary: the user may do everything in the cluster, whatever the rules
+    /** Set on an AccessSummary: the user may do every verb on every resource, whatever the rules
      * (which a webhook authorizer, or a RoleBinding in the probe Namespace, can leave incomplete)
      * show. Absent on one entry of a NamespaceAccessSummaryList. */
     clusterAdmin?: boolean

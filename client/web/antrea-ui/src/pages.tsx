@@ -26,7 +26,7 @@ import { Navigate, useLocation, useSearchParams } from 'react-router';
 import { getLastScope, scopeSearch, setLastScope } from './lastScope';
 import { useLogout } from './logout';
 import { BUILTIN_LANDING_PAGE_TAB_ID, getEdgeExtraRenderers, getFlowTableColumnsProcessors } from './plugins';
-import { useAccess } from './access';
+import { useAccess, useScopeUser } from './access';
 import type { LandingPageTab } from './plugins';
 import type { RootState } from './store';
 
@@ -41,7 +41,7 @@ import type { RootState } from './store';
 // since the page may have something for them, which they can find by picking a namespace.
 export function HomeRedirect() {
     const { summary, loaded } = useAccess();
-    const user = useSelector((state: RootState) => state.sessionInfo?.username ?? '');
+    const user = useScopeUser();
     if (!loaded) return null;
     if (holdsOverviewResources(summary)) return <Navigate to="/overview" replace />;
     if (canViewSummary(summary)) return <Navigate to="/summary" replace />;
@@ -199,7 +199,7 @@ export function FlowVisibilityPage({ view }: { view: 'list' | 'map' }) {
     const { summary, loaded } = useAccess();
     const { search } = useLocation();
     const [, setSearchParams] = useSearchParams();
-    const user = useSelector((state: RootState) => state.sessionInfo?.username ?? '');
+    const user = useScopeUser();
     const attachedTo = useRef<HTMLElement | null>(null);
     const onScopeChange = useCallback((e: Event) => {
         const { search } = (e as CustomEvent<ScopeChangeDetail>).detail;

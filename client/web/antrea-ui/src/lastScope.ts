@@ -27,6 +27,9 @@ interface Stored {
 }
 
 export function setLastScope(user: string, scope: string): void {
+    // No name, no owner: a scope kept under '' would be offered to whoever signs in next without
+    // a name either.
+    if (!user) return;
     try {
         sessionStorage.setItem(KEY, JSON.stringify({ user, scope } satisfies Stored));
     } catch {
@@ -36,6 +39,7 @@ export function setLastScope(user: string, scope: string): void {
 
 /** The last scope `user` chose in this tab, or null when there is none. */
 export function getLastScope(user: string): string | null {
+    if (!user) return null;
     try {
         const raw = sessionStorage.getItem(KEY);
         if (!raw) return null;

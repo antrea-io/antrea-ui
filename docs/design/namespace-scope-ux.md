@@ -27,7 +27,7 @@ is more specific, it wins.
   **complete** otherwise, even when empty.
 - **Verdicts.** For each permission, the access summary gives a verdict, either cluster-wide or
   in one Namespace:
-  - *allowed*: a rule grants it, or the user may do everything in the cluster (the access
+  - *allowed*: a rule grants it, or the user may do every verb on every resource (the access
     summary says so);
   - *denied*: neither, and the rules are complete;
   - *unknown*: neither, but the rules are incomplete (e.g. a webhook authorizer is in

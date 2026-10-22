@@ -20,7 +20,7 @@ import { Provider } from 'react-redux';
 import { resetAccessSummary } from '@antrea/ui-components';
 import type { AccessSummary } from '@antrea/ui-components';
 import { setupStore, setSession, setAuthenticated } from './store';
-import { AccessProvider, useAccess } from './access';
+import { AccessProvider, useAccess, useScopeUser } from './access';
 import { HomeRedirect } from './pages';
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -289,5 +289,38 @@ describe('HomeRedirect', () => {
     test('fails open to /overview when the fetch fails', async () => {
         renderAt(null);
         await waitFor(() => expect(document.querySelector('[data-testid="landed"]')?.textContent).toBe('overview'));
+    });
+});
+
+describe('useScopeUser', () => {
+    function ScopeUserProbe() {
+        return <div data-testid="scope-user">{useScopeUser()}</div>;
+    }
+    function scopeUser() {
+        return document.querySelector('[data-testid="scope-user"]')!.textContent;
+    }
+
+    test('is the session username, else the one the access summary resolved, else empty', async () => {
+        // A fresh Response per call: a body can be read once.
+        vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(summaryWith({ username: 'system:sa:ns:impersonated' }))));
+        const store = setupStore({ session: 'authenticated', sessionInfo: { authenticated: true, mode: 'admin', username: 'admin' } });
+        const { unmount } = render(
+            <Provider store={store}><AccessProvider><ScopeUserProbe /></AccessProvider></Provider>,
+        );
+        await waitFor(() => expect(scopeUser()).toBe('admin'));
+        unmount();
+
+        // The session-info fetch failed: the summary names the user.
+        resetAccessSummary();
+        const noInfo = setupStore({ session: 'authenticated', sessionInfo: null });
+        render(<Provider store={noInfo}><AccessProvider><ScopeUserProbe /></AccessProvider></Provider>);
+        await waitFor(() => expect(scopeUser()).toBe('system:sa:ns:impersonated'));
+    });
+
+    test('is empty when neither name is known', async () => {
+        vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('down')));
+        const store = setupStore({ session: 'authenticated', sessionInfo: null });
+        render(<Provider store={store}><AccessProvider><ScopeUserProbe /></AccessProvider></Provider>);
+        await waitFor(() => expect(scopeUser()).toBe(''));
     });
 });

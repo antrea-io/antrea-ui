@@ -15,15 +15,13 @@
  */
 
 import React from 'react';
-import { useSelector } from 'react-redux';
 import { useLocation } from 'react-router';
 import { Link } from 'react-router';
 import '@antrea/ui-components';
 import { can, canViewSummary, canViewFlows, canViewOverview, GATE_TRACEFLOW_CREATE } from '@antrea/ui-components';
 import type { PluginSidebarEntry } from './plugins';
-import { useAccess } from './access';
+import { useAccess, useScopeUser } from './access';
 import { getLastScope, scopeSearch } from './lastScope';
-import type { RootState } from './store';
 
 function OverviewIcon() {
     return (
@@ -118,7 +116,7 @@ function renderPluginNavItem(entry: PluginSidebarEntry, pathname: string) {
 
 export default function NavTab({ pluginSidebarEntries }: { pluginSidebarEntries: PluginSidebarEntry[] }) {
     const { pathname, search } = useLocation();
-    const user = useSelector((state: RootState) => state.sessionInfo?.username ?? '');
+    const user = useScopeUser();
     const { summary, loaded } = useAccess();
 
     // While the access summary hasn't loaded yet, render no core items: entries popping in once

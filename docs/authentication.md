@@ -238,9 +238,13 @@ Namespaces where the caller is known to hold `watch` on `flows` cluster-wide,
 since that is the only scope in which nothing is redacted, and an *unknown*
 verdict never makes it the default; otherwise the first Namespace of the list,
 unchecked. The default is not written to the URL, so a reload runs it again. The
-page opens no stream at all where there is no scope to choose: the caller has no
-Namespace in the list and no cluster-wide grant, or the URL scope is invalid. It
-never opens one without a scope.
+page opens no stream while no scope is selected: the URL scope is invalid, or the
+URL names none and there is no default to take, because the cluster-wide verdict
+is not *allowed* and the list has no Namespace (it is empty, or unknown because
+the access summary could not be fetched). There is still a scope to choose then:
+All Namespaces is offered unless the verdict is *denied*, and the caller can name
+a Namespace. The page opens a stream once they do. It never opens one without a
+scope.
 
 Antrea UI performs no RBAC decision of its own here and must not: a wrong
 answer on antrea-ui's side would either hide flow data a caller is entitled to
@@ -481,8 +485,10 @@ than reusing a failure.
 - `clusterAdmin` is computed from a `SelfSubjectAccessReview` for `*` verb, `*`
   group, `*` resource, which is true for any wildcard ClusterRole (not only one
   literally named `cluster-admin`). The frontend counts it as granting every
-  query, whatever `rules` shows, since the rules of such a user may be
-  incomplete.
+  resource query, whatever `rules` shows, since the rules of such a user may be
+  incomplete. It says nothing about non-resource URLs (such as `/featuregates`),
+  which a resource wildcard does not grant and which are matched against
+  `nonResourceRules` alone.
 - `namespaces` is `["*"]` when the user can `list` namespaces cluster-wide.
   Otherwise it is derived from a cluster-wide watch on RoleBindings, kept
   in-memory by antrea-ui using its own ServiceAccount: the namespaces where a

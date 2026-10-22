@@ -21,7 +21,7 @@ import type { PluginSidebarEntry } from './plugins';
 import type { AccessSummary } from '@antrea/ui-components';
 import { useAccess } from './access';
 
-vi.mock('./access', () => ({ useAccess: vi.fn() }));
+vi.mock('./access', () => ({ useAccess: vi.fn(), useScopeUser: () => 'alice' }));
 // The nav only reads the signed-in username, which keys the last scope chosen.
 vi.mock('react-redux', () => ({
     useSelector: (selector: (state: unknown) => unknown) => selector({ sessionInfo: { username: 'alice' } }),
@@ -355,6 +355,18 @@ describe('NavTab — permission gating', () => {
         );
 
         expect(document.querySelector('a[href="/flows/map?namespace=_all"]')).not.toBeNull();
+    });
+
+    // A URL that names the scope twice names none, as on the page, so the links carry none.
+    test('a flow page whose URL gives namespace twice carries no scope', () => {
+        render(
+            <MemoryRouter initialEntries={['/flows/list?namespace=ns-a&namespace=ns-b']}>
+                <NavTab pluginSidebarEntries={[]} />
+            </MemoryRouter>
+        );
+
+        expect(document.querySelector('a[href="/flows/map"]')).not.toBeNull();
+        expect(document.querySelector('a[href^="/flows/map?"]')).toBeNull();
     });
 
     // While on the page, the entries carry its URL's scope or none, and not the last scope chosen:

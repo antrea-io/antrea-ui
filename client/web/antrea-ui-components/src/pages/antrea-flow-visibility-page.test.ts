@@ -777,6 +777,81 @@ describe('AntreaFlowVisibilityPage — observed-namespace selector', () => {
             expect(scopeValue(page)).toBe('xray');
         });
 
+        // The highlighted row indexed the list the menu showed, and means nothing once the menu
+        // has closed: an Enter in the input, which keeps focus, must not pick from the unfiltered
+        // list the next open would show.
+        test('Enter after a pick, or after Escape, picks nothing more', async () => {
+            const page = await mount(async () => sseResponse([]), {
+                search: '/?namespace=team-00',
+                flowAccess: () => flowAccessFixture({ clusterWide: 'allowed', lister: { names: many } }),
+            });
+            await typeScope(page, 'team-1');
+            await pressInScope(page, 'ArrowDown');
+            await pressInScope(page, 'ArrowDown');
+            await pressInScope(page, 'Enter');
+            await vi.advanceTimersByTimeAsync(0);
+            expect(scopeValue(page)).toBe('team-11');
+
+            await pressInScope(page, 'Enter');
+            await vi.advanceTimersByTimeAsync(0);
+            expect(scopeValue(page)).toBe('team-11');
+
+            await openScope(page);
+            await pressInScope(page, 'ArrowDown');
+            await pressInScope(page, 'ArrowDown');
+            await pressInScope(page, 'Escape');
+            await pressInScope(page, 'Enter');
+            await vi.advanceTimersByTimeAsync(0);
+            expect(scopeValue(page)).toBe('team-11');
+        });
+
+        // A search only filters the list: the scope in force is added to the options only while
+        // nothing is typed, so typing never offers a name the list does not hold.
+        test('a selected namespace outside the list is offered only while nothing is typed', async () => {
+            const page = await mount(async () => sseResponse([]), {
+                search: '/?namespace=ns-x',
+                flowAccess: () => flowAccessFixture({ clusterWide: 'allowed', lister: { names: many } }),
+            });
+            expect((await scopeMenu(page)).map(o => o.value)).toContain('ns-x');
+            await typeScope(page, 'ns');
+            expect((await scopeMenu(page)).map(o => o.value)).not.toContain('ns-x');
+            await typeScope(page, 'ns-x');
+            await pressInScope(page, 'Enter');
+            await vi.advanceTimersByTimeAsync(0);
+            expect(window.location.search).not.toContain('team-');
+            expect(page.shadowRoot!.querySelector('.combobox-empty')?.textContent ?? '').toContain('No matching');
+        });
+
+        test('the options start from the whole list again after a pick or Escape', async () => {
+            const page = await mount(async () => sseResponse([]), {
+                search: '/?namespace=team-00',
+                flowAccess: () => flowAccessFixture({ clusterWide: 'allowed', lister: { names: many } }),
+            });
+            await typeScope(page, 'team-1');
+            expect((await scopeMenu(page)).map(o => o.value)).not.toContain('team-00');
+            await pressInScope(page, 'Escape');
+            expect((await scopeMenu(page)).map(o => o.value)).toContain('team-00');
+
+            await typeScope(page, 'team-1');
+            await pressInScope(page, 'ArrowDown');
+            await pressInScope(page, 'Enter');
+            await vi.advanceTimersByTimeAsync(0);
+            expect(scopeValue(page)).toBe('team-10');
+            expect((await scopeMenu(page)).map(o => o.value)).toContain('team-00');
+        });
+
+        // The name typed in full is the one meant, even when it is also the start of another.
+        test('Enter on a name that starts another picks the name typed', async () => {
+            const page = await mount(async () => sseResponse([]), {
+                search: '/?namespace=zeta',
+                flowAccess: () => flowAccessFixture({ clusterWide: 'allowed', lister: { names: ['app', 'app-staging', 'zeta'] } }),
+            });
+            await typeScope(page, 'app');
+            await pressInScope(page, 'Enter');
+            await vi.advanceTimersByTimeAsync(0);
+            expect(scopeValue(page)).toBe('app');
+        });
+
         test('a click outside closes the menu', async () => {
             const page = await mount(async () => sseResponse([]), {
                 search: '/',
@@ -789,6 +864,29 @@ describe('AntreaFlowVisibilityPage — observed-namespace selector', () => {
             await page.updateComplete;
             expect(page.shadowRoot!.querySelector('#observed-ns-list')).toBeNull();
         });
+    });
+
+    // Only one menu is open at a time, whichever of them was used last.
+    test('the scope menu and a peer filter menu close each other', async () => {
+        const page = await mount(async () => sseResponse([]), {
+            search: '/?namespace=ns-a',
+            flowAccess: () => flowAccessFixture({ namespaces: ['ns-a', 'ns-b'] }),
+        });
+        const peerMenuOpen = () => page.shadowRoot!.querySelector('.multiselect-dropdown') !== null;
+        const scopeMenuOpen = () => page.shadowRoot!.querySelector('#observed-ns-list') !== null;
+
+        await openScope(page);
+        expect(scopeMenuOpen()).toBe(true);
+        page.shadowRoot!.querySelector<HTMLButtonElement>('.multiselect-btn')!.click();
+        await page.updateComplete;
+        expect(scopeMenuOpen()).toBe(false);
+        expect(peerMenuOpen()).toBe(true);
+
+        // A press on the scope input is outside the peer menu, which closes.
+        scopeInput(page).dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, composed: true }));
+        await openScope(page);
+        expect(scopeMenuOpen()).toBe(true);
+        expect(peerMenuOpen()).toBe(false);
     });
 
     test('an empty free-text box does nothing', async () => {
@@ -868,6 +966,69 @@ describe('AntreaFlowVisibilityPage — the scope in the URL', () => {
         await el.updateComplete;
         expect(streamCalls(fetchMock)).toHaveLength(1);
         expect(scopeValue(el)).toBe('ns-a');
+    });
+
+    // The list is still loading when the user picks a scope, which All Namespaces allows since
+    // nothing says yet that the user lacks it. The answer that arrives afterwards settles the
+    // default's business only, and must read the page's own URL: the router has not delivered the
+    // pick to `locationSearch` yet.
+    test('a scope picked while the access summary loads is kept when it arrives', async () => {
+        const fetchMock = vi.fn(async () => sseResponse([]));
+        let release!: () => void;
+        const gate = new Promise<void>(r => { release = r; });
+        resetAccessSummary();
+        window.history.replaceState(null, '', '/?namespace=ns-a');
+        vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+            if (typeof url === 'string' && url.includes('/api/v1/access-summary')) {
+                await gate;
+                return accessSummaryResponse(flowAccessFixture({ namespaces: ['ns-a', 'ns-b'], clusterWide: 'denied' }));
+            }
+            return fetchMock(url as never, init as never);
+        }));
+        el = document.createElement('antrea-flow-visibility-page') as AntreaFlowVisibilityPage;
+        el.locationSearch = '?namespace=ns-a';
+        document.body.appendChild(el);
+        await el.updateComplete;
+        await vi.advanceTimersByTimeAsync(0);
+
+        await chooseScope(el, '__cluster_wide__');
+        await vi.advanceTimersByTimeAsync(0);
+        expect(scopeValue(el)).toBe('__cluster_wide__');
+
+        release();
+        await vi.advanceTimersByTimeAsync(0);
+        await el.updateComplete;
+        expect(scopeValue(el)).toBe('__cluster_wide__');
+        expect(window.location.search).toContain('namespace=_all');
+        const calls = streamCalls(fetchMock);
+        expect(new URL(calls[calls.length - 1][0] as string, 'http://example.test').searchParams.get('clusterWide')).toBe('true');
+    });
+
+    // The element is connected before the host attaches its listeners, so the scope the URL gave
+    // at mount is told again once the page has rendered. A listener on the element itself, added
+    // right after it is appended, only hears that second telling: a listener on the document
+    // could not tell it from the first.
+    test('tells the host the scope the URL gave once mounted', async () => {
+        let release!: () => void;
+        const gate = new Promise<void>(r => { release = r; });
+        resetAccessSummary();
+        window.history.replaceState(null, '', '/?namespace=ns-a');
+        vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+            if (typeof url === 'string' && url.includes('/api/v1/access-summary')) {
+                await gate;
+                return accessSummaryResponse(flowAccessFixture());
+            }
+            return sseResponse([]);
+        }));
+        el = document.createElement('antrea-flow-visibility-page') as AntreaFlowVisibilityPage;
+        document.body.appendChild(el);
+        const seen: string[] = [];
+        el.addEventListener(SCOPE_CHOSEN_EVENT, e => seen.push((e as CustomEvent<ScopeChosenDetail>).detail.scope));
+        await el.updateComplete;
+
+        expect(seen).toEqual(['ns-a']);
+        release();
+        await vi.advanceTimersByTimeAsync(0);
     });
 
     test('an explicit choice is written to the URL, and a default is not', async () => {
@@ -1486,6 +1647,55 @@ describe('AntreaFlowVisibilityPage — filters, sort, text filter, pause/resume,
         await page.updateComplete;
         rows = page.shadowRoot!.querySelectorAll('tbody tr');
         expect(rows[0].textContent).toContain('zzz-xyz34');
+    });
+
+    /** Mounts the flows, then returns a function that sorts by a column and reads the order the
+     * rows come out in, by a marker each flow carries in a field the column does not show. */
+    async function sortedBy(flows: Flow[], header: string, markers: string[]): Promise<string[]> {
+        const page = await mount(vi.fn(async () => sseResponse([flowEventChunk(flows)])), { search: '/?namespace=ns-a' });
+        for (let i = 0; i < 5 && page.shadowRoot!.querySelectorAll('tbody tr').length < flows.length; i++) {
+            await vi.advanceTimersByTimeAsync(1000);
+            await page.updateComplete;
+        }
+        Array.from(page.shadowRoot!.querySelectorAll('th')).find(th => th.textContent?.includes(header))!.click();
+        await page.updateComplete;
+        return Array.from(page.shadowRoot!.querySelectorAll('tbody tr'))
+            .map(r => markers.find(m => r.textContent!.includes(m))!);
+    }
+
+    // The cell of a withheld endpoint reads "ns-z/<hidden>", so that is where it sorts: not by
+    // the address it also carries, which is not the text on screen.
+    test('Source and Destination sort by what the cell shows for a withheld endpoint', async () => {
+        const flows = [
+            makeFlow({ srcNs: 'ns-z', srcPod: '', srcIP: '10.0.0.1', srcDisclosure: EndpointDisclosure.Flow, dstPod: 'm-hidden' }),
+            makeFlow({ srcNs: 'ns-a', srcPod: 'x', srcIP: '10.0.0.2', dstPod: 'm-first' }),
+            makeFlow({ srcNs: 'ns-z', srcPod: 'zzz', srcIP: '10.0.0.3', dstPod: 'm-last' }),
+        ];
+        expect(await sortedBy(flows, 'Source', ['m-hidden', 'm-first', 'm-last']))
+            .toEqual(['m-first', 'm-hidden', 'm-last']);
+    });
+
+    // A withheld policy shows its action and a policy that never matched shows "-", and neither
+    // is the empty name both used to sort as.
+    test('the policy columns sort by what the cell shows', async () => {
+        const flows = [
+            makeFlow({ srcPod: 'm-hidden', srcIP: '10.0.0.1', dstDisclosure: EndpointDisclosure.Flow, ingressAction: NetworkPolicyRuleAction.Drop }),
+            makeFlow({ srcPod: 'm-none', srcIP: '10.0.0.2' }),
+            makeFlow({ srcPod: 'm-named', srcIP: '10.0.0.3', ingressPolicy: 'bbb-policy' }),
+        ];
+        expect(await sortedBy(flows, 'Ingress Policy', ['m-hidden', 'm-none', 'm-named']))
+            .toEqual(['m-none', 'm-named', 'm-hidden']);
+    });
+
+    // A withheld Service has no text and an absent one reads "-": two cells, so two sort keys.
+    test('Dest Service sorts a withheld Service apart from an absent one', async () => {
+        const flows = [
+            makeFlow({ srcPod: 'm-absent', srcIP: '10.0.0.1' }),
+            makeFlow({ srcPod: 'm-withheld', srcIP: '10.0.0.2', dstDisclosure: EndpointDisclosure.Flow }),
+            makeFlow({ srcPod: 'm-named', srcIP: '10.0.0.3', destService: 'ns-a/svc:http' }),
+        ];
+        expect(await sortedBy(flows, 'Dest Service', ['m-absent', 'm-withheld', 'm-named']))
+            .toEqual(['m-withheld', 'm-absent', 'm-named']);
     });
 
     test('the text filter narrows the flow list to matching entries', async () => {
