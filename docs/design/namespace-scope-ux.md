@@ -125,7 +125,8 @@ list is empty, unknown or cut.
 
 The selected scope always appears in the picker as selected, even if the picker would not
 otherwise offer it: a scope from the URL, a default Namespace, a typed name, a star that left
-the list, or All Namespaces on a *denied* page.
+the list, or All Namespaces on a *denied* page. This does not apply while something is typed:
+the selected scope then appears only if the search of rule 2 shows it.
 
 ## 8. Naming a Namespace
 
