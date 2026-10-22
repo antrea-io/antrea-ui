@@ -24,7 +24,6 @@ import {
     NetworkPolicyRuleAction,
     flowTypeLabel,
     getProtocolName,
-    formatEndpoint,
     formatPolicyInfo,
     formatBytes,
     destinationK8sServiceFilterKey,
@@ -593,8 +592,10 @@ function sortValue(entry: FlowEntry, field: SortField): string | number {
     const { flow } = entry;
     switch (field) {
         case 'lastSeen': return new Date(flow.endTs).getTime();
-        case 'source': return formatEndpoint(flow.k8s.sourcePodNamespace, flow.k8s.sourcePodName, flow.ip.source);
-        case 'destination': return formatEndpoint(flow.k8s.destinationPodNamespace, flow.k8s.destinationPodName, flow.ip.destination);
+        // The text the cell shows, so the order matches what the user reads: a withheld endpoint
+        // shows "ns/<hidden>", not its address.
+        case 'source': return endpointView(flow.k8s.sourceDisclosure, flow.k8s.sourcePodNamespace, flow.k8s.sourcePodName, flow.ip.source, flow.k8s.flowType as FlowType === FlowType.FromExternal).text;
+        case 'destination': return endpointView(flow.k8s.destinationDisclosure, flow.k8s.destinationPodNamespace, flow.k8s.destinationPodName, flow.ip.destination, flow.k8s.flowType as FlowType === FlowType.ToExternal).text;
         case 'destinationService': return destinationK8sServiceFilterKey(flow.k8s.destinationServicePortName) || flow.k8s.destinationServicePortName;
         case 'protocol': return flow.transport.protocolNumber;
         case 'destPort': return flow.transport.destinationPort;
@@ -811,9 +812,6 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
     // left without a way to choose a scope.
     @state() private _flowAccess: FlowAccess | null = null;
     @state() private _flowAccessLoaded = false;
-    // What the selector offers: the namespaces matching what was typed in its search box, at most
-    // one page of them. See searchFlowNamespaces.
-    // Whether more namespaces matched than the menu shows.
     @state() private _scopeQuery = '';
     @state() private _scopeOpen = false;
     // Which item of the open menu the keyboard is on, or -1 for none.
@@ -1240,6 +1238,10 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         super.disconnectedCallback();
         this._client?.stop();
         this._client = null;
+        // The stream is gone, so the key that says which request is open no longer holds. Left in
+        // place, a reattached element would find the key unchanged in _refreshStream and never
+        // reopen its stream.
+        this._filterKey = '';
         this._simulation?.stop();
         this._ro?.disconnect();
         if (this._refreshTimer) { clearInterval(this._refreshTimer); this._refreshTimer = null; }

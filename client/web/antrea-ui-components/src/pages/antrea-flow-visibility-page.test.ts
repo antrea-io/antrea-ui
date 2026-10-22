@@ -1288,6 +1288,20 @@ describe('AntreaFlowVisibilityPage — smoke and stream lifecycle', () => {
         expect(page.shadowRoot).not.toBeNull();
     });
 
+    test('a page detached and attached again reopens its stream', async () => {
+        const fetchMock = vi.fn(async () => sseResponse([]));
+        const page = await mount(fetchMock);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(streamCalls(fetchMock)).toHaveLength(1);
+
+        const parent = page.parentElement!;
+        page.remove();
+        parent.appendChild(page);
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(streamCalls(fetchMock)).toHaveLength(2);
+    });
+
     test('a stream 401 dispatches antrea-session-expired', async () => {
         // The stream opens from connectedCallback(), so the 401 can land before mount() returns.
         // Listen on document.body (the event bubbles and is composed) to catch it either way.
