@@ -18,8 +18,15 @@
 // Passed to antrea-ui-components' setApiBase() at startup; see src/index.tsx.
 const apiServer = import.meta.env.VITE_API_SERVER || "";
 
+// This shell's own full release version, injected at build time (VITE_ANTREA_UI_VERSION; see
+// build/frontend.dockerfile), with any leading "v" dropped but any prerelease suffix (e.g.
+// "-rc.2") kept - a plugin's compatibleAntreaUI range is matched against it (see plugins.ts).
+// Empty in an unconfigured dev build, in which case that check is skipped.
+const shellVersion = (import.meta.env.VITE_ANTREA_UI_VERSION || "").replace(/^v/, "");
+
 const config = {
     apiServer: apiServer,
+    shellVersion: shellVersion,
 };
 
 export default config;

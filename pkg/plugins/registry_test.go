@@ -37,6 +37,7 @@ func TestRegistryIndexIncludesFederation(t *testing.T) {
 				"name": "policy-management",
 				"version": "0.2.0",
 				"entry": "index.js",
+				"compatibleAntreaUI": "*",
 				"federation": {
 					"remoteEntry": "remoteEntry.json",
 					"routes": [
@@ -53,9 +54,10 @@ func TestRegistryIndexIncludesFederation(t *testing.T) {
 	})
 
 	assert.Equal(t, []apisv1.PluginManifest{{
-		Name:    "policy-management",
-		Version: "0.2.0",
-		Entry:   "index.js",
+		Name:               "policy-management",
+		Version:            "0.2.0",
+		Entry:              "index.js",
+		CompatibleAntreaUI: "*",
 		Federation: &apisv1.PluginFederation{
 			RemoteEntry: "remoteEntry.json",
 			Routes: []apisv1.PluginRoute{
@@ -76,6 +78,7 @@ func federationConfigMap(t *testing.T, cmName, pluginName, entry string, routes 
 				"name": "` + pluginName + `",
 				"version": "0.1.0",
 				"entry": "` + entry + `",
+				"compatibleAntreaUI": "*",
 				"federation": {"remoteEntry": "remoteEntry.json", "routes": ` + routes + `}
 			}`,
 		},
@@ -241,7 +244,7 @@ func TestRegistryDuplicatePluginNameKeepsLowerConfigMapName(t *testing.T) {
 	r.handleUpsert(t.Context(), configMap(t, "a-configmap", "pod-counter", "1.0.0", "index.js", map[string]string{"index.js": "a"}))
 
 	assert.Equal(t, []apisv1.PluginManifest{
-		{Name: "pod-counter", Version: "1.0.0", Entry: "index.js"},
+		{Name: "pod-counter", Version: "1.0.0", Entry: "index.js", CompatibleAntreaUI: "*"},
 	}, r.Index())
 	rc, _, ok := r.File("pod-counter", "index.js")
 	require.True(t, ok)

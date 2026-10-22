@@ -59,7 +59,7 @@ func createPluginConfigMap(t *testing.T, ts *testServer, name, pluginName, versi
 			Labels: map[string]string{"ui.antrea.io/plugin": "true"},
 		},
 		Data: map[string]string{
-			"manifest.json": `{"name":"` + pluginName + `","version":"` + version + `","entry":"` + entry + `"}`,
+			"manifest.json": `{"name":"` + pluginName + `","version":"` + version + `","entry":"` + entry + `","compatibleAntreaUI":"*"}`,
 		},
 		BinaryData: map[string][]byte{"bundle.zip": buildZip(t, bundleFiles)},
 	}, metav1.CreateOptions{})
@@ -97,7 +97,7 @@ func TestGetPluginsIndex(t *testing.T) {
 			"index.js": []byte("console.log('hi')"),
 		})
 		waitForPluginIndex(t, ts, []apisv1.PluginManifest{
-			{Name: "pod-counter", Version: "0.1.0", Entry: "index.js"},
+			{Name: "pod-counter", Version: "0.1.0", Entry: "index.js", CompatibleAntreaUI: "*"},
 		})
 	})
 }
@@ -113,7 +113,7 @@ func TestGetPluginsIndexReflectsConfigMapDeletion(t *testing.T) {
 			"index.js": []byte("console.log('hi')"),
 		})
 		waitForPluginIndex(t, ts, []apisv1.PluginManifest{
-			{Name: "pod-counter", Version: "0.1.0", Entry: "index.js"},
+			{Name: "pod-counter", Version: "0.1.0", Entry: "index.js", CompatibleAntreaUI: "*"},
 		})
 
 		require.NoError(t, ts.pluginsClientset.CoreV1().ConfigMaps("antrea-ui").Delete(context.Background(), "pod-counter-plugin", metav1.DeleteOptions{}))
@@ -133,7 +133,7 @@ func TestGetPluginFile(t *testing.T) {
 			"index.js": []byte("console.log('hi')"),
 		})
 		waitForPluginIndex(t, ts, []apisv1.PluginManifest{
-			{Name: "pod-counter", Version: "0.1.0", Entry: "index.js"},
+			{Name: "pod-counter", Version: "0.1.0", Entry: "index.js", CompatibleAntreaUI: "*"},
 		})
 
 		req := httptest.NewRequest("GET", "/api/v1/plugins/pod-counter/index.js", nil)
@@ -159,7 +159,7 @@ func TestGetPluginFileNestedPath(t *testing.T) {
 			"assets/logo.png": []byte("fake-png-bytes"),
 		})
 		waitForPluginIndex(t, ts, []apisv1.PluginManifest{
-			{Name: "pod-counter", Version: "0.1.0", Entry: "index.js"},
+			{Name: "pod-counter", Version: "0.1.0", Entry: "index.js", CompatibleAntreaUI: "*"},
 		})
 
 		req := httptest.NewRequest("GET", "/api/v1/plugins/pod-counter/assets/logo.png", nil)
@@ -211,7 +211,7 @@ func TestGetPluginFileGzipped(t *testing.T) {
 			"index.js": gzipped.Bytes(),
 		})
 		waitForPluginIndex(t, ts, []apisv1.PluginManifest{
-			{Name: "pod-counter", Version: "0.1.0", Entry: "index.js"},
+			{Name: "pod-counter", Version: "0.1.0", Entry: "index.js", CompatibleAntreaUI: "*"},
 		})
 
 		req := httptest.NewRequest("GET", "/api/v1/plugins/pod-counter/index.js", nil)

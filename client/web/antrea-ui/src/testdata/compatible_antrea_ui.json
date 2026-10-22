@@ -1,0 +1,15 @@
+[
+  {"range": "1.0.0-rc.1 || 1.0.0-rc.2", "valid": true},
+  {"range": ">=1.0.0-rc.1 <1.0.0-rc.3", "valid": true},
+  {"range": ">=1.0.0 <2.0.0", "valid": true},
+  {"range": "^1.0.0", "valid": true},
+  {"range": "~1.2.3", "valid": true},
+  {"range": "1.x", "valid": true},
+  {"range": "1.0.0 - 2.0.0", "valid": true},
+  {"range": "1.0.0-rc.x", "valid": true},
+  {"range": "*", "valid": true},
+  {"range": "", "valid": false},
+  {"range": "   ", "valid": false},
+  {"range": "not a range", "valid": false},
+  {"range": ">=", "valid": false}
+]

@@ -20,6 +20,8 @@ import (
 	"path"
 	"strings"
 
+	"github.com/Masterminds/semver/v3"
+
 	apisv1 "antrea.io/antrea-ui/apis/v1"
 )
 
@@ -88,6 +90,21 @@ func isReservedRoutePath(normalized string) bool {
 	return false
 }
 
+// validateCompatibleAntreaUI checks that compatibleAntreaUI is present and a well-formed semver
+// range. It deliberately does not evaluate the range: only a frontend shell knows its own full
+// release version (the backend serves one index to every shell), so each shell does that against
+// its build-time version - see plugins.ts. Because the two sides use different libraries, the
+// shared cases in client/web/antrea-ui/src/testdata/compatible_antrea_ui.json pin their agreement on syntax.
+func validateCompatibleAntreaUI(r string) error {
+	if strings.TrimSpace(r) == "" {
+		return fmt.Errorf("manifest is missing 'compatibleAntreaUI'")
+	}
+	if _, err := semver.NewConstraint(r); err != nil {
+		return fmt.Errorf("manifest's 'compatibleAntreaUI' %q is not a valid semver range: %w", r, err)
+	}
+	return nil
+}
+
 // validateManifest parses manifestJSON and checks that every file it references (Entry,
 // Federation.RemoteEntry) is present in the bundle - names is just the bundle's file name set,
 // not its content, since both callers only have names cheaply available (from bundle.zip's
@@ -128,6 +145,9 @@ func parseManifest(manifestJSON []byte) (*apisv1.PluginManifest, error) {
 	}
 	if manifest.Entry == "" {
 		return nil, fmt.Errorf("manifest is missing 'entry'")
+	}
+	if err := validateCompatibleAntreaUI(manifest.CompatibleAntreaUI); err != nil {
+		return nil, err
 	}
 	entry := cleanEntryName(manifest.Entry)
 	if manifest.BundleSource != nil {

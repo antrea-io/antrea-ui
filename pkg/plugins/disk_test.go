@@ -64,7 +64,7 @@ func TestParsePluginArchive(t *testing.T) {
 
 	entry, err := parsePluginArchive(filepath.Join(dir, "pod-counter"), filepath.Join(t.TempDir(), "pod-counter"), 0, nil)
 	require.NoError(t, err)
-	assert.Equal(t, apisv1.PluginManifest{Name: "pod-counter", Version: "0.1.0", Entry: "index.js"}, entry.manifest)
+	assert.Equal(t, apisv1.PluginManifest{Name: "pod-counter", Version: "0.1.0", Entry: "index.js", CompatibleAntreaUI: "*"}, entry.manifest)
 	rc, size, ok := entry.open("index.js")
 	require.True(t, ok)
 	assert.Equal(t, int64(len("console.log('hi')")), size)
@@ -91,6 +91,7 @@ func TestParsePluginArchiveIncludesRoutesAndFederation(t *testing.T) {
 			"name": "policy-management",
 			"version": "0.2.0",
 			"entry": "index.js",
+			"compatibleAntreaUI": "*",
 			"federation": {
 				"remoteEntry": "remoteEntry.json",
 				"routes": [
@@ -106,9 +107,10 @@ func TestParsePluginArchiveIncludesRoutesAndFederation(t *testing.T) {
 	entry, err := parsePluginArchive(filepath.Join(dir, "policy-management"), filepath.Join(t.TempDir(), "policy-management"), 0, nil)
 	require.NoError(t, err)
 	assert.Equal(t, apisv1.PluginManifest{
-		Name:    "policy-management",
-		Version: "0.2.0",
-		Entry:   "index.js",
+		Name:               "policy-management",
+		Version:            "0.2.0",
+		Entry:              "index.js",
+		CompatibleAntreaUI: "*",
 		Federation: &apisv1.PluginFederation{
 			RemoteEntry: "remoteEntry.json",
 			Routes: []apisv1.PluginRoute{
@@ -125,15 +127,15 @@ func TestParsePluginArchiveRejectsInvalidFederationRoutes(t *testing.T) {
 		bundle   map[string]string
 	}{
 		"route missing path": {
-			`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"sidebarLabel":"Plugin","exposedModule":"./Page"}]}}`,
+			`{"name":"plugin","version":"0.1.0","entry":"index.js","compatibleAntreaUI":"*","federation":{"remoteEntry":"remoteEntry.json","routes":[{"sidebarLabel":"Plugin","exposedModule":"./Page"}]}}`,
 			map[string]string{"index.js": "x", "remoteEntry.json": "x"},
 		},
 		"route path under reserved api/ prefix": {
-			`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"path":"/api/v1/plugin","sidebarLabel":"Plugin","exposedModule":"./Page"}]}}`,
+			`{"name":"plugin","version":"0.1.0","entry":"index.js","compatibleAntreaUI":"*","federation":{"remoteEntry":"remoteEntry.json","routes":[{"path":"/api/v1/plugin","sidebarLabel":"Plugin","exposedModule":"./Page"}]}}`,
 			map[string]string{"index.js": "x", "remoteEntry.json": "x"},
 		},
 		"federation remoteEntry file not present": {
-			`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json"}}`,
+			`{"name":"plugin","version":"0.1.0","entry":"index.js","compatibleAntreaUI":"*","federation":{"remoteEntry":"remoteEntry.json"}}`,
 			map[string]string{"index.js": "x"},
 		},
 	}
@@ -149,9 +151,9 @@ func TestParsePluginArchiveRejectsInvalidFederationRoutes(t *testing.T) {
 
 func TestParsePluginArchiveInvalid(t *testing.T) {
 	dir := t.TempDir()
-	writePluginDir(t, dir, "missing-name", `{"version":"0.1.0","entry":"index.js"}`, map[string]string{"index.js": "x"})
-	writePluginDir(t, dir, "missing-entry", `{"name":"plugin","version":"0.1.0"}`, map[string]string{"index.js": "x"})
-	writePluginDir(t, dir, "entry-not-present", `{"name":"plugin","version":"0.1.0","entry":"index.js"}`, map[string]string{"other.js": "x"})
+	writePluginDir(t, dir, "missing-name", `{"version":"0.1.0","entry":"index.js","compatibleAntreaUI":"*"}`, map[string]string{"index.js": "x"})
+	writePluginDir(t, dir, "missing-entry", `{"name":"plugin","version":"0.1.0","compatibleAntreaUI":"*"}`, map[string]string{"index.js": "x"})
+	writePluginDir(t, dir, "entry-not-present", `{"name":"plugin","version":"0.1.0","entry":"index.js","compatibleAntreaUI":"*"}`, map[string]string{"other.js": "x"})
 	writePluginDir(t, dir, "malformed-manifest", "not json", map[string]string{"index.js": "x"})
 
 	// missing manifest.json entirely
@@ -161,12 +163,12 @@ func TestParsePluginArchiveInvalid(t *testing.T) {
 	// missing bundle.zip entirely
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "missing-bundle"), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "missing-bundle", manifestFileName),
-		[]byte(`{"name":"plugin","version":"0.1.0","entry":"index.js"}`), 0o600))
+		[]byte(`{"name":"plugin","version":"0.1.0","entry":"index.js","compatibleAntreaUI":"*"}`), 0o600))
 
 	// malformed bundle.zip (not a zip at all)
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "malformed-bundle"), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "malformed-bundle", manifestFileName),
-		[]byte(`{"name":"plugin","version":"0.1.0","entry":"index.js"}`), 0o600))
+		[]byte(`{"name":"plugin","version":"0.1.0","entry":"index.js","compatibleAntreaUI":"*"}`), 0o600))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "malformed-bundle", bundleFileName), []byte("not a zip"), 0o600))
 
 	// No keyring is passed below, so nothing requires a manifest.json.asc - but a bundleSha256
@@ -196,7 +198,7 @@ func TestRunDirectoryWatchLoadsExistingPlugins(t *testing.T) {
 
 	waitFor(t, time.Second, func() bool { return len(r.Index()) == 1 })
 	assert.Equal(t, []apisv1.PluginManifest{
-		{Name: "pod-counter", Version: "0.1.0", Entry: "index.js"},
+		{Name: "pod-counter", Version: "0.1.0", Entry: "index.js", CompatibleAntreaUI: "*"},
 	}, r.Index())
 	rc, _, ok := r.File("pod-counter", "index.js")
 	require.True(t, ok)
@@ -228,7 +230,7 @@ func TestRunDirectoryWatchRetriesUntilDirectoryAppears(t *testing.T) {
 	writePluginDir(t, dir, "pod-counter", podCounterManifest("pod-counter", "0.1.0"), podCounterBundle())
 	waitFor(t, time.Second, func() bool { return len(r.Index()) == 1 })
 	assert.Equal(t, []apisv1.PluginManifest{
-		{Name: "pod-counter", Version: "0.1.0", Entry: "index.js"},
+		{Name: "pod-counter", Version: "0.1.0", Entry: "index.js", CompatibleAntreaUI: "*"},
 	}, r.Index())
 }
 
@@ -249,7 +251,7 @@ func TestRunDirectoryWatchLoadsPluginBehindSymlink(t *testing.T) {
 
 	waitFor(t, time.Second, func() bool { return len(r.Index()) == 1 })
 	assert.Equal(t, []apisv1.PluginManifest{
-		{Name: "pod-counter", Version: "0.1.0", Entry: "index.js"},
+		{Name: "pod-counter", Version: "0.1.0", Entry: "index.js", CompatibleAntreaUI: "*"},
 	}, r.Index())
 }
 

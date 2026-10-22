@@ -37,6 +37,12 @@
 // It must exist before any plugin's `import()` below runs, since a plugin registers by calling
 // an SDK function during its own module evaluation.
 
+// Only the three functions needed, from their own entry points: the package's default one pulls
+// all of node-semver (Range, Comparator, every coercion path) into the browser bundle.
+import satisfies from 'semver/functions/satisfies';
+import valid from 'semver/functions/valid';
+import validRange from 'semver/ranges/valid';
+import config from './config';
 import type { EdgeExtraRenderer, FlowTableColumnsProcessor } from '@antrea/ui-components';
 // The host and the SDK must agree on AntreaPluginHost's shape (it's the contract every plugin's
 // registerX() call goes through), but only as types — importing them with `import type` here
@@ -196,12 +202,56 @@ export interface PluginManifest {
     // verification is entirely backend-side (see pkg/plugins/signature.go), so a plugin that
     // fails it never reaches this index at all.
     bundleSha256?: string;
+    // compatibleAntreaUI is a node-semver range of the full frontend versions (prerelease
+    // suffix included) that may load this plugin. The backend guarantees it is present and well-formed
+    // (see pkg/plugins/manifest.go); this host evaluates it against its own build-time version
+    // before fetching any of the plugin's code (see isCompatible).
+    compatibleAntreaUI: string;
     federation?: {
         remoteEntry: string;
         // kind mirrors apis/v1's PluginRouteKindComponent/PluginRouteKindRoutes; the backend
         // rejects a manifest with any other value, so the union can't be widened by input.
         routes: { path: string; sidebarLabel: string; icon?: string; exposedModule: string; kind?: 'component' | 'routes' }[];
     };
+}
+
+export interface IncompatiblePlugin {
+    name: string;
+    version: string;
+    // The plugin's declared compatibleAntreaUI range, and the shell version it was matched against.
+    range: string;
+    shellVersion: string;
+}
+
+const incompatiblePlugins: IncompatiblePlugin[] = [];
+
+export function getIncompatiblePlugins(): IncompatiblePlugin[] {
+    return incompatiblePlugins;
+}
+
+// The banner text for a plugin that was not loaded because of its compatibleAntreaUI range.
+export function incompatiblePluginMessage(p: IncompatiblePlugin): string {
+    return `Plugin ${p.name} (version ${p.version}) does not support antrea-ui version ${p.shellVersion}. ` +
+        `Supported versions: ${p.range}. Install a supported shell/plugin combination.`;
+}
+
+// Reports whether range is a usable compatibleAntreaUI value. validRange('') is '*' in node-semver,
+// which would admit every shell; the backend rejects an empty range (pkg/plugins/manifest.go), so
+// this must not accept one either. src/testdata/compatible_antrea_ui.json pins the two
+// implementations to the same answer.
+export function isValidRange(range: unknown): range is string {
+    return typeof range === 'string' && range.trim() !== '' && validRange(range) !== null;
+}
+
+// Reports whether manifest's compatibleAntreaUI range admits shellVersion. satisfies() with its
+// default options is the only decision: its prerelease handling is what makes a range like
+// ">=1.0.0 <2.0.0" not admit "1.0.0-rc.2", and ltr()/gtr() could only say whether the
+// version is numerically below or above the range, not whether the frontend or the plugin is the
+// one to upgrade, so no direction is ever suggested. A range that does not parse is treated as a
+// mismatch, though the backend already rejects those.
+export function isCompatible(manifest: PluginManifest, shellVersion: string): boolean {
+    const range = manifest.compatibleAntreaUI;
+    return isValidRange(range) && valid(shellVersion) !== null && satisfies(shellVersion, range);
 }
 
 export async function loadPlugins(): Promise<PluginManifest[]> {
@@ -215,8 +265,27 @@ export async function loadPlugins(): Promise<PluginManifest[]> {
         return [];
     }
 
+    const shellVersion = config.shellVersion;
+    // A version that is missing or not valid semver cannot be matched against anything: every plugin
+    // would be reported as incompatible, blaming the plugin for what is a problem with this build.
+    const checkCompatibility = valid(shellVersion) !== null;
+    if (!checkCompatibility) {
+        console.warn(
+            `antrea-ui build has no valid version (VITE_ANTREA_UI_VERSION is "${shellVersion}"); ` +
+            'skipping plugin compatibility checks'
+        );
+    }
+
     const loaded: PluginManifest[] = [];
     for (const manifest of manifests) {
+        if (checkCompatibility && !isCompatible(manifest, shellVersion)) {
+            // A pre-change backend serves no range at all; say so rather than print "undefined".
+            const range = typeof manifest.compatibleAntreaUI === 'string' ? manifest.compatibleAntreaUI : '(none declared)';
+            const info = { name: manifest.name, version: manifest.version, range, shellVersion };
+            console.error(incompatiblePluginMessage(info));
+            incompatiblePlugins.push(info);
+            continue;
+        }
         try {
             await import(/* @vite-ignore */ `/api/v1/plugins/${encodeURIComponent(manifest.name)}/${encodeURIComponent(manifest.entry)}`);
             loaded.push(manifest);

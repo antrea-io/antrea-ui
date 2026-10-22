@@ -28,7 +28,8 @@ import { AccessProvider } from './access';
 import { Provider, useSelector, useDispatch } from 'react-redux';
 import type { RootState } from './store';
 import { store, setSession, setAuthenticated } from './store';
-import type { PluginSidebarEntry } from './plugins';
+import type { PluginSidebarEntry, IncompatiblePlugin } from './plugins';
+import { incompatiblePluginMessage } from './plugins';
 
 // How often to ping GET /auth/session while a tab is visible. The backend expires a session
 // after 30 minutes without a request, and "idle" should mean "no open visible tab" rather than
@@ -134,7 +135,23 @@ function UserIdentity() {
     );
 }
 
-function App({ pluginSidebarEntries = [] }: { pluginSidebarEntries?: PluginSidebarEntry[] }) {
+// One banner per plugin that was skipped because its compatibleAntreaUI range does not admit this
+// shell's version (see plugins.ts). Not closable: the condition lasts until the shell or the
+// plugin is replaced.
+function IncompatiblePluginBanners({ plugins }: { plugins: IncompatiblePlugin[] }) {
+    return (
+        <>
+            {plugins.map(p => (
+                <antrea-alert key={p.name} status="warning">{incompatiblePluginMessage(p)}</antrea-alert>
+            ))}
+        </>
+    );
+}
+
+function App({ pluginSidebarEntries = [], incompatiblePlugins = [] }: {
+    pluginSidebarEntries?: PluginSidebarEntry[];
+    incompatiblePlugins?: IncompatiblePlugin[];
+}) {
     return (
         <div className="app-shell">
             <Provider store={store}>
@@ -150,6 +167,7 @@ function App({ pluginSidebarEntries = [] }: { pluginSidebarEntries?: PluginSideb
                         <Logout />
                     </div>
                 </header>
+                <IncompatiblePluginBanners plugins={incompatiblePlugins} />
                 <div className="app-body">
                     <AppErrorProvider>
                         <AccessProvider>

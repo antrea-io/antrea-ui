@@ -164,7 +164,7 @@ func (b *readTracker) Close() error             { b.closed = true; return nil }
 
 // httpManifest is remoteManifest for a plugin whose bundleSource is "http".
 func httpManifest(version string, bundle []byte) string {
-	return fmt.Sprintf(`{"name":"pod-counter","version":%q,"entry":"index.js","bundleSha256":%q,"bundleSource":{"http":{}}}`,
+	return fmt.Sprintf(`{"name":"pod-counter","version":%q,"entry":"index.js","compatibleAntreaUI":"*","bundleSha256":%q,"bundleSource":{"http":{}}}`,
 		version, bundleDigest(bundle))
 }
 
@@ -308,14 +308,14 @@ func TestHTTPBundleRejections(t *testing.T) {
 		{
 			name: "no digest",
 			cm: func(t *testing.T) *corev1.ConfigMap {
-				return httpConfigMap(t, testSigner(), `{"name":"pod-counter","entry":"index.js","bundleSource":{"http":{}}}`, testBundleURL)
+				return httpConfigMap(t, testSigner(), `{"name":"pod-counter","entry":"index.js","compatibleAntreaUI":"*","bundleSource":{"http":{}}}`, testBundleURL)
 			},
 			want: upsertRejected,
 		},
 		{
 			name: "both transports",
 			cm: func(t *testing.T) *corev1.ConfigMap {
-				m := fmt.Sprintf(`{"name":"pod-counter","entry":"index.js","bundleSha256":%q,"bundleSource":{"http":{},"apiServer":{"path":%q}}}`, bundleDigest(bundle), testBundlePath)
+				m := fmt.Sprintf(`{"name":"pod-counter","entry":"index.js","compatibleAntreaUI":"*","bundleSha256":%q,"bundleSource":{"http":{},"apiServer":{"path":%q}}}`, bundleDigest(bundle), testBundlePath)
 				return httpConfigMap(t, testSigner(), m, testBundleURL)
 			},
 			want: upsertRejected,
@@ -323,7 +323,7 @@ func TestHTTPBundleRejections(t *testing.T) {
 		{
 			name: "entry missing from the bundle",
 			cm: func(t *testing.T) *corev1.ConfigMap {
-				m := fmt.Sprintf(`{"name":"pod-counter","entry":"missing.js","bundleSha256":%q,"bundleSource":{"http":{}}}`, bundleDigest(bundle))
+				m := fmt.Sprintf(`{"name":"pod-counter","entry":"missing.js","compatibleAntreaUI":"*","bundleSha256":%q,"bundleSource":{"http":{}}}`, bundleDigest(bundle))
 				return httpConfigMap(t, testSigner(), m, testBundleURL)
 			},
 			want:      upsertRejected,

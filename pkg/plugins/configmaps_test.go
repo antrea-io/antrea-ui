@@ -57,7 +57,7 @@ func TestRegistryUpsertAndIndex(t *testing.T) {
 	}))
 
 	assert.Equal(t, []apisv1.PluginManifest{
-		{Name: "pod-counter", Version: "0.1.0", Entry: "index.js"},
+		{Name: "pod-counter", Version: "0.1.0", Entry: "index.js", CompatibleAntreaUI: "*"},
 	}, r.Index())
 
 	rc, size, ok := r.File("pod-counter", "index.js")
@@ -79,7 +79,7 @@ func TestRegistryUpsertAndIndex(t *testing.T) {
 func TestRegistryUpsertReadsManifestFromBinaryData(t *testing.T) {
 	r := newTestRegistry(t)
 
-	manifestJSON := `{"name":"pod-counter","version":"0.1.0","entry":"index.js"}`
+	manifestJSON := `{"name":"pod-counter","version":"0.1.0","entry":"index.js","compatibleAntreaUI":"*"}`
 	cm := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{Name: "pod-counter-plugin", Namespace: "antrea-ui", ResourceVersion: "0.1.0"},
 		BinaryData: map[string][]byte{
@@ -91,7 +91,7 @@ func TestRegistryUpsertReadsManifestFromBinaryData(t *testing.T) {
 	r.handleUpsert(t.Context(), cm)
 
 	assert.Equal(t, []apisv1.PluginManifest{
-		{Name: "pod-counter", Version: "0.1.0", Entry: "index.js"},
+		{Name: "pod-counter", Version: "0.1.0", Entry: "index.js", CompatibleAntreaUI: "*"},
 	}, r.Index())
 }
 
@@ -114,7 +114,7 @@ func TestRegistryUpdateReplacesPreviousContents(t *testing.T) {
 	r.handleUpsert(t.Context(), configMap(t, name, "pod-counter", "0.2.0", "index.js", map[string]string{"index.js": "v2"}))
 
 	assert.Equal(t, []apisv1.PluginManifest{
-		{Name: "pod-counter", Version: "0.2.0", Entry: "index.js"},
+		{Name: "pod-counter", Version: "0.2.0", Entry: "index.js", CompatibleAntreaUI: "*"},
 	}, r.Index())
 	rc, _, ok := r.File("pod-counter", "index.js")
 	require.True(t, ok)
@@ -165,7 +165,7 @@ func TestRegistrySkipsInvalidConfigMaps(t *testing.T) {
 		"missing bundle.zip": func(t *testing.T) *corev1.ConfigMap {
 			return &corev1.ConfigMap{
 				ObjectMeta: metav1.ObjectMeta{Name: "cm"},
-				Data:       map[string]string{"manifest.json": `{"name":"plugin","version":"0.1.0","entry":"index.js"}`},
+				Data:       map[string]string{"manifest.json": `{"name":"plugin","version":"0.1.0","entry":"index.js","compatibleAntreaUI":"*"}`},
 			}
 		},
 		"malformed manifest.json": func(t *testing.T) *corev1.ConfigMap {
@@ -174,7 +174,7 @@ func TestRegistrySkipsInvalidConfigMaps(t *testing.T) {
 		"malformed bundle.zip": func(t *testing.T) *corev1.ConfigMap {
 			return &corev1.ConfigMap{
 				ObjectMeta: metav1.ObjectMeta{Name: "cm"},
-				Data:       map[string]string{"manifest.json": `{"name":"plugin","version":"0.1.0","entry":"index.js"}`},
+				Data:       map[string]string{"manifest.json": `{"name":"plugin","version":"0.1.0","entry":"index.js","compatibleAntreaUI":"*"}`},
 				BinaryData: map[string][]byte{"bundle.zip": []byte("not a zip")},
 			}
 		},
@@ -184,37 +184,37 @@ func TestRegistrySkipsInvalidConfigMaps(t *testing.T) {
 			return withBundle(t, manifestWithDigest("plugin", "0.1.0", "index.js", bundleDigest([]byte("some other bundle"))), map[string]string{"index.js": "x"})
 		},
 		"missing name": func(t *testing.T) *corev1.ConfigMap {
-			return withBundle(t, `{"version":"0.1.0","entry":"index.js"}`, map[string]string{"index.js": "x"})
+			return withBundle(t, `{"version":"0.1.0","entry":"index.js","compatibleAntreaUI":"*"}`, map[string]string{"index.js": "x"})
 		},
 		"missing entry": func(t *testing.T) *corev1.ConfigMap {
-			return withBundle(t, `{"name":"plugin","version":"0.1.0"}`, map[string]string{"index.js": "x"})
+			return withBundle(t, `{"name":"plugin","version":"0.1.0","compatibleAntreaUI":"*"}`, map[string]string{"index.js": "x"})
 		},
 		"entry file not present": func(t *testing.T) *corev1.ConfigMap {
-			return withBundle(t, `{"name":"plugin","version":"0.1.0","entry":"index.js"}`, map[string]string{"other.js": "x"})
+			return withBundle(t, `{"name":"plugin","version":"0.1.0","entry":"index.js","compatibleAntreaUI":"*"}`, map[string]string{"other.js": "x"})
 		},
 		"route missing path": func(t *testing.T) *corev1.ConfigMap {
 			return withBundle(t,
-				`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"sidebarLabel":"Plugin","exposedModule":"./Page"}]}}`,
+				`{"name":"plugin","version":"0.1.0","entry":"index.js","compatibleAntreaUI":"*","federation":{"remoteEntry":"remoteEntry.json","routes":[{"sidebarLabel":"Plugin","exposedModule":"./Page"}]}}`,
 				map[string]string{"index.js": "x", "remoteEntry.json": "x"})
 		},
 		"route missing sidebarLabel": func(t *testing.T) *corev1.ConfigMap {
 			return withBundle(t,
-				`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"path":"/plugin","exposedModule":"./Page"}]}}`,
+				`{"name":"plugin","version":"0.1.0","entry":"index.js","compatibleAntreaUI":"*","federation":{"remoteEntry":"remoteEntry.json","routes":[{"path":"/plugin","exposedModule":"./Page"}]}}`,
 				map[string]string{"index.js": "x", "remoteEntry.json": "x"})
 		},
 		"route missing exposedModule": func(t *testing.T) *corev1.ConfigMap {
 			return withBundle(t,
-				`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"path":"/plugin","sidebarLabel":"Plugin"}]}}`,
+				`{"name":"plugin","version":"0.1.0","entry":"index.js","compatibleAntreaUI":"*","federation":{"remoteEntry":"remoteEntry.json","routes":[{"path":"/plugin","sidebarLabel":"Plugin"}]}}`,
 				map[string]string{"index.js": "x", "remoteEntry.json": "x"})
 		},
 		"route with an unknown kind": func(t *testing.T) *corev1.ConfigMap {
 			return withBundle(t,
-				`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"path":"/plugin","sidebarLabel":"Plugin","exposedModule":"./Page","kind":"route"}]}}`,
+				`{"name":"plugin","version":"0.1.0","entry":"index.js","compatibleAntreaUI":"*","federation":{"remoteEntry":"remoteEntry.json","routes":[{"path":"/plugin","sidebarLabel":"Plugin","exposedModule":"./Page","kind":"route"}]}}`,
 				map[string]string{"index.js": "x", "remoteEntry.json": "x"})
 		},
 		"route nested under a routes-kind route": func(t *testing.T) *corev1.ConfigMap {
 			return withBundle(t,
-				`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[
+				`{"name":"plugin","version":"0.1.0","entry":"index.js","compatibleAntreaUI":"*","federation":{"remoteEntry":"remoteEntry.json","routes":[
 					{"path":"/policies","sidebarLabel":"Policies","exposedModule":"./PolicyRoutes","kind":"routes"},
 					{"path":"/policies/audit","sidebarLabel":"Audit","exposedModule":"./PolicyAuditPage"}
 				]}}`,
@@ -224,7 +224,7 @@ func TestRegistrySkipsInvalidConfigMaps(t *testing.T) {
 		// with different slashes), since declaration order says nothing about which owns the path.
 		"routes-kind route declared after the route it owns": func(t *testing.T) *corev1.ConfigMap {
 			return withBundle(t,
-				`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[
+				`{"name":"plugin","version":"0.1.0","entry":"index.js","compatibleAntreaUI":"*","federation":{"remoteEntry":"remoteEntry.json","routes":[
 					{"path":"policies/audit","sidebarLabel":"Audit","exposedModule":"./PolicyAuditPage"},
 					{"path":"/policies/","sidebarLabel":"Policies","exposedModule":"./PolicyRoutes","kind":"routes"}
 				]}}`,
@@ -232,27 +232,27 @@ func TestRegistrySkipsInvalidConfigMaps(t *testing.T) {
 		},
 		"route path under reserved api prefix": func(t *testing.T) *corev1.ConfigMap {
 			return withBundle(t,
-				`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"path":"/apiobjects","sidebarLabel":"Plugin","exposedModule":"./Page"}]}}`,
+				`{"name":"plugin","version":"0.1.0","entry":"index.js","compatibleAntreaUI":"*","federation":{"remoteEntry":"remoteEntry.json","routes":[{"path":"/apiobjects","sidebarLabel":"Plugin","exposedModule":"./Page"}]}}`,
 				map[string]string{"index.js": "x", "remoteEntry.json": "x"})
 		},
 		"route path under reserved auth prefix": func(t *testing.T) *corev1.ConfigMap {
 			return withBundle(t,
-				`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"path":"/authors","sidebarLabel":"Plugin","exposedModule":"./Page"}]}}`,
+				`{"name":"plugin","version":"0.1.0","entry":"index.js","compatibleAntreaUI":"*","federation":{"remoteEntry":"remoteEntry.json","routes":[{"path":"/authors","sidebarLabel":"Plugin","exposedModule":"./Page"}]}}`,
 				map[string]string{"index.js": "x", "remoteEntry.json": "x"})
 		},
 		"route path is the root path": func(t *testing.T) *corev1.ConfigMap {
 			return withBundle(t,
-				`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"path":"/","sidebarLabel":"Plugin","exposedModule":"./Page"}]}}`,
+				`{"name":"plugin","version":"0.1.0","entry":"index.js","compatibleAntreaUI":"*","federation":{"remoteEntry":"remoteEntry.json","routes":[{"path":"/","sidebarLabel":"Plugin","exposedModule":"./Page"}]}}`,
 				map[string]string{"index.js": "x", "remoteEntry.json": "x"})
 		},
 		"route path collapses to the root path via dot segments": func(t *testing.T) *corev1.ConfigMap {
 			return withBundle(t,
-				`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"path":"/plugin/..","sidebarLabel":"Plugin","exposedModule":"./Page"}]}}`,
+				`{"name":"plugin","version":"0.1.0","entry":"index.js","compatibleAntreaUI":"*","federation":{"remoteEntry":"remoteEntry.json","routes":[{"path":"/plugin/..","sidebarLabel":"Plugin","exposedModule":"./Page"}]}}`,
 				map[string]string{"index.js": "x", "remoteEntry.json": "x"})
 		},
 		"duplicate route path in the same manifest": func(t *testing.T) *corev1.ConfigMap {
 			return withBundle(t,
-				`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[
+				`{"name":"plugin","version":"0.1.0","entry":"index.js","compatibleAntreaUI":"*","federation":{"remoteEntry":"remoteEntry.json","routes":[
 					{"path":"/plugin","sidebarLabel":"Plugin","exposedModule":"./Page"},
 					{"path":"/plugin","sidebarLabel":"Plugin Again","exposedModule":"./OtherPage"}
 				]}}`,
@@ -260,7 +260,7 @@ func TestRegistrySkipsInvalidConfigMaps(t *testing.T) {
 		},
 		"duplicate route path differing only by leading slash": func(t *testing.T) *corev1.ConfigMap {
 			return withBundle(t,
-				`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[
+				`{"name":"plugin","version":"0.1.0","entry":"index.js","compatibleAntreaUI":"*","federation":{"remoteEntry":"remoteEntry.json","routes":[
 					{"path":"/plugin","sidebarLabel":"Plugin","exposedModule":"./Page"},
 					{"path":"plugin","sidebarLabel":"Plugin Again","exposedModule":"./OtherPage"}
 				]}}`,
@@ -268,7 +268,7 @@ func TestRegistrySkipsInvalidConfigMaps(t *testing.T) {
 		},
 		"duplicate route path differing only by doubled and trailing slashes": func(t *testing.T) *corev1.ConfigMap {
 			return withBundle(t,
-				`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[
+				`{"name":"plugin","version":"0.1.0","entry":"index.js","compatibleAntreaUI":"*","federation":{"remoteEntry":"remoteEntry.json","routes":[
 					{"path":"/plugin","sidebarLabel":"Plugin","exposedModule":"./Page"},
 					{"path":"//plugin/","sidebarLabel":"Plugin Again","exposedModule":"./OtherPage"}
 				]}}`,
@@ -276,25 +276,25 @@ func TestRegistrySkipsInvalidConfigMaps(t *testing.T) {
 		},
 		"federation with no routes": func(t *testing.T) *corev1.ConfigMap {
 			return withBundle(t,
-				`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[]}}`,
+				`{"name":"plugin","version":"0.1.0","entry":"index.js","compatibleAntreaUI":"*","federation":{"remoteEntry":"remoteEntry.json","routes":[]}}`,
 				map[string]string{"index.js": "x", "remoteEntry.json": "x"})
 		},
 		"federation missing remoteEntry": func(t *testing.T) *corev1.ConfigMap {
-			return withBundle(t, `{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{}}`, map[string]string{"index.js": "x"})
+			return withBundle(t, `{"name":"plugin","version":"0.1.0","entry":"index.js","compatibleAntreaUI":"*","federation":{}}`, map[string]string{"index.js": "x"})
 		},
 		"federation remoteEntry same file as entry": func(t *testing.T) *corev1.ConfigMap {
 			return withBundle(t,
-				`{"name":"plugin","version":"0.1.0","entry":"shared.js","federation":{"remoteEntry":"shared.js","routes":[{"path":"/plugin","sidebarLabel":"Plugin","exposedModule":"./Page"}]}}`,
+				`{"name":"plugin","version":"0.1.0","entry":"shared.js","compatibleAntreaUI":"*","federation":{"remoteEntry":"shared.js","routes":[{"path":"/plugin","sidebarLabel":"Plugin","exposedModule":"./Page"}]}}`,
 				map[string]string{"shared.js": "x"})
 		},
 		"federation remoteEntry same file as entry, differing only by a non-clean prefix": func(t *testing.T) *corev1.ConfigMap {
 			return withBundle(t,
-				`{"name":"plugin","version":"0.1.0","entry":"shared.js","federation":{"remoteEntry":"./shared.js","routes":[{"path":"/plugin","sidebarLabel":"Plugin","exposedModule":"./Page"}]}}`,
+				`{"name":"plugin","version":"0.1.0","entry":"shared.js","compatibleAntreaUI":"*","federation":{"remoteEntry":"./shared.js","routes":[{"path":"/plugin","sidebarLabel":"Plugin","exposedModule":"./Page"}]}}`,
 				map[string]string{"shared.js": "x"})
 		},
 		"federation remoteEntry file not present": func(t *testing.T) *corev1.ConfigMap {
 			return withBundle(t,
-				`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json"}}`,
+				`{"name":"plugin","version":"0.1.0","entry":"index.js","compatibleAntreaUI":"*","federation":{"remoteEntry":"remoteEntry.json"}}`,
 				map[string]string{"index.js": "x"})
 		},
 	}
@@ -325,11 +325,11 @@ func TestRegistryRejectsNewConfigMapPluginPastLimit(t *testing.T) {
 
 	r.handleUpsert(t.Context(), configMap(t, "first-cm", "first", "0.1.0", "index.js", map[string]string{"index.js": "x"}))
 	r.handleUpsert(t.Context(), configMap(t, "second-cm", "second", "0.1.0", "index.js", map[string]string{"index.js": "x"}))
-	assert.Equal(t, []apisv1.PluginManifest{{Name: "first", Version: "0.1.0", Entry: "index.js"}}, r.Index())
+	assert.Equal(t, []apisv1.PluginManifest{{Name: "first", Version: "0.1.0", Entry: "index.js", CompatibleAntreaUI: "*"}}, r.Index())
 
 	// An update to the already-tracked plugin is never blocked by the limit.
 	r.handleUpsert(t.Context(), configMap(t, "first-cm", "first", "0.2.0", "index.js", map[string]string{"index.js": "x"}))
-	assert.Equal(t, []apisv1.PluginManifest{{Name: "first", Version: "0.2.0", Entry: "index.js"}}, r.Index())
+	assert.Equal(t, []apisv1.PluginManifest{{Name: "first", Version: "0.2.0", Entry: "index.js", CompatibleAntreaUI: "*"}}, r.Index())
 }
 
 func TestRegistryRejectsConfigMapBundlePastTheDecompressedSizeLimit(t *testing.T) {
@@ -354,7 +354,7 @@ func TestRegistryRejectsConfigMapBundlePastTheDecompressedSizeLimit(t *testing.T
 	r.handleUpsert(t.Context(), configMap(t, "plugin-cm", "plugin", "0.1.0", "index.js", map[string]string{
 		"index.js": strings.Repeat("x", 50),
 	}))
-	assert.Equal(t, []apisv1.PluginManifest{{Name: "plugin", Version: "0.1.0", Entry: "index.js"}}, r.Index())
+	assert.Equal(t, []apisv1.PluginManifest{{Name: "plugin", Version: "0.1.0", Entry: "index.js", CompatibleAntreaUI: "*"}}, r.Index())
 }
 
 // countingIndexer counts GetByKey calls so a test can assert exactly how many attempts a

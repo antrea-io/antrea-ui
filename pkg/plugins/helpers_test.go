@@ -63,7 +63,7 @@ func configMap(t *testing.T, name, pluginName, version, entry string, bundleFile
 	cm := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "antrea-ui", ResourceVersion: version},
 		Data: map[string]string{
-			"manifest.json": fmt.Sprintf(`{"name":%q,"version":%q,"entry":%q}`, pluginName, version, entry),
+			"manifest.json": fmt.Sprintf(`{"name":%q,"version":%q,"entry":%q,"compatibleAntreaUI":"*"}`, pluginName, version, entry),
 		},
 	}
 	if bundleFiles != nil {
@@ -100,7 +100,7 @@ func writePluginDir(t *testing.T, root, name, manifestJSON string, bundleFiles m
 }
 
 func podCounterManifest(pluginName, version string) string {
-	return fmt.Sprintf(`{"name":%q,"version":%q,"entry":"index.js"}`, pluginName, version)
+	return fmt.Sprintf(`{"name":%q,"version":%q,"entry":"index.js","compatibleAntreaUI":"*"}`, pluginName, version)
 }
 
 func podCounterBundle() map[string]string {
@@ -234,7 +234,7 @@ func sha256Sum(data []byte) []byte {
 // manifestWithDigest builds a manifest JSON with an arbitrary bundleSha256 string, including the
 // malformed ones the signature suite needs.
 func manifestWithDigest(pluginName, version, entry, digest string) string {
-	return fmt.Sprintf(`{"name":%q,"version":%q,"entry":%q,"bundleSha256":%q}`, pluginName, version, entry, digest)
+	return fmt.Sprintf(`{"name":%q,"version":%q,"entry":%q,"compatibleAntreaUI":"*","bundleSha256":%q}`, pluginName, version, entry, digest)
 }
 
 // signedManifest returns a manifest JSON pinning bundleZip's real SHA-256 in bundleSha256.

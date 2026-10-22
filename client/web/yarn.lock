@@ -1243,6 +1243,13 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@types/semver@npm:^7.8.0":
+  version: 7.8.0
+  resolution: "@types/semver@npm:7.8.0"
+  checksum: 10c0/46a1f38e36013448b279798e8b134e7e8de3b3630b1f40683903b9d57d36dd1d70838515570ed9a149fa09e9c381b9e39319b58d7b9f3b929b42ae2becff7aa3
+  languageName: node
+  linkType: hard
+
 "@types/trusted-types@npm:^2.0.2":
   version: 2.0.7
   resolution: "@types/trusted-types@npm:2.0.7"
@@ -1653,6 +1660,7 @@ __metadata:
     "@types/node": "npm:24"
     "@types/react": "npm:^19.0.0"
     "@types/react-dom": "npm:^19.0.0"
+    "@types/semver": "npm:^7.8.0"
     "@types/uuid": "npm:^11.0.0"
     "@vitejs/plugin-react": "npm:^6.0.0"
     "@vitest/eslint-plugin": "npm:^1.0.1"
@@ -1676,6 +1684,7 @@ __metadata:
     react-redux: "npm:^9.2.0"
     react-router: "npm:^8.0.0"
     rollup-plugin-visualizer: "npm:^7.0.0"
+    semver: "npm:^7.7.3"
     typescript: "npm:^6.0.0"
     typescript-eslint: "npm:^8.36.0"
     uuid: "npm:^14.0.0"

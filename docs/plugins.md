@@ -404,7 +404,8 @@ lives inside `bundle.zip`:
 {
   "name": "pod-counter",
   "version": "0.1.0",
-  "entry": "index.js"
+  "entry": "index.js",
+  "compatibleAntreaUI": ">=0.8.0-dev <0.9.0"
 }
 ```
 
@@ -413,6 +414,7 @@ lives inside `bundle.zip`:
 | `name` | yes | Unique name; also the path segment used to serve the plugin, e.g. `/api/v1/plugins/<name>/`. |
 | `version` | yes | Informational only. |
 | `entry` | yes | Plugin's JS module filename; must be an entry in the same plugin's `bundle.zip`. Always eagerly `import()`-ed by the host at startup, for whatever page-extension registration the plugin's code performs (see below) — independent of `federation`. Required even for a plugin whose only page(s) are a `federation` remote with no other page-extension registration; such a plugin still needs a real ES module here, distinct from `federation.remoteEntry` — see below. |
+| `compatibleAntreaUI` | yes | A [node-semver](https://github.com/npm/node-semver#ranges) range of the **full** Antrea UI versions, prerelease suffix included, that may load this plugin, e.g. `"1.0.0-rc.1 \|\| 1.0.0-rc.2"`. A manifest with this missing, empty or not a well-formed range is rejected by the backend, dropping the whole plugin. The frontend then matches the range against its own build-time version with `semver.satisfies()` (default prerelease handling) *before* fetching any of the plugin's code; on a mismatch the plugin gets no route, sidebar entry or code fetch, and a banner names the plugin, the Antrea UI version and the supported range. The one exception is a frontend build with no valid version of its own, which skips the check. See "Version compatibility" below. |
 | `bundleSha256` | no* | Hex SHA-256 of the plugin's `bundle.zip` as delivered (64 characters, compared case-insensitively). Verified whenever present, and **required** when the backend is configured with a plugin signing key — it is what makes the signature over `manifest.json` cover the bundle too. See "Signature verification" above. |
 | `bundleSource` | no | `{"apiServer": {"path": "/apis/<group>/<version>"}}` or `{"http": {}}` (with the URL in the ConfigMap's `bundleURL` key) — where the backend downloads `bundle.zip` from, for a ConfigMap that ships no `bundle.zip` (see "Downloading the bundle" below). Requires `bundleSha256`. `http` can be turned off with `plugins.bundleSource.http.enabled`. Not supported for the plugin directory source. |
 | `federation` | no | `{remoteEntry, routes: [{path, sidebarLabel, icon?, exposedModule, kind?}]}` — a [Native Federation](https://www.npmjs.com/package/@angular-architects/native-federation) remote (its own entry in `bundle.zip`, separate from `entry`) plus the whole-page routes/sidebar entries it serves, as data instead of registering them in code (see below). Antrea UI's own frontend has no module federation loader and ignores this field entirely (see `plugins.ts`); it's consumed by a separate, out-of-tree Angular-based host, which lazily loads a route's `exposedModule` out of `remoteEntry`, only once that route is actually visited. `kind` is `"component"` (the default) or `"routes"` — any other value is rejected, dropping the whole plugin (see below): `"component"` expects `exposedModule` to export a single page component; `"routes"` expects it to export a whole route tree the plugin owns end to end, letting it nest its own sub-paths and register its own route-level providers without the host knowing anything about them. Since a `"routes"` route owns every sub-path under its own `path`, no other route in the same manifest may fall under it (rejected the same way two routes with an identical `path` are); a route nested under it in a *different*, already-installed plugin's manifest is resolved the same way an identical `path` across plugins is (see below). |
@@ -441,6 +443,7 @@ A manifest declaring `federation`:
   "name": "policy-management",
   "version": "0.2.0",
   "entry": "index.js",
+  "compatibleAntreaUI": ">=0.8.0-dev <0.9.0",
   "federation": {
     "remoteEntry": "remoteEntry.json",
     "routes": [
@@ -533,6 +536,7 @@ signed:
   "name": "my-plugin",
   "version": "1.2.3",
   "entry": "index.js",
+  "compatibleAntreaUI": "1.0.0-rc.1 || 1.0.0-rc.2",
   "bundleSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
   "bundleSource": {
     "apiServer": {
@@ -549,6 +553,7 @@ or, for `http`:
   "name": "my-plugin",
   "version": "1.2.3",
   "entry": "index.js",
+  "compatibleAntreaUI": "1.0.0-rc.1 || 1.0.0-rc.2",
   "bundleSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
   "bundleSource": {
     "http": {}
@@ -699,6 +704,40 @@ ingress from antrea-ui.
 
 `manifest.json.asc` signs the exact bytes of `manifest.json`, so the provider's
 chart must embed the signed file as is, without reformatting it.
+
+## Version compatibility
+
+A plugin is built against a particular version of the host, so it declares which
+ones it supports in `compatibleAntreaUI`. The range is matched against the full
+version of the frontend that loads the plugin, not the backend's: the backend
+serves one plugin index to every frontend, so only the frontend knows which
+version it is. The backend therefore only checks that the range is present and
+well-formed, and the frontend decides.
+
+Matching is plain `semver.satisfies()`, with no tolerance of its own — how much
+drift a plugin accepts is up to how its author writes the range, and the one
+exception is a frontend with no version to match (see below). Two things to know
+about prerelease versions such as `1.0.0-rc.2`:
+
+- SemVer treats `-rc.2` as a prerelease, which sorts *below* `1.0.0`, so a
+  range like `>=1.0.0 <2.0.0` does **not** match it. A range only admits the
+  prereleases of a `major.minor.patch` it mentions with a prerelease itself,
+  e.g. `>=1.0.0-rc.1 <1.0.0-rc.3`.
+- `1.0.0-rc.x` is not a wildcard. List the revisions you have tested, e.g.
+  `1.0.0-rc.1 || 1.0.0-rc.2`, and add `|| 1.0.0` separately if the plugin
+  also supports the final release.
+
+The range is part of `manifest.json`, so a signature over the manifest covers it
+too, and the backend checks the signature before looking at it.
+
+The frontend learns its own version at build time, from the
+`VITE_ANTREA_UI_VERSION` environment variable (`make build-frontend` sets it from
+the `VERSION` file). A build where it is unset or not a valid semver version,
+such as `yarn start` during development, has nothing to match against, so it
+**skips the check and loads every plugin whatever its range says**, logging a
+warning to the browser console. Blaming each plugin for a problem with the build
+would be worse. Anything that builds the frontend image another way has to set
+the variable, or no plugin will ever be reported as incompatible.
 
 ## Writing a plugin
 

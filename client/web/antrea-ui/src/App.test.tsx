@@ -76,6 +76,27 @@ afterEach(() => {
 });
 
 describe('App', () => {
+    test('shows a banner for each plugin skipped as incompatible with this version', async () => {
+        stubFetchWithSession(true);
+        const incompatible = [{ name: 'my-plugin', version: '1.2.3', range: '1.0.0-rc.1', shellVersion: '1.0.0-rc.2' }];
+
+        render(<App incompatiblePlugins={incompatible} />, { wrapper: MemoryRouter });
+
+        const alert = document.querySelector('antrea-alert');
+        expect(alert?.textContent).toContain('Plugin my-plugin (version 1.2.3) does not support antrea-ui version 1.0.0-rc.2');
+        expect(alert?.textContent).toContain('Supported versions: 1.0.0-rc.1');
+        await waitFor(() => expect(document.querySelector('antrea-login-page')).toBeNull());
+    });
+
+    test('shows no plugin banner when every plugin is compatible', async () => {
+        stubFetchWithSession(true);
+
+        render(<App />, { wrapper: MemoryRouter });
+
+        await waitFor(() => expect(document.querySelector('antrea-login-page')).toBeNull());
+        expect(document.querySelector('antrea-alert')).toBeNull();
+    });
+
     test('an existing session hides the login page and shows the nav', async () => {
         stubFetchWithSession(true);
 
