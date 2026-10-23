@@ -241,7 +241,7 @@ unchecked. The default is not written to the URL, so a reload runs it again. The
 page opens no stream while no scope is selected: the URL scope is invalid, or the
 URL names none and there is no default to take, because the cluster-wide verdict
 is not *allowed* and the list has no Namespace (it is empty, or unknown because
-the access summary could not be fetched). There is still a scope to choose then:
+the access summary or the listing of Namespaces failed). There is still a scope to choose then:
 All Namespaces is offered unless the verdict is *denied*, and the caller can name
 a Namespace. The page opens a stream once they do. It never opens one without a
 scope.
@@ -287,13 +287,15 @@ That question is answered from the access summary described in [What the
 frontend knows about your permissions](#what-the-frontend-knows-about-your-permissions),
 with nothing flow-specific on the backend. The summary says whether the caller
 holds `watch` on `flows` cluster-wide, which is *allowed* when a rule grants it
-or `clusterAdmin` is true, *denied* when none does in a rule list the API server says is exhaustive, and
-*unknown* when none does but the API server could not enumerate its rules, as
+or `clusterAdmin` is true, *denied* when none does in a rule list the API server
+says is exhaustive, and *unknown* when none does but the API server could not enumerate its rules, as
 with a webhook authorizer, or the summary could not be fetched. The selector
 offers All Namespaces unless the verdict is *denied*, so a caller granted `flows`
 cluster-wide by a webhook can choose it; only *allowed* makes it the default. The
-scope in force always appears in the selector as selected, even one it would not
-otherwise offer, such as All Namespaces on a *denied* page reached through a link.
+scope in force appears in the selector as selected while nothing is typed, even
+one it would not otherwise offer, such as All Namespaces on a *denied* page
+reached through a link. While something is typed, it appears only if the search
+shows it.
 
 The selector's candidates are the Namespaces the access summary derived from
 RoleBindings naming the caller or their groups, as the summary has them, whatever

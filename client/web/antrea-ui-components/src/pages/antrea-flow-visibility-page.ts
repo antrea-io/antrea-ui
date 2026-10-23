@@ -1189,7 +1189,10 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
             this._openScopeMenu();
             if (items.length === 0) return;
             const step = e.key === 'ArrowDown' ? 1 : -1;
-            this._scopeActive = (this._scopeActive + step + items.length) % items.length;
+            // With nothing highlighted, ArrowDown starts at the first option and ArrowUp at the last.
+            this._scopeActive = this._scopeActive < 0
+                ? (step > 0 ? 0 : items.length - 1)
+                : (this._scopeActive + step + items.length) % items.length;
             break;
         }
         case 'Enter': {

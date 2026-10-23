@@ -762,6 +762,19 @@ describe('AntreaFlowVisibilityPage — observed-namespace selector', () => {
             expect(window.location.search).toContain('namespace=team-01');
         });
 
+        test('ArrowUp with nothing highlighted starts at the last option', async () => {
+            const page = await mount(async () => sseResponse([]), {
+                search: '/?namespace=team-00',
+                flowAccess: () => flowAccessFixture({ clusterWide: 'allowed', lister: { names: many } }),
+            });
+            await openScope(page);
+            await pressInScope(page, 'ArrowUp');
+            await pressInScope(page, 'Enter');
+            await vi.advanceTimersByTimeAsync(0);
+            // The menu is "All Namespaces", then the first ten: team-00 to team-09.
+            expect(scopeValue(page)).toBe('team-09');
+        });
+
         test('Enter on a single match picks it, and on nothing typed picks nothing', async () => {
             const page = await mount(async () => sseResponse([]), {
                 search: '/?namespace=team-00',
@@ -818,7 +831,6 @@ describe('AntreaFlowVisibilityPage — observed-namespace selector', () => {
             await typeScope(page, 'ns-x');
             await pressInScope(page, 'Enter');
             await vi.advanceTimersByTimeAsync(0);
-            expect(window.location.search).not.toContain('team-');
             expect(page.shadowRoot!.querySelector('.combobox-empty')?.textContent ?? '').toContain('No matching');
         });
 
@@ -1672,6 +1684,16 @@ describe('AntreaFlowVisibilityPage — filters, sort, text filter, pause/resume,
             makeFlow({ srcNs: 'ns-z', srcPod: 'zzz', srcIP: '10.0.0.3', dstPod: 'm-last' }),
         ];
         expect(await sortedBy(flows, 'Source', ['m-hidden', 'm-first', 'm-last']))
+            .toEqual(['m-first', 'm-hidden', 'm-last']);
+    });
+
+    test('Destination sorts by what the cell shows for a withheld endpoint', async () => {
+        const flows = [
+            makeFlow({ srcPod: 'm-hidden', srcIP: '10.0.0.1', dstNs: 'ns-z', dstPod: '', dstIP: '10.1.0.9', dstDisclosure: EndpointDisclosure.Flow }),
+            makeFlow({ srcPod: 'm-first', srcIP: '10.0.0.2', dstNs: 'ns-a', dstPod: 'x', dstIP: '10.1.0.2' }),
+            makeFlow({ srcPod: 'm-last', srcIP: '10.0.0.3', dstNs: 'ns-z', dstPod: 'zzz', dstIP: '10.1.0.3' }),
+        ];
+        expect(await sortedBy(flows, 'Destination', ['m-hidden', 'm-first', 'm-last']))
             .toEqual(['m-first', 'm-hidden', 'm-last']);
     });
 

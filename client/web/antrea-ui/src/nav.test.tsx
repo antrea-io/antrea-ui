@@ -22,10 +22,6 @@ import type { AccessSummary } from '@antrea/ui-components';
 import { useAccess } from './access';
 
 vi.mock('./access', () => ({ useAccess: vi.fn(), useScopeUser: () => 'alice' }));
-// The nav only reads the signed-in username, which keys the last scope chosen.
-vi.mock('react-redux', () => ({
-    useSelector: (selector: (state: unknown) => unknown) => selector({ sessionInfo: { username: 'alice' } }),
-}));
 const mockUseAccess = vi.mocked(useAccess);
 
 const podCounterEntry: PluginSidebarEntry = { label: 'Pod Counter', path: '/plugin/pod-counter' };
@@ -230,6 +226,7 @@ describe('NavTab — nested plugin entries', () => {
 describe('NavTab — permission gating', () => {
     beforeEach(() => {
         sessionStorage.clear();
+        mockUseAccess.mockReturnValue({ summary: null, loaded: true });
     });
 
     test('while unloaded, renders no core items', () => {

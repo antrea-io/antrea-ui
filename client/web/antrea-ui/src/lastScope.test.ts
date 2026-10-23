@@ -26,10 +26,13 @@ describe('last scope chosen', () => {
         expect(getLastScope('bob')).toBeNull();
     });
 
-    test('is neither stored nor read when the user is not known', () => {
+    test('is not stored when the user is not known', () => {
         setLastScope('', 'ns-a');
-        expect(getLastScope('')).toBeNull();
-        setLastScope('alice', 'ns-b');
+        expect(sessionStorage.length).toBe(0);
+    });
+
+    test('is not read when the user is not known', () => {
+        sessionStorage.setItem('antrea-ui:last-scope', JSON.stringify({ user: '', scope: 'ns-a' }));
         expect(getLastScope('')).toBeNull();
     });
 });

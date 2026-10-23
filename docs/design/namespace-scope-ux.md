@@ -153,8 +153,9 @@ A plugin page is Namespace-aware when it declares so, and then follows these rul
 the URL parameters of rule 12, like any other page. It may replace parts of them, such as its
 picker or how it picks its scope; a scope it sets through Antrea UI is still kept in its URL and
 becomes the last scope chosen, like any other. Its verdict comes from the permissions it
-declares; when it declares none, it is *allowed* for a user who may do everything in the
-cluster, and *unknown* otherwise. A plugin page that declares nothing is not Namespace-aware.
+declares; when it declares none, it is *allowed* for a user who may do every verb on every
+resource (the access summary says so), and *unknown* otherwise. A plugin page that declares
+nothing is not Namespace-aware.
 
 ## 12. The scope in the URL
 
