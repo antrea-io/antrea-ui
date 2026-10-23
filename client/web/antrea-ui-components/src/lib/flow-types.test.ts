@@ -356,6 +356,17 @@ describe('destinationServiceView', () => {
         expect(view.tooltip).toContain("destination's namespace");
     });
 
+    // A destination without a namespace (none, or cleared on a denied connection) cannot be said to
+    // belong to one, so "it belongs to the destination's namespace" would be wrong.
+    test('a withheld service of a destination with no namespace is explained without one', () => {
+        const view = destinationServiceView(EndpointDisclosure.Flow, '', false, '');
+        expect(view.redacted).toBe(true);
+        expect(view.tooltip).toContain('not shown on this stream');
+        expect(view.tooltip).not.toContain('belongs to');
+        expect(destinationServiceView(EndpointDisclosure.Flow, '', false, 'ns-b').tooltip)
+            .toContain('belongs to the destination');
+    });
+
     test('an identified destination with no service is simply empty', () => {
         expect(destinationServiceView(EndpointDisclosure.Full, ''))
             .toEqual({ text: '-', redacted: false });

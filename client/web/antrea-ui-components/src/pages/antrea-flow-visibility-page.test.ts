@@ -2204,6 +2204,9 @@ describe('AntreaFlowVisibilityPage — disclosure in the flow list', () => {
             ingressPolicy: '', ingressPolicyType: NetworkPolicyType.ACNP, ingressAction: NetworkPolicyRuleAction.Drop,
         }));
         expect(cluster.textContent).toContain('Dropped (policy hidden)');
+    });
+
+    test('an empty Namespaced policy name is not marked as hidden on a fully disclosed endpoint', async () => {
         const namespaced = await rowFor(makeFlow({
             ingressPolicy: '', ingressPolicyType: NetworkPolicyType.ANP, ingressAction: NetworkPolicyRuleAction.Drop,
         }));

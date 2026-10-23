@@ -600,7 +600,7 @@ function sortValue(entry: FlowEntry, field: SortField): string | number {
         // shows "ns/<hidden>", not its address, and a policy that was withheld shows its action.
         case 'source': return endpointView(flow.k8s.sourceDisclosure, flow.k8s.sourcePodNamespace, flow.k8s.sourcePodName, flow.ip.source, flow.k8s.flowType as FlowType === FlowType.FromExternal).text;
         case 'destination': return endpointView(flow.k8s.destinationDisclosure, flow.k8s.destinationPodNamespace, flow.k8s.destinationPodName, flow.ip.destination, flow.k8s.flowType as FlowType === FlowType.ToExternal).text;
-        case 'destinationService': return destinationServiceView(flow.k8s.destinationDisclosure, flow.k8s.destinationServicePortName, flow.k8s.flowType as FlowType === FlowType.ToExternal).text;
+        case 'destinationService': return destinationServiceView(flow.k8s.destinationDisclosure, flow.k8s.destinationServicePortName, flow.k8s.flowType as FlowType === FlowType.ToExternal, flow.k8s.destinationPodNamespace).text;
         case 'protocol': return flow.transport.protocolNumber;
         case 'destPort': return flow.transport.destinationPort;
         case 'bytesFwd': return flow.stats.octetTotalCount;
@@ -665,7 +665,7 @@ const BASE_COLUMNS: (FlowTableColumn & { field?: SortField })[] = [
     { key: 'lastSeen', field: 'lastSeen', label: 'Last Seen', render: e => new Date(e.flow.endTs).toLocaleTimeString() },
     { key: 'source', field: 'source', label: 'Source', render: e => renderRedactable(endpointView(e.flow.k8s.sourceDisclosure, e.flow.k8s.sourcePodNamespace, e.flow.k8s.sourcePodName, e.flow.ip.source, e.flow.k8s.flowType as FlowType === FlowType.FromExternal)) },
     { key: 'destination', field: 'destination', label: 'Destination', render: e => renderRedactable(endpointView(e.flow.k8s.destinationDisclosure, e.flow.k8s.destinationPodNamespace, e.flow.k8s.destinationPodName, e.flow.ip.destination, e.flow.k8s.flowType as FlowType === FlowType.ToExternal)) },
-    { key: 'destinationService', field: 'destinationService', label: 'Dest Service', render: e => renderRedactable(destinationServiceView(e.flow.k8s.destinationDisclosure, e.flow.k8s.destinationServicePortName, e.flow.k8s.flowType as FlowType === FlowType.ToExternal)) },
+    { key: 'destinationService', field: 'destinationService', label: 'Dest Service', render: e => renderRedactable(destinationServiceView(e.flow.k8s.destinationDisclosure, e.flow.k8s.destinationServicePortName, e.flow.k8s.flowType as FlowType === FlowType.ToExternal, e.flow.k8s.destinationPodNamespace)) },
     { key: 'protocol', field: 'protocol', label: 'Protocol', render: e => getProtocolName(e.flow.transport.protocolNumber) },
     { key: 'destPort', field: 'destPort', label: 'Dest Port', render: e => String(e.flow.transport.destinationPort) },
     { key: 'bytesFwd', field: 'bytesFwd', label: 'Bytes (Fwd)', render: e => formatBytes(e.flow.stats.octetTotalCount) },

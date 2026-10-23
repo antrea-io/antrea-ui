@@ -99,12 +99,13 @@ export enum EndpointDisclosure {
     // Everything the record carries for the endpoint, including its Node placement and the
     // Egress applied to it.
     Full = 0,
-    // The endpoint's Namespace, Pod and Service identity and the identity of the network policy
-    // evaluated on its side, but not its Node placement or its Egress.
+    // The endpoint's Namespace, Pod and Service identity and the identity of the network policies
+    // of its Namespace, but not its Node placement or its Egress. The identity of a cluster-scoped
+    // policy is not part of this: it follows what the client holds cluster-wide.
     Identity = 1,
     // Only what the flow itself shows - addresses, ports, protocol, statistics, and the type and
-    // action of the policies evaluated on the endpoint's side - plus the endpoint's Namespace if
-    // the connection was allowed.
+    // action of the policies - plus the endpoint's Namespace, unless the endpoint is the
+    // destination of a denied connection the client initiated.
     Flow = 2,
 }
 
@@ -333,11 +334,16 @@ export function endpointView(
  * endpoint's tier, so they are gone at the Flow tier - and an unexplained empty cell is exactly
  * the "looks like missing data" failure the mark exists to prevent. Its tooltip is its own rather
  * than the peer's: with a lock already in the Destination cell, a second unexplained one reads as
- * a duplicate rather than as a separately withheld field. */
+ * a duplicate rather than as a separately withheld field. `destinationNamespace` is the
+ * destination's Namespace as the record carries it. It is empty when the destination has none (a
+ * hostNetwork backend, say) and also when it was cleared because the connection was denied, which
+ * this cannot tell apart, so the tooltip then says no more than that. Left out, it is taken to
+ * be there. */
 export function destinationServiceView(
     disclosure: EndpointDisclosure | undefined,
     destinationServicePortName: string,
     external = false,
+    destinationNamespace?: string,
 ): EndpointView {
     const name = destinationK8sServiceFilterKey(destinationServicePortName) || destinationServicePortName;
     if (name) return { text: name, redacted: false };
@@ -347,7 +353,9 @@ export function destinationServiceView(
         return {
             text: "",
             redacted: true,
-            tooltip: "Service not shown. It belongs to the destination's namespace.",
+            tooltip: destinationNamespace === ''
+                ? "Service not shown. The destination's namespace is not shown on this stream either."
+                : "Service not shown. It belongs to the destination's namespace.",
         };
     }
     return { text: "-", redacted: false };
