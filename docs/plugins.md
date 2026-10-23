@@ -394,6 +394,15 @@ manifest" below and
 `manifest.json` `data` key plus a `bundle.zip` `binaryData` key holding
 every other file the manifest references, zipped.
 
+Every plugin's `manifest.json` must also declare `compatibleAntreaUI` (see
+"The manifest" below). A plugin without it is dropped by the backend after the
+upgrade, which logs `manifest is missing 'compatibleAntreaUI'`, until its
+manifest is updated. Set it to the range of Antrea UI versions the plugin was
+built and tested against. If the backend verifies plugin signatures, the
+signature covers the manifest's bytes, so the updated manifest must be signed
+again (see "Signature verification") and delivered together with its new
+`manifest.json.asc`.
+
 ## The manifest
 
 `manifest.json` is delivered on its own (a ConfigMap `data` key, or a file
@@ -414,7 +423,7 @@ lives inside `bundle.zip`:
 | `name` | yes | Unique name; also the path segment used to serve the plugin, e.g. `/api/v1/plugins/<name>/`. |
 | `version` | yes | Informational only. |
 | `entry` | yes | Plugin's JS module filename; must be an entry in the same plugin's `bundle.zip`. Always eagerly `import()`-ed by the host at startup, for whatever page-extension registration the plugin's code performs (see below) — independent of `federation`. Required even for a plugin whose only page(s) are a `federation` remote with no other page-extension registration; such a plugin still needs a real ES module here, distinct from `federation.remoteEntry` — see below. |
-| `compatibleAntreaUI` | yes | A [node-semver](https://github.com/npm/node-semver#ranges) range of the **full** Antrea UI versions, prerelease suffix included, that may load this plugin, e.g. `"1.0.0-rc.1 \|\| 1.0.0-rc.2"`. The backend accepts only a subset of that syntax: `\|\|`-separated sets of space-separated comparators (`<`, `<=`, `>`, `>=`, `=`, `^`, `~`, or none), each followed by a full `MAJOR.MINOR.PATCH[-prerelease]` version; x-ranges, `*`, hyphen ranges, partial versions, a `v` prefix and build metadata are not accepted. A manifest with this missing, empty or outside that grammar is rejected by the backend, dropping the whole plugin. The frontend then matches the range against its own build-time version with `semver.satisfies()` (default prerelease handling) *before* fetching any of the plugin's code; on a mismatch the plugin gets no route, sidebar entry or code fetch, and a banner names the plugin, the Antrea UI version and the supported range. The one exception is a frontend build with no valid version of its own, which skips the check. See "Version compatibility" below. |
+| `compatibleAntreaUI` | yes | A [node-semver](https://github.com/npm/node-semver#ranges) range of the **full** Antrea UI versions, prerelease suffix included, that may load this plugin, e.g. `"1.0.0-rc.1 \|\| 1.0.0-rc.2"`. The backend accepts only a subset of that syntax: `\|\|`-separated sets of space-separated comparators (`<`, `<=`, `>`, `>=`, `=`, `^`, `~`, or none), each followed by a full `MAJOR.MINOR.PATCH[-prerelease]` version; x-ranges, `*`, hyphen ranges, partial versions, a `v` prefix and build metadata are not accepted, and the whole range is at most 256 characters. A manifest with this missing, empty or outside that grammar is rejected by the backend, dropping the whole plugin. The frontend then matches the range against its own build-time version with `semver.satisfies()` (default prerelease handling) *before* fetching any of the plugin's code; on a mismatch the plugin gets no route, sidebar entry or code fetch, and a banner names the plugin, the Antrea UI version and the supported range. The one exception is a frontend build with no valid version of its own, which skips the check. See "Version compatibility" below. |
 | `bundleSha256` | no* | Hex SHA-256 of the plugin's `bundle.zip` as delivered (64 characters, compared case-insensitively). Verified whenever present, and **required** when the backend is configured with a plugin signing key — it is what makes the signature over `manifest.json` cover the bundle too. See "Signature verification" above. |
 | `bundleSource` | no | `{"apiServer": {"path": "/apis/<group>/<version>"}}` or `{"http": {}}` (with the URL in the ConfigMap's `bundleURL` key) — where the backend downloads `bundle.zip` from, for a ConfigMap that ships no `bundle.zip` (see "Downloading the bundle" below). Requires `bundleSha256`. `http` can be turned off with `plugins.bundleSource.http.enabled`. Not supported for the plugin directory source. |
 | `federation` | no | `{remoteEntry, routes: [{path, sidebarLabel, icon?, exposedModule, kind?}]}` — a [Native Federation](https://www.npmjs.com/package/@angular-architects/native-federation) remote (its own entry in `bundle.zip`, separate from `entry`) plus the whole-page routes/sidebar entries it serves, as data instead of registering them in code (see below). Antrea UI's own frontend has no module federation loader and ignores this field entirely (see `plugins.ts`); it's consumed by a separate, out-of-tree Angular-based host, which lazily loads a route's `exposedModule` out of `remoteEntry`, only once that route is actually visited. `kind` is `"component"` (the default) or `"routes"` — any other value is rejected, dropping the whole plugin (see below): `"component"` expects `exposedModule` to export a single page component; `"routes"` expects it to export a whole route tree the plugin owns end to end, letting it nest its own sub-paths and register its own route-level providers without the host knowing anything about them. Since a `"routes"` route owns every sub-path under its own `path`, no other route in the same manifest may fall under it (rejected the same way two routes with an identical `path` are); a route nested under it in a *different*, already-installed plugin's manifest is resolved the same way an identical `path` across plugins is (see below). |
@@ -843,7 +852,7 @@ cd client/web && yarn install
 yarn workspace @antrea/ui-components build
 yarn workspace @antrea/ui-plugin-sdk build
 cd ../../plugins/examples/pod-counter
-npm install && npm run build   # vite build, copies manifest.json, zips everything else into bundle.zip
+npm install && npm run build   # vite build (generates manifest.json), zips the rest into bundle.zip
 ```
 
 The `build` script's `bundle.zip` step shells out to the `zip` binary, which
@@ -952,7 +961,7 @@ the plugin bundle itself, not the cluster — the fastest way to iterate is
 
 ```bash
 cd plugins/examples/pod-counter
-npm install && npm run build   # vite build, copies manifest.json, zips everything else into bundle.zip
+npm install && npm run build   # vite build (generates manifest.json), zips the rest into bundle.zip
 mkdir -p <plugins.directory>/pod-counter
 cp dist/manifest.json dist/bundle.zip <plugins.directory>/pod-counter/
 ```

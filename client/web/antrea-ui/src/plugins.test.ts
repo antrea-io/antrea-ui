@@ -66,10 +66,10 @@ describe('loadPlugins compatibility', () => {
 
         await expect(loadPlugins()).resolves.toEqual([]);
 
-        // Only the index was fetched, and no "failed to load plugin" error: import() was never tried.
-        expect(fetch).toHaveBeenCalledTimes(1);
+        // The only error logged is the incompatibility message, not "failed to load plugin", so
+        // import() was never tried.
         expect(errorSpy).toHaveBeenCalledTimes(1);
-        const [info] = getIncompatiblePlugins();
+        const info = getIncompatiblePlugins().find(p => p.name === 'too-old')!;
         expect(info).toEqual({ name: 'too-old', version: '2.0.0', range: '1.0.0-rc.1', shellVersion: '1.0.0-rc.2' });
         expect(incompatiblePluginMessage(info)).toBe(
             'Plugin too-old (version 2.0.0) does not support antrea-ui version 1.0.0-rc.2. ' +

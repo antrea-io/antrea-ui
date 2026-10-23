@@ -36,10 +36,10 @@ type PluginManifest struct {
 	// present and within a narrow subset of node-semver's syntax: "||"-separated sets of
 	// space-separated comparators ("<", "<=", ">", ">=", "=", "^", "~" or none), each followed by
 	// a full MAJOR.MINOR.PATCH[-prerelease] version (no x-ranges, "*", hyphen ranges, partial
-	// versions, "v" prefix or build metadata), so a range it accepts always parses in node-semver.
-	// Each frontend evaluates it against its own build-time version before fetching any plugin
-	// code, since only the frontend knows which version it actually is (the backend serves the
-	// same index to every frontend).
+	// versions, "v" prefix or build metadata) and at most 256 characters, so a range it accepts
+	// always parses in node-semver. Each frontend evaluates it against its own build-time version
+	// before fetching any plugin code, since only the frontend knows which version it actually is
+	// (the backend serves the same index to every frontend).
 	CompatibleAntreaUI string `json:"compatibleAntreaUI"`
 
 	// Federation optionally declares the plugin's module federation remote

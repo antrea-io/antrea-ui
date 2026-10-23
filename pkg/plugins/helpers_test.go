@@ -44,16 +44,18 @@ const testCompatibleAntreaUI = ">=0.0.0"
 
 // withCompatibleAntreaUI returns manifestJSON with compatibleAntreaUI set to
 // testCompatibleAntreaUI if it has none, so only tests about that field need to mention it.
-// A test for a missing range passes "compatibleAntreaUI":"" (rejected the same way). Input that
-// is not a JSON object is returned as is, for the tests that exercise a malformed manifest.
+// Input that is not a JSON object, or that already has the field, is returned unchanged: the
+// first so the tests that exercise a malformed manifest still reach the parser, the second so
+// wrapping a manifest that is already complete (or already signed) never changes its bytes.
 func withCompatibleAntreaUI(manifestJSON string) string {
 	var m map[string]any
-	if err := json.Unmarshal([]byte(manifestJSON), &m); err != nil {
+	if err := json.Unmarshal([]byte(manifestJSON), &m); err != nil || m == nil {
 		return manifestJSON
 	}
-	if _, ok := m["compatibleAntreaUI"]; !ok {
-		m["compatibleAntreaUI"] = testCompatibleAntreaUI
+	if _, ok := m["compatibleAntreaUI"]; ok {
+		return manifestJSON
 	}
+	m["compatibleAntreaUI"] = testCompatibleAntreaUI
 	b, err := json.Marshal(m)
 	if err != nil {
 		return manifestJSON

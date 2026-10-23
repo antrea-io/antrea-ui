@@ -104,12 +104,19 @@ const (
 	semverSet   = semverComp + `(?:\s+` + semverComp + `)*`
 )
 
+// maxCompatibleAntreaUILength is node-semver's MAX_LENGTH, which it applies to every version it
+// parses and rejects anything longer. Capping the whole range at it means no version inside the
+// range can exceed it, at the cost of also rejecting a long range of many short comparators that
+// node-semver would accept, which is fine since the backend may be stricter.
+const maxCompatibleAntreaUILength = 256
+
 var compatibleAntreaUIRegexp = regexp.MustCompile(`^\s*` + semverSet + `(?:\s*\|\|\s*` + semverSet + `)*\s*$`)
 
 // validateCompatibleAntreaUI checks that compatibleAntreaUI is present and within the grammar
 // above: "||"-separated sets of space-separated comparators ("<", "<=", ">", ">=", "=", "^", "~"
 // or none), each followed by a full MAJOR.MINOR.PATCH[-prerelease] version, with no x-ranges, "*",
-// hyphen ranges, partial versions, "v" prefix or build metadata. It deliberately does not
+// hyphen ranges, partial versions, "v" prefix or build metadata, and at most
+// maxCompatibleAntreaUILength characters. It deliberately does not
 // evaluate the range: only a frontend shell knows its own full release version (the backend
 // serves one index to every shell), so each shell does that against its build-time version - see
 // plugins.ts. The shared cases in client/web/antrea-ui/src/testdata/compatible_antrea_ui.json
@@ -118,6 +125,9 @@ var compatibleAntreaUIRegexp = regexp.MustCompile(`^\s*` + semverSet + `(?:\s*\|
 func validateCompatibleAntreaUI(r string) error {
 	if strings.TrimSpace(r) == "" {
 		return fmt.Errorf("manifest is missing 'compatibleAntreaUI'")
+	}
+	if len(r) > maxCompatibleAntreaUILength {
+		return fmt.Errorf("manifest's 'compatibleAntreaUI' is longer than %d characters", maxCompatibleAntreaUILength)
 	}
 	if !compatibleAntreaUIRegexp.MatchString(r) {
 		return fmt.Errorf("manifest's 'compatibleAntreaUI' %q is not a supported semver range: "+

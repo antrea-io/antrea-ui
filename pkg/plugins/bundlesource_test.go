@@ -217,6 +217,7 @@ func remoteManifest(version string, bundle []byte) string {
 // remoteConfigMap is a manifest-only plugin ConfigMap whose manifest is signed by signer.
 func remoteConfigMap(t *testing.T, signer *openpgp.Entity, manifestJSON string) *corev1.ConfigMap {
 	t.Helper()
+	manifestJSON = withCompatibleAntreaUI(manifestJSON)
 	cm := signedConfigMap(t, "pod-counter-cm", manifestJSON, asc(sign(t, signer, []byte(manifestJSON))), nil)
 	cm.BinaryData = nil
 	cm.ResourceVersion = manifestJSON
@@ -359,7 +360,7 @@ func TestRemoteBundleRejections(t *testing.T) {
 		{
 			name: "entry missing from the bundle",
 			cm: func(t *testing.T) *corev1.ConfigMap {
-				m := withCompatibleAntreaUI(fmt.Sprintf(`{"name":"pod-counter","entry":"missing.js","bundleSha256":%q,"bundleSource":{"apiServer":{"path":%q}}}`, bundleDigest(bundle), testBundlePath))
+				m := fmt.Sprintf(`{"name":"pod-counter","entry":"missing.js","bundleSha256":%q,"bundleSource":{"apiServer":{"path":%q}}}`, bundleDigest(bundle), testBundlePath)
 				return signedCM(t, m)
 			},
 			want:      upsertRejected,

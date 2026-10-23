@@ -324,7 +324,7 @@ func TestHTTPBundleRejections(t *testing.T) {
 		{
 			name: "entry missing from the bundle",
 			cm: func(t *testing.T) *corev1.ConfigMap {
-				m := withCompatibleAntreaUI(fmt.Sprintf(`{"name":"pod-counter","entry":"missing.js","bundleSha256":%q,"bundleSource":{"http":{}}}`, bundleDigest(bundle)))
+				m := fmt.Sprintf(`{"name":"pod-counter","entry":"missing.js","bundleSha256":%q,"bundleSource":{"http":{}}}`, bundleDigest(bundle))
 				return httpConfigMap(t, testSigner(), m, testBundleURL)
 			},
 			want:      upsertRejected,

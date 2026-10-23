@@ -14,13 +14,13 @@
 
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { defineConfig } from 'vite';
+import { defineConfig, type Plugin } from 'vite';
 
 // Writes manifest.json into dist with compatibleAntreaUI covering every version of the Antrea UI
 // minor release in the repository's VERSION file (prereleases of its .0 included). This example is
 // only ever built and tested together with the frontend from the same tree, so its range follows
 // the tree instead of being bumped by hand.
-function manifest() {
+function manifest(): Plugin {
   return {
     name: 'manifest',
     generateBundle() {
