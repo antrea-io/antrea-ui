@@ -30,6 +30,18 @@ type PluginManifest struct {
 	// set.
 	Entry string `json:"entry"`
 
+	// CompatibleAntreaUI is a node-semver range (e.g. "1.0.0-rc.1 || 1.0.0-rc.2") of the full
+	// versions of the frontend that may load this plugin, prerelease suffix included: the ones
+	// the plugin was built and tested against. Required. The backend only checks that it is
+	// present and within a narrow subset of node-semver's syntax: "||"-separated sets of
+	// space-separated comparators ("<", "<=", ">", ">=", "=", "^", "~" or none), each followed by
+	// a full MAJOR.MINOR.PATCH[-prerelease] version (no x-ranges, "*", hyphen ranges, partial
+	// versions, "v" prefix or build metadata) and at most 256 characters, so a range it accepts
+	// always parses in node-semver. Each frontend evaluates it against its own build-time version
+	// before fetching any plugin code, since only the frontend knows which version it actually is
+	// (the backend serves the same index to every frontend).
+	CompatibleAntreaUI string `json:"compatibleAntreaUI"`
+
 	// Federation optionally declares the plugin's module federation remote
 	// and the routes it serves, as data instead of the plugin's code calling
 	// registerRoute()/registerSidebarEntry() (see antrea-ui-plugin-sdk). Its

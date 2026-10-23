@@ -210,13 +210,14 @@ func (f *fakeFetcher) requestPaths() []string {
 }
 
 func remoteManifest(version string, bundle []byte) string {
-	return fmt.Sprintf(`{"name":"pod-counter","version":%q,"entry":"index.js","bundleSha256":%q,"bundleSource":{"apiServer":{"path":%q}}}`,
-		version, bundleDigest(bundle), testBundlePath)
+	return withCompatibleAntreaUI(fmt.Sprintf(`{"name":"pod-counter","version":%q,"entry":"index.js","bundleSha256":%q,"bundleSource":{"apiServer":{"path":%q}}}`,
+		version, bundleDigest(bundle), testBundlePath))
 }
 
 // remoteConfigMap is a manifest-only plugin ConfigMap whose manifest is signed by signer.
 func remoteConfigMap(t *testing.T, signer *openpgp.Entity, manifestJSON string) *corev1.ConfigMap {
 	t.Helper()
+	manifestJSON = withCompatibleAntreaUI(manifestJSON)
 	cm := signedConfigMap(t, "pod-counter-cm", manifestJSON, asc(sign(t, signer, []byte(manifestJSON))), nil)
 	cm.BinaryData = nil
 	cm.ResourceVersion = manifestJSON

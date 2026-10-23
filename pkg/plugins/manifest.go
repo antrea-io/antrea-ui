@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path"
+	"regexp"
 	"strings"
 
 	apisv1 "antrea.io/antrea-ui/apis/v1"
@@ -88,6 +89,54 @@ func isReservedRoutePath(normalized string) bool {
 	return false
 }
 
+// The grammar accepted for compatibleAntreaUI is deliberately a narrow subset of node-semver's
+// range syntax, which is what every frontend evaluates the range with (see plugins.ts). Another
+// semver library (Masterminds, for one) accepts syntax node-semver rejects, such as "," as an AND
+// separator or "!=", and a range accepted here but rejected by node-semver would pass the backend
+// only to keep the plugin from ever loading. Rejecting more than node-semver is harmless: the
+// plugin is dropped at load time with a clear log. Accepting more is the problem.
+const (
+	// Numeric parts follow SemVer (no leading zeros), capped well below the 2^53 node-semver rejects.
+	semverNum   = `(?:0|[1-9][0-9]{0,14})`
+	semverIdent = `(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)`
+	semverVer   = semverNum + `\.` + semverNum + `\.` + semverNum + `(?:-` + semverIdent + `(?:\.` + semverIdent + `)*)?`
+	semverComp  = `(?:[<>]=?|=|\^|~)?` + semverVer
+	semverSet   = semverComp + `(?:\s+` + semverComp + `)*`
+)
+
+// maxCompatibleAntreaUILength is node-semver's MAX_LENGTH, which it applies to every version it
+// parses and rejects anything longer. Capping the whole range at it means no version inside the
+// range can exceed it, at the cost of also rejecting a long range of many short comparators that
+// node-semver would accept, which is fine since the backend may be stricter.
+const maxCompatibleAntreaUILength = 256
+
+var compatibleAntreaUIRegexp = regexp.MustCompile(`^\s*` + semverSet + `(?:\s*\|\|\s*` + semverSet + `)*\s*$`)
+
+// validateCompatibleAntreaUI checks that compatibleAntreaUI is present and within the grammar
+// above: "||"-separated sets of space-separated comparators ("<", "<=", ">", ">=", "=", "^", "~"
+// or none), each followed by a full MAJOR.MINOR.PATCH[-prerelease] version, with no x-ranges, "*",
+// hyphen ranges, partial versions, "v" prefix or build metadata, and at most
+// maxCompatibleAntreaUILength characters. It deliberately does not
+// evaluate the range: only a frontend shell knows its own full release version (the backend
+// serves one index to every shell), so each shell does that against its build-time version - see
+// plugins.ts. The shared cases in client/web/antrea-ui/src/testdata/compatible_antrea_ui.json
+// mean "the backend accepts it": the Go test asserts every row, and the frontend test asserts
+// that the valid rows parse in node-semver.
+func validateCompatibleAntreaUI(r string) error {
+	if strings.TrimSpace(r) == "" {
+		return fmt.Errorf("manifest is missing 'compatibleAntreaUI'")
+	}
+	if len(r) > maxCompatibleAntreaUILength {
+		return fmt.Errorf("manifest's 'compatibleAntreaUI' is longer than %d characters", maxCompatibleAntreaUILength)
+	}
+	if !compatibleAntreaUIRegexp.MatchString(r) {
+		return fmt.Errorf("manifest's 'compatibleAntreaUI' %q is not a supported semver range: "+
+			"expected '||'-separated sets of space-separated comparators (<, <=, >, >=, =, ^, ~), "+
+			"each followed by a full MAJOR.MINOR.PATCH[-prerelease] version", r)
+	}
+	return nil
+}
+
 // validateManifest parses manifestJSON and checks that every file it references (Entry,
 // Federation.RemoteEntry) is present in the bundle - names is just the bundle's file name set,
 // not its content, since both callers only have names cheaply available (from bundle.zip's
@@ -128,6 +177,9 @@ func parseManifest(manifestJSON []byte) (*apisv1.PluginManifest, error) {
 	}
 	if manifest.Entry == "" {
 		return nil, fmt.Errorf("manifest is missing 'entry'")
+	}
+	if err := validateCompatibleAntreaUI(manifest.CompatibleAntreaUI); err != nil {
+		return nil, err
 	}
 	entry := cleanEntryName(manifest.Entry)
 	if manifest.BundleSource != nil {

@@ -57,7 +57,7 @@ func TestRegistryUpsertAndIndex(t *testing.T) {
 	}))
 
 	assert.Equal(t, []apisv1.PluginManifest{
-		{Name: "pod-counter", Version: "0.1.0", Entry: "index.js"},
+		{Name: "pod-counter", Version: "0.1.0", Entry: "index.js", CompatibleAntreaUI: testCompatibleAntreaUI},
 	}, r.Index())
 
 	rc, size, ok := r.File("pod-counter", "index.js")
@@ -79,7 +79,7 @@ func TestRegistryUpsertAndIndex(t *testing.T) {
 func TestRegistryUpsertReadsManifestFromBinaryData(t *testing.T) {
 	r := newTestRegistry(t)
 
-	manifestJSON := `{"name":"pod-counter","version":"0.1.0","entry":"index.js"}`
+	manifestJSON := withCompatibleAntreaUI(`{"name":"pod-counter","version":"0.1.0","entry":"index.js"}`)
 	cm := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{Name: "pod-counter-plugin", Namespace: "antrea-ui", ResourceVersion: "0.1.0"},
 		BinaryData: map[string][]byte{
@@ -91,7 +91,7 @@ func TestRegistryUpsertReadsManifestFromBinaryData(t *testing.T) {
 	r.handleUpsert(t.Context(), cm)
 
 	assert.Equal(t, []apisv1.PluginManifest{
-		{Name: "pod-counter", Version: "0.1.0", Entry: "index.js"},
+		{Name: "pod-counter", Version: "0.1.0", Entry: "index.js", CompatibleAntreaUI: testCompatibleAntreaUI},
 	}, r.Index())
 }
 
@@ -114,7 +114,7 @@ func TestRegistryUpdateReplacesPreviousContents(t *testing.T) {
 	r.handleUpsert(t.Context(), configMap(t, name, "pod-counter", "0.2.0", "index.js", map[string]string{"index.js": "v2"}))
 
 	assert.Equal(t, []apisv1.PluginManifest{
-		{Name: "pod-counter", Version: "0.2.0", Entry: "index.js"},
+		{Name: "pod-counter", Version: "0.2.0", Entry: "index.js", CompatibleAntreaUI: testCompatibleAntreaUI},
 	}, r.Index())
 	rc, _, ok := r.File("pod-counter", "index.js")
 	require.True(t, ok)
@@ -150,7 +150,7 @@ func TestRegistrySkipsInvalidConfigMaps(t *testing.T) {
 		t.Helper()
 		return &corev1.ConfigMap{
 			ObjectMeta: metav1.ObjectMeta{Name: "cm"},
-			Data:       map[string]string{"manifest.json": manifestJSON},
+			Data:       map[string]string{"manifest.json": withCompatibleAntreaUI(manifestJSON)},
 			BinaryData: map[string][]byte{"bundle.zip": buildZip(t, bundleFiles)},
 		}
 	}
@@ -165,7 +165,7 @@ func TestRegistrySkipsInvalidConfigMaps(t *testing.T) {
 		"missing bundle.zip": func(t *testing.T) *corev1.ConfigMap {
 			return &corev1.ConfigMap{
 				ObjectMeta: metav1.ObjectMeta{Name: "cm"},
-				Data:       map[string]string{"manifest.json": `{"name":"plugin","version":"0.1.0","entry":"index.js"}`},
+				Data:       map[string]string{"manifest.json": withCompatibleAntreaUI(`{"name":"plugin","version":"0.1.0","entry":"index.js"}`)},
 			}
 		},
 		"malformed manifest.json": func(t *testing.T) *corev1.ConfigMap {
@@ -174,7 +174,7 @@ func TestRegistrySkipsInvalidConfigMaps(t *testing.T) {
 		"malformed bundle.zip": func(t *testing.T) *corev1.ConfigMap {
 			return &corev1.ConfigMap{
 				ObjectMeta: metav1.ObjectMeta{Name: "cm"},
-				Data:       map[string]string{"manifest.json": `{"name":"plugin","version":"0.1.0","entry":"index.js"}`},
+				Data:       map[string]string{"manifest.json": withCompatibleAntreaUI(`{"name":"plugin","version":"0.1.0","entry":"index.js"}`)},
 				BinaryData: map[string][]byte{"bundle.zip": []byte("not a zip")},
 			}
 		},
@@ -325,11 +325,11 @@ func TestRegistryRejectsNewConfigMapPluginPastLimit(t *testing.T) {
 
 	r.handleUpsert(t.Context(), configMap(t, "first-cm", "first", "0.1.0", "index.js", map[string]string{"index.js": "x"}))
 	r.handleUpsert(t.Context(), configMap(t, "second-cm", "second", "0.1.0", "index.js", map[string]string{"index.js": "x"}))
-	assert.Equal(t, []apisv1.PluginManifest{{Name: "first", Version: "0.1.0", Entry: "index.js"}}, r.Index())
+	assert.Equal(t, []apisv1.PluginManifest{{Name: "first", Version: "0.1.0", Entry: "index.js", CompatibleAntreaUI: testCompatibleAntreaUI}}, r.Index())
 
 	// An update to the already-tracked plugin is never blocked by the limit.
 	r.handleUpsert(t.Context(), configMap(t, "first-cm", "first", "0.2.0", "index.js", map[string]string{"index.js": "x"}))
-	assert.Equal(t, []apisv1.PluginManifest{{Name: "first", Version: "0.2.0", Entry: "index.js"}}, r.Index())
+	assert.Equal(t, []apisv1.PluginManifest{{Name: "first", Version: "0.2.0", Entry: "index.js", CompatibleAntreaUI: testCompatibleAntreaUI}}, r.Index())
 }
 
 func TestRegistryRejectsConfigMapBundlePastTheDecompressedSizeLimit(t *testing.T) {
@@ -354,7 +354,7 @@ func TestRegistryRejectsConfigMapBundlePastTheDecompressedSizeLimit(t *testing.T
 	r.handleUpsert(t.Context(), configMap(t, "plugin-cm", "plugin", "0.1.0", "index.js", map[string]string{
 		"index.js": strings.Repeat("x", 50),
 	}))
-	assert.Equal(t, []apisv1.PluginManifest{{Name: "plugin", Version: "0.1.0", Entry: "index.js"}}, r.Index())
+	assert.Equal(t, []apisv1.PluginManifest{{Name: "plugin", Version: "0.1.0", Entry: "index.js", CompatibleAntreaUI: testCompatibleAntreaUI}}, r.Index())
 }
 
 // countingIndexer counts GetByKey calls so a test can assert exactly how many attempts a

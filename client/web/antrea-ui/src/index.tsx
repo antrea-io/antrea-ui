@@ -24,7 +24,7 @@ import App from './App';
 import { OverviewPage, SummaryPage, TraceflowPage, FlowVisibilityPage, SettingsPage, PluginPage, HomeRedirect } from './pages';
 import reportWebVitals from './reportWebVitals';
 import config from './config';
-import { loadPlugins, getPluginRoutes, getPluginSidebarEntries, getLandingPageTabs } from './plugins';
+import { loadPlugins, getPluginRoutes, getPluginSidebarEntries, getLandingPageTabs, getIncompatiblePlugins } from './plugins';
 
 async function main() {
     // Lets antrea-ui-components' fetch calls (login, refresh, settings, data pages) reach the
@@ -46,7 +46,7 @@ async function main() {
     const router = createBrowserRouter([
         {
             path: "/",
-            element: <App pluginSidebarEntries={getPluginSidebarEntries()} />,
+            element: <App pluginSidebarEntries={getPluginSidebarEntries()} incompatiblePlugins={getIncompatiblePlugins()} />,
             children: [
                 {
                     index: true,

@@ -19,6 +19,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -36,6 +37,31 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
+
+// testCompatibleAntreaUI is what test manifests declare unless they set compatibleAntreaUI
+// themselves; the backend only checks its syntax, so the value does not matter.
+const testCompatibleAntreaUI = ">=0.0.0"
+
+// withCompatibleAntreaUI returns manifestJSON with compatibleAntreaUI set to
+// testCompatibleAntreaUI if it has none, so only tests about that field need to mention it.
+// Input that is not a JSON object, or that already has the field, is returned unchanged: the
+// first so the tests that exercise a malformed manifest still reach the parser, the second so
+// wrapping a manifest that is already complete (or already signed) never changes its bytes.
+func withCompatibleAntreaUI(manifestJSON string) string {
+	var m map[string]any
+	if err := json.Unmarshal([]byte(manifestJSON), &m); err != nil || m == nil {
+		return manifestJSON
+	}
+	if _, ok := m["compatibleAntreaUI"]; ok {
+		return manifestJSON
+	}
+	m["compatibleAntreaUI"] = testCompatibleAntreaUI
+	b, err := json.Marshal(m)
+	if err != nil {
+		return manifestJSON
+	}
+	return string(b)
+}
 
 func newTestRegistry(t *testing.T) *Registry {
 	r := NewRegistry(Options{Logger: testr.New(t), Clientset: nil, Namespace: "antrea-ui", LabelSelector: "ui.antrea.io/plugin=true", MaxConfigMapPlugins: 0, MaxDirectoryPlugins: 0, MaxBundleBytes: 0})
@@ -63,7 +89,7 @@ func configMap(t *testing.T, name, pluginName, version, entry string, bundleFile
 	cm := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "antrea-ui", ResourceVersion: version},
 		Data: map[string]string{
-			"manifest.json": fmt.Sprintf(`{"name":%q,"version":%q,"entry":%q}`, pluginName, version, entry),
+			"manifest.json": withCompatibleAntreaUI(fmt.Sprintf(`{"name":%q,"version":%q,"entry":%q}`, pluginName, version, entry)),
 		},
 	}
 	if bundleFiles != nil {
@@ -95,12 +121,12 @@ func writePluginDir(t *testing.T, root, name, manifestJSON string, bundleFiles m
 	t.Helper()
 	dir := filepath.Join(root, name)
 	require.NoError(t, os.MkdirAll(dir, 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, manifestFileName), []byte(manifestJSON), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, manifestFileName), []byte(withCompatibleAntreaUI(manifestJSON)), 0o600))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, bundleFileName), buildZip(t, bundleFiles), 0o600))
 }
 
 func podCounterManifest(pluginName, version string) string {
-	return fmt.Sprintf(`{"name":%q,"version":%q,"entry":"index.js"}`, pluginName, version)
+	return withCompatibleAntreaUI(fmt.Sprintf(`{"name":%q,"version":%q,"entry":"index.js"}`, pluginName, version))
 }
 
 func podCounterBundle() map[string]string {
@@ -234,7 +260,7 @@ func sha256Sum(data []byte) []byte {
 // manifestWithDigest builds a manifest JSON with an arbitrary bundleSha256 string, including the
 // malformed ones the signature suite needs.
 func manifestWithDigest(pluginName, version, entry, digest string) string {
-	return fmt.Sprintf(`{"name":%q,"version":%q,"entry":%q,"bundleSha256":%q}`, pluginName, version, entry, digest)
+	return withCompatibleAntreaUI(fmt.Sprintf(`{"name":%q,"version":%q,"entry":%q,"bundleSha256":%q}`, pluginName, version, entry, digest))
 }
 
 // signedManifest returns a manifest JSON pinning bundleZip's real SHA-256 in bundleSha256.

@@ -33,7 +33,7 @@ func TestRegistryIndexIncludesFederation(t *testing.T) {
 	r.handleUpsert(t.Context(), &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{Name: "policy-management-plugin", Namespace: "antrea-ui"},
 		Data: map[string]string{
-			"manifest.json": `{
+			"manifest.json": withCompatibleAntreaUI(`{
 				"name": "policy-management",
 				"version": "0.2.0",
 				"entry": "index.js",
@@ -45,7 +45,7 @@ func TestRegistryIndexIncludesFederation(t *testing.T) {
 						{"path": "/policy-summary", "sidebarLabel": "Policy Summary", "exposedModule": "./PolicySummaryPage", "kind": "component"}
 					]
 				}
-			}`,
+			}`),
 		},
 		BinaryData: map[string][]byte{
 			"bundle.zip": buildZip(t, map[string]string{"index.js": "x", "remoteEntry.json": "{}"}),
@@ -53,9 +53,10 @@ func TestRegistryIndexIncludesFederation(t *testing.T) {
 	})
 
 	assert.Equal(t, []apisv1.PluginManifest{{
-		Name:    "policy-management",
-		Version: "0.2.0",
-		Entry:   "index.js",
+		Name:               "policy-management",
+		Version:            "0.2.0",
+		Entry:              "index.js",
+		CompatibleAntreaUI: testCompatibleAntreaUI,
 		Federation: &apisv1.PluginFederation{
 			RemoteEntry: "remoteEntry.json",
 			Routes: []apisv1.PluginRoute{
@@ -72,12 +73,12 @@ func federationConfigMap(t *testing.T, cmName, pluginName, entry string, routes 
 	return &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{Name: cmName, Namespace: "antrea-ui"},
 		Data: map[string]string{
-			"manifest.json": `{
+			"manifest.json": withCompatibleAntreaUI(`{
 				"name": "` + pluginName + `",
 				"version": "0.1.0",
 				"entry": "` + entry + `",
 				"federation": {"remoteEntry": "remoteEntry.json", "routes": ` + routes + `}
-			}`,
+			}`),
 		},
 		BinaryData: map[string][]byte{
 			"bundle.zip": buildZip(t, map[string]string{
@@ -241,7 +242,7 @@ func TestRegistryDuplicatePluginNameKeepsLowerConfigMapName(t *testing.T) {
 	r.handleUpsert(t.Context(), configMap(t, "a-configmap", "pod-counter", "1.0.0", "index.js", map[string]string{"index.js": "a"}))
 
 	assert.Equal(t, []apisv1.PluginManifest{
-		{Name: "pod-counter", Version: "1.0.0", Entry: "index.js"},
+		{Name: "pod-counter", Version: "1.0.0", Entry: "index.js", CompatibleAntreaUI: testCompatibleAntreaUI},
 	}, r.Index())
 	rc, _, ok := r.File("pod-counter", "index.js")
 	require.True(t, ok)

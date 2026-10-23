@@ -50,6 +50,10 @@ RUN yarn workspace @antrea/ui-plugin-sdk run build
 
 COPY client/web/antrea-ui ./antrea-ui
 ARG NODE_ENV=production
+# The shell's own full release version, which a plugin's compatibleAntreaUI range is matched
+# against in the browser (see client/web/antrea-ui/src/plugins.ts). Vite inlines VITE_* variables.
+ARG ANTREA_UI_VERSION=""
+ENV VITE_ANTREA_UI_VERSION=$ANTREA_UI_VERSION
 RUN yarn workspace antrea-ui run build
 
 FROM nginxinc/nginx-unprivileged:1.29

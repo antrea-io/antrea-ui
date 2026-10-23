@@ -64,7 +64,7 @@ func TestParsePluginArchive(t *testing.T) {
 
 	entry, err := parsePluginArchive(filepath.Join(dir, "pod-counter"), filepath.Join(t.TempDir(), "pod-counter"), 0, nil)
 	require.NoError(t, err)
-	assert.Equal(t, apisv1.PluginManifest{Name: "pod-counter", Version: "0.1.0", Entry: "index.js"}, entry.manifest)
+	assert.Equal(t, apisv1.PluginManifest{Name: "pod-counter", Version: "0.1.0", Entry: "index.js", CompatibleAntreaUI: testCompatibleAntreaUI}, entry.manifest)
 	rc, size, ok := entry.open("index.js")
 	require.True(t, ok)
 	assert.Equal(t, int64(len("console.log('hi')")), size)
@@ -106,9 +106,10 @@ func TestParsePluginArchiveIncludesRoutesAndFederation(t *testing.T) {
 	entry, err := parsePluginArchive(filepath.Join(dir, "policy-management"), filepath.Join(t.TempDir(), "policy-management"), 0, nil)
 	require.NoError(t, err)
 	assert.Equal(t, apisv1.PluginManifest{
-		Name:    "policy-management",
-		Version: "0.2.0",
-		Entry:   "index.js",
+		Name:               "policy-management",
+		Version:            "0.2.0",
+		Entry:              "index.js",
+		CompatibleAntreaUI: testCompatibleAntreaUI,
 		Federation: &apisv1.PluginFederation{
 			RemoteEntry: "remoteEntry.json",
 			Routes: []apisv1.PluginRoute{
@@ -196,7 +197,7 @@ func TestRunDirectoryWatchLoadsExistingPlugins(t *testing.T) {
 
 	waitFor(t, time.Second, func() bool { return len(r.Index()) == 1 })
 	assert.Equal(t, []apisv1.PluginManifest{
-		{Name: "pod-counter", Version: "0.1.0", Entry: "index.js"},
+		{Name: "pod-counter", Version: "0.1.0", Entry: "index.js", CompatibleAntreaUI: testCompatibleAntreaUI},
 	}, r.Index())
 	rc, _, ok := r.File("pod-counter", "index.js")
 	require.True(t, ok)
@@ -228,7 +229,7 @@ func TestRunDirectoryWatchRetriesUntilDirectoryAppears(t *testing.T) {
 	writePluginDir(t, dir, "pod-counter", podCounterManifest("pod-counter", "0.1.0"), podCounterBundle())
 	waitFor(t, time.Second, func() bool { return len(r.Index()) == 1 })
 	assert.Equal(t, []apisv1.PluginManifest{
-		{Name: "pod-counter", Version: "0.1.0", Entry: "index.js"},
+		{Name: "pod-counter", Version: "0.1.0", Entry: "index.js", CompatibleAntreaUI: testCompatibleAntreaUI},
 	}, r.Index())
 }
 
@@ -249,7 +250,7 @@ func TestRunDirectoryWatchLoadsPluginBehindSymlink(t *testing.T) {
 
 	waitFor(t, time.Second, func() bool { return len(r.Index()) == 1 })
 	assert.Equal(t, []apisv1.PluginManifest{
-		{Name: "pod-counter", Version: "0.1.0", Entry: "index.js"},
+		{Name: "pod-counter", Version: "0.1.0", Entry: "index.js", CompatibleAntreaUI: testCompatibleAntreaUI},
 	}, r.Index())
 }
 

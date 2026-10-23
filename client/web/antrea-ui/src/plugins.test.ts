@@ -14,14 +14,20 @@
  * limitations under the License.
  */
 
-import { loadPlugins, dedupeByPath, getPluginRoutes, resolveParentPaths, getLandingPageTabs, type PluginManifest, type PluginRoute, type PluginSidebarEntry, type LandingPageTab } from './plugins';
+import { loadPlugins, isCompatible, isValidRange, getIncompatiblePlugins, incompatiblePluginMessage, dedupeByPath, getPluginRoutes, resolveParentPaths, getLandingPageTabs, type PluginManifest, type PluginRoute, type PluginSidebarEntry, type LandingPageTab } from './plugins';
+
+// The shell version loadPlugins() matches compatibleAntreaUI against; a prerelease version, to
+// exercise the prerelease semantics a range has to get right.
+vi.mock('./config', () => ({ default: { apiServer: '', shellVersion: '1.0.0-rc.2' } }));
+
+import rangeCases from './testdata/compatible_antrea_ui.json';
 
 function jsonResponse(body: unknown, status = 200): Response {
     return new Response(JSON.stringify(body), { status });
 }
 
 function manifest(overrides: Partial<PluginManifest> = {}): PluginManifest {
-    return { name: 'pod-counter', version: '0.1.0', entry: 'index.js', ...overrides };
+    return { name: 'pod-counter', version: '0.1.0', entry: 'index.js', compatibleAntreaUI: '1.0.0-rc.1 || 1.0.0-rc.2', ...overrides };
 }
 
 afterEach(() => {
@@ -48,6 +54,96 @@ describe('loadPlugins', () => {
             expect.stringContaining('failed to load plugin "broken"'),
             expect.anything()
         );
+    });
+});
+
+describe('loadPlugins compatibility', () => {
+    test('a plugin whose range does not admit the shell version is skipped before its code is fetched', async () => {
+        vi.stubGlobal('fetch', vi.fn(async () => jsonResponse([
+            manifest({ name: 'too-old', version: '2.0.0', compatibleAntreaUI: '1.0.0-rc.1' }),
+        ])));
+        const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+        await expect(loadPlugins()).resolves.toEqual([]);
+
+        // The only error logged is the incompatibility message, not "failed to load plugin", so
+        // import() was never tried.
+        expect(errorSpy).toHaveBeenCalledTimes(1);
+        const info = getIncompatiblePlugins().find(p => p.name === 'too-old')!;
+        expect(info).toEqual({ name: 'too-old', version: '2.0.0', range: '1.0.0-rc.1', shellVersion: '1.0.0-rc.2' });
+        expect(incompatiblePluginMessage(info)).toBe(
+            'Plugin too-old (version 2.0.0) does not support antrea-ui version 1.0.0-rc.2. ' +
+            'Supported versions: 1.0.0-rc.1. Install a supported shell/plugin combination.'
+        );
+    });
+});
+
+describe('loadPlugins with an unusable shell version or range', () => {
+    test('a manifest with no range is reported as having none declared, not as "undefined"', async () => {
+        const noRange: Partial<PluginManifest> = manifest({ name: 'old-backend' });
+        delete noRange.compatibleAntreaUI;
+        vi.stubGlobal('fetch', vi.fn(async () => jsonResponse([noRange])));
+        vi.spyOn(console, 'error').mockImplementation(() => {});
+
+        await loadPlugins();
+
+        expect(getIncompatiblePlugins().find(p => p.name === 'old-backend')?.range).toBe('(none declared)');
+    });
+
+    test('a shell version that is not valid semver skips the check instead of dropping every plugin', async () => {
+        const config = (await import('./config')).default;
+        const original = config.shellVersion;
+        config.shellVersion = '0.8.0.1';
+        vi.stubGlobal('fetch', vi.fn(async () => jsonResponse([manifest({ name: 'bad-version-plugin', compatibleAntreaUI: '>=9.0.0' })])));
+        const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        vi.spyOn(console, 'error').mockImplementation(() => {});
+        try {
+            await loadPlugins();
+        } finally {
+            config.shellVersion = original;
+        }
+
+        expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('no valid version'));
+        expect(getIncompatiblePlugins().some(p => p.name === 'bad-version-plugin')).toBe(false);
+    });
+});
+
+describe('isValidRange', () => {
+    // Every range the backend accepts must parse here too; the backend may reject more.
+    test.each(rangeCases.filter(c => c.valid))('$range is valid', ({ range }) => {
+        expect(isValidRange(range)).toBe(true);
+    });
+
+    test.each(['', '   ', 'not a range', '>='])('%j is not valid', (range) => {
+        expect(isValidRange(range)).toBe(false);
+    });
+});
+
+describe('isCompatible', () => {
+    const cases: [string, string, boolean][] = [
+        ['1.0.0-rc.2', '1.0.0-rc.1 || 1.0.0-rc.2', true],
+        ['1.0.0-rc.2', '>=1.0.0-rc.1 <1.0.0-rc.3', true],
+        // A suffix such as -rc.2 makes it a prerelease, which sorts below 1.0.0 and is not admitted by a
+        // range that does not mention a prerelease of the same major.minor.patch.
+        ['1.0.0-rc.2', '>=1.0.0 <2.0.0', false],
+        ['1.0.0-rc.2', '^1.0.0', false],
+        ['1.0.0', '1.0.0-rc.1 || 1.0.0-rc.2', false],
+        ['1.0.0', '1.0.0-rc.1 || 1.0.0', true],
+        // A gap between two supported releases: satisfies() is the only decision.
+        ['1.0.0-rc.2', '1.0.0-rc.1 || 1.0.0-rc.3', false],
+        ['1.2.3', '>=1.0.0 <2.0.0', true],
+        // "x" is not a wildcard in a prerelease identifier.
+        ['1.0.0-rc.2', '1.0.0-rc.x', false],
+        // Malformed or missing ranges never match.
+        ['1.0.0', 'not a range', false],
+        ['1.0.0', '', false],
+    ];
+    test.each(cases)('shell %s against %j is %s', (shell, range, want) => {
+        expect(isCompatible(manifest({ compatibleAntreaUI: range }), shell)).toBe(want);
+    });
+
+    test('a missing range never matches', () => {
+        expect(isCompatible({ name: 'p', version: '1', entry: 'i.js' } as PluginManifest, '1.0.0')).toBe(false);
     });
 });
 

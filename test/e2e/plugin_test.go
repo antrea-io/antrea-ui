@@ -51,6 +51,7 @@ func TestPluginLoading(t *testing.T) {
 				// have loaded at all - assert it is actually there rather than leave the
 				// signed path indistinguishable from the unsigned one.
 				assert.NotEmpty(t, m.BundleSha256, "expected pod-counter's manifest to carry bundleSha256")
+				assert.NotEmpty(t, m.CompatibleAntreaUI, "expected pod-counter's manifest to carry compatibleAntreaUI")
 			}
 		}
 		assert.True(t, found, "expected to find pod-counter in the plugin index: %s", body)
@@ -197,8 +198,9 @@ const (
 
 // pluginManifest is the subset of apis/v1.PluginManifest these tests assert on.
 type pluginManifest struct {
-	Name         string `json:"name"`
-	BundleSha256 string `json:"bundleSha256"`
+	Name               string `json:"name"`
+	BundleSha256       string `json:"bundleSha256"`
+	CompatibleAntreaUI string `json:"compatibleAntreaUI"`
 }
 
 // pluginIndex fetches /api/v1/plugins/index.json, returning the decoded manifests plus the raw

@@ -164,14 +164,15 @@ func (b *readTracker) Close() error             { b.closed = true; return nil }
 
 // httpManifest is remoteManifest for a plugin whose bundleSource is "http".
 func httpManifest(version string, bundle []byte) string {
-	return fmt.Sprintf(`{"name":"pod-counter","version":%q,"entry":"index.js","bundleSha256":%q,"bundleSource":{"http":{}}}`,
-		version, bundleDigest(bundle))
+	return withCompatibleAntreaUI(fmt.Sprintf(`{"name":"pod-counter","version":%q,"entry":"index.js","bundleSha256":%q,"bundleSource":{"http":{}}}`,
+		version, bundleDigest(bundle)))
 }
 
 // httpConfigMap is a manifest-only plugin ConfigMap for a bundleSource "http" manifest, naming url
 // as its bundle's location. It is signed by signer, unless that is nil.
 func httpConfigMap(t *testing.T, signer *openpgp.Entity, manifestJSON, url string) *corev1.ConfigMap {
 	t.Helper()
+	manifestJSON = withCompatibleAntreaUI(manifestJSON)
 	cm := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{Name: "pod-counter-cm", Namespace: "antrea-ui", ResourceVersion: manifestJSON + url},
 		Data:       map[string]string{manifestFileName: manifestJSON},

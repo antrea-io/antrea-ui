@@ -66,7 +66,7 @@ NPM_REGISTRY ?=
 
 .PHONY: build-frontend
 build-frontend:
-	docker build --pull -t antrea/antrea-ui-frontend:$(DOCKER_IMG_VERSION) -f build/frontend.dockerfile --build-arg GO_VERSION=$(GO_VERSION) $(if $(NPM_REGISTRY),--build-arg NPM_REGISTRY=$(NPM_REGISTRY)) .
+	docker build --pull -t antrea/antrea-ui-frontend:$(DOCKER_IMG_VERSION) -f build/frontend.dockerfile --build-arg GO_VERSION=$(GO_VERSION) --build-arg ANTREA_UI_VERSION=$(VERSION) $(if $(NPM_REGISTRY),--build-arg NPM_REGISTRY=$(NPM_REGISTRY)) .
 	docker tag antrea/antrea-ui-frontend:$(DOCKER_IMG_VERSION) antrea/antrea-ui-frontend
 
 .PHONY: build-backend
