@@ -73,8 +73,9 @@ export interface EdgeSelection {
 export type EdgeExtraRenderer = (selection: EdgeSelection) => Node | null;
 
 /** A single column of the flow list table. `render` may return a Lit template as well as a
- * string — the built-in endpoint columns do, to mark a withheld cell — so a plugin returning a
- * plain string keeps working unchanged. */
+ * string — the built-in endpoint columns do, for an endpoint shown by name (its address goes on a
+ * second line) as well as to mark a withheld cell — so a plugin returning a plain string keeps
+ * working unchanged. */
 export interface FlowTableColumn {
     key: string;
     label: string;
@@ -207,11 +208,11 @@ function workloadShortName(id: string): string { return id.split('/').pop() ?? i
  *                         workload, so a box labelled `ns-c` would read as a workload called
  *                         `ns-c`.
  * - `undisclosed`       — a peer inside the cluster whose namespace was cleared too, which
- *                         happens only on a denied connection. One per identified counterpart
- *                         workload, never one shared node: a shared node would assert that every
- *                         denied flow reaching it went to the same place, which is false and
- *                         unknowable, and a force layout would pull the one thing nobody can see
- *                         into the centre of the graph.
+ *                         happens only for the destination of a denied connection. One per
+ *                         identified counterpart workload, never one shared node: a shared node
+ *                         would assert that every denied flow reaching it went to the same place,
+ *                         which is false and unknowable, and a force layout would pull the one
+ *                         thing nobody can see into the centre of the graph.
  */
 type NodeKind = 'workload' | 'external' | 'undisclosedNamespace' | 'undisclosed';
 
@@ -222,7 +223,7 @@ interface WorkloadNode {
     kind: NodeKind;
     /** The second line of the label. The namespace for a workload, and for a collapsed form the
      * distinct peer addresses behind it - a count that leaks nothing, since those addresses are
-     * already in the records the client holds (redactFlow never touches Flow.IP). */
+     * already in the records the client holds (addresses are kept at the Flow tier). */
     detail: string;
     /** Distinct peer addresses collapsed into this node, which `detail` is derived from once the
      * graph is complete. Deliberately not a workload or Pod count: it is a lower bound, it
@@ -271,12 +272,12 @@ function describeEndpoint(flow: Flow, side: 'source' | 'destination'): EndpointD
     const namespace = isSource ? k8s.sourcePodNamespace : k8s.destinationPodNamespace;
     const address = isSource ? flow.ip.source : flow.ip.destination;
     if (endpointRedacted(disclosure)) {
-        // The namespace survives only for an allowed connection: redactFlow clears it as well
-        // when the connection was denied, which is what splits the two collapsed forms. One real
-        // namespace can therefore appear twice in a graph - under its name for its allowed
-        // flows, among the anonymous nodes for its denied ones - and must not be merged back by
-        // correlating addresses, which would reconstruct the IP-to-namespace map redaction
-        // exists to prevent.
+        // The namespace survives, except for the destination of a denied connection the client
+        // initiated: it is cleared there as well, which is what splits the two collapsed forms.
+        // One real namespace can therefore appear twice in a graph - under its name for its
+        // allowed flows, among the anonymous nodes for its denied ones - and must not be merged
+        // back by correlating addresses, which would reconstruct the IP-to-namespace map
+        // redaction exists to prevent.
         return namespace
             ? { kind: 'undisclosedNamespace', namespace, address }
             : { kind: 'undisclosed', address };
@@ -386,14 +387,17 @@ function buildGraph(entries: FlowEntry[]): GraphData {
         // information because the name went missing would lose the one field redaction
         // deliberately preserved - including the colour edgeRole gives the edge. The raw-name
         // sets stay keyed on the name, since there is no name to link to.
-        // Each policy's identity follows its own side's tier: the ingress policy is evaluated on
-        // the destination, the egress policy on the source.
-        const ingressInfo = formatPolicyInfo(flow.k8s.ingressNetworkPolicyName, flow.k8s.ingressNetworkPolicyRuleAction, flow.k8s.destinationDisclosure);
+        // The tier used for a policy is that of the side it is evaluated on: the destination for
+        // an ingress policy, the source for an egress one. That is right for a Namespaced policy,
+        // whose identity follows its Namespace. A cluster-scoped policy's identity follows the
+        // cluster segment instead, so its name can be withheld on an endpoint disclosed in full:
+        // formatPolicyInfo takes the policy's type for that.
+        const ingressInfo = formatPolicyInfo(flow.k8s.ingressNetworkPolicyName, flow.k8s.ingressNetworkPolicyRuleAction, flow.k8s.destinationDisclosure, flow.k8s.ingressNetworkPolicyType);
         if (ingressInfo) {
             edge.ingressPolicies.set(ingressInfo, flow.k8s.ingressNetworkPolicyRuleAction);
             if (flow.k8s.ingressNetworkPolicyName) edge.ingressPolicyNames.add(flow.k8s.ingressNetworkPolicyName);
         }
-        const egressInfo = formatPolicyInfo(flow.k8s.egressNetworkPolicyName, flow.k8s.egressNetworkPolicyRuleAction, flow.k8s.sourceDisclosure);
+        const egressInfo = formatPolicyInfo(flow.k8s.egressNetworkPolicyName, flow.k8s.egressNetworkPolicyRuleAction, flow.k8s.sourceDisclosure, flow.k8s.egressNetworkPolicyType);
         if (egressInfo) {
             edge.egressPolicies.set(egressInfo, flow.k8s.egressNetworkPolicyRuleAction);
             if (flow.k8s.egressNetworkPolicyName) edge.egressPolicyNames.add(flow.k8s.egressNetworkPolicyName);
@@ -601,8 +605,8 @@ function sortValue(entry: FlowEntry, field: SortField): string | number {
         case 'destPort': return flow.transport.destinationPort;
         case 'bytesFwd': return flow.stats.octetTotalCount;
         case 'bytesRev': return flow.reverseStats.octetTotalCount;
-        case 'ingressPolicy': return formatPolicyInfo(flow.k8s.ingressNetworkPolicyName, flow.k8s.ingressNetworkPolicyRuleAction, flow.k8s.destinationDisclosure) || '-';
-        case 'egressPolicy': return formatPolicyInfo(flow.k8s.egressNetworkPolicyName, flow.k8s.egressNetworkPolicyRuleAction, flow.k8s.sourceDisclosure) || '-';
+        case 'ingressPolicy': return formatPolicyInfo(flow.k8s.ingressNetworkPolicyName, flow.k8s.ingressNetworkPolicyRuleAction, flow.k8s.destinationDisclosure, flow.k8s.ingressNetworkPolicyType) || '-';
+        case 'egressPolicy': return formatPolicyInfo(flow.k8s.egressNetworkPolicyName, flow.k8s.egressNetworkPolicyRuleAction, flow.k8s.sourceDisclosure, flow.k8s.egressNetworkPolicyType) || '-';
         case 'flowType': return flow.k8s.flowType;
     }
 }
@@ -666,8 +670,8 @@ const BASE_COLUMNS: (FlowTableColumn & { field?: SortField })[] = [
     { key: 'destPort', field: 'destPort', label: 'Dest Port', render: e => String(e.flow.transport.destinationPort) },
     { key: 'bytesFwd', field: 'bytesFwd', label: 'Bytes (Fwd)', render: e => formatBytes(e.flow.stats.octetTotalCount) },
     { key: 'bytesRev', field: 'bytesRev', label: 'Bytes (Rev)', render: e => formatBytes(e.flow.reverseStats.octetTotalCount) },
-    { key: 'ingressPolicy', field: 'ingressPolicy', label: 'Ingress Policy', render: e => formatPolicyInfo(e.flow.k8s.ingressNetworkPolicyName, e.flow.k8s.ingressNetworkPolicyRuleAction, e.flow.k8s.destinationDisclosure) || '-' },
-    { key: 'egressPolicy', field: 'egressPolicy', label: 'Egress Policy', render: e => formatPolicyInfo(e.flow.k8s.egressNetworkPolicyName, e.flow.k8s.egressNetworkPolicyRuleAction, e.flow.k8s.sourceDisclosure) || '-' },
+    { key: 'ingressPolicy', field: 'ingressPolicy', label: 'Ingress Policy', render: e => formatPolicyInfo(e.flow.k8s.ingressNetworkPolicyName, e.flow.k8s.ingressNetworkPolicyRuleAction, e.flow.k8s.destinationDisclosure, e.flow.k8s.ingressNetworkPolicyType) || '-' },
+    { key: 'egressPolicy', field: 'egressPolicy', label: 'Egress Policy', render: e => formatPolicyInfo(e.flow.k8s.egressNetworkPolicyName, e.flow.k8s.egressNetworkPolicyRuleAction, e.flow.k8s.sourceDisclosure, e.flow.k8s.egressNetworkPolicyType) || '-' },
     { key: 'flowType', field: 'flowType', label: 'Flow Type', render: e => flowTypeLabel[e.flow.k8s.flowType as FlowType] ?? 'Unknown' },
 ];
 
@@ -1452,10 +1456,9 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
      *
      * Deliberately not intersected with the namespaces this user may read Kubernetes objects in,
      * the way it was while this control doubled as a scope. Those are a different grant from
-     * flows/identity, and after per-user redaction the data is itself the authorization
-     * boundary: a namespace can only appear on a record at all if the Flow Aggregator already
-     * decided this user may identify it, so re-checking could only wrongly hide a legitimate
-     * option.
+     * flows/identity, and the records are already disclosed per user: a namespace appears on a
+     * record only where the Flow Aggregator chose to disclose it to this user, so re-checking
+     * could only wrongly hide a legitimate option.
      */
     private get _availableNs(): string[] {
         const ns = new Set<string>();

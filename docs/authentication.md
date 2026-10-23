@@ -208,12 +208,14 @@ Every request also names a **scope**: either `clusterWide=true` or a single
 `observedNamespace`, never both. FA authorizes the stream against that scope
 with the caller's Kubernetes RBAC on the virtual `flows.observability.antrea.io`
 resource — `watch` for the SSE stream, since it always follows — and resolves
-every endpoint of every record to a disclosure tier (full identity, identity
-only, or no identity at all) relative to what the caller may see there. An
+every endpoint of every record to a disclosure tier (full, identity, or flow)
+relative to what the caller may see there. An
 endpoint is disclosed in full when its Namespace is in the requested scope, or
 when the caller holds the stream's own verb (`watch`) on `flows` in that
 Namespace; a caller holding only `get` on the `flows/identity` subresource there
-sees it at the identity tier, and one holding neither sees no identity at all.
+sees it at the identity tier, and one holding neither sees it at the flow tier:
+the addresses and the Namespace, but no Pod, except that the Namespace of the
+destination of a denied connection is withheld too.
 So a caller with `flows` cluster-wide sees the same peers in full whether it
 asks for the whole cluster or for a single Namespace, and the `flows` rule alone
 is enough — `flows/identity` is only for being recognizable in records the

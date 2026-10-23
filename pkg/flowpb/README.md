@@ -27,7 +27,7 @@ for f in flow.pb.go service.pb.go service_grpc.pb.go; do
 done
 ```
 
-The current copies are from antrea-io/antrea@4716546 (antrea-io/antrea#8471).
+The current copies are from antrea-io/antrea@95b85ee (antrea-io/antrea#8491).
 They carry antrea-io/antrea#8276, which added `GetFlowsRequest.cluster_wide`,
 `GetFlowsRequest.namespaces`, `FlowKubernetes.source_disclosure`,
 `FlowKubernetes.destination_disclosure` and the `EndpointDisclosure` enum,
@@ -35,4 +35,6 @@ antrea-io/antrea#8432, which added `GetFlowsRequest.resume`,
 `GetFlowsResponse.resume_token` and the `ResumeToken` message, and
 antrea-io/antrea#8471, which changed when an endpoint is disclosed in full (the
 client holds the stream's own verb on `flows` in the endpoint's Namespace) and
-so only the `EndpointDisclosure` comments.
+so only the `EndpointDisclosure` comments, and antrea-io/antrea#8491, which limits the
+Namespace withheld at the Flow tier to the destination of a denied connection the client
+initiated, again only in the `EndpointDisclosure` comments.

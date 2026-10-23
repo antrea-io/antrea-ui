@@ -36,6 +36,7 @@ interface FlowOverrides {
     dstPod?: string;
     ingressPolicy?: string;
     ingressAction?: NetworkPolicyRuleAction;
+    ingressPolicyType?: NetworkPolicyType;
     egressPolicy?: string;
     egressAction?: NetworkPolicyRuleAction;
     /** Part of connectionKey, so two records differing only here are two connections. */
@@ -79,7 +80,7 @@ function makeFlow(overrides: FlowOverrides = {}): Flow {
             destinationServicePort: 0,
             destinationServicePortName: overrides.destService ?? '',
             destinationServiceUid: '',
-            ingressNetworkPolicyType: overrides.ingressPolicy ? NetworkPolicyType.K8s : NetworkPolicyType.Unspecified,
+            ingressNetworkPolicyType: overrides.ingressPolicyType ?? (overrides.ingressPolicy ? NetworkPolicyType.K8s : NetworkPolicyType.Unspecified),
             ingressNetworkPolicyNamespace: '',
             ingressNetworkPolicyName: overrides.ingressPolicy ?? '',
             ingressNetworkPolicyUid: '',
@@ -612,15 +613,16 @@ describe('AntreaFlowVisibilityPage — observed-namespace selector', () => {
     test('an unchanged URL does not tell the host', async () => {
         let events = 0;
         const onEvent = () => { events += 1; };
-        // On the document, and before the page mounts: the page rewrites its URL while it settles
-        // on a scope, and the event is composed, so it reaches here from inside the shadow root.
+        // On the document, since the event is composed and so reaches here from inside the shadow
+        // root.
         document.addEventListener(SCOPE_CHANGE_EVENT, onEvent);
         try {
             const page = await mount(async () => sseResponse([]), {
                 search: '/?namespace=default',
                 flowAccess: () => flowAccessFixture(),
             });
-            await page.updateComplete;
+            // Picking the scope already in force writes the same URL again.
+            await chooseScope(page, 'default');
             expect(events).toBe(0);
         } finally {
             document.removeEventListener(SCOPE_CHANGE_EVENT, onEvent);
@@ -1310,11 +1312,15 @@ describe('AntreaFlowVisibilityPage — the scope in the URL', () => {
             page.locationSearch = '?namespace=ns-a';
             await page.updateComplete;
 
+            // Taking the URL again would dispatch the scope again: only the pick may be seen.
+            const seen: string[] = [];
+            page.addEventListener(SCOPE_CHOSEN_EVENT, e => seen.push((e as CustomEvent<ScopeChosenDetail>).detail.scope));
             await chooseScope(page, 'ns-b');
             page.locationSearch = '?namespace=ns-b';
             await page.updateComplete;
             await vi.advanceTimersByTimeAsync(0);
 
+            expect(seen).toEqual(['ns-b']);
             expect(streamCalls(fetchMock)).toHaveLength(2);
             expect(scopeValue(page)).toBe('ns-b');
         });
@@ -1677,7 +1683,7 @@ describe('AntreaFlowVisibilityPage — filters, sort, text filter, pause/resume,
 
     // The cell of a withheld endpoint reads "ns-z/<hidden>", so that is where it sorts: not by
     // the address it also carries, which is not the text on screen.
-    test('Source and Destination sort by what the cell shows for a withheld endpoint', async () => {
+    test('Source sorts by what the cell shows for a withheld endpoint', async () => {
         const flows = [
             makeFlow({ srcNs: 'ns-z', srcPod: '', srcIP: '10.0.0.1', srcDisclosure: EndpointDisclosure.Flow, dstPod: 'm-hidden' }),
             makeFlow({ srcNs: 'ns-a', srcPod: 'x', srcIP: '10.0.0.2', dstPod: 'm-first' }),
@@ -2191,6 +2197,20 @@ describe('AntreaFlowVisibilityPage — disclosure in the flow list', () => {
         return row.querySelectorAll('td')[index];
     }
 
+    // A cluster-scoped policy always has a name, so an empty one is withheld even on an endpoint
+    // disclosed in full, where a Namespaced policy's empty name is not.
+    test('an empty cluster-scoped policy name is marked as hidden on a fully disclosed endpoint', async () => {
+        const cluster = await rowFor(makeFlow({
+            ingressPolicy: '', ingressPolicyType: NetworkPolicyType.ACNP, ingressAction: NetworkPolicyRuleAction.Drop,
+        }));
+        expect(cluster.textContent).toContain('Dropped (policy hidden)');
+        const namespaced = await rowFor(makeFlow({
+            ingressPolicy: '', ingressPolicyType: NetworkPolicyType.ANP, ingressAction: NetworkPolicyRuleAction.Drop,
+        }));
+        expect(namespaced.textContent).toContain('Dropped');
+        expect(namespaced.textContent).not.toContain('policy hidden');
+    });
+
     // Identity is deliberately indistinguishable from Full: the whole difference between them is
     // Node placement and the Antrea Egress, and this UI renders neither.
     test('an Identity-tier peer is not marked as redacted', async () => {
@@ -2209,9 +2229,9 @@ describe('AntreaFlowVisibilityPage — disclosure in the flow list', () => {
         expect(dst.querySelector('.redacted')!.getAttribute('title')).toContain('watch on flows or get on flows/identity in ns-c');
     });
 
-    // The denied connection: redactFlow clears the peer's namespace too, so only the address is
+    // The destination of a denied connection: its namespace is cleared too, so only the address is
     // left — and there is no namespace to name, so no tooltip either.
-    test('a Flow-tier peer on a denied connection shows the address alone, with no tooltip', async () => {
+    test('a Flow-tier destination on a denied connection shows the address alone, with no tooltip', async () => {
         const row = await rowFor(makeFlow({
             dstDisclosure: EndpointDisclosure.Flow, dstNs: '', dstPod: '', dstIP: '10.0.0.9',
             ingressPolicy: '', ingressAction: NetworkPolicyRuleAction.Drop,
@@ -2302,7 +2322,7 @@ describe('AntreaFlowVisibilityPage — collapsed peers in the service map', () =
         expect(workloads[0].id).toBe('default/client');
     });
 
-    // Form B: a denied connection costs the peer its namespace too, so there is nothing left to
+    // Form B: a denied connection costs its destination the namespace too, so there is nothing left to
     // group by but the identified counterpart — one leaf per source workload, never one shared
     // node, which would assert that every denied flow went to the same place.
     test('a fully anonymous peer collapses into one leaf per source workload', async () => {

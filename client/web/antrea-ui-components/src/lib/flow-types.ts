@@ -27,6 +27,18 @@ export enum NetworkPolicyType {
     K8s = 1,
     ANP = 2,
     ACNP = 3,
+    K8sCNP = 4,
+}
+
+/** Whether a policy belongs to the cluster rather than to a Namespace. Its identity is disclosed
+ * on its own terms (a grant cluster-wide), not with the endpoint it was evaluated on. As in the
+ * Flow Aggregator, any type that is neither unspecified (no policy was evaluated) nor known to be
+ * Namespaced counts as cluster-scoped, so a type added later is treated as withheld, not shown. */
+export function isClusterScopedPolicy(type: NetworkPolicyType | undefined): boolean {
+    return type !== undefined
+        && type !== NetworkPolicyType.Unspecified
+        && type !== NetworkPolicyType.K8s
+        && type !== NetworkPolicyType.ANP;
 }
 
 export enum NetworkPolicyRuleAction {
@@ -201,16 +213,19 @@ const hiddenPolicyActionLabel: Record<NetworkPolicyRuleAction, string> = {
  * Renders one of the two policy columns, keyed on the rule *action* rather than on the policy
  * name.
  *
- * | Name  | Action       | Tier | Means                             | Renders as                |
- * | ----- | ------------ | ---- | --------------------------------- | ------------------------- |
- * | set   | any          | any  | nothing withheld                  | `my-policy (Drop)`        |
- * | empty | not NoAction | Flow | withheld, but its effect is known | `Dropped (policy hidden)` |
- * | empty | not NoAction | else | never recorded, not withheld      | `Dropped`                 |
- * | empty | NoAction     | any  | no policy matched at all          | `` (the caller renders -) |
+ * | Name  | Action       | Tier or scope        | Means                             | Renders as                |
+ * | ----- | ------------ | -------------------- | --------------------------------- | ------------------------- |
+ * | set   | any          | any                  | nothing withheld                  | `my-policy (Drop)`        |
+ * | empty | not NoAction | cluster-scoped       | withheld, but its effect is known | `Dropped (policy hidden)` |
+ * | empty | not NoAction | Flow                 | withheld, but its effect is known | `Dropped (policy hidden)` |
+ * | empty | not NoAction | else                 | never recorded, not withheld      | `Dropped`                 |
+ * | empty | NoAction     | any                  | no policy matched at all          | `` (the caller renders -) |
  *
  * `disclosure` is the tier of the endpoint this policy was evaluated on - the destination for an
  * ingress policy, the source for an egress one. Omitting it reads as Full, as endpointRedacted
- * does: nothing was withheld.
+ * does: nothing was withheld. `type` tells a cluster-scoped policy apart: its identity follows
+ * the cluster segment rather than the endpoint, and it always has a name, so an empty name means
+ * it was withheld whatever the endpoint's tier.
  *
  * The last row is not a redaction artefact and must not be marked as one: a policy that matched
  * always carries an action, so an empty name with NoAction was already empty before redaction
@@ -221,14 +236,16 @@ export function formatPolicyInfo(
     name: string,
     action: NetworkPolicyRuleAction,
     disclosure?: EndpointDisclosure,
+    type?: NetworkPolicyType,
 ): string {
     const actionStr = networkPolicyRuleActionLabel[action];
     if (name) return actionStr ? `${name} (${actionStr})` : name;
-    // An empty name is only evidence of redaction at the Flow tier. Above it the Flow Aggregator
-    // may simply never have had the name - its own proto warns that an endpoint can lack a field
+    // An empty name is evidence of redaction at the Flow tier. Above it the Flow Aggregator may
+    // simply never have had the name - its own proto warns that an endpoint can lack a field
     // while still reporting full disclosure - and calling that "hidden" would blame redaction
-    // for a gap it did not cause. The action is still worth showing either way.
-    const withheld = endpointRedacted(disclosure);
+    // for a gap it did not cause. A cluster-scoped policy always has a name, so there an empty
+    // one is withheld at any tier. The action is still worth showing either way.
+    const withheld = endpointRedacted(disclosure) || isClusterScopedPolicy(type);
     const hidden = hiddenPolicyActionLabel[action];
     if (!hidden) return "";
     return withheld ? `${hidden} (policy hidden)` : hidden;
@@ -242,10 +259,11 @@ export function formatEndpoint(namespace: string, podName: string, ip: string): 
 }
 
 /** Whether the Flow Aggregator withheld this endpoint's Kubernetes identity. Only the Flow tier
- * withholds anything this UI renders: the entire Full-over-Identity difference is Node placement
- * and the Antrea Egress, neither of which appears anywhere in the list, the map or the edge
- * details. So there are two visual states, not three - revisit only if a Node or Egress field is
- * ever surfaced. An absent marker reads as Full, which is the enum's zero value. */
+ * withholds anything of an endpoint that this UI renders: the entire Full-over-Identity difference
+ * is Node placement and the Antrea Egress, neither of which appears anywhere in the list, the map
+ * or the edge details. So there are two visual states, not three - revisit only if a Node or
+ * Egress field is ever surfaced. (The identity of a cluster-scoped policy is not part of an
+ * endpoint's disclosure.) An absent marker reads as Full, which is the enum's zero value. */
 export function endpointRedacted(disclosure: EndpointDisclosure | undefined): boolean {
     return disclosure === EndpointDisclosure.Flow;
 }
@@ -273,11 +291,13 @@ export interface EndpointView {
 /**
  * How to render one endpoint of a flow.
  *
- * At the Flow tier the namespace survives only for an allowed connection: redactFlow clears it
- * as well when the connection was denied, to close a Pod-CIDR enumeration oracle. Those are the
- * two withheld forms, and both are marked, so a cell does not read as missing data and get filed
- * as a bug. The address is never redacted at any tier - redactFlow rewrites only the Kubernetes
- * sub-message - so there is always a label to fall back to.
+ * At the Flow tier the namespace survives, except for the destination of a denied connection the
+ * client initiated: it is cleared there as well, to close a Pod-CIDR enumeration oracle. Those
+ * are the two withheld forms, and both are marked, so a cell does not read as missing data and
+ * get filed as a bug. Addresses are kept at the Flow tier, so there is always a label to fall
+ * back to. See "What a client sees of a flow" in the Antrea documentation of the Flow
+ * Aggregator's API:
+ * https://github.com/antrea-io/antrea/blob/95b85ee13cdd5dc7502c54b3c5cf307d8c6e066d/docs/network-flow-visibility.md#what-a-client-sees-of-a-flow
  */
 export function endpointView(
     disclosure: EndpointDisclosure | undefined,
@@ -286,10 +306,11 @@ export function endpointView(
     ip: string,
     external = false,
 ): EndpointView {
-    // An endpoint outside the cluster reaches the Flow tier too, because tierFor resolves an
-    // endpoint with no namespace that way, but nothing was withheld from it: it never had a
-    // Kubernetes identity to withhold. Upstream's fix for telling the two apart is the flow
-    // type, which is never redacted. Marking it would claim something is hidden that is not.
+    // An endpoint outside the cluster is at the Flow tier too, since an endpoint with no
+    // namespace is, but nothing was withheld from it: it never had a Kubernetes identity to
+    // withhold. The flow type is not redacted so that a client can tell the two apart, as the
+    // Antrea documentation says (see above). Marking it would claim something is hidden that is
+    // not.
     if (external || !endpointRedacted(disclosure)) {
         const text = formatEndpoint(namespace, podName, ip);
         // Only when the name is what is shown: formatEndpoint falls back to the address, and

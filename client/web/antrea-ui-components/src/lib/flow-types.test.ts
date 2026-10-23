@@ -255,6 +255,26 @@ describe('formatPolicyInfo', () => {
         expect(formatPolicyInfo('', NetworkPolicyRuleAction.Drop, EndpointDisclosure.Identity)).toBe('Dropped');
     });
 
+    // A cluster-scoped policy always has a name, and its identity is disclosed on its own terms, so
+    // an empty one is withheld whatever the endpoint's tier. A Namespaced policy is not.
+    test('an empty cluster-scoped policy name is withheld at any tier', () => {
+        for (const type of [NetworkPolicyType.ACNP, NetworkPolicyType.K8sCNP]) {
+            for (const tier of [EndpointDisclosure.Full, EndpointDisclosure.Identity, EndpointDisclosure.Flow, undefined]) {
+                expect(formatPolicyInfo('', NetworkPolicyRuleAction.Drop, tier, type)).toBe('Dropped (policy hidden)');
+            }
+        }
+        expect(formatPolicyInfo('', NetworkPolicyRuleAction.Drop, EndpointDisclosure.Full, NetworkPolicyType.ANP)).toBe('Dropped');
+        expect(formatPolicyInfo('', NetworkPolicyRuleAction.Drop, EndpointDisclosure.Full, NetworkPolicyType.K8s)).toBe('Dropped');
+        // A type this UI does not know is treated as cluster-scoped, as the Flow Aggregator does.
+        expect(formatPolicyInfo('', NetworkPolicyRuleAction.Drop, EndpointDisclosure.Full, 99 as NetworkPolicyType))
+            .toBe('Dropped (policy hidden)');
+    });
+
+    test('a cluster-scoped policy with a name, or with no action, is not marked', () => {
+        expect(formatPolicyInfo('acnp-1', NetworkPolicyRuleAction.Drop, EndpointDisclosure.Full, NetworkPolicyType.ACNP)).toBe('acnp-1 (Drop)');
+        expect(formatPolicyInfo('', NetworkPolicyRuleAction.NoAction, EndpointDisclosure.Full, NetworkPolicyType.ACNP)).toBe('');
+    });
+
     // A caller that cannot say reads as Full, as endpointRedacted does.
     test('an omitted tier is read as Full', () => {
         expect(formatPolicyInfo('', NetworkPolicyRuleAction.Drop)).toBe('Dropped');
@@ -305,7 +325,7 @@ describe('endpointView', () => {
             .toEqual({ text: 'ns-b/db-abc12', detail: '10.0.0.5', redacted: false });
     });
 
-    // The Flow tier on an allowed connection: the namespace survives, the workload does not, and
+    // The Flow tier where the namespace survives: the workload does not, and
     // the tooltip can name the grant that would disclose it.
     test('a withheld workload keeps its namespace and gets an actionable tooltip', () => {
         const view = endpointView(EndpointDisclosure.Flow, 'ns-c', '', '10.0.0.7');
@@ -314,8 +334,8 @@ describe('endpointView', () => {
         expect(view.tooltip).toContain('watch on flows or get on flows/identity in ns-c');
     });
 
-    // The denied-connection case: redactFlow clears the namespace too, to close a Pod-CIDR
-    // enumeration oracle. There is no namespace to name, so there is nothing actionable to say.
+    // The denied-connection case: the namespace is cleared too, to close a Pod-CIDR enumeration
+    // oracle. There is no namespace to name, so there is nothing actionable to say.
     test('a withheld endpoint with no namespace falls back to the address, with no tooltip', () => {
         const view = endpointView(EndpointDisclosure.Flow, '', '', '10.0.0.9');
         expect(view).toEqual({ text: '10.0.0.9', redacted: true });
@@ -343,9 +363,9 @@ describe('destinationServiceView', () => {
 });
 
 describe('external endpoints are not marked as redacted', () => {
-    // An out-of-cluster endpoint reaches the Flow tier because tierFor resolves an endpoint with
-    // no namespace that way, but nothing was withheld from it. Upstream's documented way to tell
-    // the two apart is the flow type, which is never redacted.
+    // An out-of-cluster endpoint is at the Flow tier because an endpoint with no namespace is,
+    // but nothing was withheld from it. The documented way to tell the two apart is the flow
+    // type, which is not redacted.
     it('renders an external endpoint plainly at the Flow tier', () => {
         const v = endpointView(EndpointDisclosure.Flow, '', '', '10.89.0.2', true);
         expect(v.redacted).toBe(false);
