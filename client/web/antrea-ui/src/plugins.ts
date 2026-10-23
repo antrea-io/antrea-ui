@@ -37,8 +37,9 @@
 // It must exist before any plugin's `import()` below runs, since a plugin registers by calling
 // an SDK function during its own module evaluation.
 
-// Only the three functions needed, from their own entry points: the package's default one pulls
-// all of node-semver (Range, Comparator, every coercion path) into the browser bundle.
+// Only the three functions needed, from their own entry points: the package's default one also
+// pulls in the functions this does not use (coerce, inc, diff, ...). satisfies and validRange
+// still bring in Range and Comparator.
 import satisfies from 'semver/functions/satisfies';
 import valid from 'semver/functions/valid';
 import validRange from 'semver/ranges/valid';
@@ -203,9 +204,10 @@ export interface PluginManifest {
     // fails it never reaches this index at all.
     bundleSha256?: string;
     // compatibleAntreaUI is a node-semver range of the full frontend versions (prerelease
-    // suffix included) that may load this plugin. The backend guarantees it is present and well-formed
-    // (see pkg/plugins/manifest.go); this host evaluates it against its own build-time version
-    // before fetching any of the plugin's code (see isCompatible).
+    // suffix included) that may load this plugin. The backend guarantees it is present and within
+    // a narrow subset of node-semver's syntax (see pkg/plugins/manifest.go); this host evaluates it
+    // against its own build-time version before fetching any of the plugin's code (see
+    // isCompatible).
     compatibleAntreaUI: string;
     federation?: {
         remoteEntry: string;
@@ -236,9 +238,9 @@ export function incompatiblePluginMessage(p: IncompatiblePlugin): string {
 }
 
 // Reports whether range is a usable compatibleAntreaUI value. validRange('') is '*' in node-semver,
-// which would admit every shell; the backend rejects an empty range (pkg/plugins/manifest.go), so
-// this must not accept one either. src/testdata/compatible_antrea_ui.json pins the two
-// implementations to the same answer.
+// which would admit every shell, so an empty range is rejected here as well. The backend accepts a
+// narrower grammar than node-semver (pkg/plugins/manifest.go), so every range it lets through
+// parses here; src/testdata/compatible_antrea_ui.json pins that.
 export function isValidRange(range: unknown): range is string {
     return typeof range === 'string' && range.trim() !== '' && validRange(range) !== null;
 }

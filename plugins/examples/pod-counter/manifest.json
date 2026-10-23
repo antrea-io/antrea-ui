@@ -1,6 +1,5 @@
 {
   "name": "pod-counter",
   "version": "0.1.0",
-  "entry": "index.js",
-  "compatibleAntreaUI": ">=0.8.0-dev <0.9.0"
+  "entry": "index.js"
 }

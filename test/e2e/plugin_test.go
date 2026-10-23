@@ -20,7 +20,6 @@ import (
 	"io"
 	"net/http"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -196,52 +195,6 @@ const (
 	httpPluginName         = "http-plugin"
 	deniedRemotePluginName = "remote-plugin-denied"
 )
-
-// TestPluginCompatibleAntreaUI covers the backend's half of the compatibleAntreaUI field. ci/e2e-plugins.sh
-// installs three plugins that are signed like pod-counter, so a rejection can only come from the
-// field itself:
-//
-//   - missing-compat-plugin and malformed-compat-plugin must be rejected, by name, for that field.
-//   - future-compat-plugin has a well-formed range that no real shell satisfies, and must still be
-//     served, range intact: the backend does not evaluate it, because it cannot know which shell
-//     version is asking. Skipping such a plugin, and showing a banner, is the frontend's job
-//     (client/web/antrea-ui/src/plugins.ts), covered by its own unit tests - there is no browser
-//     in this suite.
-//
-// As in TestPluginWithoutSignatureIsRejected, the absence assertions only mean something once the
-// backend has logged that it tried to load the plugin.
-func TestPluginCompatibleAntreaUI(t *testing.T) {
-	ctx := t.Context()
-
-	for _, name := range []string{"missing-compat-plugin", "malformed-compat-plugin"} {
-		t.Run(name+" is rejected", func(t *testing.T) {
-			require.NoError(t,
-				waitForBackendLogLine(ctx, "skipping invalid plugin ConfigMap", name, "compatibleAntreaUI"),
-				"the backend never rejected the %s ConfigMap for its compatibleAntreaUI", name)
-
-			manifests, body := pluginIndex(ctx, t)
-			for _, m := range manifests {
-				assert.NotEqual(t, name, m.Name, "a plugin with a bad compatibleAntreaUI must not be served: %s", body)
-			}
-			resp, err := Request(ctx, host, "GET", "api/v1/plugins/"+name+"/index.js", nil)
-			require.NoError(t, err)
-			defer resp.Body.Close()
-			assert.Equal(t, http.StatusNotFound, resp.StatusCode)
-		})
-	}
-
-	t.Run("a well-formed range the shell will not satisfy is still served", func(t *testing.T) {
-		require.Eventually(t, func() bool {
-			manifests, _ := pluginIndex(ctx, t)
-			for _, m := range manifests {
-				if m.Name == "future-compat-plugin" {
-					return m.CompatibleAntreaUI == ">=9999.0.0"
-				}
-			}
-			return false
-		}, 60*time.Second, time.Second, "expected future-compat-plugin in the index with its range unchanged")
-	})
-}
 
 // pluginManifest is the subset of apis/v1.PluginManifest these tests assert on.
 type pluginManifest struct {

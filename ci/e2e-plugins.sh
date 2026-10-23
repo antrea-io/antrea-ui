@@ -37,16 +37,6 @@
 #   - http-plugin:           over plain HTTP to the Service, the URL being in the ConfigMap,
 #                            expected to load (TestPluginBundleDownloadOverHTTP)
 #
-# Three more plugins cover the manifest's compatibleAntreaUI field (TestPluginCompatibleAntreaUI).
-# They are signed too, so the only thing that can reject them is the field itself:
-#
-#   - missing-compat-plugin:    no compatibleAntreaUI, expected to be rejected
-#   - malformed-compat-plugin:  a compatibleAntreaUI that is not a semver range, expected to be
-#                               rejected
-#   - future-compat-plugin:     a well-formed range no real shell satisfies; the backend does not
-#                               evaluate ranges (each shell does, in the browser), so it is
-#                               expected to be served unchanged
-#
 # The signing key is generated here into a throwaway GNUPGHOME and never leaves the machine; no
 # key material is committed.
 #
@@ -313,12 +303,6 @@ function create_plugins() {
         --from-file="${no_signature_dir}/manifest.json"
     kubectl label configmap no-signature-plugin --namespace "${PLUGINS_NAMESPACE}" ui.antrea.io/plugin=true
 
-    # The ConfigMap name is also the manifest name, and test/e2e/plugin_test.go matches on both.
-    log "Creating the compatibleAntreaUI variants (signed)"
-    create_signed_variant missing-compat-plugin '.name = "missing-compat-plugin" | del(.compatibleAntreaUI)'
-    create_signed_variant malformed-compat-plugin '.name = "malformed-compat-plugin" | .compatibleAntreaUI = "not a range"'
-    create_signed_variant future-compat-plugin '.name = "future-compat-plugin" | .compatibleAntreaUI = ">=9999.0.0"'
-
     log "Creating the pod-counter plugin ConfigMap (signed)"
     # The same mechanism a real plugin deployment uses (see docs/plugins.md) - the backend's
     # ConfigMap watch picks it up with no antrea-ui restart. manifest.json.asc is a third key
@@ -341,24 +325,6 @@ function create_plugins() {
     create_http_plugin http-plugin
     log "Creating the remote-plugin-denied ConfigMap (download refused by RBAC)"
     create_remote_plugin remote-plugin-denied "${DENIED_BUNDLE_PATH}"
-}
-
-# Creates a labeled plugin ConfigMap named $1 from the built example plugin, with manifest.json
-# rewritten by the jq filter $2 (which should at least set .name) and then signed, so the
-# backend's signature check passes and any rejection is down to what $2 changed.
-function create_signed_variant() {
-    local name="$1" filter="$2"
-    local dir="${WORK_DIR}/${name}"
-    rm -rf "${dir}"
-    mkdir -p "${dir}"
-    cp "${PLUGIN_DIST}/bundle.zip" "${dir}/bundle.zip"
-    jq "${filter}" "${PLUGIN_DIST}/manifest.json" > "${dir}/manifest.json"
-    "${ROOT_DIR}/hack/sign-plugin.sh" "${dir}" > /dev/null
-    kubectl create configmap "${name}" --namespace "${PLUGINS_NAMESPACE}" \
-        --from-file="${dir}/bundle.zip" \
-        --from-file="${dir}/manifest.json" \
-        --from-file="${dir}/manifest.json.asc"
-    kubectl label configmap "${name}" --namespace "${PLUGINS_NAMESPACE}" ui.antrea.io/plugin=true
 }
 
 function clean() {

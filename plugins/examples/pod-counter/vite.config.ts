@@ -12,10 +12,33 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { defineConfig } from 'vite';
-import { resolve } from 'path';
+
+// Writes manifest.json into dist with compatibleAntreaUI covering every version of the Antrea UI
+// minor release in the repository's VERSION file (prereleases of its .0 included). This example is
+// only ever built and tested together with the frontend from the same tree, so its range follows
+// the tree instead of being bumped by hand.
+function manifest() {
+  return {
+    name: 'manifest',
+    generateBundle() {
+      const version = readFileSync(resolve(__dirname, '../../../VERSION'), 'utf8').trim().replace(/^v/, '');
+      const match = version.match(/^(\d+)\.(\d+)\./);
+      if (!match) {
+        throw new Error(`cannot parse VERSION "${version}"`);
+      }
+      const [, major, minor] = match;
+      const m = JSON.parse(readFileSync(resolve(__dirname, 'manifest.json'), 'utf8'));
+      m.compatibleAntreaUI = `>=${major}.${minor}.0-0 <${major}.${Number(minor) + 1}.0`;
+      this.emitFile({ type: 'asset', fileName: 'manifest.json', source: JSON.stringify(m, null, 2) + '\n' });
+    },
+  };
+}
 
 export default defineConfig({
+  plugins: [manifest()],
   build: {
     lib: {
       entry: resolve(__dirname, 'src/index.ts'),

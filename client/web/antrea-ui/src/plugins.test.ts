@@ -109,9 +109,13 @@ describe('loadPlugins with an unusable shell version or range', () => {
 });
 
 describe('isValidRange', () => {
-    // The same cases the backend's TestValidateCompatibleAntreaUI runs against its own library.
-    test.each(rangeCases)('$range is valid: $valid', ({ range, valid }) => {
-        expect(isValidRange(range)).toBe(valid);
+    // Every range the backend accepts must parse here too; the backend may reject more.
+    test.each(rangeCases.filter(c => c.valid))('$range is valid', ({ range }) => {
+        expect(isValidRange(range)).toBe(true);
+    });
+
+    test.each(['', '   ', 'not a range', '>='])('%j is not valid', (range) => {
+        expect(isValidRange(range)).toBe(false);
     });
 });
 

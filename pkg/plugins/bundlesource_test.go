@@ -210,8 +210,8 @@ func (f *fakeFetcher) requestPaths() []string {
 }
 
 func remoteManifest(version string, bundle []byte) string {
-	return fmt.Sprintf(`{"name":"pod-counter","version":%q,"entry":"index.js","compatibleAntreaUI":"*","bundleSha256":%q,"bundleSource":{"apiServer":{"path":%q}}}`,
-		version, bundleDigest(bundle), testBundlePath)
+	return withCompatibleAntreaUI(fmt.Sprintf(`{"name":"pod-counter","version":%q,"entry":"index.js","bundleSha256":%q,"bundleSource":{"apiServer":{"path":%q}}}`,
+		version, bundleDigest(bundle), testBundlePath))
 }
 
 // remoteConfigMap is a manifest-only plugin ConfigMap whose manifest is signed by signer.
@@ -322,28 +322,28 @@ func TestRemoteBundleRejections(t *testing.T) {
 		{
 			name: "no digest",
 			cm: func(t *testing.T) *corev1.ConfigMap {
-				return signedCM(t, fmt.Sprintf(`{"name":"pod-counter","entry":"index.js","compatibleAntreaUI":"*","bundleSource":{"apiServer":{"path":%q}}}`, testBundlePath))
+				return signedCM(t, fmt.Sprintf(`{"name":"pod-counter","entry":"index.js","bundleSource":{"apiServer":{"path":%q}}}`, testBundlePath))
 			},
 			want: upsertRejected,
 		},
 		{
 			name: "path of another shape",
 			cm: func(t *testing.T) *corev1.ConfigMap {
-				return signedCM(t, fmt.Sprintf(`{"name":"pod-counter","entry":"index.js","compatibleAntreaUI":"*","bundleSha256":%q,"bundleSource":{"apiServer":{"path":"/api/v1/namespaces/ns/services/svc/proxy"}}}`, bundleDigest(bundle)))
+				return signedCM(t, fmt.Sprintf(`{"name":"pod-counter","entry":"index.js","bundleSha256":%q,"bundleSource":{"apiServer":{"path":"/api/v1/namespaces/ns/services/svc/proxy"}}}`, bundleDigest(bundle)))
 			},
 			want: upsertRejected,
 		},
 		{
 			name: "absolute URL as path",
 			cm: func(t *testing.T) *corev1.ConfigMap {
-				return signedCM(t, fmt.Sprintf(`{"name":"pod-counter","entry":"index.js","compatibleAntreaUI":"*","bundleSha256":%q,"bundleSource":{"apiServer":{"path":"https://evil.example/x"}}}`, bundleDigest(bundle)))
+				return signedCM(t, fmt.Sprintf(`{"name":"pod-counter","entry":"index.js","bundleSha256":%q,"bundleSource":{"apiServer":{"path":"https://evil.example/x"}}}`, bundleDigest(bundle)))
 			},
 			want: upsertRejected,
 		},
 		{
 			name: "no transport",
 			cm: func(t *testing.T) *corev1.ConfigMap {
-				return signedCM(t, fmt.Sprintf(`{"name":"pod-counter","entry":"index.js","compatibleAntreaUI":"*","bundleSha256":%q,"bundleSource":{}}`, bundleDigest(bundle)))
+				return signedCM(t, fmt.Sprintf(`{"name":"pod-counter","entry":"index.js","bundleSha256":%q,"bundleSource":{}}`, bundleDigest(bundle)))
 			},
 			want: upsertRejected,
 		},
@@ -359,7 +359,7 @@ func TestRemoteBundleRejections(t *testing.T) {
 		{
 			name: "entry missing from the bundle",
 			cm: func(t *testing.T) *corev1.ConfigMap {
-				m := fmt.Sprintf(`{"name":"pod-counter","entry":"missing.js","compatibleAntreaUI":"*","bundleSha256":%q,"bundleSource":{"apiServer":{"path":%q}}}`, bundleDigest(bundle), testBundlePath)
+				m := withCompatibleAntreaUI(fmt.Sprintf(`{"name":"pod-counter","entry":"missing.js","bundleSha256":%q,"bundleSource":{"apiServer":{"path":%q}}}`, bundleDigest(bundle), testBundlePath))
 				return signedCM(t, m)
 			},
 			want:      upsertRejected,
