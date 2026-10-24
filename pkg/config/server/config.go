@@ -172,6 +172,9 @@ type SupportBundleExtraSource struct {
 	Name      string
 	HTTPS     *SupportBundleHTTPSSource
 	APIServer *apisv1.APIServerSourceSpec
+	// MaxConcurrent caps how many collections are outstanding against the source at once (see
+	// apisv1.SupportBundleSourceSpec.MaxConcurrent). 0 means no limit.
+	MaxConcurrent int
 }
 
 // SupportBundleHTTPSSource is a source reached directly over HTTPS. Unlike the apiserver variant,
@@ -495,6 +498,9 @@ func validateSupportBundleConfig(c *SupportBundleConfig) error {
 			return fmt.Errorf("supportBundle.extraSources[%d].name %q is not unique", i, source.Name)
 		}
 		names.Insert(source.Name)
+		if source.MaxConcurrent < 0 {
+			return fmt.Errorf("supportBundle.extraSources[%d] (%s) maxConcurrent must not be negative", i, source.Name)
+		}
 		if (source.HTTPS == nil) == (source.APIServer == nil) {
 			return fmt.Errorf("supportBundle.extraSources[%d] (%s) must set exactly one of https and apiServer", i, source.Name)
 		}

@@ -141,10 +141,12 @@ supportBundle:
   # in docs/supportbundle.md. Each entry has a `name` (a DNS-1123 label, unique within the list)
   # and exactly one of `apiServer` (`path`, of the form /apis/<group>/<version>, reached through
   # the Kubernetes apiserver) or `https` (`url`, plus optional `caData`, `serverName` and
-  # `insecureSkipVerify`). Every source is called as antrea-ui-admin, whoever requested the
-  # bundle: an `https` source receives a short-lived token for antrea-ui-admin whose audience is
-  # supportbundle.ui.antrea.io/<name>, so only point it at a service you trust. An `apiServer`
-  # source needs antrea-ui-admin to be granted access to it (see docs/plugins.md).
+  # `insecureSkipVerify`), plus an optional `maxConcurrent`: how many collections may be
+  # outstanding against that one source at once (0, the default, means no limit; 1 for a source
+  # that can only hold one bundle at a time). Every source is called as antrea-ui-admin, whoever
+  # requested the bundle: an `https` source receives a short-lived token for antrea-ui-admin whose
+  # audience is supportbundle.ui.antrea.io/<name>, so only point it at a service you trust. An
+  # `apiServer` source needs antrea-ui-admin to be granted access to it (see docs/plugins.md).
   extraSources: []
   # - name: foo
   #   https:
@@ -155,6 +157,7 @@ supportBundle:
   # - name: bar
   #   apiServer:
   #     path: /apis/bar.example.com/v1alpha1
+  #   maxConcurrent: 1
 
 # Flow Aggregator gRPC integration (live flow visibility in the UI).
 flowAggregator:

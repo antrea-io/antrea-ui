@@ -104,13 +104,13 @@ func TestRegistryAcceptsSupportBundleDeclarations(t *testing.T) {
 		}
 	}
 	r := newTestRegistry(t)
-	r.handleUpsert(t.Context(), newCM(t, "a", `{"apiServer":{"path":"/apis/a.example.com/v1alpha1"}}`))
+	r.handleUpsert(t.Context(), newCM(t, "a", `{"apiServer":{"path":"/apis/a.example.com/v1alpha1"},"maxConcurrent":1}`))
 	// A variant this backend does not know (here, one only operator-configured sources may use)
 	// leaves the plugin loaded, with no recognized variant for the support bundle to collect.
 	r.handleUpsert(t.Context(), newCM(t, "b", `{"https":{"url":"https://b.example.com"}}`))
 
 	assert.Equal(t, []apisv1.PluginManifest{
-		{Name: "a", Version: "0.1.0", Entry: "index.js", CompatibleAntreaUI: testCompatibleAntreaUI, SupportBundle: &apisv1.SupportBundleSourceSpec{APIServer: &apisv1.APIServerSourceSpec{Path: "/apis/a.example.com/v1alpha1"}}},
+		{Name: "a", Version: "0.1.0", Entry: "index.js", CompatibleAntreaUI: testCompatibleAntreaUI, SupportBundle: &apisv1.SupportBundleSourceSpec{APIServer: &apisv1.APIServerSourceSpec{Path: "/apis/a.example.com/v1alpha1"}, MaxConcurrent: 1}},
 		{Name: "b", Version: "0.1.0", Entry: "index.js", CompatibleAntreaUI: testCompatibleAntreaUI, SupportBundle: &apisv1.SupportBundleSourceSpec{}},
 	}, r.Index())
 }
@@ -320,6 +320,11 @@ func TestRegistrySkipsInvalidConfigMaps(t *testing.T) {
 		"supportBundle apiServer path with a dot segment": func(t *testing.T) *corev1.ConfigMap {
 			return withBundle(t,
 				`{"name":"plugin","version":"0.1.0","entry":"index.js","supportBundle":{"apiServer":{"path":"/apis/foo.example.com/v1/.."}}}`,
+				map[string]string{"index.js": "x"})
+		},
+		"supportBundle negative maxConcurrent": func(t *testing.T) *corev1.ConfigMap {
+			return withBundle(t,
+				`{"name":"plugin","version":"0.1.0","entry":"index.js","supportBundle":{"apiServer":{"path":"/apis/foo.example.com/v1"},"maxConcurrent":-1}}`,
 				map[string]string{"index.js": "x"})
 		},
 		"federation remoteEntry file not present": func(t *testing.T) *corev1.ConfigMap {

@@ -18,6 +18,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
@@ -76,9 +77,16 @@ type fakeSource struct {
 	statusResponse func(w http.ResponseWriter, poll int)
 	retryAfter     string
 	payload        []byte
+	// gate, when set, is called before each request is served, without holding mutex, so that it
+	// can block one request without holding up the others. An error fails the request in the
+	// transport, as a canceled request would.
+	gate func(r *http.Request) error
 
 	polls    int
 	requests []recordedRequest
+	// outstanding counts the bundles created and not deleted yet, and maxOutstanding is its peak.
+	outstanding    int
+	maxOutstanding int
 }
 
 func newFakeSource() *fakeSource {
@@ -95,6 +103,8 @@ func (f *fakeSource) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			f.createResponse(w)
 			return
 		}
+		f.outstanding++
+		f.maxOutstanding = max(f.maxOutstanding, f.outstanding)
 		w.Header().Set("Retry-After", f.retryAfter)
 		w.WriteHeader(http.StatusAccepted)
 		_ = json.NewEncoder(w).Encode(apisv1.SupportBundle{ID: f.remoteID, Status: apisv1.SupportBundleStatusCollecting})
@@ -113,6 +123,7 @@ func (f *fakeSource) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet && strings.HasSuffix(path, "/supportbundle/"+f.remoteID+"/download"):
 		_, _ = w.Write(f.payload)
 	case r.Method == http.MethodDelete && strings.HasSuffix(path, "/supportbundle/"+f.remoteID):
+		f.outstanding--
 		w.WriteHeader(http.StatusOK)
 	default:
 		w.WriteHeader(http.StatusNotFound)
@@ -157,7 +168,13 @@ func (f *fakeAPIServer) transport() http.RoundTripper {
 			if strings.HasPrefix(req.URL.Path, prefix+"/") {
 				source.mutex.Lock()
 				source.requests = append(source.requests, r)
+				gate := source.gate
 				source.mutex.Unlock()
+				if gate != nil {
+					if err := gate(req); err != nil {
+						return nil, err
+					}
+				}
 				rec := httptest.NewRecorder()
 				source.ServeHTTP(rec, req)
 				return rec.Result(), nil
@@ -946,6 +963,250 @@ func TestSourcesAreCollectedAtMostMaxParallelSourcesAtOnce(t *testing.T) {
 		for _, status := range b.Sources {
 			assert.Equal(t, apisv1.SupportBundleStatusCollected, status.Status, status.Name)
 		}
+	})
+}
+
+// A source declaring maxConcurrent: 1 may use the same ID for every bundle: antrea-ui never creates
+// a bundle there before the previous one is deleted.
+func TestSourceMaxConcurrentSerializesCollections(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		config := testConfig(t)
+		foo := newFakeSource()
+		foo.remoteID = "foobar"
+		plugins := []apisv1.PluginManifest{
+			{Name: "foo", SupportBundle: &apisv1.SupportBundleSourceSpec{APIServer: &apisv1.APIServerSourceSpec{Path: "/apis/foo.example.com/v1"}, MaxConcurrent: 1}},
+		}
+		tm := newTestManager(t, config, map[string]*fakeSource{"/apis/foo.example.com/v1": foo}, plugins)
+		first, err := tm.Create(testRequester, nil)
+		require.NoError(t, err)
+		second, err := tm.Create(testRequester, nil)
+		require.NoError(t, err)
+
+		for _, id := range []string{first.ID, second.ID} {
+			b := tm.waitDone(t, id)
+			assert.Equal(t, apisv1.SupportBundleStatusCollected, b.Status)
+			assert.Equal(t, apisv1.SupportBundleStatusCollected, sourceStatus(b, "foo").Status)
+		}
+		var sequence []string
+		for _, r := range foo.recorded() {
+			if r.method == http.MethodPost || r.method == http.MethodDelete {
+				sequence = append(sequence, r.method)
+			}
+		}
+		assert.Equal(t, []string{http.MethodPost, http.MethodDelete, http.MethodPost, http.MethodDelete}, sequence)
+		assert.Equal(t, 1, foo.maxOutstanding)
+		assert.Empty(t, tm.slots.inUse)
+	})
+}
+
+// The slot is held until the remote DELETE has returned. A collection that cannot get one within
+// the collection timeout fails that source only.
+func TestSourceMaxConcurrentWaitGivesUpAtTimeout(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		config := testConfig(t)
+		limited := apiServerExtraSource("limited", "limited.example.com")
+		limited.MaxConcurrent = 1
+		config.ExtraSources = []serverconfig.SupportBundleExtraSource{limited, apiServerExtraSource("other", "other.example.com")}
+		limitedSource, otherSource := newFakeSource(), newFakeSource()
+		release := make(chan struct{})
+		limitedSource.gate = func(r *http.Request) error {
+			if r.Method == http.MethodDelete {
+				<-release
+			}
+			return nil
+		}
+		tm := newTestManager(t, config, map[string]*fakeSource{
+			"/apis/limited.example.com/v1": limitedSource,
+			"/apis/other.example.com/v1":   otherSource,
+		}, nil)
+		var ids []string
+		for range 2 {
+			created, err := tm.Create(testRequester, nil)
+			require.NoError(t, err)
+			ids = append(ids, created.ID)
+		}
+
+		// Whichever bundle got the slot is stuck in its DELETE: the other one gives up on the
+		// source at the collection timeout.
+		var waiter *apisv1.SupportBundle
+		for range 1000 {
+			for _, id := range ids {
+				b, err := tm.Get(id)
+				require.NoError(t, err)
+				if b.Status != apisv1.SupportBundleStatusCollecting {
+					waiter = b
+				}
+			}
+			if waiter != nil {
+				break
+			}
+			time.Sleep(time.Second)
+		}
+		require.NotNil(t, waiter, "no bundle done")
+		assert.Equal(t, apisv1.SupportBundleStatusCollected, waiter.Status)
+		assert.Equal(t, apisv1.SupportBundleStatusFailed, sourceStatus(waiter, "limited").Status)
+		assert.Contains(t, sourceStatus(waiter, "limited").Error, "gave up waiting for other collections from this source to finish")
+		assert.Equal(t, apisv1.SupportBundleStatusCollected, sourceStatus(waiter, "other").Status)
+		assert.Equal(t, 1, limitedSource.countRequests(http.MethodPost, "/supportbundle"))
+
+		close(release)
+		holder := ids[0]
+		if waiter.ID == holder {
+			holder = ids[1]
+		}
+		b := tm.waitDone(t, holder)
+		assert.Equal(t, apisv1.SupportBundleStatusCollected, b.Status)
+		assert.Equal(t, apisv1.SupportBundleStatusCollected, sourceStatus(b, "limited").Status)
+		assert.Equal(t, 1, limitedSource.countRequests(http.MethodPost, "/supportbundle"))
+		assert.Equal(t, 1, limitedSource.maxOutstanding)
+	})
+}
+
+// A source waiting for its slot does not hold one of the bundle's parallel slots, which the
+// bundle's other sources can use meanwhile.
+func TestSourceWaitingForItsSlotDoesNotHoldUpOtherSources(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		config := testConfig(t)
+		limited := apiServerExtraSource("limited", "limited.example.com")
+		limited.MaxConcurrent = 1
+		config.ExtraSources = []serverconfig.SupportBundleExtraSource{limited}
+		foo := newFakeSource()
+		tm := newTestManager(t, config, map[string]*fakeSource{"/apis/limited.example.com/v1": foo}, nil)
+		// Another bundle's collection holds the only slot of the source.
+		release, err := tm.slots.acquire(t.Context(), "extra/limited", 1, nil)
+		require.NoError(t, err)
+
+		parallel := make(chan struct{}, 1)
+		var collectErr error
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			_, collectErr = tm.collectSourceInTurn(t.Context(), &bundle{}, tm.extraSources[0].source, 1, parallel, requester{username: testRequester, bundleID: "bundle-1"}, &apisv1.SupportBundleRequest{}, t.TempDir())
+		}()
+		synctest.Wait()
+		assert.Empty(t, parallel)
+		assert.Zero(t, foo.countRequests(http.MethodPost, "/supportbundle"))
+
+		release()
+		<-done
+		require.NoError(t, collectErr)
+		assert.Empty(t, parallel)
+		assert.Equal(t, 1, foo.countRequests(http.MethodDelete, "/supportbundle/remote-1"))
+	})
+}
+
+// A limit added while a collection is running without one (e.g. by a plugin upgrade) still counts
+// that collection.
+func TestSourceMaxConcurrentAddedCountsRunningCollections(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		config := testConfig(t)
+		foo := newFakeSource()
+		release := make(chan struct{})
+		foo.gate = func(r *http.Request) error {
+			if r.Method == http.MethodDelete {
+				<-release
+			}
+			return nil
+		}
+		spec := apisv1.SupportBundleSourceSpec{APIServer: &apisv1.APIServerSourceSpec{Path: "/apis/foo.example.com/v1"}}
+		tm := newTestManager(t, config, map[string]*fakeSource{"/apis/foo.example.com/v1": foo}, []apisv1.PluginManifest{{Name: "foo", SupportBundle: &spec}})
+		first, err := tm.Create(testRequester, nil)
+		require.NoError(t, err)
+		synctest.Sleep(time.Minute)
+		require.Equal(t, 1, foo.countRequests(http.MethodDelete, "/supportbundle/remote-1"))
+
+		limited := spec
+		limited.MaxConcurrent = 1
+		tm.plugins = []apisv1.PluginManifest{{Name: "foo", SupportBundle: &limited}}
+		second, err := tm.Create(testRequester, nil)
+		require.NoError(t, err)
+		synctest.Sleep(time.Minute)
+		assert.Equal(t, 1, foo.countRequests(http.MethodPost, "/supportbundle"))
+
+		close(release)
+		for _, id := range []string{first.ID, second.ID} {
+			b := tm.waitDone(t, id)
+			assert.Equal(t, apisv1.SupportBundleStatusCollected, sourceStatus(b, "foo").Status)
+		}
+		assert.Equal(t, 1, foo.maxOutstanding)
+	})
+}
+
+// No POST is sent for a collection that has already given up, since a POST is not canceled once
+// sent.
+func TestNoCreateForCollectionThatGaveUp(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		config := testConfig(t)
+		config.ExtraSources = []serverconfig.SupportBundleExtraSource{apiServerExtraSource("foo", "foo.example.com")}
+		foo := newFakeSource()
+		tm := newTestManager(t, config, map[string]*fakeSource{"/apis/foo.example.com/v1": foo}, nil)
+		ctx, cancel := context.WithCancelCause(t.Context())
+		cancel(errDeleted)
+		_, err := tm.collectSource(ctx, &bundle{}, tm.extraSources[0].source, requester{username: testRequester, bundleID: "bundle-1"}, &apisv1.SupportBundleRequest{}, t.TempDir())
+		require.ErrorIs(t, err, errDeleted)
+		assert.Contains(t, err.Error(), "gave up on the source before requesting a bundle")
+		assert.Empty(t, foo.recorded())
+	})
+}
+
+// A POST is bounded by remoteCreateTimeout, so a source that never answers it only fails itself,
+// and gives back its slot.
+func TestCreateTimesOut(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		config := testConfig(t)
+		foo := apiServerExtraSource("foo", "foo.example.com")
+		foo.MaxConcurrent = 1
+		config.ExtraSources = []serverconfig.SupportBundleExtraSource{foo}
+		fooSource := newFakeSource()
+		fooSource.gate = func(r *http.Request) error {
+			<-r.Context().Done()
+			return r.Context().Err()
+		}
+		tm := newTestManager(t, config, map[string]*fakeSource{"/apis/foo.example.com/v1": fooSource}, nil)
+		created, err := tm.Create(testRequester, nil)
+		require.NoError(t, err)
+		start := time.Now()
+
+		b := tm.waitDone(t, created.ID)
+		assert.Equal(t, apisv1.SupportBundleStatusCollected, b.Status)
+		assert.Equal(t, apisv1.SupportBundleStatusFailed, sourceStatus(b, "foo").Status)
+		assert.Contains(t, sourceStatus(b, "foo").Error, "failed to request a bundle")
+		assert.Less(t, time.Since(start), remoteCreateTimeout+2*time.Second)
+		assert.Empty(t, tm.slots.inUse)
+	})
+}
+
+// A collection canceled while the source's POST is in flight still reads the response, and
+// deletes the bundle the source created.
+func TestCreateIsNotAbandonedWhenCollectionIsCanceled(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		config := testConfig(t)
+		config.ExtraSources = []serverconfig.SupportBundleExtraSource{apiServerExtraSource("foo", "foo.example.com")}
+		foo := newFakeSource()
+		release := make(chan struct{})
+		foo.gate = func(r *http.Request) error {
+			if r.Method != http.MethodPost {
+				return nil
+			}
+			select {
+			case <-release:
+				return nil
+			case <-r.Context().Done():
+				return r.Context().Err()
+			}
+		}
+		tm := newTestManager(t, config, map[string]*fakeSource{"/apis/foo.example.com/v1": foo}, nil)
+		created, err := tm.Create(testRequester, nil)
+		require.NoError(t, err)
+		synctest.Wait()
+		require.Equal(t, 1, foo.countRequests(http.MethodPost, "/supportbundle"))
+
+		require.NoError(t, tm.Delete(created.ID))
+		synctest.Wait()
+		close(release)
+		synctest.Wait()
+		assert.Equal(t, 1, foo.countRequests(http.MethodDelete, "/supportbundle/remote-1"))
+		assert.Zero(t, foo.countRequests(http.MethodGet, "/status"))
 	})
 }
 

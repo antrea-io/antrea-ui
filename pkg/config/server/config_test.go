@@ -158,6 +158,15 @@ func TestValidateSupportBundleConfig(t *testing.T) {
 			expectedErr: "is not unique",
 		},
 		{
+			name: "negative maxConcurrent",
+			mutate: func(c *Config) {
+				s := apiServerSource("foo", "/apis/foo.example.com/v1")
+				s.MaxConcurrent = -1
+				c.SupportBundle.ExtraSources = []SupportBundleExtraSource{s}
+			},
+			expectedErr: "maxConcurrent must not be negative",
+		},
+		{
 			name: "no variant",
 			mutate: func(c *Config) {
 				c.SupportBundle.ExtraSources = []SupportBundleExtraSource{{Name: "foo"}}
@@ -283,6 +292,7 @@ supportBundle:
     - name: bar
       apiServer:
         path: /apis/bar.example.com/v1alpha1
+      maxConcurrent: 1
 `)))
 	var c Config
 	require.NoError(t, v.Unmarshal(&c))
@@ -299,7 +309,7 @@ supportBundle:
 		CollectionTimeout: 5 * time.Minute,
 		ExtraSources: []SupportBundleExtraSource{
 			{Name: "foo", HTTPS: &SupportBundleHTTPSSource{URL: "https://foo.ns.svc/api/v1", CAData: "PEM", ServerName: "foo.example.com", InsecureSkipVerify: true}},
-			{Name: "bar", APIServer: &apisv1.APIServerSourceSpec{Path: "/apis/bar.example.com/v1alpha1"}},
+			{Name: "bar", APIServer: &apisv1.APIServerSourceSpec{Path: "/apis/bar.example.com/v1alpha1"}, MaxConcurrent: 1},
 		},
 	}, c.SupportBundle)
 }

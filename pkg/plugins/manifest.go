@@ -256,12 +256,17 @@ func parseManifest(manifestJSON []byte) (*apisv1.PluginManifest, error) {
 			}
 		}
 	}
-	// Only the variant this backend knows is validated. A supportBundle declaring none of them
-	// (e.g. a variant added by a later version) is not a reason to reject the plugin's UI: the
-	// support bundle skips that source and records why.
-	if manifest.SupportBundle != nil && manifest.SupportBundle.APIServer != nil {
-		if err := k8sapipath.ValidateGroupPath(manifest.SupportBundle.APIServer.Path); err != nil {
-			return nil, fmt.Errorf("manifest's 'supportBundle.apiServer.path' is invalid: %w", err)
+	// Of the transport variants, only the one this backend knows is validated. A supportBundle
+	// declaring none of them (e.g. a variant added by a later version) is not a reason to reject
+	// the plugin's UI: the support bundle skips that source and records why.
+	if manifest.SupportBundle != nil {
+		if manifest.SupportBundle.MaxConcurrent < 0 {
+			return nil, fmt.Errorf("manifest's 'supportBundle.maxConcurrent' must not be negative")
+		}
+		if manifest.SupportBundle.APIServer != nil {
+			if err := k8sapipath.ValidateGroupPath(manifest.SupportBundle.APIServer.Path); err != nil {
+				return nil, fmt.Errorf("manifest's 'supportBundle.apiServer.path' is invalid: %w", err)
+			}
 		}
 	}
 	return &manifest, nil

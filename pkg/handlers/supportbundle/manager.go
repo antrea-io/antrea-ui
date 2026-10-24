@@ -72,9 +72,10 @@ type manager struct {
 	apiServerURL       *url.URL
 	apiServerTransport http.RoundTripper
 	adminUser          string
-	extraSources       []source
+	extraSources       []extraSource
 	plugins            func() []apisv1.PluginManifest
 	budget             *budget
+	slots              *sourceSlots
 
 	// ctx is canceled when Run's stopCh is closed, and every collection derives from it.
 	ctx    context.Context
@@ -85,6 +86,14 @@ type manager struct {
 	// collecting counts the collections still running, including those of bundles deleted (or
 	// expired) that have not stopped yet.
 	collecting int
+}
+
+// extraSource is a source configured by the operator.
+type extraSource struct {
+	source source
+	// maxConcurrent caps the collections outstanding against the source at once, 0 meaning no
+	// limit.
+	maxConcurrent int
 }
 
 // bundle is one support bundle. Its exported state is guarded by manager.mutex.
@@ -113,7 +122,7 @@ func NewManager(o Options) (Manager, error) {
 		return nil, fmt.Errorf("failed to create support bundle directory: %w", err)
 	}
 
-	var extraSources []source
+	var extraSources []extraSource
 	for i := range o.Config.ExtraSources {
 		cfg := &o.Config.ExtraSources[i]
 		switch {
@@ -125,9 +134,10 @@ func NewManager(o Options) (Manager, error) {
 			if err != nil {
 				return nil, fmt.Errorf("invalid support bundle source %q: %w", cfg.Name, err)
 			}
-			extraSources = append(extraSources, s)
+			extraSources = append(extraSources, extraSource{source: s, maxConcurrent: cfg.MaxConcurrent})
 		case cfg.APIServer != nil:
-			extraSources = append(extraSources, newAPIServerSource(cfg.Name, apisv1.SupportBundleSourceKindExtra, o.APIServerURL, cfg.APIServer.Path, o.APIServerTransport, o.AdminUserName))
+			s := newAPIServerSource(cfg.Name, apisv1.SupportBundleSourceKindExtra, o.APIServerURL, cfg.APIServer.Path, o.APIServerTransport, o.AdminUserName)
+			extraSources = append(extraSources, extraSource{source: s, maxConcurrent: cfg.MaxConcurrent})
 		default:
 			return nil, fmt.Errorf("support bundle source %q has no https or apiServer", cfg.Name)
 		}
@@ -145,6 +155,7 @@ func NewManager(o Options) (Manager, error) {
 		extraSources:       extraSources,
 		plugins:            o.Backend.Plugins,
 		budget:             &budget{max: o.Config.MaxTotalBytes},
+		slots:              newSourceSlots(),
 		ctx:                ctx,
 		cancel:             cancel,
 		bundles:            make(map[string]*bundle),
@@ -160,6 +171,9 @@ func NewManager(o Options) (Manager, error) {
 type pendingSource struct {
 	status apisv1.SupportBundleSourceStatus
 	source source
+	// maxConcurrent caps the collections outstanding against the source at once, across bundles,
+	// 0 meaning no limit.
+	maxConcurrent int
 }
 
 // resolveSources lists the sources to collect for a new bundle: the operator's, then the ones the
@@ -168,8 +182,9 @@ func (m *manager) resolveSources() []pendingSource {
 	var sources []pendingSource
 	for _, s := range m.extraSources {
 		sources = append(sources, pendingSource{
-			status: apisv1.SupportBundleSourceStatus{Name: s.name(), Kind: s.kind(), Status: apisv1.SupportBundleStatusCollecting},
-			source: s,
+			status:        apisv1.SupportBundleSourceStatus{Name: s.source.name(), Kind: s.source.kind(), Status: apisv1.SupportBundleStatusCollecting},
+			source:        s.source,
+			maxConcurrent: s.maxConcurrent,
 		})
 	}
 	if m.plugins == nil {
@@ -193,7 +208,7 @@ func (m *manager) resolveSources() []pendingSource {
 			status.Status = apisv1.SupportBundleStatusFailed
 			status.Error = "unsupported source declaration"
 		}
-		sources = append(sources, pendingSource{status: status, source: s})
+		sources = append(sources, pendingSource{status: status, source: s, maxConcurrent: manifest.SupportBundle.MaxConcurrent})
 	}
 	return sources
 }

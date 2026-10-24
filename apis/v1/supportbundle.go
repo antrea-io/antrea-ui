@@ -76,13 +76,18 @@ type SupportBundleList struct {
 	Items []SupportBundle `json:"items"`
 }
 
-// SupportBundleSourceSpec declares a support bundle source. It is a union, with APIServer as its
-// only variant. A declaration with no variant antrea-ui recognizes only skips the source: the
-// plugin still loads.
+// SupportBundleSourceSpec declares a support bundle source. How the source is reached is a union,
+// with APIServer as its only variant. A declaration with no variant antrea-ui recognizes only
+// skips the source: the plugin still loads.
 type SupportBundleSourceSpec struct {
 	// APIServer is a source served through the Kubernetes apiserver, typically by an
 	// APIService.
 	APIServer *APIServerSourceSpec `json:"apiServer,omitempty"`
+	// MaxConcurrent caps how many antrea-ui collections are outstanding against the source at
+	// once, each from its POST until its DELETE has returned. A collection waits for a slot,
+	// within the collection timeout. 0 means no limit. A source that can only hold one bundle at a
+	// time (e.g. because it uses the same ID for every bundle) sets 1.
+	MaxConcurrent int `json:"maxConcurrent,omitempty"`
 }
 
 // APIServerSourceSpec is a support bundle source reached through the Kubernetes apiserver.

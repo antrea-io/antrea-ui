@@ -42,6 +42,7 @@ const (
 	// maxJSONBodyBytes bounds a source's create and status responses.
 	maxJSONBodyBytes = 64 * 1024
 
+	remoteCreateTimeout = 30 * time.Second
 	remoteDeleteTimeout = 5 * time.Second
 )
 
@@ -126,8 +127,12 @@ func retryAfter(resp *http.Response) time.Duration {
 }
 
 // create asks the source for a new bundle and returns its ID, and how long to wait before polling
-// it.
+// it. The request runs on a context of its own, bounded by remoteCreateTimeout, so that it is not
+// abandoned when the collection is canceled: the source may already have created its bundle, and
+// only the response says which one to delete.
 func (p *protocolClient) create(ctx context.Context, request *apisv1.SupportBundleRequest) (string, time.Duration, error) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), remoteCreateTimeout)
+	defer cancel()
 	body, err := json.Marshal(request)
 	if err != nil {
 		return "", 0, err

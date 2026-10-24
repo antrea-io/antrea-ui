@@ -105,7 +105,7 @@ func TestHTTPSSourceRequestsCarryAdminTokenAndAuditHeaders(t *testing.T) {
 	require.Len(t, m.extraSources, 1)
 
 	const username = "alice@example.com/ü x"
-	p := &protocolClient{conn: m.extraSources[0].connect(requester{username: username, bundleID: "bundle-1"}), maxBytes: 1024}
+	p := &protocolClient{conn: m.extraSources[0].source.connect(requester{username: username, bundleID: "bundle-1"}), maxBytes: 1024}
 	id, _, err := p.create(t.Context(), &apisv1.SupportBundleRequest{})
 	require.NoError(t, err)
 	_, _, err = p.status(t.Context(), id)

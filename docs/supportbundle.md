@@ -18,21 +18,24 @@ Bundles are short-lived by design:
   bundle that was still being collected is then reported as failed;
 - they expire 6 hours after they are requested (`supportBundle.ttl`);
 - at most 5 are retained (`supportBundle.maxBundles`), at most 2 may be
-  collected at once (`supportBundle.maxConcurrent`), and all of them share a
-  disk budget of 1GiB (`supportBundle.maxTotalBytes`).
+  collected at once (`supportBundle.maxConcurrent`, which a bundle deleted
+  while collecting counts against until its collection has stopped), and all
+  of them share a disk budget of 1GiB (`supportBundle.maxTotalBytes`).
 
 The backend enforces the disk budget itself, on every write: a bundle that
 would exceed it fails, rather than growing the volume until the kubelet evicts
 the Pod. A bundle's bytes are released as soon as it is deleted or expires,
 even if a download of it is still in progress: its file only leaves the disk
-when that download ends. The `emptyDir` size limit, set slightly above the
-budget, is only a backstop. A source tarball is briefly charged twice while it
-is copied into the bundle tarball, so a new bundle is refused up front when the
-budget left is less than twice `supportBundle.maxSourceBytes`, and
-`maxSourceBytes` may be at most half of `maxTotalBytes`. That check only
-refuses bundles that clearly cannot fit: it leaves out Antrea UI's own logs and
-every other source, so leave `maxTotalBytes` room beyond twice
-`maxSourceBytes`.
+when that download ends. For a bundle still collecting, that is once its
+collection has stopped, which can take up to 35s, while requests in flight to
+its sources complete (see [The source protocol](#the-source-protocol)). The
+`emptyDir` size limit, set slightly above the budget, is only a backstop. A
+source tarball is briefly charged twice while it is copied into the bundle
+tarball, so a new bundle is refused up front when the budget left is less than
+twice `supportBundle.maxSourceBytes`, and `maxSourceBytes` may be at most half
+of `maxTotalBytes`. That check only refuses bundles that clearly cannot fit: it
+leaves out Antrea UI's own logs and every other source, so leave
+`maxTotalBytes` room beyond twice `maxSourceBytes`.
 
 ## Authorization
 
@@ -141,7 +144,10 @@ and Antrea UI appends `/supportbundle` to it, so a declaration can only ever
 reach a `supportbundle` resource of an API group. A plugin cannot point Antrea
 UI at an arbitrary URL. A `supportBundle` declaration this version of Antrea UI
 does not recognize does not reject the plugin: the source is skipped, and the
-bundle records it as an "unsupported source declaration".
+bundle records it as an "unsupported source declaration". A declaration may
+also set `maxConcurrent` (see [Concurrent
+collections](#concurrent-collections)), e.g. `"supportBundle": {"apiServer":
+{...}, "maxConcurrent": 1}`.
 
 **Extra sources** are configured by the operator, in the Helm chart:
 
@@ -159,6 +165,7 @@ supportBundle:
     - name: bar
       apiServer:
         path: /apis/bar.example.com/v1alpha1
+      maxConcurrent: 1          # optional; see "Concurrent collections"
 ```
 
 Exactly one of `https` and `apiServer` must be set. `insecureSkipVerify` is
@@ -185,7 +192,13 @@ These are the same routes and JSON types as Antrea UI's own API, without
 
 - requires the `id` to match `^[A-Za-z0-9._-]{1,128}$` (and not be `.` or
   `..`), and builds every URL from the configured base and that `id`. It never
-  follows a redirect or a `Location` header;
+  follows a redirect or a `Location` header. The `id` is otherwise opaque: it
+  need not be unique, and a source may return the same one for every bundle
+  (see [Concurrent collections](#concurrent-collections));
+- gives a source 30s to answer its `POST` (a slower answer fails the source),
+  and waits for that answer even if the collection is canceled in the
+  meantime, so that it learns the `id` of the bundle the source created and
+  can `DELETE` it;
 - honors `Retry-After` in seconds, clamped to [1s, 30s], and polls every 2s
   without one;
 - keeps polling a bundle's status through a transport error or a 429, 502,
@@ -193,7 +206,8 @@ These are the same routes and JSON types as Antrea UI's own API, without
   apiserver in front of it. Any other error fails the source;
 - fails the source if its tarball exceeds `supportBundle.maxSourceBytes`
   (256MiB by default), or if the whole collection exceeds
-  `supportBundle.collectionTimeout` (10 minutes by default);
+  `supportBundle.collectionTimeout` (10 minutes by default). A `POST` in
+  flight at that point, and the `DELETE` that follows it, still complete;
 - calls `DELETE` as soon as the download is done, or when it gives up on the
   source. This is best effort (a backend restart skips it, for one), so a
   source should also expire the bundles it holds on its own;
@@ -201,6 +215,36 @@ These are the same routes and JSON types as Antrea UI's own API, without
 
 A source authorizes each request itself. A 401 or 403 from a source only fails
 that source.
+
+### Concurrent collections
+
+By default, Antrea UI may collect from a source for several bundles at once,
+up to the global `supportBundle.maxConcurrent`. A source that can only hold so
+many bundles at a time, for instance because it uses the same `id` for every
+bundle, sets its own `maxConcurrent` (in the plugin manifest's `supportBundle`,
+or on the `extraSources` entry); 0, the default, means no limit. A source that
+can only hold one bundle sets 1.
+
+Antrea UI then never has more than `maxConcurrent` collections outstanding
+against the source, each from its `POST` until its `DELETE` has returned. A
+collection that finds every slot taken waits for one, and its source stays
+`Collecting` in the meantime; waiting collections are not served in order. The
+wait counts against `supportBundle.collectionTimeout`: if it runs out, only
+that source fails. A collection waiting for a source does not hold up the
+bundle's other sources. It takes its slot of the source before one of its
+bundle's 4 parallel slots, though, so while the bundle's other sources are
+slow it may hold the slot for a while before contacting the source.
+
+The limit is enforced by the Antrea UI backend (a single replica), on the
+assumption that it is the source's only client. It does not guarantee that the
+source holds no bundle when a new `POST` arrives, since `DELETE` is best
+effort: a collection cut short by a backend restart, a `DELETE` that failed or
+timed out (after 5s), or a `POST` that failed, timed out (after 30s) or got a
+response Antrea UI could not use (an error status, an invalid body or `id`)
+can leave one behind. A source that reuses an `id` must handle a `POST` that
+arrives while the bundle it last created has not been deleted, whatever that
+bundle's phase, by discarding that bundle and starting a new collection,
+rather than failing the `POST`.
 
 ### How a source authenticates Antrea UI
 

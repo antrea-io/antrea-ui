@@ -25,10 +25,9 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"time"
-
-	"golang.org/x/sync/errgroup"
 
 	apisv1 "antrea.io/antrea-ui/apis/v1"
 	"antrea.io/antrea-ui/pkg/version"
@@ -116,15 +115,16 @@ func (m *manager) doCollect(ctx context.Context, b *bundle, r requester, request
 	sourcesCtx, cancelSources := context.WithCancelCause(collectCtx)
 	defer cancelSources(nil)
 	var budgetExceeded atomic.Bool
-	var g errgroup.Group
-	g.SetLimit(maxParallelSources)
+	parallel := make(chan struct{}, maxParallelSources)
+	var wg sync.WaitGroup
 	for i := range sources {
 		s := sources[i].source
 		if s == nil {
 			continue
 		}
-		g.Go(func() error {
-			size, err := m.collectSource(sourcesCtx, b, s, r, request, workDir)
+		maxConcurrent := sources[i].maxConcurrent
+		wg.Go(func() {
+			size, err := m.collectSourceInTurn(sourcesCtx, b, s, maxConcurrent, parallel, r, request, workDir)
 			if errors.Is(err, errBudgetExceeded) {
 				budgetExceeded.Store(true)
 				cancelSources(errBudgetExceeded)
@@ -136,15 +136,14 @@ func (m *manager) doCollect(ctx context.Context, b *bundle, r requester, request
 				m.logger.Info("Failed to collect support bundle source", "id", r.bundleID, "createdBy", r.username, "source", s.name(), "kind", s.kind(), "err", err.Error())
 				status.Status = apisv1.SupportBundleStatusFailed
 				status.Error = err.Error()
-				return nil
+				return
 			}
 			m.logger.Info("Collected support bundle source", "id", r.bundleID, "createdBy", r.username, "source", s.name(), "kind", s.kind(), "size", size)
 			status.Status = apisv1.SupportBundleStatusCollected
 			status.Size = size
-			return nil
 		})
 	}
-	_ = g.Wait()
+	wg.Wait()
 
 	if cause := context.Cause(ctx); cause != nil {
 		return cause
@@ -155,9 +154,36 @@ func (m *manager) doCollect(ctx context.Context, b *bundle, r requester, request
 	return m.assemble(ctx, b, workDir)
 }
 
+// collectSourceInTurn collects s once it is its turn: once one of the maxConcurrent slots of s is
+// free (always, for a source with no limit, which is only counted), then one of the bundle's
+// parallel slots. The slot of s is taken first, so that a source waiting for other bundles to be
+// done with it does not hold up the bundle's other sources. It is held until collectSource has
+// returned, remote DELETE included.
+func (m *manager) collectSourceInTurn(ctx context.Context, b *bundle, s source, maxConcurrent int, parallel chan struct{}, r requester, request *apisv1.SupportBundleRequest, workDir string) (int64, error) {
+	release, err := m.slots.acquire(ctx, s.kind()+"/"+s.name(), maxConcurrent, func() {
+		m.logger.V(2).Info("Waiting for other collections from support bundle source to finish", "id", r.bundleID, "source", s.name(), "kind", s.kind(), "maxConcurrent", maxConcurrent)
+	})
+	if err != nil {
+		return 0, fmt.Errorf("gave up waiting for other collections from this source to finish: %w", err)
+	}
+	defer release()
+	select {
+	case parallel <- struct{}{}:
+	case <-ctx.Done():
+		return 0, fmt.Errorf("gave up waiting for the bundle's other sources: %w", context.Cause(ctx))
+	}
+	defer func() { <-parallel }()
+	return m.collectSource(ctx, b, s, r, request, workDir)
+}
+
 // collectSource runs the source protocol against s, and stores the tarball it returns as-is: it is
 // untrusted, so it is never extracted.
 func (m *manager) collectSource(ctx context.Context, b *bundle, s source, r requester, request *apisv1.SupportBundleRequest, workDir string) (int64, error) {
+	// The POST is not canceled with ctx once sent (see create), so it is not sent at all for a
+	// collection that has already given up, e.g. while it waited for its turn.
+	if ctx.Err() != nil {
+		return 0, fmt.Errorf("gave up on the source before requesting a bundle: %w", context.Cause(ctx))
+	}
 	p := &protocolClient{conn: s.connect(r), maxBytes: m.config.MaxSourceBytes}
 	id, wait, err := p.create(ctx, request)
 	if err != nil {
