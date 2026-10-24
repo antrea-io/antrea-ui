@@ -294,10 +294,15 @@ describe('HomeRedirect', () => {
 
 describe('useScopeUser', () => {
     function ScopeUserProbe() {
-        return <div data-testid="scope-user">{useScopeUser()}</div>;
+        const { loaded } = useAccess();
+        return <><div data-testid="scope-user">{useScopeUser()}</div><div data-testid="loaded">{String(loaded)}</div></>;
     }
     function scopeUser() {
         return document.querySelector('[data-testid="scope-user"]')!.textContent;
+    }
+    // The summary is what the order of names is about, so wait for it before looking.
+    async function summaryLoaded() {
+        await waitFor(() => expect(document.querySelector('[data-testid="loaded"]')!.textContent).toBe('true'));
     }
 
     test('is the session username, else the one the access summary resolved, else empty', async () => {
@@ -307,20 +312,23 @@ describe('useScopeUser', () => {
         const { unmount } = render(
             <Provider store={store}><AccessProvider><ScopeUserProbe /></AccessProvider></Provider>,
         );
-        await waitFor(() => expect(scopeUser()).toBe('admin'));
+        await summaryLoaded();
+        expect(scopeUser()).toBe('admin');
         unmount();
 
         // The session-info fetch failed: the summary names the user.
         resetAccessSummary();
         const noInfo = setupStore({ session: 'authenticated', sessionInfo: null });
         render(<Provider store={noInfo}><AccessProvider><ScopeUserProbe /></AccessProvider></Provider>);
-        await waitFor(() => expect(scopeUser()).toBe('system:sa:ns:impersonated'));
+        await summaryLoaded();
+        expect(scopeUser()).toBe('system:sa:ns:impersonated');
     });
 
     test('is empty when neither name is known', async () => {
         vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('down')));
         const store = setupStore({ session: 'authenticated', sessionInfo: null });
         render(<Provider store={store}><AccessProvider><ScopeUserProbe /></AccessProvider></Provider>);
-        await waitFor(() => expect(scopeUser()).toBe(''));
+        await summaryLoaded();
+        expect(scopeUser()).toBe('');
     });
 });

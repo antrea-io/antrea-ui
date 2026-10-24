@@ -98,7 +98,7 @@ async function fetchNamespaceNames(): Promise<{ names: string[], cut: boolean }>
 
 /** Whether a namespace exists, asked of the API again: a list loaded earlier may predate it.
  * Null when the answer could not be had, which is not a "no". Needs the caller to be allowed to
- * get namespaces, as one who may list them is. */
+ * get namespaces, which the chart's roles grant along with list. */
 export async function namespaceExists(name: string): Promise<boolean | null> {
     try {
         await apiFetchJSON(`k8s/api/v1/namespaces/${encodeURIComponent(name)}`);

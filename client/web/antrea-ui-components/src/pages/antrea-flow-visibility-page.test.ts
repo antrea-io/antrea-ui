@@ -373,6 +373,7 @@ describe('AntreaFlowVisibilityPage — observed-namespace selector', () => {
         // Selected in the picker, which offers it for a scope in force even when it would not
         // otherwise.
         expect(scopeValue(page)).toBe('__cluster_wide__');
+        expect((await scopeMenu(page)).map(o => o.value)).toContain('__cluster_wide__');
         expect(window.location.search).toBe('?namespace=_all');
     });
 

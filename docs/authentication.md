@@ -151,7 +151,7 @@ else:
 - `get`/`list`/`watch`/`create`/`delete` on `traceflows` and
   `traceflows/status`
 - `get` on the `/featuregates` non-resource URL
-- `list` on `namespaces`
+- `list` and `get` on `namespaces`
 - `list` and `watch` on `flows.observability.antrea.io`, the virtual resource
   the Flow Aggregator authorizes flow streams against (see [Flow data is
   per-user](#flow-data-is-per-user))
@@ -335,6 +335,12 @@ a fresh `GET` of that one Namespace confirms it, as it may have been created
 after the list was loaded; for any other caller it says the Namespace is not in
 their list, so it may not exist or they may not have access. There is no note when
 the list is empty, not known, or cut.
+
+The Dest Service column shows `-` for a destination outside the Pod network on a
+Namespace stream, and its Service on All Namespaces. Such a destination has no
+Namespace, so the Flow Aggregator withholds its Service on every stream that is
+not cluster-wide, and the page cannot tell that from a destination with no
+Service.
 
 To turn the integration off entirely, deploy with `flowAggregator.enabled=false`
 (the chart default). The endpoint then returns 501 for every user, including

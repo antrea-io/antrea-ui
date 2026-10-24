@@ -33,6 +33,7 @@ const (
 	NetworkPolicyTypeK8s         NetworkPolicyType = 1
 	NetworkPolicyTypeANP         NetworkPolicyType = 2
 	NetworkPolicyTypeACNP        NetworkPolicyType = 3
+	NetworkPolicyTypeK8sCNP      NetworkPolicyType = 4
 )
 
 // EndpointDisclosure records how much of one endpoint of a flow this user was authorized to see.
@@ -45,12 +46,14 @@ const (
 	// its Node placement and the Egress applied to it.
 	EndpointDisclosureFull EndpointDisclosure = 0
 	// EndpointDisclosureIdentity means the endpoint's Namespace, Pod and Service identity and
-	// the identity of the network policy evaluated on its side, but not its Node placement or
-	// its Egress.
+	// the identity of the network policies of its Namespace, but not its Node placement or its
+	// Egress. The identity of a cluster-scoped policy is not part of this: it follows what the
+	// client holds cluster-wide.
 	EndpointDisclosureIdentity EndpointDisclosure = 1
 	// EndpointDisclosureFlow means only what the flow itself shows - addresses, ports,
-	// protocol, statistics, and the type and action of the policies evaluated on the
-	// endpoint's side - plus the endpoint's Namespace if the connection was allowed.
+	// protocol, statistics, and the type and action of the policies - plus the endpoint's
+	// Namespace, unless the endpoint is the destination of a denied connection the client
+	// initiated.
 	EndpointDisclosureFlow EndpointDisclosure = 2
 )
 

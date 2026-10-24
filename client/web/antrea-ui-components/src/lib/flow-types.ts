@@ -335,10 +335,13 @@ export function endpointView(
  * the "looks like missing data" failure the mark exists to prevent. Its tooltip is its own rather
  * than the peer's: with a lock already in the Destination cell, a second unexplained one reads as
  * a duplicate rather than as a separately withheld field. `destinationNamespace` is the
- * destination's Namespace as the record carries it. It is empty when the destination has none (a
- * hostNetwork backend, say) and also when it was cleared because the connection was denied, which
- * this cannot tell apart, so the tooltip then says no more than that. Left out, it is taken to
- * be there. */
+ * destination's Namespace as the record carries it. In practice it is empty here only when it was
+ * cleared because the connection was denied, so the tooltip then says no more than that the
+ * Namespace is not shown either. Left out, it is taken to be there.
+ *
+ * A destination outside the Pod network is TO_EXTERNAL and takes the `external` branch, but may
+ * still have had its Service withheld on a Namespace stream. The cell reads `-`, as the UI cannot
+ * tell that from a destination with no Service. */
 export function destinationServiceView(
     disclosure: EndpointDisclosure | undefined,
     destinationServicePortName: string,
@@ -347,8 +350,7 @@ export function destinationServiceView(
 ): EndpointView {
     const name = destinationK8sServiceFilterKey(destinationServicePortName) || destinationServicePortName;
     if (name) return { text: name, redacted: false };
-    // See endpointView: an out-of-cluster destination is at the Flow tier but had no Service to
-    // withhold, so its empty cell is genuinely empty rather than redacted.
+    // An external destination is not marked as redacted: see above.
     if (!external && endpointRedacted(disclosure)) {
         return {
             text: "",
