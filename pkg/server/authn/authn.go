@@ -100,7 +100,8 @@ func New(logger logr.Logger, config Config) (*Authenticator, error) {
 	}
 	if config.DevMode {
 		logger.Info("WARNING: development mode is enabled. The CSRF origin check accepts " +
-			DevOrigin + " and the session cookie is set with SameSite=Lax instead of Strict. " +
+			DevOrigin + " and same-site top-level GET navigations, and the session cookie is " +
+			"set with SameSite=Lax instead of Strict. " +
 			"Never run a production deployment with APP_ENV=dev.")
 	}
 	return a, nil
@@ -286,6 +287,13 @@ func (a *Authenticator) checkCrossOrigin(c *gin.Context, allowTopLevelNavigation
 	// Development mode: the frontend dev server is a different origin from the backend by
 	// construction, so neither Sec-Fetch-Site nor Origin can match.
 	if a.config.DevMode && origin == DevOrigin {
+		return nil
+	}
+	// A GET navigation carries no Origin header, so the exemption above misses it. Without this,
+	// a native browser download (e.g. of a support bundle) from the dev server would get a 403.
+	// The dev server is same-site (a site ignores the port); other sites stay blocked.
+	if a.config.DevMode && c.Request.Method == http.MethodGet && c.GetHeader("Sec-Fetch-Site") == "same-site" &&
+		isTopLevelNavigation(c) {
 		return nil
 	}
 

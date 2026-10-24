@@ -54,3 +54,15 @@ Tear down with `kind delete cluster && ci/e2e-oidc.sh stop`.
 
 `TestPluginLoading` additionally needs the pod-counter example plugin built and installed as a
 labeled ConfigMap — see the corresponding steps in `.github/workflows/kind_e2e.yml`.
+
+`TestSupportBundle` collects from a support bundle source deployed by `ci/e2e-supportbundle.sh`,
+reached both as an APIService declared by a plugin (`supportbundle-plugin`, installed by
+`ci/e2e-plugins.sh`) and as an HTTPS extra source. Before installing Antrea UI, build and load the
+source's image and deploy it, then install Antrea UI with the values file it writes:
+
+```bash
+ci/e2e-supportbundle.sh build
+kind load docker-image antrea/antrea-ui-e2e-supportbundle-source:latest
+ci/e2e-supportbundle.sh configure-cluster
+helm install ... -f "$(ci/e2e-supportbundle.sh values-file)" ./build/charts/antrea-ui
+```

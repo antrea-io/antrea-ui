@@ -68,6 +68,13 @@ server {
             {{- include "antrea-ui.nginx.sse" . | nindent 12 }}
         }
 
+        # Support bundle downloads can be large: stream them instead of buffering them to nginx's
+        # own temporary files.
+        location /api/v1/supportbundle {
+            proxy_buffering off;
+            proxy_pass http://127.0.0.1:{{ .Values.backend.port }};
+        }
+
         location /api {
             proxy_pass http://127.0.0.1:{{ .Values.backend.port }};
         }

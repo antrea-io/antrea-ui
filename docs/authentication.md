@@ -158,6 +158,13 @@ else:
 - `get` on `metrics.ui.antrea.io`, the virtual resource Antrea UI authorizes
   live metrics taps against (see [Metrics are authorized by Antrea UI
   itself](#metrics-are-authorized-by-antrea-ui-itself))
+- `create`/`get`/`list`/`delete` on `supportbundles.ui.antrea.io`, the virtual
+  resource Antrea UI checks before every support bundle request. Bundles are
+  shared: everyone holding this grant can list, download and delete every
+  bundle, whoever requested it. Collection also runs as `antrea-ui-admin`,
+  whoever requests it, so `create` lets the holder trigger a collection, as
+  `antrea-ui-admin`, from every configured source and every installed plugin's
+  source (see [supportbundle.md](supportbundle.md#trust-model))
 - `list` on `pods`, `services` and `events`
 - `list` on `deployments`, `statefulsets` and `daemonsets`
 - `list` on `networkpolicies` (both `networking.k8s.io` and `crd.antrea.io`)
@@ -183,6 +190,8 @@ Its rules are assembled by the API server from every ClusterRole labeled
 `antrea-ui-admin-core` plus whatever any installed plugin contributes (see
 [plugins.md](plugins.md)). It is what the admin-password mode impersonates,
 which is why that mode sees everything the UI and its plugins can reach.
+Support bundle collection also runs as `antrea-ui-admin`, whoever requests the
+bundle (see [supportbundle.md](supportbundle.md#trust-model)).
 
 **Its contents grow on their own.** Deploying a plugin that ships an aggregated
 ClusterRole silently widens `antrea-ui-admin`, and therefore silently widens
@@ -654,9 +663,11 @@ exempt: a browser cannot attach that header cross-origin without the server
 opting in through a CORS preflight, which antrea-ui does not.
 
 In development mode (`APP_ENV=dev`) the check also accepts
-`http://localhost:3000`, and the cookie is set with `SameSite=Lax`, because the
-Vite dev server and the backend are necessarily on different origins. Never run
-a production deployment with `APP_ENV=dev`.
+`http://localhost:3000` and any same-site top-level GET navigation, such as a
+native browser download (a navigation carries no `Origin`), and the cookie is
+set with `SameSite=Lax`, because the Vite dev server and the backend are
+necessarily on different origins. Never run a production deployment with
+`APP_ENV=dev`.
 
 ## What to expect when upgrading
 

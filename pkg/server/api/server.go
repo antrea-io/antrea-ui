@@ -29,6 +29,7 @@ import (
 	"antrea.io/antrea-ui/pkg/handlers/antreasvc"
 	"antrea.io/antrea-ui/pkg/handlers/flowstream"
 	"antrea.io/antrea-ui/pkg/handlers/metricstap"
+	"antrea.io/antrea-ui/pkg/handlers/supportbundle"
 	"antrea.io/antrea-ui/pkg/handlers/traceflow"
 	"antrea.io/antrea-ui/pkg/k8s"
 	"antrea.io/antrea-ui/pkg/metrics"
@@ -43,6 +44,7 @@ type serverConfig struct {
 	// keep all fields exported, so the config struct can be logged
 	MaxTraceflowsPerHour        int
 	MaxMetricsRequestsPerSecond int
+	MaxSupportBundlesPerHour    int
 }
 
 // Options are the dependencies of the API server.
@@ -68,6 +70,8 @@ type Options struct {
 	// MetricsGatherer holds the backend's own metrics, which GET /metrics exposes when metrics
 	// are enabled.
 	MetricsGatherer prometheus.Gatherer
+	// SupportBundleManager serves /api/v1/supportbundle. Nil means the feature is disabled.
+	SupportBundleManager supportbundle.Manager
 }
 
 type Server struct {
@@ -84,6 +88,7 @@ type Server struct {
 	pluginRegistry           *plugins.Registry
 	accessResolver           accesshandler.Resolver
 	metricsManager           metricstap.Manager
+	supportBundleManager     supportbundle.Manager
 	// backendMetricsHandler serves the backend's own metrics. Nil when metrics are disabled.
 	backendMetricsHandler http.Handler
 	// namespaceAccess memoizes each session's SelfSubjectRulesReview of a Namespace, for
@@ -95,6 +100,7 @@ func NewServer(o Options) *Server {
 	c := serverConfig{
 		MaxTraceflowsPerHour:        o.Config.Limits.MaxTraceflowsPerHour,
 		MaxMetricsRequestsPerSecond: o.Config.Metrics.MaxRequestsPerSecond,
+		MaxSupportBundlesPerHour:    o.Config.Limits.MaxSupportBundlesPerHour,
 	}
 	o.Logger.Info("Created API server config", "config", c)
 	var flowSSEHandler *flowstream.SSEHandler
@@ -119,6 +125,7 @@ func NewServer(o Options) *Server {
 		pluginRegistry:           o.PluginRegistry,
 		accessResolver:           o.AccessResolver,
 		metricsManager:           o.MetricsManager,
+		supportBundleManager:     o.SupportBundleManager,
 		backendMetricsHandler:    backendMetricsHandler,
 		namespaceAccess:          newNamespaceAccessCache(),
 	}
@@ -153,6 +160,7 @@ func (s *Server) AddRoutes(r *gin.RouterGroup) {
 	s.AddFlowStreamRoutes(apiv1)
 	s.AddAccessRoutes(apiv1)
 	s.AddMetricsRoutes(r, apiv1)
+	s.AddSupportBundleRoutes(apiv1)
 }
 
 func (s *Server) AddFlowStreamRoutes(r *gin.RouterGroup) {

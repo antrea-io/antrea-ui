@@ -27,6 +27,7 @@ import (
 	"antrea.io/antrea-ui/pkg/handlers/antreasvc"
 	"antrea.io/antrea-ui/pkg/handlers/flowstream"
 	"antrea.io/antrea-ui/pkg/handlers/metricstap"
+	"antrea.io/antrea-ui/pkg/handlers/supportbundle"
 	"antrea.io/antrea-ui/pkg/handlers/traceflow"
 	"antrea.io/antrea-ui/pkg/k8s"
 	"antrea.io/antrea-ui/pkg/password"
@@ -75,6 +76,8 @@ type Options struct {
 	MetricsManager metricstap.Manager
 	// MetricsGatherer holds the backend's own metrics.
 	MetricsGatherer prometheus.Gatherer
+	// SupportBundleManager serves /api/v1/supportbundle. Nil means the feature is disabled.
+	SupportBundleManager supportbundle.Manager
 }
 
 type Server struct {
@@ -123,6 +126,7 @@ func NewServer(o Options) (*Server, error) {
 			AccessResolver:           o.AccessResolver,
 			MetricsManager:           o.MetricsManager,
 			MetricsGatherer:          o.MetricsGatherer,
+			SupportBundleManager:     o.SupportBundleManager,
 		}),
 		passwordStore: o.PasswordStore,
 		sessionStore:  o.SessionStore,
