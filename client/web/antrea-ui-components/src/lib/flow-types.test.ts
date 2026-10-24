@@ -349,11 +349,13 @@ describe('destinationServiceView', () => {
     });
 
     // Its own string rather than the peer's: with a lock already in the Destination cell, a
-    // second unexplained one reads as a duplicate rather than as a separate withheld field.
+    // second unexplained one reads as a duplicate rather than as a separate withheld field. At the
+    // Flow tier the record does not say whether there was a Service, so the tooltip does not either.
     test('a withheld service is marked and explained', () => {
         const view = destinationServiceView(EndpointDisclosure.Flow, '');
         expect(view.redacted).toBe(true);
         expect(view.tooltip).toContain("destination's namespace");
+        expect(view.tooltip).toContain('if any');
     });
 
     // A destination without a namespace (none, or cleared on a denied connection) cannot be said to
@@ -362,9 +364,11 @@ describe('destinationServiceView', () => {
         const view = destinationServiceView(EndpointDisclosure.Flow, '', false, '');
         expect(view.redacted).toBe(true);
         expect(view.tooltip).toContain('not shown on this stream');
+        expect(view.tooltip).toContain('if any');
         expect(view.tooltip).not.toContain('belongs to');
-        expect(destinationServiceView(EndpointDisclosure.Flow, '', false, 'ns-b').tooltip)
-            .toContain('belongs to the destination');
+        const withNamespace = destinationServiceView(EndpointDisclosure.Flow, '', false, 'ns-b');
+        expect(withNamespace.tooltip).toContain('belongs to the destination');
+        expect(withNamespace.tooltip).toContain('if any');
     });
 
     test('an identified destination with no service is simply empty', () => {

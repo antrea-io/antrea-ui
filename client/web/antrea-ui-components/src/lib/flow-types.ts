@@ -356,8 +356,8 @@ export function destinationServiceView(
             text: "",
             redacted: true,
             tooltip: destinationNamespace === ''
-                ? "Service not shown. The destination's namespace is not shown on this stream either."
-                : "Service not shown. It belongs to the destination's namespace.",
+                ? "Service, if any, not shown. The destination's namespace is not shown on this stream either."
+                : "Service, if any, not shown. It belongs to the destination's namespace.",
         };
     }
     return { text: "-", redacted: false };

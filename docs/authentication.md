@@ -215,10 +215,13 @@ when the caller holds the stream's own verb (`watch`) on `flows` in that
 Namespace; a caller holding only `get` on the `flows/identity` subresource there
 sees it at the identity tier, and one holding neither sees it at the flow tier:
 the addresses and the Namespace, but no Pod, except that the Namespace of the
-destination of a denied connection is withheld too.
-So a caller with `flows` cluster-wide sees the same peers in full whether it
-asks for the whole cluster or for a single Namespace, and the `flows` rule alone
-is enough — `flows/identity` is only for being recognizable in records the
+destination of a denied connection is withheld too. An endpoint with no
+Namespace at all, such as a Service backend outside the Pod network (the
+destination is the endpoint after DNAT), is at the flow tier on every stream
+that is not cluster-wide, even when its Service has a Namespace.
+So a caller with `flows` cluster-wide sees every peer that has a Namespace in
+full whether it asks for the whole cluster or for a single Namespace, and the
+`flows` rule alone is enough — `flows/identity` is only for being recognizable in records the
 caller receives through some other Namespace. A request naming no scope, or
 both, is rejected before it ever reaches FA. The frontend picks the scope from
 a Namespace selector, which offers All Namespaces (the `clusterWide` scope)
