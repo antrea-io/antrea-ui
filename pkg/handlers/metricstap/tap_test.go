@@ -92,6 +92,27 @@ func (f *tapFixture) open(t *testing.T, ctx context.Context, options TapOptions)
 	return id, events
 }
 
+// newIdleTap returns an open tap which no loop runs, for tests which drive its ticks themselves.
+func newIdleTap(t *testing.T, m *manager, selections ...apisv1.MetricsSelection) *tap {
+	t.Helper()
+	parsed, err := m.parseSelections(selections)
+	require.NoError(t, err)
+	tp := &tap{
+		id:          "0123456789abcdef0123456789abcdef",
+		owner:       testOwner,
+		user:        testOwner,
+		interval:    testInterval,
+		events:      make(chan Event, tapEventBuffer),
+		updated:     make(chan struct{}, 1),
+		lastEmitted: make(map[string]time.Time),
+		active:      parsed,
+	}
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+	m.taps[tp.id] = tp
+	return tp
+}
+
 func selection(target string, metrics ...string) apisv1.MetricsSelection {
 	return apisv1.MetricsSelection{Target: target, Metrics: metrics}
 }
@@ -227,25 +248,23 @@ func TestTapSelectionUpdate(t *testing.T) {
 // next one: the tick which follows an update sends it, although its scrape is not new.
 func TestTapSelectionUpdateOfMetricsAfterLateTick(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		// As in TestTapDoesNotSendAResultTwice, the access check delays a tick, and the next
-		// one is handed the same result.
-		const checkDuration = 3 * time.Second
+		// As in TestTapDoesNotSendAResultTwice, a client which does not read delays a tick, and
+		// the next one is handed the same result.
+		const lateBy = 3 * time.Second
 		f := newTapFixture(t)
 		start := time.Now()
 		id, events := f.open(t, t.Context(), TapOptions{
 			Interval:   testMinScrapeInterval,
 			Selections: []apisv1.MetricsSelection{selection("antrea-controller", "metric_a")},
-			Authorizer: func(context.Context, []string) error {
-				time.Sleep(checkDuration)
-				return nil
-			},
 		})
+		due := time.Duration(tapEventBuffer) * testMinScrapeInterval
+		synctest.Sleep(due + lateBy)
 		nextTapEvent(t, events)
-		for range int(reauthorizeInterval / testMinScrapeInterval) {
+		for range tapEventBuffer {
 			nextScrapeEvent(t, events)
 		}
 		late := nextScrapeEvent(t, events)
-		require.Equal(t, reauthorizeInterval+checkDuration, time.Since(start))
+		require.Equal(t, start.Add(due+lateBy).UTC(), late.Timestamp)
 		assert.Equal(t, "metric_a", late.Families[0].Name)
 
 		// The update comes between the late tick and the next one.
@@ -255,41 +274,70 @@ func TestTapSelectionUpdateOfMetricsAfterLateTick(t *testing.T) {
 		assert.Equal(t, updated, nextTapEvent(t, events).Selections)
 
 		next := nextScrapeEvent(t, events)
-		assert.Equal(t, reauthorizeInterval+testMinScrapeInterval, time.Since(start))
+		assert.Equal(t, due+testMinScrapeInterval, time.Since(start))
 		assert.Equal(t, "metric_b", next.Families[0].Name)
 		assert.Equal(t, late.Timestamp, next.Timestamp)
 	})
 }
 
-// An update which is pending when a tick is due is used by that tick, and still announced before
-// it.
-func TestTapSelectionUpdateOnTick(t *testing.T) {
-	// Without the rule, the loop takes the tick or the update first at random: the scenario is
-	// played several times so that a tick which does not apply the update first is not missed.
-	for range 8 {
+// What is due along with a tick comes before its scrapes, whatever woke the loop up: tick is
+// driven directly, with what is due already.
+func TestTapTick(t *testing.T) {
+	updated := []apisv1.MetricsSelection{selection("antrea-controller", "metric_b")}
+	dueCheck := func() <-chan time.Time {
+		ch := make(chan time.Time, 1)
+		ch <- time.Now()
+		return ch
+	}
+
+	t.Run("a pending update and a due check come before the scrapes", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			f := newTapFixture(t)
-			id, events := f.open(t, t.Context(), TapOptions{
-				Selections: []apisv1.MetricsSelection{selection("antrea-controller", "metric_a")},
-			})
-			// Nothing reads the events: the tap fills its buffer, and then waits in the middle
-			// of a tick with one more event, for long enough that the next tick is due.
-			time.Sleep(time.Duration(tapEventBuffer+5) * testInterval)
-			synctest.Wait()
-			require.Len(t, events, tapEventBuffer)
-			updated := []apisv1.MetricsSelection{selection("antrea-controller", "metric_b")}
-			require.NoError(t, f.manager.UpdateSelections(id, testOwner, updated))
-
-			// What the tap had to say before the update.
-			nextTapEvent(t, events)
-			for range tapEventBuffer {
-				assert.Equal(t, "metric_a", nextScrapeEvent(t, events).Families[0].Name)
+			m := f.manager.(*manager)
+			tp := newIdleTap(t, m, selection("antrea-controller", "metric_a"))
+			require.NoError(t, m.UpdateSelections(tp.id, tp.owner, updated))
+			checks := 0
+			checkAccess := func() bool {
+				checks++
+				// The check is made for the new selection, before anything is scraped.
+				assert.Equal(t, updated, tp.active.api)
+				assert.Zero(t, f.controller.scrapeCount(""))
+				return true
 			}
-			// The tick which is due does not scrape the old selection once more.
-			assert.Equal(t, updated, nextTapEvent(t, events).Selections)
-			assert.Equal(t, "metric_b", nextScrapeEvent(t, events).Families[0].Name)
+
+			require.True(t, m.tick(t.Context(), tp, dueCheck(), checkAccess))
+			assert.Equal(t, 1, checks)
+			assert.Equal(t, updated, nextTapEvent(t, tp.events).Selections)
+			assert.Equal(t, "metric_b", nextScrapeEvent(t, tp.events).Families[0].Name)
 		})
-	}
+	})
+
+	t.Run("a check which ends the tap leaves nothing to scrape", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			f := newTapFixture(t)
+			m := f.manager.(*manager)
+			tp := newIdleTap(t, m, selection("antrea-controller", "metric_a"))
+
+			assert.False(t, m.tick(t.Context(), tp, dueCheck(), func() bool { return false }))
+			assert.Zero(t, f.controller.scrapeCount(""))
+			assert.Empty(t, tp.events)
+		})
+	})
+
+	t.Run("no check is made when none is due", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			f := newTapFixture(t)
+			m := f.manager.(*manager)
+			tp := newIdleTap(t, m, selection("antrea-controller", "metric_a"))
+			checkAccess := func() bool {
+				assert.Fail(t, "unexpected access check")
+				return true
+			}
+
+			require.True(t, m.tick(t.Context(), tp, make(chan time.Time), checkAccess))
+			assert.Equal(t, "metric_a", nextScrapeEvent(t, tp.events).Families[0].Name)
+		})
+	})
 }
 
 func TestTapScrapeErrorIsNotTerminal(t *testing.T) {
@@ -425,31 +473,31 @@ func TestTapSlowTargetsHoldUpNoOther(t *testing.T) {
 // does not send it again.
 func TestTapDoesNotSendAResultTwice(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		// The access check delays the tick which is due with it, by less than the interval
-		// and by enough for the next tick to come while the result is still reused.
-		const checkDuration = 3 * time.Second
-		require.Less(t, testMinScrapeInterval-checkDuration, testMinScrapeInterval/2)
+		// A client which does not read delays the tick which is due when it reads again, by
+		// less than the interval and by enough for the next tick to come while the result is
+		// still reused.
+		const lateBy = 3 * time.Second
+		require.Less(t, testMinScrapeInterval-lateBy, testMinScrapeInterval/2)
 		f := newTapFixture(t)
 		start := time.Now()
 		_, events := f.open(t, t.Context(), TapOptions{
 			Interval:   testMinScrapeInterval,
 			Selections: []apisv1.MetricsSelection{selection("antrea-controller", "metric_a")},
-			Authorizer: func(context.Context, []string) error {
-				time.Sleep(checkDuration)
-				return nil
-			},
 		})
+		// The tap event and the scrapes of the first ticks fill the buffer, and the tap waits
+		// with the scrape of the tick after them, until the tick which is due next is late.
+		due := time.Duration(tapEventBuffer) * testMinScrapeInterval
+		synctest.Sleep(due + lateBy)
 		nextTapEvent(t, events)
-		for tick := range int(reauthorizeInterval / testMinScrapeInterval) {
+		for range tapEventBuffer {
 			nextScrapeEvent(t, events)
-			assert.Equal(t, time.Duration(tick)*testMinScrapeInterval, time.Since(start))
 		}
 		late := nextScrapeEvent(t, events)
-		assert.Equal(t, reauthorizeInterval+checkDuration, time.Since(start))
+		assert.Equal(t, start.Add(due+lateBy).UTC(), late.Timestamp)
 
-		// Nothing is sent for the tick which is due one interval after the check was.
+		// Nothing is sent for the tick which is due one interval after the late one was.
 		next := nextScrapeEvent(t, events)
-		assert.Equal(t, reauthorizeInterval+2*testMinScrapeInterval, time.Since(start))
+		assert.Equal(t, due+2*testMinScrapeInterval, time.Since(start))
 		assert.NotEqual(t, late.Timestamp, next.Timestamp)
 	})
 }
@@ -543,59 +591,6 @@ func TestTapReauthorization(t *testing.T) {
 			}}, last)
 			synctest.Wait()
 			assert.False(t, f.manager.HasTap(id, testOwner))
-		})
-	})
-
-	// A check and a tick are due together every minute. The check comes first, so that the
-	// tick scrapes nothing for an owner whose grant was removed.
-	t.Run("a check which is due comes before the tick", func(t *testing.T) {
-		synctest.Test(t, func(t *testing.T) {
-			const checks = 10
-			const ticksPerCheck = int(reauthorizeInterval / testInterval)
-			f := newTapFixture(t)
-			var mutex sync.Mutex
-			var order []string
-			record := func(what string) {
-				mutex.Lock()
-				defer mutex.Unlock()
-				order = append(order, what)
-			}
-			f.controller.setScrape(func(context.Context, string) ([]*dto.MetricFamily, error) {
-				record("scrape")
-				return gaugeFamilies(1, "metric_a"), nil
-			})
-			made := 0
-			_, events := f.open(t, t.Context(), TapOptions{
-				Selections: selections,
-				Authorizer: func(context.Context, []string) error {
-					record("check")
-					made++
-					if made < checks {
-						return nil
-					}
-					return ErrForbidden
-				},
-			})
-			nextTapEvent(t, events)
-			last := drain(t, events)
-			assert.Equal(t, EventError, last.Name)
-
-			// The first scrape and the ticks of the first minute, then each check followed by
-			// the ticks of its minute, and nothing after the check which ends the tap.
-			var expected []string
-			for range ticksPerCheck {
-				expected = append(expected, "scrape")
-			}
-			for range checks - 1 {
-				expected = append(expected, "check")
-				for range ticksPerCheck {
-					expected = append(expected, "scrape")
-				}
-			}
-			expected = append(expected, "check")
-			mutex.Lock()
-			defer mutex.Unlock()
-			assert.Equal(t, expected, order)
 		})
 	})
 
