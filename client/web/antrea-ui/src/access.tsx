@@ -63,6 +63,19 @@ export function AccessProvider(props: React.PropsWithChildren) {
     );
 }
 
+/**
+ * The name the last scope chosen is kept under: the session's username, else the one the access
+ * summary resolved, else '' when neither is known. Every reader and writer of that scope must use
+ * this, so they agree on the key; in admin mode the two names differ (`admin`, and the
+ * impersonated ServiceAccount), so the order matters.
+ */
+// eslint-disable-next-line react-refresh/only-export-components
+export function useScopeUser(): string {
+    const sessionUser = useSelector((state: RootState) => state.sessionInfo?.username);
+    const { summary } = useAccess();
+    return sessionUser || summary?.username || '';
+}
+
 // eslint-disable-next-line react-refresh/only-export-components
 export function useAccess(): AccessContextType {
     return useContext(AccessContext);

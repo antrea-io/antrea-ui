@@ -15,12 +15,12 @@
  */
 
 import { act, render, waitFor } from '@testing-library/react';
-import { MemoryRouter, Routes, Route } from 'react-router';
+import { MemoryRouter, Routes, Route, useLocation } from 'react-router';
 import { Provider } from 'react-redux';
 import { resetAccessSummary } from '@antrea/ui-components';
 import type { AccessSummary } from '@antrea/ui-components';
 import { setupStore, setSession, setAuthenticated } from './store';
-import { AccessProvider, useAccess } from './access';
+import { AccessProvider, useAccess, useScopeUser } from './access';
 import { HomeRedirect } from './pages';
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -140,14 +140,22 @@ describe('AccessProvider', () => {
     });
 });
 
+function Where() {
+    const { pathname, search } = useLocation();
+    return <div data-testid="where">{pathname + search}</div>;
+}
+
 describe('HomeRedirect', () => {
+    beforeEach(() => { sessionStorage.clear(); });
+
     function renderAt(summary: AccessSummary | null) {
         vi.stubGlobal('fetch', vi.fn().mockResolvedValue(summary ? jsonResponse(summary) : new Response('', { status: 500 })));
-        const store = setupStore({ session: 'authenticated' });
+        const store = setupStore({ session: 'authenticated', sessionInfo: { authenticated: true, username: 'alice' } });
         return render(
             <Provider store={store}>
                 <AccessProvider>
                     <MemoryRouter initialEntries={['/']}>
+                        <Where />
                         <Routes>
                             <Route path="/" element={<HomeRedirect />} />
                             <Route path="/overview" element={<div data-testid="landed">overview</div>} />
@@ -197,11 +205,21 @@ describe('HomeRedirect', () => {
         await waitFor(() => expect(document.querySelector('[data-testid="landed"]')?.textContent).toBe('flows'));
     });
 
-    // The grant has to be cluster-wide (see canViewFlows's own doc comment): a caller holding
-    // flows only in their own Namespace does not land there, because clusterWide=true is the
-    // only scope the page can request today. The namespace field here stands in for what a
-    // namespace-scoped summary would report; it is canViewFlows's own namespace check that must
-    // reject it, not the fixture.
+    // Like a navigation entry, the redirect carries the last scope chosen, but not another user's.
+    test('carries the last scope chosen into /flows/list', async () => {
+        sessionStorage.setItem('antrea-ui:last-scope', JSON.stringify({ user: 'alice', scope: 'ns-last' }));
+        renderAt(summaryWith({
+            rules: { resourceRules: [{ apiGroups: ['observability.antrea.io'], resources: ['flows'], verbs: ['watch'] }], nonResourceRules: [], incomplete: false },
+        }));
+        await waitFor(() => expect(document.querySelector('[data-testid="where"]')?.textContent)
+            .toBe('/flows/list?namespace=ns-last'));
+    });
+
+    // The grant has to be cluster-wide (see holdsFlowsClusterWide's own doc comment): a caller
+    // holding flows only in their own Namespace does not land there, since the redirect is for
+    // whoever can observe the whole cluster. The namespace field here stands in for what a
+    // namespace-scoped summary would report; it is holdsFlowsClusterWide's own namespace check
+    // that must reject it, not the fixture.
     test('does not land on /flows/list for a caller holding only a namespaced flows grant', async () => {
         renderAt(summaryWith({
             namespace: 'default',
@@ -271,5 +289,46 @@ describe('HomeRedirect', () => {
     test('fails open to /overview when the fetch fails', async () => {
         renderAt(null);
         await waitFor(() => expect(document.querySelector('[data-testid="landed"]')?.textContent).toBe('overview'));
+    });
+});
+
+describe('useScopeUser', () => {
+    function ScopeUserProbe() {
+        const { loaded } = useAccess();
+        return <><div data-testid="scope-user">{useScopeUser()}</div><div data-testid="loaded">{String(loaded)}</div></>;
+    }
+    function scopeUser() {
+        return document.querySelector('[data-testid="scope-user"]')!.textContent;
+    }
+    // The summary is what the order of names is about, so wait for it before looking.
+    async function summaryLoaded() {
+        await waitFor(() => expect(document.querySelector('[data-testid="loaded"]')!.textContent).toBe('true'));
+    }
+
+    test('is the session username, else the one the access summary resolved, else empty', async () => {
+        // A fresh Response per call: a body can be read once.
+        vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(summaryWith({ username: 'system:sa:ns:impersonated' }))));
+        const store = setupStore({ session: 'authenticated', sessionInfo: { authenticated: true, mode: 'admin', username: 'admin' } });
+        const { unmount } = render(
+            <Provider store={store}><AccessProvider><ScopeUserProbe /></AccessProvider></Provider>,
+        );
+        await summaryLoaded();
+        expect(scopeUser()).toBe('admin');
+        unmount();
+
+        // The session-info fetch failed: the summary names the user.
+        resetAccessSummary();
+        const noInfo = setupStore({ session: 'authenticated', sessionInfo: null });
+        render(<Provider store={noInfo}><AccessProvider><ScopeUserProbe /></AccessProvider></Provider>);
+        await summaryLoaded();
+        expect(scopeUser()).toBe('system:sa:ns:impersonated');
+    });
+
+    test('is empty when neither name is known', async () => {
+        vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('down')));
+        const store = setupStore({ session: 'authenticated', sessionInfo: null });
+        render(<Provider store={store}><AccessProvider><ScopeUserProbe /></AccessProvider></Provider>);
+        await summaryLoaded();
+        expect(scopeUser()).toBe('');
     });
 });

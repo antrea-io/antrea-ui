@@ -21,7 +21,7 @@ import type { PluginSidebarEntry } from './plugins';
 import type { AccessSummary } from '@antrea/ui-components';
 import { useAccess } from './access';
 
-vi.mock('./access', () => ({ useAccess: vi.fn() }));
+vi.mock('./access', () => ({ useAccess: vi.fn(), useScopeUser: () => 'alice' }));
 const mockUseAccess = vi.mocked(useAccess);
 
 const podCounterEntry: PluginSidebarEntry = { label: 'Pod Counter', path: '/plugin/pod-counter' };
@@ -224,6 +224,11 @@ describe('NavTab — nested plugin entries', () => {
 });
 
 describe('NavTab — permission gating', () => {
+    beforeEach(() => {
+        sessionStorage.clear();
+        mockUseAccess.mockReturnValue({ summary: null, loaded: true });
+    });
+
     test('while unloaded, renders no core items', () => {
         mockUseAccess.mockReturnValue({ summary: null, loaded: false });
         render(<NavTab pluginSidebarEntries={[]} />, { wrapper: MemoryRouter });
@@ -284,8 +289,8 @@ describe('NavTab — permission gating', () => {
         expect(document.querySelector('a[href="/flows/list"]')).not.toBeNull();
     });
 
-    // The grant has to be cluster-wide: Flow Visibility can only ever request clusterWide=true
-    // today, so a namespaced Role granting flows authorizes nothing it would ask for.
+    // A summary evaluated for one namespace shows a namespaced Role's grant, which is not the
+    // cluster-wide grant the gate reads from the cluster-scoped summary.
     test('Flows is hidden when the flows grant is only namespace-scoped', () => {
         mockUseAccess.mockReturnValue({
             summary: {
@@ -299,6 +304,109 @@ describe('NavTab — permission gating', () => {
         render(<NavTab pluginSidebarEntries={[]} />, { wrapper: MemoryRouter });
 
         expect(document.querySelector('a[href="/flows/list"]')).toBeNull();
+    });
+
+    // The gate is decided from the cluster-scoped summary alone: a RoleBinding may carry a flows
+    // grant, which only a per-namespace review would say, so the entry is offered.
+    test('Flows shows for a caller named in a RoleBinding', () => {
+        mockUseAccess.mockReturnValue({ summary: { ...summaryAllowing(), namespaces: ['team-a'] }, loaded: true });
+        render(<NavTab pluginSidebarEntries={[]} />, { wrapper: MemoryRouter });
+
+        expect(document.querySelector('a[href="/flows/list"]')).not.toBeNull();
+    });
+
+    test('Flows shows for a caller who may list namespaces', () => {
+        mockUseAccess.mockReturnValue({
+            summary: {
+                ...summaryAllowing({
+                    resourceRules: [{ apiGroups: [''], resources: ['namespaces'], verbs: ['list'] }],
+                }),
+                namespaces: ['*'],
+            },
+            loaded: true,
+        });
+        render(<NavTab pluginSidebarEntries={[]} />, { wrapper: MemoryRouter });
+
+        expect(document.querySelector('a[href="/flows/list"]')).not.toBeNull();
+    });
+
+    // The flow page keeps its scope in the query string. Switching sub-page does not remount the
+    // page, which follows its URL, so a link that dropped the scope would reset it.
+    test('the flow sub-page links keep the scope in the URL', () => {
+        render(
+            <MemoryRouter initialEntries={['/flows/list?namespace=ns-a']}>
+                <NavTab pluginSidebarEntries={[]} />
+            </MemoryRouter>
+        );
+
+        expect(document.querySelector('a[href="/flows/map?namespace=ns-a"]')).not.toBeNull();
+        expect(document.querySelectorAll('a[href="/flows/list?namespace=ns-a"]')).toHaveLength(2);
+    });
+
+    // ...but only the scope: another parameter on the flow page means nothing to the other view.
+    test('only the scope is carried between the flow sub-pages', () => {
+        render(
+            <MemoryRouter initialEntries={['/flows/list?namespace=_all&other=1']}>
+                <NavTab pluginSidebarEntries={[]} />
+            </MemoryRouter>
+        );
+
+        expect(document.querySelector('a[href="/flows/map?namespace=_all"]')).not.toBeNull();
+    });
+
+    // A URL that names the scope twice names none, as on the page, so the links carry none.
+    test('a flow page whose URL gives namespace twice carries no scope', () => {
+        render(
+            <MemoryRouter initialEntries={['/flows/list?namespace=ns-a&namespace=ns-b']}>
+                <NavTab pluginSidebarEntries={[]} />
+            </MemoryRouter>
+        );
+
+        expect(document.querySelector('a[href="/flows/map"]')).not.toBeNull();
+        expect(document.querySelector('a[href^="/flows/map?"]')).toBeNull();
+    });
+
+    // While on the page, the entries carry its URL's scope or none, and not the last scope chosen:
+    // a page that took a default has none, and switching views must not invent one.
+    test('a flow page with no scope in its URL carries none, whatever was chosen last', () => {
+        sessionStorage.setItem('antrea-ui:last-scope', JSON.stringify({ user: 'alice', scope: 'ns-last' }));
+        render(
+            <MemoryRouter initialEntries={['/flows/list']}>
+                <NavTab pluginSidebarEntries={[]} />
+            </MemoryRouter>
+        );
+
+        expect(document.querySelector('a[href="/flows/map"]')).not.toBeNull();
+    });
+
+    // Off the flow pages the entries carry the last scope chosen.
+    test('the flow links carry the last scope chosen from another page', () => {
+        sessionStorage.setItem('antrea-ui:last-scope', JSON.stringify({ user: 'alice', scope: 'ns-last' }));
+        render(
+            <MemoryRouter initialEntries={['/summary?tab=nodes']}>
+                <NavTab pluginSidebarEntries={[]} />
+            </MemoryRouter>
+        );
+
+        expect(document.querySelector('a[href="/flows/map?namespace=ns-last"]')).not.toBeNull();
+    });
+
+    test('another user\'s last scope is not carried', () => {
+        sessionStorage.setItem('antrea-ui:last-scope', JSON.stringify({ user: 'bob', scope: 'ns-last' }));
+        render(<NavTab pluginSidebarEntries={[]} />, { wrapper: MemoryRouter });
+
+        expect(document.querySelector('a[href="/flows/map"]')).not.toBeNull();
+    });
+
+    // An unrelated page's query string means nothing to the flow page.
+    test('an unrelated page\'s query string is not carried into the flow links', () => {
+        render(
+            <MemoryRouter initialEntries={['/summary?tab=nodes']}>
+                <NavTab pluginSidebarEntries={[]} />
+            </MemoryRouter>
+        );
+
+        expect(document.querySelector('a[href="/flows/map"]')).not.toBeNull();
     });
 
     test('Summary is hidden when none of its three gates is granted', () => {

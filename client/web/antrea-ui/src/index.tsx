@@ -16,12 +16,12 @@
 
 import React from 'react';
 import ReactDOM from 'react-dom/client';
-import { createBrowserRouter, Navigate } from 'react-router';
+import { createBrowserRouter } from 'react-router';
 import { RouterProvider } from 'react-router/dom';
 import { setApiBase } from '@antrea/ui-components';
 import './index.css';
 import App from './App';
-import { OverviewPage, SummaryPage, TraceflowPage, FlowVisibilityPage, SettingsPage, PluginPage, HomeRedirect } from './pages';
+import { OverviewPage, SummaryPage, TraceflowPage, FlowVisibilityPage, FlowsRedirect, SettingsPage, PluginPage, HomeRedirect } from './pages';
 import reportWebVitals from './reportWebVitals';
 import config from './config';
 import { loadPlugins, getPluginRoutes, getPluginSidebarEntries, getLandingPageTabs, getIncompatiblePlugins } from './plugins';
@@ -67,9 +67,9 @@ async function main() {
                 {
                     // No page of its own: Flow List and Service Map (below) are Flow
                     // Visibility's actual second-level pages (see nav.tsx's antrea-nav-group), so
-                    // "/flows" itself just lands on the default one.
+                    // "/flows" itself just lands on the default one, with its query string.
                     path: "flows",
-                    element: <Navigate to="/flows/list" replace />,
+                    element: <FlowsRedirect />,
                 },
                 {
                     path: "flows/list",

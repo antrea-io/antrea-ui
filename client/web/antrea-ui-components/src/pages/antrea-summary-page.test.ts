@@ -212,6 +212,7 @@ describe('AntreaSummaryPage — per-card degradation', () => {
         const controller = makeControllerInfo(0, []);
         const summary: AccessSummary = {
             ...fullAccessSummary(),
+            clusterAdmin: false,
             rules: {
                 resourceRules: [{ apiGroups: ['crd.antrea.io'], resources: ['antreacontrollerinfos'], verbs: ['get'] }],
                 nonResourceRules: [{ nonResourceURLs: ['/featuregates'], verbs: ['get'] }],

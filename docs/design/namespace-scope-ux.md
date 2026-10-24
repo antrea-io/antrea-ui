@@ -27,7 +27,7 @@ is more specific, it wins.
   **complete** otherwise, even when empty.
 - **Verdicts.** For each permission, the access summary gives a verdict, either cluster-wide or
   in one Namespace:
-  - *allowed*: a rule grants it, or the user may do everything in the cluster (the access
+  - *allowed*: a rule grants it, or the user may do every verb on every resource (the access
     summary says so);
   - *denied*: neither, and the rules are complete;
   - *unknown*: neither, but the rules are incomplete (e.g. a webhook authorizer is in
@@ -154,8 +154,9 @@ A plugin page is Namespace-aware when it declares so, and then follows these rul
 the URL parameters of rule 12, like any other page. It may replace parts of them, such as its
 picker or how it picks its scope; a scope it sets through Antrea UI is still kept in its URL and
 becomes the last scope chosen, like any other. Its verdict comes from the permissions it
-declares; when it declares none, it is *allowed* for a user who may do everything in the
-cluster, and *unknown* otherwise. A plugin page that declares nothing is not Namespace-aware.
+declares; when it declares none, it is *allowed* for a user who may do every verb on every
+resource (the access summary says so), and *unknown* otherwise. A plugin page that declares
+nothing is not Namespace-aware.
 
 ## 12. The scope in the URL
 

@@ -72,6 +72,7 @@ declare global {
                 edgeExtraRenderers?: EdgeExtraRenderer[];
                 flowTableColumnsProcessors?: FlowTableColumnsProcessor[];
                 viewMode?: 'list' | 'map';
+                locationSearch?: string;
             };
             'antrea-login-page': React.HTMLAttributes<HTMLElement> & React.ClassAttributes<HTMLElement>;
         }
