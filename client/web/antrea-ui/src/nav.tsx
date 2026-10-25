@@ -20,7 +20,8 @@ import { Link } from 'react-router';
 import '@antrea/ui-components';
 import { can, canViewSummary, canViewFlows, canViewOverview, GATE_TRACEFLOW_CREATE } from '@antrea/ui-components';
 import type { PluginSidebarEntry } from './plugins';
-import { useAccess } from './access';
+import { useAccess, useScopeUser } from './access';
+import { getLastScope, scopeSearch } from './lastScope';
 
 function OverviewIcon() {
     return (
@@ -114,7 +115,8 @@ function renderPluginNavItem(entry: PluginSidebarEntry, pathname: string) {
 }
 
 export default function NavTab({ pluginSidebarEntries }: { pluginSidebarEntries: PluginSidebarEntry[] }) {
-    const { pathname } = useLocation();
+    const { pathname, search } = useLocation();
+    const user = useScopeUser();
     const { summary, loaded } = useAccess();
 
     // While the access summary hasn't loaded yet, render no core items: entries popping in once
@@ -185,6 +187,15 @@ export default function NavTab({ pluginSidebarEntries }: { pluginSidebarEntries:
         );
     }
 
+    // The scope the flow entries carry: the one in the page's URL while on it (or none, when the
+    // page has none), so switching between its views keeps a scope the user chose, and otherwise
+    // the last scope chosen. Only `namespace`, so an unrelated query parameter is not carried.
+    // A URL that gives `namespace` more than once names no scope, as on the page.
+    const pageScopes = new URLSearchParams(search).getAll('namespace');
+    const flowsSearch = scopeSearch(pathStartsWith(pathname, '/flows')
+        ? (pageScopes.length === 1 ? pageScopes[0] : null)
+        : getLastScope(user));
+
     return (
         <antrea-nav>
             {withNestedChildren('overview', showOverview, (
@@ -211,9 +222,13 @@ export default function NavTab({ pluginSidebarEntries }: { pluginSidebarEntries:
                     </Link>
                 </antrea-nav-item>
             ))}
+            {/* The flow entries carry the scope (see flowsSearch). Switching between Flow List and
+                Service Map does not remount the page, which follows its URL instead, so dropping
+                the scope here would reset it, and a link that kept it lets Back and Forward
+                bring the page to the scope the URL names. */}
             {withNestedChildren('flows', showFlows, (
                 <antrea-nav-item {...(pathStartsWith(pathname, '/flows') ? { active: true } : {})}>
-                    <Link to="/flows/list">
+                    <Link to={`/flows/list${flowsSearch}`}>
                         <EyeIcon />
                         <span className="nav-label">Flow Visibility</span>
                     </Link>
@@ -223,7 +238,7 @@ export default function NavTab({ pluginSidebarEntries }: { pluginSidebarEntries:
                     path: '/flows/list',
                     node: (
                         <antrea-nav-item key="/flows/list" {...(pathEquals(pathname, '/flows/list') ? { active: true } : {})}>
-                            <Link to="/flows/list">
+                            <Link to={`/flows/list${flowsSearch}`}>
                                 <span className="nav-label">Flow List</span>
                             </Link>
                         </antrea-nav-item>
@@ -233,7 +248,7 @@ export default function NavTab({ pluginSidebarEntries }: { pluginSidebarEntries:
                     path: '/flows/map',
                     node: (
                         <antrea-nav-item key="/flows/map" {...(pathEquals(pathname, '/flows/map') ? { active: true } : {})}>
-                            <Link to="/flows/map">
+                            <Link to={`/flows/map${flowsSearch}`}>
                                 <span className="nav-label">Service Map</span>
                             </Link>
                         </antrea-nav-item>

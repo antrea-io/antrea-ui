@@ -836,8 +836,9 @@ an entry that is itself nested is invalid, and the host drops the nesting
 
 `overview`, `summary`, `traceflow` and `flows` are themselves gated by
 per-user RBAC (see [authentication.md](authentication.md)) and simply don't
-render for a user who fails that gate; `flows` requires a cluster-wide
-`watch` grant on `flows.observability.antrea.io`. Nesting under any of them
+render for a user who fails that gate; `flows` is shown to a user who holds
+`watch` on `flows.observability.antrea.io` cluster-wide, may list namespaces, or
+is named in any RoleBinding. Nesting under any of them
 still falls back to a top-level entry for such a user, same as the
 invalid-nesting case above — but silently, per user, and without dropping
 anything: the entry itself is always valid, it just isn't always nested.
@@ -931,6 +932,27 @@ built-in tab) nor an id another plugin already claimed; the host drops (and
 logs) whichever registration loses the race, as it does for a colliding
 route. The tab is part of the `/overview` route, so it is only reachable by a
 user the Overview page itself is visible to.
+
+Two things in what these functions receive can trip up a plugin written
+against an earlier version:
+
+- **A column's `render` may return a Lit `TemplateResult`, not only a string.**
+  The built-in Source and Destination columns do, for an endpoint shown by
+  name (its address goes on a second line) as well as for an endpoint whose
+  identity the caller is not entitled to see. So on a cluster-wide stream, where
+  nothing is withheld, they still return a template on every Pod row. A
+  processor that calls `render(entry)` on a built-in column and treats the
+  result as a string (concatenating it, taking its `length`, setting it as
+  `textContent`) breaks for those columns. Wrap such a column instead of
+  reading its output, or test for a string first. A column that returns a
+  string is unaffected.
+- **`EdgeSelection.source` and `target` are node ids, and not always a
+  workload.** Where an endpoint is collapsed because its identity is withheld,
+  the id is synthetic, such as `undisclosed-namespace:ns-c` or
+  `undisclosed-peer:...`, and it names no workload. Do not build a URL or a
+  Kubernetes lookup from it without checking it first; the `my-plugin?source=`
+  link above is fine for a plugin that only passes the id back to its own page,
+  and wrong for one that expects `namespace/name`.
 
 All registration functions, including the whole-new-page ones from "Writing
 a plugin" above:

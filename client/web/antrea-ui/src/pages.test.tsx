@@ -14,13 +14,15 @@
  * limitations under the License.
  */
 
+import type { ReactNode } from 'react';
 import { act, render, waitFor } from '@testing-library/react';
 import { Provider } from 'react-redux';
-import { navigateTo, resetAccessSummary } from '@antrea/ui-components';
+import { navigateTo, resetAccessSummary, SCOPE_CHANGE_EVENT, SCOPE_CHOSEN_EVENT } from '@antrea/ui-components';
 import type { AccessSummary } from '@antrea/ui-components';
 import { setAuthenticated, setupStore } from './store';
-import { MemoryRouter, Route, Routes, useLocation } from 'react-router';
-import { FlowVisibilityPage, OverviewPage, SummaryPage } from './pages';
+import { MemoryRouter, Route, Routes, useLocation, useNavigate } from 'react-router';
+import { FlowsRedirect, FlowVisibilityPage, OverviewPage, SummaryPage } from './pages';
+import { getLastScope } from './lastScope';
 import type { LandingPageTab } from './plugins';
 import { AccessProvider } from './access';
 
@@ -95,7 +97,9 @@ describe('FlowVisibilityPage — route guard', () => {
         return render(
             <Provider store={store}>
                 <AccessProvider>
-                    <FlowVisibilityPage view="list" />
+                    <MemoryRouter>
+                        <FlowVisibilityPage view="list" />
+                    </MemoryRouter>
                 </AccessProvider>
             </Provider>,
         );
@@ -109,6 +113,14 @@ describe('FlowVisibilityPage — route guard', () => {
         // The point of the guard: the Lit element is never constructed, so it never opens the
         // stream. Asserting the panel alone would pass with both rendered.
         expect(document.querySelector('antrea-flow-visibility-page')).toBeNull();
+    });
+
+    // The gate reads the cluster-scoped summary alone, so a RoleBinding is enough to show the page;
+    // whether the user holds flows in that namespace is the Flow Aggregator's to say.
+    test('renders the page for a user named in a RoleBinding', async () => {
+        renderPage(summaryWith({ namespaces: ['team-a'] }));
+        await waitFor(() => expect(document.querySelector('antrea-flow-visibility-page')).not.toBeNull());
+        expect(document.querySelector('antrea-alert')).toBeNull();
     });
 
     test('renders the page for a user granted the flows watch gate', async () => {
@@ -284,5 +296,123 @@ describe('OverviewPage', () => {
 
         await waitFor(() => expect(store.getState().session).toBe('anonymous'));
         expect(navigateTo).toHaveBeenCalledTimes(1);
+    });
+});
+
+// The flow page keeps its scope in the query string (?namespace=) and rewrites it itself, which no
+// router is told about. The host adopts it on the page's own event, so that what the sidebar links
+// carry between the two sub-pages is the scope in force and not the one the page loaded with.
+describe('FlowVisibilityPage — scope in the URL', () => {
+    function LocationProbe() {
+        const { pathname, search } = useLocation();
+        return <div data-testid="location">{pathname + search}</div>;
+    }
+
+    test('the router adopts the query string the page announces', async () => {
+        const store = setupStore({ session: 'authenticated' });
+        // Every fetch fails, so the access answer fails open and the page renders.
+        vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+            throw new Error(`unexpected fetch to ${url}`);
+        }));
+
+        render(
+            <Provider store={store}>
+                <AccessProvider>
+                    <MemoryRouter initialEntries={['/flows/list']}>
+                        <LocationProbe />
+                        <Routes>
+                            <Route path="/flows/list" element={<FlowVisibilityPage view="list" />} />
+                        </Routes>
+                    </MemoryRouter>
+                </AccessProvider>
+            </Provider>,
+        );
+        await waitFor(() => expect(document.querySelector('antrea-flow-visibility-page')).not.toBeNull());
+        const el = document.querySelector('antrea-flow-visibility-page')!;
+        expect(document.querySelector('[data-testid="location"]')?.textContent).toBe('/flows/list');
+
+        await act(async () => {
+            el.dispatchEvent(new CustomEvent(SCOPE_CHANGE_EVENT, {
+                detail: { search: '?namespace=ns-a' }, bubbles: true, composed: true,
+            }));
+        });
+
+        await waitFor(() => expect(document.querySelector('[data-testid="location"]')?.textContent)
+                        .toBe('/flows/list?namespace=ns-a'));
+    });
+
+    function renderFlowPage(initialEntry: string, probe?: ReactNode) {
+        const store = setupStore({ session: 'authenticated', sessionInfo: { authenticated: true, username: 'alice' } });
+        vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+            throw new Error(`unexpected fetch to ${url}`);
+        }));
+        render(
+            <Provider store={store}>
+                <AccessProvider>
+                    <MemoryRouter initialEntries={[initialEntry]}>
+                        <LocationProbe />
+                        {probe}
+                        <Routes>
+                            <Route path="/flows/list" element={<FlowVisibilityPage view="list" />} />
+                            <Route path="/flows/map" element={<FlowVisibilityPage view="map" />} />
+                        </Routes>
+                    </MemoryRouter>
+                </AccessProvider>
+            </Provider>,
+        );
+    }
+
+    // Switching Flow List and Service Map does not remount the page, so it has to be handed the
+    // location to follow Back and Forward.
+    test('the page is handed the query string of the location', async () => {
+        function Go() {
+            const navigate = useNavigate();
+            return <button data-testid="go" onClick={() => navigate('/flows/map?namespace=ns-b')} />;
+        }
+        renderFlowPage('/flows/list?namespace=ns-a', <Go />);
+        await waitFor(() => expect(document.querySelector('antrea-flow-visibility-page')).not.toBeNull());
+        const el = document.querySelector('antrea-flow-visibility-page') as HTMLElement & { locationSearch?: string };
+        expect(el.locationSearch).toBe('?namespace=ns-a');
+
+        await act(async () => { (document.querySelector('[data-testid="go"]') as HTMLElement).click(); });
+
+        await waitFor(() => expect(el.locationSearch).toBe('?namespace=ns-b'));
+    });
+
+    test('a scope the page takes is remembered as the last scope chosen', async () => {
+        sessionStorage.clear();
+        renderFlowPage('/flows/list');
+        await waitFor(() => expect(document.querySelector('antrea-flow-visibility-page')).not.toBeNull());
+        const el = document.querySelector('antrea-flow-visibility-page')!;
+
+        await act(async () => {
+            el.dispatchEvent(new CustomEvent(SCOPE_CHOSEN_EVENT, {
+                detail: { scope: 'ns-a' }, bubbles: true, composed: true,
+            }));
+        });
+
+        expect(getLastScope('alice')).toBe('ns-a');
+        expect(getLastScope('bob')).toBeNull();
+    });
+});
+
+// "/flows" lands on the default sub-page with its query string, where the scope lives.
+describe('FlowsRedirect', () => {
+    test('keeps the query string', async () => {
+        function LocationProbe() {
+            const { pathname, search } = useLocation();
+            return <div data-testid="location">{pathname + search}</div>;
+        }
+        render(
+            <MemoryRouter initialEntries={['/flows?namespace=dev']}>
+                <LocationProbe />
+                <Routes>
+                    <Route path="/flows" element={<FlowsRedirect />} />
+                    <Route path="/flows/list" element={<div>list</div>} />
+                </Routes>
+            </MemoryRouter>,
+        );
+        await waitFor(() => expect(document.querySelector('[data-testid="location"]')?.textContent)
+            .toBe('/flows/list?namespace=dev'));
     });
 });

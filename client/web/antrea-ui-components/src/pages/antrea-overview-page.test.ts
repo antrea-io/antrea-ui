@@ -232,6 +232,7 @@ describe('AntreaOverviewPage — per-resource degradation', () => {
     test('a resource the user cannot list is skipped, not fetched, and a note is shown', async () => {
         const summary: AccessSummary = {
             ...fullAccessSummary(),
+            clusterAdmin: false,
             rules: {
                 resourceRules: [{ apiGroups: [''], resources: ['pods'], verbs: ['list'] }],
                 nonResourceRules: [],
@@ -252,6 +253,7 @@ describe('AntreaOverviewPage — per-resource degradation', () => {
     test('a SA that can list workloads but not NetworkPolicies sees workload tiles only', async () => {
         const summary: AccessSummary = {
             ...fullAccessSummary(),
+            clusterAdmin: false,
             rules: {
                 resourceRules: [
                     { apiGroups: ['apps'], resources: ['deployments', 'statefulsets', 'daemonsets'], verbs: ['list'] },
@@ -859,6 +861,7 @@ describe('AntreaOverviewPage — Recent Events', () => {
     test('no Recent Events card when the user may not list events', async () => {
         const summary: AccessSummary = {
             ...fullAccessSummary(),
+            clusterAdmin: false,
             rules: {
                 resourceRules: [{ apiGroups: [''], resources: ['pods'], verbs: ['list'] }],
                 nonResourceRules: [],

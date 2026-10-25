@@ -151,7 +151,7 @@ else:
 - `get`/`list`/`watch`/`create`/`delete` on `traceflows` and
   `traceflows/status`
 - `get` on the `/featuregates` non-resource URL
-- `list` on `namespaces`
+- `list` and `get` on `namespaces`
 - `list` and `watch` on `flows.observability.antrea.io`, the virtual resource
   the Flow Aggregator authorizes flow streams against (see [Flow data is
   per-user](#flow-data-is-per-user))
@@ -208,13 +208,48 @@ Every request also names a **scope**: either `clusterWide=true` or a single
 `observedNamespace`, never both. FA authorizes the stream against that scope
 with the caller's Kubernetes RBAC on the virtual `flows.observability.antrea.io`
 resource — `watch` for the SSE stream, since it always follows — and resolves
-every endpoint of every record to a disclosure tier (full identity, identity
-only, or no identity at all) relative to what the caller may see there. A
-request naming no scope, or both, is rejected before it ever reaches FA. The
-frontend currently only ever requests `clusterWide=true`; the observed-Namespace
-selector that would let a caller ask for their own Namespace instead has not
-been built yet, so a caller holding the `flows` grant only in one Namespace
-gets a 403 today rather than a scoped stream.
+every endpoint of every record to a disclosure tier (full, identity, or flow)
+relative to what the caller may see there. An
+endpoint is disclosed in full when its Namespace is in the requested scope, or
+when the caller holds the stream's own verb (`watch`) on `flows` in that
+Namespace; a caller holding only `get` on the `flows/identity` subresource there
+sees it at the identity tier, and one holding neither sees it at the flow tier:
+the addresses and the Namespace, but no Pod, except that the Namespace of the
+destination of a denied connection is withheld too. An endpoint with no
+Namespace at all, such as a Service backend outside the Pod network (the
+destination is the endpoint after DNAT), is at the flow tier on every stream
+that is not cluster-wide, even when its Service has a Namespace.
+So a caller with `flows` cluster-wide sees every peer that has a Namespace in
+full whether it asks for the whole cluster or for a single Namespace, and the
+`flows` rule alone is enough — `flows/identity` is only for being recognizable in records the
+caller receives through some other Namespace. A request naming no scope, or
+both, is rejected before it ever reaches FA. The frontend picks the scope from
+a Namespace selector, which offers All Namespaces (the `clusterWide` scope)
+unless the caller is known not to hold it. The page's URL carries the scope the
+user chose as `?namespace=<name>`, or `?namespace=_all` for All Namespaces, so a
+reload or a shared link keeps it. The scope in the URL is used as given: the
+stream opens on it without waiting for the Namespace list, it is not checked
+against the list, and it is not replaced by a default even when it is All
+Namespaces and the caller is known not to hold it. FA then answers, and the page
+shows the refusal. An invalid value (one that is neither `_all` nor a valid
+Namespace name, an empty value, or `namespace` given more than once) is reported
+on the page and nothing is selected. The page follows its URL when it changes,
+as with Back and Forward or a switch between Flow List and Service Map.
+
+Only a scope the user chose is written to the URL, in place, without a history
+entry: a pick, a typed name or a link followed. When the URL names none, the page
+takes a default, once the Namespace list and the verdict are known: All
+Namespaces where the caller is known to hold `watch` on `flows` cluster-wide,
+since that is the only scope in which nothing is redacted, and an *unknown*
+verdict never makes it the default; otherwise the first Namespace of the list,
+unchecked. The default is not written to the URL, so a reload runs it again. The
+page opens no stream while no scope is selected: the URL scope is invalid, or the
+URL names none and there is no default to take, because the cluster-wide verdict
+is not *allowed* and the list has no Namespace (it is empty, or unknown because
+the access summary or the listing of Namespaces failed). There is still a scope to choose then:
+All Namespaces is offered unless the verdict is *denied*, and the caller can name
+a Namespace. The page opens a stream once they do. It never opens one without a
+scope.
 
 Antrea UI performs no RBAC decision of its own here and must not: a wrong
 answer on antrea-ui's side would either hide flow data a caller is entitled to
@@ -241,13 +276,74 @@ stream ends before sending one, antrea-ui refuses the stream
 data. Antrea UI v1.0.0 requires Antrea and the Flow Aggregator at v2.8 or
 later; flow visibility is unavailable against an older deployment.
 
-The Flow Visibility navigation entry and page are gated on the `flows`
-`watch` grant above, the same RBAC FA itself checks — a rendering hint, not
-an authorization decision, so it can only ever hide the page from a caller FA
-would refuse, never show it to one FA would allow that this check missed. The
-grant has to be cluster-wide: the UI has no observed-Namespace selector yet, so
-`clusterWide=true` is the only scope it can request, and a grant that covers
-only one Namespace authorizes nothing it would ask for.
+The Flow Visibility navigation entry and page are gated like the Overview
+page: from the cluster-scoped access summary alone, with no per-namespace review
+at login. The caller sees them if they hold `watch` on `flows` cluster-wide, may
+list namespaces, or are named in any RoleBinding (a non-empty
+`summary.namespaces`). This is a rendering hint, not an authorization decision,
+and it fails open: a summary that could not be fetched shows the page and lets FA
+answer. The price of the wider test is that a caller with a RoleBinding but no
+`flows` grant, `edit` in their Namespace say, sees the entry and gets FA's 403
+message on the page. The `/` redirect is narrower, and lands on Flow Visibility
+only for a caller who holds `flows` cluster-wide, so a caller who merely has a
+RoleBinding lands on Overview instead of a page that may be refused.
+
+That question is answered from the access summary described in [What the
+frontend knows about your permissions](#what-the-frontend-knows-about-your-permissions),
+with nothing flow-specific on the backend. The summary says whether the caller
+holds `watch` on `flows` cluster-wide, which is *allowed* when a rule grants it
+or `clusterAdmin` is true, *denied* when none does in a rule list the API server
+says is exhaustive, and *unknown* when none does but the API server could not enumerate its rules, as
+with a webhook authorizer, or the summary could not be fetched. The selector
+offers All Namespaces unless the verdict is *denied*, so a caller granted `flows`
+cluster-wide by a webhook can choose it; only *allowed* makes it the default. The
+scope in force appears in the selector as selected while nothing is typed, even
+one it would not otherwise offer, such as All Namespaces on a *denied* page
+reached through a link. While something is typed, it appears only if the search
+shows it.
+
+The selector's candidates are the Namespaces the access summary derived from
+RoleBindings naming the caller or their groups, as the summary has them, whatever
+`rules.incomplete` says: with a webhook authorizer the rules are incomplete for
+every caller, and a caller with RoleBindings must still get their list. The
+selector does not review the candidates. It offers each of them, whether or not
+the caller may observe flows there, and says nothing about access in the list. A
+Namespace the caller may not observe is refused by FA with a 403 when they open
+it, and the page shows that error.
+
+A caller who may list namespaces has none named in the access summary (it says
+`"*"`), so the page lists them itself through the Kubernetes API proxy, with the
+caller's own credentials. The list is not capped, but as a safeguard the request
+asks for at most 10,000 Namespaces, and a response that says there are more
+(a `continue` token) marks the list as cut. The selector is a combobox: with
+nothing typed it offers All Namespaces and then the first 10 Namespaces of the
+list, and typing searches the whole list by name prefix, ignoring case and
+surrounding spaces. It shows at most 10 matches and says when there are more ("Showing the
+first 10 - type to search" with nothing typed, "More matches, keep typing"
+otherwise), and hides All Namespaces while something is typed.
+
+When the list is empty, not known, or cut, the selector lets a caller name a
+Namespace directly instead, and FA authorizes it either way. The list is empty
+for a caller a webhook authorizer grants `flows` in a Namespace that no
+RoleBinding names; it is not known when the summary could not be fetched or a
+caller who may list namespaces could not list them. A typed name, in the
+combobox or in that box, must be a valid Namespace name (an RFC 1123 label) and
+is rejected otherwise.
+
+When the selected Namespace is not in a complete, non-empty list, the page still
+opens the stream, and adds a note, since a caller who holds `flows` cluster-wide
+gets an empty stream rather than a 403 for a misspelled or deleted Namespace. For
+a caller who may list namespaces the note says the Namespace does not exist, once
+a fresh `GET` of that one Namespace confirms it, as it may have been created
+after the list was loaded; for any other caller it says the Namespace is not in
+their list, so it may not exist or they may not have access. There is no note when
+the list is empty, not known, or cut.
+
+The Dest Service column shows `-` for a destination outside the Pod network on a
+Namespace stream, and its Service on All Namespaces. Such a destination has no
+Namespace, so the Flow Aggregator withholds its Service on every stream that is
+not cluster-wide, and the page cannot tell that from a destination with no
+Service.
 
 To turn the integration off entirely, deploy with `flowAggregator.enabled=false`
 (the chart default). The endpoint then returns 501 for every user, including
@@ -401,7 +497,11 @@ than reusing a failure.
   today's pre-access-summary behaviour.
 - `clusterAdmin` is computed from a `SelfSubjectAccessReview` for `*` verb, `*`
   group, `*` resource, which is true for any wildcard ClusterRole (not only one
-  literally named `cluster-admin`).
+  literally named `cluster-admin`). The frontend counts it as granting every
+  resource query, whatever `rules` shows, since the rules of such a user may be
+  incomplete. It says nothing about non-resource URLs (such as `/featuregates`),
+  which a resource wildcard does not grant and which are matched against
+  `nonResourceRules` alone.
 - `namespaces` is `["*"]` when the user can `list` namespaces cluster-wide.
   Otherwise it is derived from a cluster-wide watch on RoleBindings, kept
   in-memory by antrea-ui using its own ServiceAccount: the namespaces where a

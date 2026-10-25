@@ -17,11 +17,16 @@
 import React, { useRef, useCallback, useMemo } from 'react';
 import { useSelector } from 'react-redux';
 import '@antrea/ui-components';
-import { can, canViewSummary, canViewOverview, holdsOverviewResources, canViewFlows, sessionIdentity, GATE_TRACEFLOW_CREATE } from '@antrea/ui-components';
-import { Navigate, useSearchParams } from 'react-router';
+import {
+    can, canViewSummary, canViewOverview, holdsOverviewResources, canViewFlows, holdsFlowsClusterWide,
+    sessionIdentity, GATE_TRACEFLOW_CREATE, SCOPE_CHANGE_EVENT, SCOPE_CHOSEN_EVENT,
+} from '@antrea/ui-components';
+import type { ScopeChangeDetail, ScopeChosenDetail } from '@antrea/ui-components';
+import { Navigate, useLocation, useSearchParams } from 'react-router';
+import { getLastScope, scopeSearch, setLastScope } from './lastScope';
 import { useLogout } from './logout';
 import { BUILTIN_LANDING_PAGE_TAB_ID, getEdgeExtraRenderers, getFlowTableColumnsProcessors } from './plugins';
-import { useAccess } from './access';
+import { useAccess, useScopeUser } from './access';
 import type { LandingPageTab } from './plugins';
 import type { RootState } from './store';
 
@@ -36,14 +41,20 @@ import type { RootState } from './store';
 // since the page may have something for them, which they can find by picking a namespace.
 export function HomeRedirect() {
     const { summary, loaded } = useAccess();
+    const user = useScopeUser();
     if (!loaded) return null;
     if (holdsOverviewResources(summary)) return <Navigate to="/overview" replace />;
     if (canViewSummary(summary)) return <Navigate to="/summary" replace />;
     if (can(summary, GATE_TRACEFLOW_CREATE)) return <Navigate to="/traceflow" replace />;
-    // canViewFlows is a rendering hint fed by the same RBAC the Flow Aggregator itself checks
-    // (see access-api.ts), not a stand-in for its authorization decision - it can only ever
+    // holdsFlowsClusterWide is a rendering hint fed by the same RBAC the Flow Aggregator itself
+    // checks (see access-api.ts), not a stand-in for its authorization decision - it can only ever
     // agree with FA's own answer or be more conservative, never grant a stream FA would refuse.
-    if (canViewFlows(summary)) return <Navigate to="/flows/list" replace />;
+    // Only the cluster-wide holder lands here: canViewFlows is wider, and a user who merely has a
+    // RoleBinding may be refused by FA, so that case falls through to canViewOverview.
+    // The last scope chosen goes with the redirect, like a navigation entry's link.
+    if (holdsFlowsClusterWide(summary)) {
+        return <Navigate to={`/flows/list${scopeSearch(getLastScope(user))}`} replace />;
+    }
     if (canViewOverview(summary)) return <Navigate to="/overview" replace />;
     // A user permitted none of these lands on Settings, which needs no permission at all - the
     // floor everyone can reach.
@@ -175,19 +186,56 @@ export function TraceflowPage() {
 // source of truth for which one is showing, flowing one-way into the Lit element's viewMode
 // property. There is no in-page control that could disagree with it: switching is entirely a
 // sidebar (nav.tsx) concern.
+//
+// The page keeps its scope in the query string (`?namespace=`), and rewrites it with
+// history.replaceState, which the router is not told about. It says so with SCOPE_CHANGE_EVENT
+// instead, and the router adopts the location here, so the sidebar's links never go stale. The
+// location goes the other way too: the page is handed the query string, and follows it when it
+// changes (Back, Forward, or switching between Flow List and Service Map, which does not remount
+// it). A scope the page takes from its picker or its URL is remembered as the last scope chosen
+// (see lastScope.ts), which the navigation entries carry.
 export function FlowVisibilityPage({ view }: { view: 'list' | 'map' }) {
-    const { ref } = useLitPage();
+    const { ref: litRef } = useLitPage();
     const { summary, loaded } = useAccess();
+    const { search } = useLocation();
+    const [, setSearchParams] = useSearchParams();
+    const user = useScopeUser();
+    const attachedTo = useRef<HTMLElement | null>(null);
+    const onScopeChange = useCallback((e: Event) => {
+        const { search } = (e as CustomEvent<ScopeChangeDetail>).detail;
+        setSearchParams(new URLSearchParams(search), { replace: true });
+    }, [setSearchParams]);
+    const onScopeChosen = useCallback((e: Event) => {
+        setLastScope(user, (e as CustomEvent<ScopeChosenDetail>).detail.scope);
+    }, [user]);
+    // A callback ref for the same reason as useLitPage's: the element mounts once the permission
+    // check resolves, which does not re-render a hook declared here to notice it.
+    const ref = useCallback((el: HTMLElement | null) => {
+        litRef(el);
+        attachedTo.current?.removeEventListener(SCOPE_CHANGE_EVENT, onScopeChange);
+        attachedTo.current?.removeEventListener(SCOPE_CHOSEN_EVENT, onScopeChosen);
+        attachedTo.current = el;
+        el?.addEventListener(SCOPE_CHANGE_EVENT, onScopeChange);
+        el?.addEventListener(SCOPE_CHOSEN_EVENT, onScopeChosen);
+    }, [litRef, onScopeChange, onScopeChosen]);
     return (
         <RequirePermission allowed={canViewFlows(summary)} loaded={loaded}>
             <antrea-flow-visibility-page
                 ref={ref}
                 viewMode={view}
+                locationSearch={search}
                 edgeExtraRenderers={getEdgeExtraRenderers()}
                 flowTableColumnsProcessors={getFlowTableColumnsProcessors()}
             />
         </RequirePermission>
     );
+}
+
+// "/flows" itself just lands on the default sub-page, and keeps the query string, which is where
+// the page's scope lives.
+export function FlowsRedirect() {
+    const { search } = useLocation();
+    return <Navigate to={{ pathname: '/flows/list', search }} replace />;
 }
 
 export function SettingsPage() {
