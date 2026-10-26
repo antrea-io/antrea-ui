@@ -426,6 +426,7 @@ lives inside `bundle.zip`:
 | `compatibleAntreaUI` | yes | A [node-semver](https://github.com/npm/node-semver#ranges) range of the **full** Antrea UI versions, prerelease suffix included, that may load this plugin, e.g. `"1.0.0-rc.1 \|\| 1.0.0-rc.2"`. The backend accepts only a subset of that syntax: `\|\|`-separated sets of space-separated comparators (`<`, `<=`, `>`, `>=`, `=`, `^`, `~`, or none), each followed by a full `MAJOR.MINOR.PATCH[-prerelease]` version; x-ranges, `*`, hyphen ranges, partial versions, a `v` prefix and build metadata are not accepted, and the whole range is at most 256 characters. A manifest with this missing, empty or outside that grammar is rejected by the backend, dropping the whole plugin. The frontend then matches the range against its own build-time version with `semver.satisfies()` (default prerelease handling) *before* fetching any of the plugin's code; on a mismatch the plugin gets no route, sidebar entry or code fetch, and a banner names the plugin, the Antrea UI version and the supported range. The one exception is a frontend build with no valid version of its own, which skips the check. See "Version compatibility" below. |
 | `bundleSha256` | no* | Hex SHA-256 of the plugin's `bundle.zip` as delivered (64 characters, compared case-insensitively). Verified whenever present, and **required** when the backend is configured with a plugin signing key — it is what makes the signature over `manifest.json` cover the bundle too. See "Signature verification" above. |
 | `bundleSource` | no | `{"apiServer": {"path": "/apis/<group>/<version>"}}` or `{"http": {}}` (with the URL in the ConfigMap's `bundleURL` key) — where the backend downloads `bundle.zip` from, for a ConfigMap that ships no `bundle.zip` (see "Downloading the bundle" below). Requires `bundleSha256`. `http` can be turned off with `plugins.bundleSource.http.enabled`. Not supported for the plugin directory source. |
+| `supportBundle` | no | `{apiServer: {path}, maxConcurrent?}`: a source of diagnostics that Antrea UI collects into its support bundles, served through the Kubernetes apiserver (typically by an APIService). `path` must be exactly `/apis/<group>/<version>`; Antrea UI appends `/supportbundles` to it and implements the protocol described in [supportbundle.md](supportbundle.md#the-source-protocol). `maxConcurrent` caps how many of Antrea UI's collections may be outstanding against the source at once (0, the default, means no limit; set 1 for a source that can only hold one bundle at a time, e.g. one that uses the same bundle name every time): see [Concurrent collections](supportbundle.md#concurrent-collections). An invalid `path` or a negative `maxConcurrent` rejects the plugin; a `supportBundle` with no variant this backend recognizes only skips the source. The plugin must grant `antrea-ui-admin` access to it: see [Support bundle sources](#support-bundle-sources). |
 | `federation` | no | `{remoteEntry, routes: [{path, sidebarLabel, icon?, exposedModule, kind?}]}` — a [Native Federation](https://www.npmjs.com/package/@angular-architects/native-federation) remote (its own entry in `bundle.zip`, separate from `entry`) plus the whole-page routes/sidebar entries it serves, as data instead of registering them in code (see below). Antrea UI's own frontend has no module federation loader and ignores this field entirely (see `plugins.ts`); it's consumed by a separate, out-of-tree Angular-based host, which lazily loads a route's `exposedModule` out of `remoteEntry`, only once that route is actually visited. `kind` is `"component"` (the default) or `"routes"` — any other value is rejected, dropping the whole plugin (see below): `"component"` expects `exposedModule` to export a single page component; `"routes"` expects it to export a whole route tree the plugin owns end to end, letting it nest its own sub-paths and register its own route-level providers without the host knowing anything about them. Since a `"routes"` route owns every sub-path under its own `path`, no other route in the same manifest may fall under it (rejected the same way two routes with an identical `path` are); a route nested under it in a *different*, already-installed plugin's manifest is resolved the same way an identical `path` across plugins is (see below). |
 
 `bundle.zip`'s own internal layout is entirely up to the plugin — a flat set
@@ -514,6 +515,39 @@ route (and its sidebar entry) from `GET /api/v1/plugins/index.json` — the
 rest of its manifest, including `entry`, is unaffected. Only if every one
 of a plugin's routes collides is the whole plugin dropped from the index,
 the same resolution as two plugins declaring the same `name`.
+
+### Support bundle sources
+
+Antrea UI collects a plugin's `supportBundle` source as the `antrea-ui-admin`
+ServiceAccount, whoever requested the bundle (see
+[supportbundle.md](supportbundle.md#trust-model)). A plugin that declares one
+must grant `antrea-ui-admin` access to it, with a ClusterRole labeled
+`rbac.ui.antrea.io/aggregate-to-antrea-ui-admin: "true"` (the same
+aggregation as in [Writing a plugin](#writing-a-plugin)), shipped by whoever
+deploys the plugin:
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: foo-supportbundle
+  labels:
+    rbac.ui.antrea.io/aggregate-to-antrea-ui-admin: "true"
+rules:
+  - apiGroups: ["foo.example.com"]
+    resources: ["supportbundles"]
+    verbs: ["create", "get", "delete"]
+  - apiGroups: ["foo.example.com"]
+    resources: ["supportbundles/download"]
+    verbs: ["get"]
+```
+
+Requests reach the source as `antrea-ui-admin`, with user extras naming the
+requester and the bundle (see [How a source authenticates Antrea
+UI](supportbundle.md#how-a-source-authenticates-antrea-ui)). Forwarding those
+extras relies on the extension apiserver honoring the extra headers prefix of
+the `extension-apiserver-authentication` ConfigMap, which kubeadm and kind
+configure.
 
 ## Downloading the bundle
 
@@ -878,11 +912,13 @@ Creating (and RBAC-scoping) that ClusterRole is the responsibility of
 whoever deploys the plugin, not Antrea UI itself.
 
 That aggregation only covers the admin-password mode, which impersonates the
-`antrea-ui-admin` ServiceAccount. Users who log in with their own Kubernetes
-identity (OIDC, kubeconfig, token) are bound to a role the cluster admin wrote,
-which your ClusterRole does not aggregate into — so your plugin's pages will
-403 for them until that admin grants the same permissions deliberately. Say so
-in your plugin's install instructions. See
+`antrea-ui-admin` ServiceAccount, and support bundle collection, which always
+runs as `antrea-ui-admin` (see
+[supportbundle.md](supportbundle.md#trust-model)). Users who log in with their
+own Kubernetes identity (OIDC, kubeconfig, token) are bound to a role the
+cluster admin wrote, which your ClusterRole does not aggregate into — so your
+plugin's pages will 403 for them until that admin grants the same permissions
+deliberately. Say so in your plugin's install instructions. See
 [authentication.md](authentication.md).
 
 ## Extending an existing page

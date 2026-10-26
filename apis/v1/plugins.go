@@ -64,6 +64,12 @@ type PluginManifest struct {
 	// or the plugin directory. It is only supported for ConfigMap plugins and requires
 	// BundleSha256: the digest is what pins the bytes accepted, wherever they come from.
 	BundleSource *PluginBundleSource `json:"bundleSource,omitempty"`
+
+	// SupportBundle optionally declares a source of diagnostics that antrea-ui collects into its
+	// own support bundle (see docs/supportbundle.md). A declaration with no variant this backend
+	// recognizes does not reject the manifest: the source is skipped, and the support bundle
+	// records why.
+	SupportBundle *SupportBundleSourceSpec `json:"supportBundle,omitempty"`
 }
 
 // PluginBundleSource is where a plugin's bundle.zip is downloaded from. Exactly one transport

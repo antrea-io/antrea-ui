@@ -86,6 +86,14 @@ Kubeconfig file with enough permissions (using the default / admin Kubeconfig is
 the easiest way).
 
 1. Build the backend with `make bin`.
-2. Run the backend with `KUBECONFIG=<path to Kubeconfig> APP_ENV=dev ./bin/server`.
+2. Run the backend with `KUBECONFIG=<path to Kubeconfig> APP_ENV=dev
+   ANTREA_UI_LOG_DIRECTORY=/tmp/antrea-ui/logs
+   ANTREA_UI_SUPPORTBUNDLE_DIRECTORY=/tmp/antrea-ui/supportbundles ./bin/server`.
+   The default log and support bundle directories (under `/var`) are the ones
+   the Helm chart mounts, and are usually not writable on a development machine.
+   Support bundles are collected by impersonating the `antrea-ui-admin`
+   ServiceAccount (and minting its tokens for sources reached by URL), as the
+   admin-password mode already requires: outside a cluster, the Kubeconfig
+   identity must be allowed to do both.
 3. Run the frontend with `cd client/web/antrea-ui/ && yarn start`.
 4. You can access the UI in your browser by visiting `http://localhost:3000/`.
