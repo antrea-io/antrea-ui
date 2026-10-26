@@ -129,7 +129,7 @@ export function OverviewPage({ pluginTabs = NO_PLUGIN_TABS }: { pluginTabs?: Lan
 
     const { ref } = useLitPage();
 
-    const tabs: OverviewTab[] = useMemo(() => [{ id: BUILTIN_LANDING_PAGE_TAB_ID, label: 'Network Traffic & Inventory' }, ...pluginTabs], [pluginTabs]);
+    const tabs: OverviewTab[] = useMemo(() => [{ id: BUILTIN_LANDING_PAGE_TAB_ID, label: 'Inventory & Events' }, ...pluginTabs], [pluginTabs]);
     const activeTab = tabs.find(t => t.id === searchParams.get('tab')) ?? tabs[0];
 
     return (
