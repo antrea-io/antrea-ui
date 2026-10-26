@@ -233,12 +233,12 @@ describe('getLandingPageTabs / window.__antreaPluginHost', () => {
         expect(getLandingPageTabs()).toContainEqual(tab);
     });
 
-    test('a tab id colliding with the built-in Network Traffic & Inventory tab is dropped', () => {
+    test('a tab id colliding with the built-in Inventory & Events tab is dropped', () => {
         const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
         window.__antreaPluginHost!.registerLandingPageTab({ id: 'traffic-inventory', label: 'Fake Overview', tag: 'antrea-fake-overview' });
 
         expect(getLandingPageTabs().find(t => t.id === 'traffic-inventory')).toBeUndefined();
-        expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('collides with the built-in Network Traffic & Inventory tab'));
+        expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('collides with the built-in Inventory & Events tab'));
     });
 
     test('a tab id already claimed by an earlier plugin is dropped', () => {

@@ -920,10 +920,9 @@ registerFlowTableColumnsProcessor((columns) => [
     { key: 'my-column', label: 'My Column', render: (entry) => entry.flow.k8s.flowType },
 ]);
 
-// Adds a tab to the Overview landing page, next to the built-in "Network
-// Traffic & Inventory" one. `tag`'s custom element is mounted the way the
-// built-in tab is, with the same session-expiry wiring, when the tab is
-// selected.
+// Adds a tab to the Overview landing page, next to the built-in "Inventory &
+// Events" one. `tag`'s custom element is mounted the way the built-in tab is,
+// with the same session-expiry wiring, when the tab is selected.
 registerLandingPageTab({ id: 'my-plugin', label: 'My Plugin', tag: 'antrea-plugin-my-tab' });
 ```
 

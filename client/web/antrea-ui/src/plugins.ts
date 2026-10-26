@@ -82,7 +82,7 @@ const BUILTIN_TOP_LEVEL_PATHS = new Set(['overview', 'summary', 'traceflow', 'fl
 // under the same path is undefined, and a colliding plugin could silently shadow a built-in page.
 const RESERVED_PATHS = new Set(['', ...BUILTIN_TOP_LEVEL_PATHS, 'flows/list', 'flows/map']);
 
-// The Overview landing page's built-in "Network Traffic & Inventory" tab id. A plugin's landing
+// The Overview landing page's built-in "Inventory & Events" tab id. A plugin's landing
 // page tab must not collide with this, for the same reason a route/sidebar entry must not
 // collide with RESERVED_PATHS above.
 export const BUILTIN_LANDING_PAGE_TAB_ID = 'traffic-inventory';
@@ -166,7 +166,7 @@ function dedupeLandingPageTabs(items: LandingPageTab[]): LandingPageTab[] {
     const kept: LandingPageTab[] = [];
     for (const item of items) {
         if (RESERVED_LANDING_PAGE_TAB_IDS.has(item.id)) {
-            console.error(`plugin landing page tab id "${item.id}" collides with the built-in Network Traffic & Inventory tab, dropping it`);
+            console.error(`plugin landing page tab id "${item.id}" collides with the built-in Inventory & Events tab, dropping it`);
             continue;
         }
         if (seenIds.has(item.id)) {

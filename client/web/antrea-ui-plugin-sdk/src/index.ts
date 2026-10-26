@@ -75,8 +75,8 @@ export interface PluginSidebarEntry {
     parentPath?: string;
 }
 
-/** A tab a plugin wants added to the Overview landing page, alongside the built-in "Network
- * Traffic & Inventory" tab — e.g. the ANS plugin's "Security" tab. `tag` is the custom element
+/** A tab a plugin wants added to the Overview landing page, alongside the built-in "Inventory &
+ * Events" tab — e.g. the ANS plugin's "Security" tab. `tag` is the custom element
  * the plugin's entry module registers via customElements.define(...); the host mounts it the
  * same way it mounts the built-in tab, with the same session-expiry wiring. `id` must not be
  * "traffic-inventory" (reserved for the built-in tab) or collide with another plugin's tab id —

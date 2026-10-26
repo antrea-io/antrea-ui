@@ -240,14 +240,14 @@ describe('OverviewPage', () => {
     describe('tab strip', () => {
         test('shows the built-in tab alone when no plugin registered one', async () => {
             renderOverview();
-            await waitFor(() => expect(tabLabels()).toEqual(['Network Traffic & Inventory']));
-            expect(activeTab()).toBe('Network Traffic & Inventory');
+            await waitFor(() => expect(tabLabels()).toEqual(['Inventory & Events']));
+            expect(activeTab()).toBe('Inventory & Events');
             expect(document.querySelector('antrea-overview-page')).not.toBeNull();
         });
 
         test('lists a plugin tab after the built-in one', async () => {
             renderOverview({ tabs: pluginTabs });
-            await waitFor(() => expect(tabLabels()).toEqual(['Network Traffic & Inventory', 'Security']));
+            await waitFor(() => expect(tabLabels()).toEqual(['Inventory & Events', 'Security']));
         });
 
         test('selects a tab through ?tab=, mounting the plugin tab\'s element instead of the built-in page', async () => {
@@ -260,7 +260,7 @@ describe('OverviewPage', () => {
         test('falls back to the built-in tab for an id nothing registered', async () => {
             renderOverview({ tabs: pluginTabs, entry: '/overview?tab=nope' });
             await waitFor(() => expect(document.querySelector('antrea-overview-page')).not.toBeNull());
-            expect(activeTab()).toBe('Network Traffic & Inventory');
+            expect(activeTab()).toBe('Inventory & Events');
             expect(document.querySelector('antrea-test-security-tab')).toBeNull();
         });
 
