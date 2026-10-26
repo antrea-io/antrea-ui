@@ -415,30 +415,39 @@ func (m *manager) run(ctx context.Context, t *tap, authorize Authorizer) {
 				return
 			}
 		case <-ticker.C:
-			// An update which is pending and an access check which is due come before the
-			// scrapes of the tick. Both are ready at the same time as the tick whenever they
-			// came up while the loop was busy for a whole interval: with a target which does
-			// not answer, or a client which does not read. This tick then uses the new
-			// selection already, and scrapes nothing for an owner whose grant was removed.
-			// Either way a selection is never used before the "tap" event which announces it
-			// has been sent.
-			select {
-			case <-t.updated:
-				if !t.applyUpdate(ctx) {
-					return
-				}
-			default:
+			if !m.tick(ctx, t, authTicker.C, checkAccess) {
+				return
 			}
-			select {
-			case <-authTicker.C:
-				if !checkAccess() {
-					return
-				}
-			default:
-			}
-			m.scrapeAll(ctx, t)
 		}
 	}
+}
+
+// tick scrapes the targets of a tap for one tick. checkDue is ready when an access check is due,
+// and checkAccess makes it. tick reports false when the tap ended.
+//
+// An update which is pending and an access check which is due come before the scrapes of the
+// tick. Both are ready at the same time as the tick whenever they came up while the loop was busy
+// for a whole interval: with a target which does not answer, or a client which does not read. This
+// tick then uses the new selection already, and scrapes nothing for an owner whose grant was
+// removed. Either way a selection is never used before the "tap" event which announces it has been
+// sent.
+func (m *manager) tick(ctx context.Context, t *tap, checkDue <-chan time.Time, checkAccess func() bool) bool {
+	select {
+	case <-t.updated:
+		if !t.applyUpdate(ctx) {
+			return false
+		}
+	default:
+	}
+	select {
+	case <-checkDue:
+		if !checkAccess() {
+			return false
+		}
+	default:
+	}
+	m.scrapeAll(ctx, t)
+	return true
 }
 
 // emit sends an event to the client. It reports false when the tap ended first.
