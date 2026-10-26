@@ -17,21 +17,20 @@ import type { AccessSummary, Verdict } from './access-api.js';
 import { apiFetchJSON, APIError } from './api.js';
 
 /**
- * What the observed-namespace selector offers: whether the user holds the cluster scope, and the
- * namespaces to choose from. Derived from the cluster-scoped access summary, which knows nothing
- * about flows: the resource and verb asked about are GATE_FLOWS_WATCH, here and nowhere in the
- * backend.
+ * What a Namespace picker offers: whether the user holds the cluster scope, and the namespaces to
+ * choose from. Derived from the cluster-scoped access summary, which knows nothing about any
+ * page: the resources and verbs the verdict is about are the page's own, given to
+ * namespaceAccess() as a callback (flowAccess() asks about watch on flows).
  *
- * A rendering hint and never an authorization decision: the Flow Aggregator authorizes and
- * redacts every stream itself.
+ * A rendering hint and never an authorization decision: the API decides what the user gets.
  */
-export interface FlowAccess {
-    /** Whether the user holds watch on flows cluster-wide, the only scope in which nothing is
-     * redacted. 'unknown' when no rule grants it but the API server could not enumerate its rules,
-     * or the summary could not be fetched, which is not a denial: the selector offers the cluster
-     * scope unless this is 'denied', and defaults to it only when it is 'allowed'. */
+export interface NamespaceAccess {
+    /** The page's verdict cluster-wide, as the caller's callback gave it. 'unknown' when no rule
+     * grants it but the API server could not enumerate its rules, or the summary could not be
+     * fetched, which is not a denial: the picker offers the cluster scope unless this is
+     * 'denied', and a page defaults to it only when it is 'allowed'. */
     clusterWide: Verdict
-    /** Every namespace the selector can search, sorted, or null when they are not known: the
+    /** Every namespace the picker can search, sorted, or null when they are not known: the
      * summary could not be fetched, or it says "*" and the namespaces could not be listed. */
     candidates: string[] | null
     /** Whether the caller may list namespaces, in which case the candidates are every namespace
@@ -44,11 +43,11 @@ export interface FlowAccess {
 
 /** Whether the user can name a namespace by typing it: the candidates are empty, unknown or
  * cut, and so no absence from them says anything. */
-export function mayNameNamespace(access: FlowAccess | null): boolean {
+export function mayNameNamespace(access: NamespaceAccess | null): boolean {
     return !!access && (!access.candidates?.length || access.cut);
 }
 
-/** How many namespaces the selector offers at once. */
+/** How many namespaces the picker offers at once. */
 export const SELECTOR_PAGE_SIZE = 10;
 
 /** The most namespaces listed for a user who may list them. Only a safeguard: the list is not
@@ -118,14 +117,17 @@ export function isValidNamespaceName(name: string): boolean {
 }
 
 /**
- * What the observed-namespace selector offers. Never rejects: a fetch that failed leaves the
- * cluster scope 'unknown' and the candidates null, and the page still lets the user name a
- * namespace.
+ * What a Namespace picker offers for a page whose cluster-wide verdict is given by `clusterWide`,
+ * evaluated against `summary`: the cluster-scoped access summary, or null when it could not be
+ * fetched (the caller fetches it, and decides what a failure means). Never rejects: a null
+ * summary leaves the cluster scope 'unknown' and the candidates null, and the page still lets the
+ * user name a namespace.
  *
- * The summary and the namespace list are memoized, so the shell's gate and the pages share one fetch.
+ * The namespace list is memoized like the summary, so the pages share one fetch.
  */
-export async function flowAccess(): Promise<FlowAccess> {
-    const summary = await accessSummary().catch(() => null);
+export async function namespaceAccess(
+    summary: AccessSummary | null, clusterWide: (summary: AccessSummary | null) => Verdict,
+): Promise<NamespaceAccess> {
     const mayList = mayListNamespaces(summary);
     const listed = mayList ? await listNamespaceNames().catch(() => null) : null;
     const candidates = candidatesFromSummary(summary) ?? listed?.names ?? null;
@@ -133,19 +135,58 @@ export async function flowAccess(): Promise<FlowAccess> {
         // `namespace` is only set on a summary evaluated for one namespace, whose rules can show
         // a namespaced Role's grant. That authorizes nothing cluster-wide, and accessSummary()
         // never asks for one, so this is a guard and not a case.
-        clusterWide: summary?.namespace ? 'denied' : verdict(summary, GATE_FLOWS_WATCH),
+        clusterWide: summary?.namespace ? 'denied' : clusterWide(summary),
         candidates,
         mayList,
         cut: listed?.cut ?? false,
     };
 }
 
+/** What the observed-namespace selector of the flow page offers. Its cluster-wide verdict is
+ * watch on flows, the only scope in which the Flow Aggregator redacts nothing; the Flow
+ * Aggregator authorizes and redacts every stream itself. */
+export async function flowAccess(): Promise<NamespaceAccess> {
+    const summary = await accessSummary().catch(() => null);
+    return namespaceAccess(summary, s => verdict(s, GATE_FLOWS_WATCH));
+}
+
 /**
- * The namespaces a selector should offer for a search: those starting with `query` (ignoring case
+ * The namespaces a picker should offer for a search: those starting with `query` (ignoring case
  * and surrounding spaces), at most one page of them, and whether there were more.
  */
-export function searchFlowNamespaces(access: FlowAccess | null, query: string): { items: string[], more: boolean } {
+export function searchNamespaces(access: NamespaceAccess | null, query: string): { items: string[], more: boolean } {
     const q = query.trim().toLowerCase();
     const matches = (access?.candidates ?? []).filter(n => n.startsWith(q));
     return { items: matches.slice(0, SELECTOR_PAGE_SIZE), more: matches.length > SELECTOR_PAGE_SIZE };
+}
+
+/** A note on the selected Namespace, which is not in the list. */
+export interface ScopeNote {
+    /** 'missing' when a fresh check confirmed that the Namespace does not exist; 'not-listed'
+     * when it may not exist or the user may not have access. */
+    kind: 'missing' | 'not-listed'
+    text: string
+}
+
+/**
+ * The note for a selected Namespace that is not in the list, or null for none. The page still
+ * loads such a Namespace, since the list is a hint. Only when the list is complete and not empty:
+ * for a user who may list Namespaces the list is every Namespace, so "does not exist", once a
+ * fresh check confirms it (it may have been created since the list was loaded); otherwise the
+ * Namespace may not exist or may not be accessible. `isCurrent` says whether the answer is still
+ * wanted once the check returns.
+ */
+export async function scopeNote(
+    access: NamespaceAccess | null, ns: string, isCurrent: () => boolean,
+): Promise<ScopeNote | null> {
+    if (!ns || !access || mayNameNamespace(access) || access.candidates?.includes(ns)) return null;
+    if (!access.mayList) {
+        return {
+            kind: 'not-listed',
+            text: `Namespace ${ns} is not in your list: it may not exist, or you may not have access`,
+        };
+    }
+    const exists = await namespaceExists(ns);
+    if (!isCurrent()) return null;
+    return exists === false ? { kind: 'missing', text: `Namespace ${ns} does not exist` } : null;
 }

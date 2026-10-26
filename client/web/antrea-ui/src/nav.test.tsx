@@ -14,9 +14,10 @@
  * limitations under the License.
  */
 
-import { render } from '@testing-library/react';
+import { act, render } from '@testing-library/react';
 import { MemoryRouter } from 'react-router';
 import NavTab from './nav';
+import { setLastScope } from './lastScope';
 import type { PluginSidebarEntry } from './plugins';
 import type { AccessSummary } from '@antrea/ui-components';
 import { useAccess } from './access';
@@ -389,6 +390,53 @@ describe('NavTab — permission gating', () => {
         );
 
         expect(document.querySelector('a[href="/flows/map?namespace=ns-last"]')).not.toBeNull();
+    });
+
+    test('the Overview link keeps the scope in the page\'s URL, and only the scope', () => {
+        render(
+            <MemoryRouter initialEntries={['/overview?namespace=ns-a&tab=security']}>
+                <NavTab pluginSidebarEntries={[]} />
+            </MemoryRouter>
+        );
+
+        expect(document.querySelector('a[href="/overview?namespace=ns-a"]')).not.toBeNull();
+    });
+
+    test('the Overview link carries the last scope chosen from another page', () => {
+        sessionStorage.setItem('antrea-ui:last-scope', JSON.stringify({ user: 'alice', scope: 'ns-last' }));
+        render(
+            <MemoryRouter initialEntries={['/flows/list?namespace=ns-here']}>
+                <NavTab pluginSidebarEntries={[]} />
+            </MemoryRouter>
+        );
+
+        expect(document.querySelector('a[href="/overview?namespace=ns-last"]')).not.toBeNull();
+    });
+
+    test('the Overview link carries no scope when the page has none, whatever was chosen last', () => {
+        sessionStorage.setItem('antrea-ui:last-scope', JSON.stringify({ user: 'alice', scope: 'ns-last' }));
+        render(
+            <MemoryRouter initialEntries={['/overview']}>
+                <NavTab pluginSidebarEntries={[]} />
+            </MemoryRouter>
+        );
+
+        expect(document.querySelector('a[href="/overview"]')).not.toBeNull();
+    });
+
+    // A page takes a scope from its URL (Back, Forward, a link) after the navigation has rendered.
+    test('the links follow a last scope set after they rendered', () => {
+        render(
+            <MemoryRouter initialEntries={['/summary']}>
+                <NavTab pluginSidebarEntries={[]} />
+            </MemoryRouter>
+        );
+        expect(document.querySelector('a[href="/flows/map"]')).not.toBeNull();
+
+        act(() => setLastScope('alice', 'ns-late'));
+
+        expect(document.querySelector('a[href="/flows/map?namespace=ns-late"]')).not.toBeNull();
+        expect(document.querySelector('a[href="/overview?namespace=ns-late"]')).not.toBeNull();
     });
 
     test('another user\'s last scope is not carried', () => {

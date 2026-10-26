@@ -282,6 +282,58 @@ describe('OverviewPage', () => {
         });
     });
 
+    describe('scope in the URL', () => {
+        test('the page is handed the query string of the location', async () => {
+            renderOverview({ entry: '/overview?namespace=ns-a' });
+            await waitFor(() => expect(document.querySelector('antrea-overview-page')).not.toBeNull());
+            const el = document.querySelector('antrea-overview-page') as HTMLElement & { locationSearch?: string };
+            expect(el.locationSearch).toBe('?namespace=ns-a');
+        });
+
+        test('the router adopts the query string the page announces', async () => {
+            renderOverview();
+            await waitFor(() => expect(document.querySelector('antrea-overview-page')).not.toBeNull());
+
+            await act(async () => {
+                document.querySelector('antrea-overview-page')!.dispatchEvent(new CustomEvent(SCOPE_CHANGE_EVENT, {
+                    detail: { search: '?namespace=ns-a' }, bubbles: true, composed: true,
+                }));
+            });
+
+            await waitFor(() => expect(location()).toBe('/overview?namespace=ns-a'));
+        });
+
+        test('a scope the page takes is remembered as the last scope chosen', async () => {
+            sessionStorage.clear();
+            renderOverview({ username: 'alice' });
+            await waitFor(() => expect(document.querySelector('antrea-overview-page')).not.toBeNull());
+
+            await act(async () => {
+                document.querySelector('antrea-overview-page')!.dispatchEvent(new CustomEvent(SCOPE_CHOSEN_EVENT, {
+                    detail: { scope: 'ns-a' }, bubbles: true, composed: true,
+                }));
+            });
+
+            expect(getLastScope('alice')).toBe('ns-a');
+        });
+
+        // The scope belongs to the page, not to a tab.
+        test('switching tabs keeps the scope', async () => {
+            renderOverview({ tabs: pluginTabs, entry: '/overview?namespace=ns-a' });
+            await waitFor(() => expect(tabLabels()).toHaveLength(2));
+
+            await act(async () => {
+                (document.querySelectorAll('.tab-bar-item')[1] as HTMLElement).click();
+            });
+            await waitFor(() => expect(location()).toBe('/overview?namespace=ns-a&tab=security'));
+
+            await act(async () => {
+                (document.querySelectorAll('.tab-bar-item')[0] as HTMLElement).click();
+            });
+            await waitFor(() => expect(location()).toBe('/overview?namespace=ns-a'));
+        });
+    });
+
     // A plugin's tab is a page like any other: a 401 inside it means the session is gone, and the
     // shell logs the user out the way it does for the built-in pages.
     test('a plugin tab\'s element can end the session', async () => {

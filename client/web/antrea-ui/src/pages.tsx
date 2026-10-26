@@ -43,7 +43,10 @@ export function HomeRedirect() {
     const { summary, loaded } = useAccess();
     const user = useScopeUser();
     if (!loaded) return null;
-    if (holdsOverviewResources(summary)) return <Navigate to="/overview" replace />;
+    // The last scope chosen goes with the redirect to a Namespace-aware page, like a navigation
+    // entry's link.
+    const lastScope = scopeSearch(getLastScope(user));
+    if (holdsOverviewResources(summary)) return <Navigate to={`/overview${lastScope}`} replace />;
     if (canViewSummary(summary)) return <Navigate to="/summary" replace />;
     if (can(summary, GATE_TRACEFLOW_CREATE)) return <Navigate to="/traceflow" replace />;
     // holdsFlowsClusterWide is a rendering hint fed by the same RBAC the Flow Aggregator itself
@@ -51,11 +54,10 @@ export function HomeRedirect() {
     // agree with FA's own answer or be more conservative, never grant a stream FA would refuse.
     // Only the cluster-wide holder lands here: canViewFlows is wider, and a user who merely has a
     // RoleBinding may be refused by FA, so that case falls through to canViewOverview.
-    // The last scope chosen goes with the redirect, like a navigation entry's link.
     if (holdsFlowsClusterWide(summary)) {
-        return <Navigate to={`/flows/list${scopeSearch(getLastScope(user))}`} replace />;
+        return <Navigate to={`/flows/list${lastScope}`} replace />;
     }
-    if (canViewOverview(summary)) return <Navigate to="/overview" replace />;
+    if (canViewOverview(summary)) return <Navigate to={`/overview${lastScope}`} replace />;
     // A user permitted none of these lands on Settings, which needs no permission at all - the
     // floor everyone can reach.
     return <Navigate to="/settings" replace />;
@@ -113,6 +115,15 @@ interface OverviewTab { id: string; label: string; tag?: string; }
 // A stable default, so that omitting the prop does not give useMemo a new dependency every render.
 const NO_PLUGIN_TABS: LandingPageTab[] = [];
 
+// The query string of a tab: its own `tab`, and the Namespace scope the page has, which belongs to
+// the page and not to a tab, so switching between tabs keeps it.
+function tabSearch(current: URLSearchParams, tabId: string): URLSearchParams {
+    const next = new URLSearchParams();
+    for (const scope of current.getAll('namespace')) next.append('namespace', scope);
+    if (tabId !== BUILTIN_LANDING_PAGE_TAB_ID) next.set('tab', tabId);
+    return next;
+}
+
 // `pluginTabs` are the plugin-registered landing page tabs. They are registered once at startup
 // (see plugins.ts), so main() resolves them once, with the routes and sidebar entries, and passes
 // them down instead of this page resolving them on every mount.
@@ -127,7 +138,7 @@ export function OverviewPage({ pluginTabs = NO_PLUGIN_TABS }: { pluginTabs?: Lan
         ? sessionIdentity({ mode: sessionInfo.mode, username: sessionInfo.username }).name
         : undefined;
 
-    const { ref } = useLitPage();
+    const { ref, search } = useNamespaceScope();
 
     const tabs: OverviewTab[] = useMemo(() => [{ id: BUILTIN_LANDING_PAGE_TAB_ID, label: 'Inventory & Events' }, ...pluginTabs], [pluginTabs]);
     const activeTab = tabs.find(t => t.id === searchParams.get('tab')) ?? tabs[0];
@@ -147,7 +158,7 @@ export function OverviewPage({ pluginTabs = NO_PLUGIN_TABS }: { pluginTabs?: Lan
                                 key={tab.id}
                                 type="button"
                                 className={`tab-bar-item${tab.id === activeTab.id ? ' active' : ''}`}
-                                onClick={() => setSearchParams(tab.id === BUILTIN_LANDING_PAGE_TAB_ID ? {} : { tab: tab.id })}
+                                onClick={() => setSearchParams(tabSearch(searchParams, tab.id))}
                             >
                                 {tab.label}
                             </button>
@@ -155,7 +166,7 @@ export function OverviewPage({ pluginTabs = NO_PLUGIN_TABS }: { pluginTabs?: Lan
                     </div>
                 </div>
                 {activeTab.id === BUILTIN_LANDING_PAGE_TAB_ID
-                    ? <antrea-overview-page ref={ref} />
+                    ? <antrea-overview-page ref={ref} locationSearch={search} />
                     : React.createElement(activeTab.tag as string, { ref })}
             </div>
         </RequirePermission>
@@ -182,21 +193,15 @@ export function TraceflowPage() {
     );
 }
 
-// view is the route's own sub-page (see index.tsx's "flows/list" / "flows/map" routes) — the sole
-// source of truth for which one is showing, flowing one-way into the Lit element's viewMode
-// property. There is no in-page control that could disagree with it: switching is entirely a
-// sidebar (nav.tsx) concern.
-//
-// The page keeps its scope in the query string (`?namespace=`), and rewrites it with
-// history.replaceState, which the router is not told about. It says so with SCOPE_CHANGE_EVENT
-// instead, and the router adopts the location here, so the sidebar's links never go stale. The
-// location goes the other way too: the page is handed the query string, and follows it when it
-// changes (Back, Forward, or switching between Flow List and Service Map, which does not remount
-// it). A scope the page takes from its picker or its URL is remembered as the last scope chosen
-// (see lastScope.ts), which the navigation entries carry.
-export function FlowVisibilityPage({ view }: { view: 'list' | 'map' }) {
+// What a Namespace-aware page needs from its host. The page keeps its scope in the query string
+// (`?namespace=`), and rewrites it with history.replaceState, which the router is not told about.
+// It says so with SCOPE_CHANGE_EVENT instead, and the router adopts the location here, so the
+// sidebar's links never go stale. The location goes the other way too: the page is handed the
+// query string (`search`), and follows it when it changes. A scope the page takes from its picker
+// or its URL is remembered as the last scope chosen (see lastScope.ts), which the navigation
+// entries carry.
+function useNamespaceScope() {
     const { ref: litRef } = useLitPage();
-    const { summary, loaded } = useAccess();
     const { search } = useLocation();
     const [, setSearchParams] = useSearchParams();
     const user = useScopeUser();
@@ -218,6 +223,17 @@ export function FlowVisibilityPage({ view }: { view: 'list' | 'map' }) {
         el?.addEventListener(SCOPE_CHANGE_EVENT, onScopeChange);
         el?.addEventListener(SCOPE_CHOSEN_EVENT, onScopeChosen);
     }, [litRef, onScopeChange, onScopeChosen]);
+    return { ref, search };
+}
+
+// view is the route's own sub-page (see index.tsx's "flows/list" / "flows/map" routes) — the sole
+// source of truth for which one is showing, flowing one-way into the Lit element's viewMode
+// property. There is no in-page control that could disagree with it: switching is entirely a
+// sidebar (nav.tsx) concern. Switching between the views does not remount the page, which follows
+// its query string (see useNamespaceScope).
+export function FlowVisibilityPage({ view }: { view: 'list' | 'map' }) {
+    const { ref, search } = useNamespaceScope();
+    const { summary, loaded } = useAccess();
     return (
         <RequirePermission allowed={canViewFlows(summary)} loaded={loaded}>
             <antrea-flow-visibility-page

@@ -339,6 +339,16 @@ after the list was loaded; for any other caller it says the Namespace is not in
 their list, so it may not exist or they may not have access. There is no note when
 the list is empty, not known, or cut.
 
+The Overview page uses the same picker and follows the same rules, with its own
+verdict: it is *allowed* if the user may list any of the resources the page
+shows cluster-wide, *denied* if the rules are complete and deny every one of
+them, and *unknown* otherwise (the rules are incomplete, as with a webhook
+authorizer, or the summary could not be fetched), and it decides the default in
+the same way. Where Flow Visibility opens a stream for the selected
+scope and reports FA's refusal, Overview asks for the access summary of the
+selected Namespace and leaves out the tiles it denies. See
+`docs/design/namespace-scope-ux.md`.
+
 The Dest Service column shows `-` for a destination outside the Pod network on a
 Namespace stream, and its Service on All Namespaces. Such a destination has no
 Namespace, so the Flow Aggregator withholds its Service on every stream that is
@@ -536,9 +546,8 @@ than reusing a failure.
 ### The same question for several namespaces
 
 `GET /api/v1/access-summary?namespace=<ns>` answers for one namespace. A feature
-that needs an answer for several, such as one that picks a default namespace or
-marks the ones the user may not use, would have to make that request once for
-each. `GET /api/v1/access-summary/namespaces?namespace=<ns>&namespace=<ns>...`
+that needs an answer for several Namespaces would have to make that request once
+for each. `GET /api/v1/access-summary/namespaces?namespace=<ns>&namespace=<ns>...`
 makes them in one request:
 
 ```json

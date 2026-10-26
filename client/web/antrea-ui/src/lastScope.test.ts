@@ -15,7 +15,7 @@
  */
 
 import { afterEach, describe, expect, test } from 'vitest';
-import { getLastScope, setLastScope } from './lastScope';
+import { getLastScope, setLastScope, subscribeLastScope } from './lastScope';
 
 afterEach(() => sessionStorage.clear());
 
@@ -34,5 +34,15 @@ describe('last scope chosen', () => {
     test('is not read when the user is not known', () => {
         sessionStorage.setItem('antrea-ui:last-scope', JSON.stringify({ user: '', scope: 'ns-a' }));
         expect(getLastScope('')).toBeNull();
+    });
+
+    test('tells a subscriber when it is set, until it unsubscribes', () => {
+        let calls = 0;
+        const unsubscribe = subscribeLastScope(() => { calls++; });
+        setLastScope('alice', 'ns-a');
+        expect(calls).toBe(1);
+        unsubscribe();
+        setLastScope('alice', 'ns-b');
+        expect(calls).toBe(1);
     });
 });

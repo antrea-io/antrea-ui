@@ -15,6 +15,7 @@
 export { AntreaButton } from './antrea-button.js';
 export { AntreaAlert } from './antrea-alert.js';
 export { AntreaCard } from './antrea-card.js';
+export { AntreaNamespacePicker } from './antrea-namespace-picker.js';
 export { AntreaNav, AntreaNavItem, AntreaNavGroup } from './antrea-nav.js';
 export { AntreaInput } from './antrea-input.js';
 export { AntreaSummaryPage } from './pages/antrea-summary-page.js';
@@ -27,10 +28,9 @@ export type {
     EdgeExtraRenderer,
     FlowTableColumn,
     FlowTableColumnsProcessor,
-    ScopeChangeDetail,
-    ScopeChosenDetail,
 } from './pages/antrea-flow-visibility-page.js';
-export { SCOPE_CHANGE_EVENT, SCOPE_CHOSEN_EVENT } from './pages/antrea-flow-visibility-page.js';
+export type { ScopeChangeDetail, ScopeChosenDetail } from './lib/namespace-scope.js';
+export { SCOPE_CHANGE_EVENT, SCOPE_CHOSEN_EVENT } from './lib/namespace-scope.js';
 export type { FlowEntry } from './lib/flow-store.js';
 export { AntreaLoginPage } from './pages/antrea-login-page.js';
 export { SessionAwarePage } from './lib/session-aware-page.js';
@@ -86,5 +86,5 @@ export {
     GATE_ANTREA_NETWORKPOLICIES_LIST,
     GATE_EVENTS_LIST,
 } from './lib/access-api.js';
-export type { FlowAccess } from './lib/flow-access.js';
-export { flowAccess } from './lib/flow-access.js';
+export type { NamespaceAccess } from './lib/namespace-access.js';
+export { flowAccess } from './lib/namespace-access.js';

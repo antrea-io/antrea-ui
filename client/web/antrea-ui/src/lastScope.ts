@@ -26,6 +26,16 @@ interface Stored {
     scope: string
 }
 
+const listeners = new Set<() => void>();
+
+/** Calls `listener` whenever the last scope chosen is set, so that what renders it (the
+ * navigation entries) does not go on showing the previous one: a page takes a scope from its URL
+ * after the navigation has rendered. Returns the function that stops it. */
+export function subscribeLastScope(listener: () => void): () => void {
+    listeners.add(listener);
+    return () => { listeners.delete(listener); };
+}
+
 export function setLastScope(user: string, scope: string): void {
     // No name, no owner: a scope kept under '' would be offered to whoever signs in next without
     // a name either.
@@ -35,6 +45,7 @@ export function setLastScope(user: string, scope: string): void {
     } catch {
         // Storage can be unavailable or full. The scope is a convenience, so losing it is fine.
     }
+    listeners.forEach(l => l());
 }
 
 /** The last scope `user` chose in this tab, or null when there is none. */

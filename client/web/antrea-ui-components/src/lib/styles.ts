@@ -178,3 +178,24 @@ export const pageStyles = css`
         font-size: var(--antrea-font-size-sm, 0.75rem);
     }
 `;
+
+/** Styles of the Namespace picker (antrea-namespace-picker). The picker renders into the light
+ * DOM of the page that contains it, so the page includes these. */
+export const pickerStyles = css`
+    antrea-namespace-picker { display: contents; }
+    .combobox { position: relative; }
+    .combobox-list {
+        position: absolute; top: 100%; left: 0; right: 0; margin: 0; padding: 0; list-style: none;
+        max-height: 240px; overflow-y: auto;
+        background: var(--antrea-color-bg, #1b2a32);
+        border: 1px solid var(--antrea-color-border, #314351);
+        border-radius: 0 0 4px 4px; z-index: 50;
+    }
+    .combobox-option {
+        padding: 5px 10px; cursor: pointer; font-size: 12px;
+        color: var(--antrea-color-text, #e9ecef);
+    }
+    .combobox-option.selected { font-weight: 600; }
+    .combobox-option.active { background: var(--antrea-color-bg-hover, #2e3f4d); }
+    .combobox-empty { padding: 5px 10px; font-size: 11px; color: var(--antrea-color-text-muted, #adbbc4); }
+`;

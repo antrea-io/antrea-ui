@@ -12,22 +12,26 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { html, css } from 'lit';
-import { state } from 'lit/decorators.js';
-import { pageStyles } from '../lib/styles.js';
+import { html, css, nothing } from 'lit';
+import { state, property } from 'lit/decorators.js';
+import { pageStyles, pickerStyles } from '../lib/styles.js';
 import { apiFetchJSON, APIError } from '../lib/api.js';
 import {
-    accessSummary, accessibleNamespaces, namespaceAccessSummaries, can, verdict,
-    MAX_NAMESPACE_ACCESS_NAMES,
+    accessSummary, namespaceAccessSummaries, can, pageVerdict,
     GATE_NAMESPACES_LIST, GATE_PODS_LIST, GATE_SERVICES_LIST,
     GATE_DEPLOYMENTS_LIST, GATE_STATEFULSETS_LIST, GATE_DAEMONSETS_LIST,
     GATE_K8S_NETWORKPOLICIES_LIST, GATE_ANTREA_CLUSTERNETWORKPOLICIES_LIST, GATE_ANTREA_NETWORKPOLICIES_LIST,
     GATE_EVENTS_LIST,
 } from '../lib/access-api.js';
-import type { AccessSummary, HasRules, ResourceQuery } from '../lib/access-api.js';
+import type { HasRules, ResourceQuery } from '../lib/access-api.js';
+import { namespaceAccess, mayNameNamespace, scopeNote, isValidNamespaceName } from '../lib/namespace-access.js';
+import type { NamespaceAccess, ScopeNote } from '../lib/namespace-access.js';
+import { SCOPE_ALL, parseScopeParam, dispatchScopeChosen, writeScopeToURL } from '../lib/namespace-scope.js';
+import type { ScopeSelectDetail } from '../antrea-namespace-picker.js';
 import { SessionAwarePage } from '../lib/session-aware-page.js';
 import '../antrea-card';
 import '../antrea-alert';
+import '../antrea-namespace-picker';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -87,7 +91,7 @@ interface ResourceSpec {
      * evaluated against that namespace's summary, which can hold `list` on it through a
      * RoleBinding without authorizing it cluster-wide, and the request would only come back 403. */
     clusterScoped?: boolean;
-    /** `limit` sent on the list request. See COUNT_LIMIT, NAMESPACES_LIMIT and EVENTS_LIMIT. */
+    /** `limit` sent on the list request. See COUNT_LIMIT and EVENTS_LIMIT. */
     limit: number;
     /** Builds the k8s proxy path (see pkg/server/api/k8s.go — RBAC is the only guard, there is no
      * path allowlist), given the selected namespace ('' meaning all namespaces / cluster scope). */
@@ -105,13 +109,9 @@ const EVENTS_DISPLAY_LIMIT = 20;
 // size give the same total as items.length + remainingItemCount; if a server ever omits it, the
 // tile shows "N+" instead.
 //
-// A tile only needs the count, so its page is small. Namespaces and events are the two kinds whose
-// page contents are used, and each has a limit of its own for that reason.
+// A tile only needs the count, so its page is small. Events are the one kind whose page contents
+// are used, and they have a limit of their own for that reason.
 const COUNT_LIMIT = 100;
-// The namespace picker is built from this page, so a cluster with more namespaces than this gets
-// a truncated picker (the tile still shows the true total). Much higher than COUNT_LIMIT, since a
-// mid-sized cluster has more namespaces than that.
-const NAMESPACES_LIMIT = 500;
 // The Recent Events rows are the newest of this page. A limited list comes back in storage-key
 // (namespace/name) order, not time order, so on a cluster with more events than this the newest
 // are not guaranteed to be on it, and the card says so. 2000 is what Headlamp fetches for its
@@ -127,7 +127,7 @@ function withPageLimit(path: string, limit: number): string {
 
 const RESOURCES: ResourceSpec[] = [
     { key: 'namespaces', label: 'Namespaces', gate: GATE_NAMESPACES_LIST,
-        clusterScoped: true, limit: NAMESPACES_LIMIT, path: () => 'k8s/api/v1/namespaces' },
+        clusterScoped: true, limit: COUNT_LIMIT, path: () => 'k8s/api/v1/namespaces' },
     { key: 'pods', label: 'Pods', gate: GATE_PODS_LIST,
         limit: COUNT_LIMIT,
         path: ns => ns ? `k8s/api/v1/namespaces/${ns}/pods` : 'k8s/api/v1/pods' },
@@ -163,10 +163,22 @@ const TILES: string[] = [
     'k8sNetworkPolicies', 'antreaNetworkPolicies', 'antreaClusterNetworkPolicies',
 ];
 
+// The permissions the page shows, from which its cluster-wide verdict is made (rule 4 of
+// docs/design/namespace-scope-ux.md): All Namespaces is offered unless it is 'denied', and is the
+// default only when it is 'allowed'. It says nothing once a Namespace is selected: the tiles are
+// then gated on that Namespace's own summary (see _summaryForScope).
+const PAGE_GATES: ResourceQuery[] = RESOURCES.map(r => r.gate);
+
+// Shown while no scope is selected: the page has nothing to show until one is.
+const SELECT_SCOPE_MESSAGE = 'Select a namespace to see its overview.';
+const UNKNOWN_NAMESPACES_NOTE =
+    'The picker has no complete list of namespaces to offer: it is empty, could not be loaded, ' +
+    'or was cut short. Use the "Namespace not listed" box to name one directly.';
+
 // ── Component ────────────────────────────────────────────────────────────────
 
 export class AntreaOverviewPage extends SessionAwarePage {
-    static styles = [pageStyles, css`
+    static styles = [pageStyles, pickerStyles, css`
         .stat-grid {
             display: grid;
             grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
@@ -188,11 +200,11 @@ export class AntreaOverviewPage extends SessionAwarePage {
         .event-type-warning { color: var(--antrea-color-warning, #f5a623); }
     `];
 
-    @state() private _namespace = '';
-    @state() private _namespaces: string[] = [];
+    // The selected scope: SCOPE_ALL, a Namespace name, or '' for none.
+    @state() private _scope = '';
     @state() private _loading = true;
-    // Set while a re-filter is in flight. Unlike _loading it does not blank the page; the tiles
-    // stay visible (dimmed) so the namespace <select> survives the update.
+    // Set while a re-filter is in flight. Unlike _loading it does not replace the page with a
+    // spinner; the previous tiles stay visible, dimmed.
     @state() private _refreshing = false;
     @state() private _counts: Record<string, number> = {};
     @state() private _truncated: Record<string, boolean> = {};
@@ -208,15 +220,29 @@ export class AntreaOverviewPage extends SessionAwarePage {
     // nothing failed otherwise: the user has nothing to see here, which is a different thing from
     // "some of it is not shown". See _loadCounts().
     @state() private _nothingPermitted = false;
-    // Whether the cluster-scoped summary grants any resource this page shows, so that All
-    // Namespaces has something to show. Without one the option can only lead to an empty page.
-    @state() private _allNamespacesUseful = true;
+    // Why the scope is not what the user asked for: the URL carries an invalid one, or a name
+    // they typed is not a valid Namespace name. Reported on the page.
+    @state() private _scopeError: string | null = null;
+    // A note on the selected namespace: that it is not in a complete list.
+    @state() private _scopeNote: ScopeNote | null = null;
+    private _scopeNoteToken = 0;
 
-    // Cluster-scoped: what the user may do cluster-wide. Gates the All Namespaces view.
-    private _accessSummary: AccessSummary | null = null;
-    // Namespaces from summary.namespaces, for a user who cannot list namespaces cluster-wide: the
-    // picker is seeded from these as well as from the namespaces fetch.
-    private _grantedNamespaces: string[] = [];
+    /** The page URL's query string, passed by a host whose router owns the location, so the page
+     * follows it when it changes (Back, Forward, or switching between the page's own views). A
+     * page without a host reads window.location instead. */
+    @property() locationSearch?: string;
+
+    // What the picker offers: the Namespace list, and the page's cluster-wide verdict. Null until
+    // it resolves; a fetch that fails resolves to an answer with no candidates, so the page is
+    // never left without a way to choose a scope.
+    @state() private _access: NamespaceAccess | null = null;
+    // The query string of the URL as the page last took it, whether it wrote it or read it, so
+    // that the host handing back what the page wrote is not mistaken for a navigation.
+    private _appliedSearch = '';
+    private _sessionStarted = false;
+    // The scope the page last loaded, so that taking the same one again (the Namespace list
+    // arriving after a scope from the URL was already loaded) does not load it twice.
+    private _loadedScope = '';
     // Whether a load has already completed, so a re-filter can keep the page rendered.
     private _loadedOnce = false;
     // Bumped before each _loadCounts() and captured per-call, so a response from a superseded
@@ -224,58 +250,153 @@ export class AntreaOverviewPage extends SessionAwarePage {
     // overwrite state after a newer one has already resolved.
     private _loadGeneration = 0;
 
-    protected override async onSessionReady() {
-        let summary: AccessSummary | null;
-        try {
-            summary = await accessSummary();
-        } catch {
-            summary = null;
-        }
-        this._accessSummary = summary;
-        this._grantedNamespaces = accessibleNamespaces(summary) ?? [];
-        this._namespaces = this._grantedNamespaces.slice().sort();
-        // Keeps namespaces in the check, unlike the one below: a user whose only cluster-wide
-        // grant is "list namespaces" starts on All Namespaces, so hiding the option for them would
-        // leave the <select> showing the first namespace while the page shows the cluster view,
-        // and picking that namespace would fire no change event.
-        this._allNamespacesUseful = RESOURCES.some(r => can(summary, r.gate));
-        // A user with no cluster-wide list grant would see an empty All Namespaces view; start in
-        // a namespace they have access to instead.
-        if (this._grantedNamespaces.length > 0 && !RESOURCES.some(r => r.key !== 'namespaces' && can(summary, r.gate))) {
-            this._namespace = await this._defaultNamespace();
-        }
-        await this._loadCounts();
+    private _onPopState = () => {
+        if (this.locationSearch === undefined) this._onLocationChange();
+    };
+
+    override connectedCallback() {
+        super.connectedCallback();
+        window.addEventListener('popstate', this._onPopState);
     }
 
-    /** The namespace to start in for a user with no cluster-wide grant: the first of theirs that
-     * grants something this page shows in a namespace (the cluster-scoped kinds are not shown in
-     * one, so they do not count). summary.namespaces is the RoleBinding-subject heuristic,
-     * a superset of what the user can see, so its first entry may grant nothing here; the
-     * per-namespace summaries say which do. Only the first MAX_NAMESPACE_ACCESS_NAMES are asked
-     * about, since each is a review against the API server, and one that is merely unknown beats
-     * one that is known to grant nothing. Fails open to the first, like every other gate. */
-    private async _defaultNamespace(): Promise<string> {
-        const candidates = this._namespaces.slice(0, MAX_NAMESPACE_ACCESS_NAMES);
-        try {
-            const { items } = await namespaceAccessSummaries(candidates);
-            const verdictOf = (item: (typeof items)[number]) => {
-                const verdicts = RESOURCES.filter(r => !r.clusterScoped).map(r => verdict(item, r.gate));
-                return verdicts.includes('allowed') ? 'allowed' : verdicts.includes('unknown') ? 'unknown' : 'denied';
-            };
-            return (items.find(i => verdictOf(i) === 'allowed') ?? items.find(i => verdictOf(i) === 'unknown'))?.namespace
-                ?? candidates[0];
-        } catch {
-            return candidates[0];
+    override disconnectedCallback() {
+        super.disconnectedCallback();
+        window.removeEventListener('popstate', this._onPopState);
+    }
+
+    override willUpdate(changed: Map<string, unknown>) {
+        super.willUpdate(changed);
+        if (changed.has('locationSearch')) this._onLocationChange();
+    }
+
+    override firstUpdated(changed: Map<string, unknown>) {
+        super.firstUpdated(changed);
+        // The scope taken from the URL at mount was dispatched before the host could listen: the
+        // element is connected before its listeners are attached. Say it again once mounted.
+        if (this._sessionStarted) {
+            const parsed = parseScopeParam(this._appliedSearch);
+            if (parsed.kind === 'scope') dispatchScopeChosen(this, parsed.value);
         }
     }
 
-    /** What to gate on for the current namespace filter. A summary for the namespace is needed to
-     * see grants that come from a RoleBinding in it, and it is the per-namespace summary rather
-     * than a memoized one for good, so that a grant added while the page is open shows up within
-     * about a minute (see namespaceAccessSummaries). Fails open (null) when it cannot be
-     * fetched, and an item whose review failed carries `incomplete`, which does the same. */
-    private async _summaryForNamespace(ns: string): Promise<HasRules | null> {
-        if (!ns) return this._accessSummary;
+    protected override onSessionReady() {
+        // A scope the URL carries is used as it is, so its content loads at once while the
+        // namespace list loads for the picker. Only a default, when the URL has none, has to wait
+        // for the list and the verdict: it is applied when they arrive (see _loadAccess).
+        this._appliedSearch = this._search;
+        this._sessionStarted = true;
+        this._applyScopeFromURL();
+        void this._loadAccess();
+    }
+
+    /** Loads the picker's options, then settles on a default scope if the URL named none. */
+    private async _loadAccess() {
+        // A dead session shows here first when nothing else is fetched (no scope to load yet).
+        const summary = await accessSummary().catch(err => {
+            if (this.isSessionExpiredError(err)) this.dispatchSessionExpired();
+            return null;
+        });
+        const access = await namespaceAccess(summary, s => pageVerdict(s, PAGE_GATES));
+        // The page may have been left while this loaded: going on would load content nothing
+        // will show.
+        if (!this.isConnected) return;
+        this._access = access;
+        // The URL the page last took or wrote, not the location prop: a scope picked while the
+        // list loaded is in the former, and the router may not have delivered it to the latter.
+        this._applyScopeFromURL(this._appliedSearch);
+    }
+
+    /** The query string the page's scope is read from. */
+    private get _search(): string {
+        return this.locationSearch ?? window.location.search;
+    }
+
+    /** Takes the scope from the URL again when the URL has changed: Back or Forward, or a switch
+     * between this page's own views. The page's own writes do not count (see _appliedSearch). */
+    private _onLocationChange() {
+        const search = this._search;
+        if (!this._sessionStarted || search === this._appliedSearch) return;
+        this._appliedSearch = search;
+        this._applyScopeFromURL(search);
+    }
+
+    /**
+     * Decides the scope from the URL, or else from the default order, and loads it. Runs when the
+     * page opens, when its URL changes, and when the namespace list arrives.
+     *
+     * A scope in the URL is used as given, with no fallback: not checked against the list, and
+     * not replaced by a default even when it is All Namespaces and the page's verdict is denied.
+     * An invalid one is reported and nothing is selected.
+     */
+    private _applyScopeFromURL(search: string = this._search) {
+        const parsed = parseScopeParam(search);
+        if (parsed.kind === 'invalid') {
+            this._scopeError = parsed.message;
+            this._setScope('');
+        } else if (parsed.kind === 'scope') {
+            this._scopeError = null;
+            this._setScope(parsed.value);
+            dispatchScopeChosen(this, parsed.value);
+        } else {
+            this._scopeError = null;
+            // The default needs the list and the verdict, so it waits for them. Nothing is
+            // selected until then, and nothing is written to the URL: a default is not a choice.
+            this._setScope(this._access ? this._defaultScope() : '');
+        }
+        void this._refreshScopeNote();
+    }
+
+    /**
+     * The scope the page opens with when the URL names none, or '' for none: All Namespaces only
+     * where the page's verdict is allowed (an unknown verdict never makes it the default);
+     * otherwise the first namespace of the list, without checking it. A namespace's access is
+     * only looked at once it is selected, and decides which tiles are shown.
+     */
+    private _defaultScope(): string {
+        if (this._access?.clusterWide === 'allowed') return SCOPE_ALL;
+        return this._access?.candidates?.[0] ?? '';
+    }
+
+    /** Sets the scope and loads its content, unless it is the one already loaded. */
+    private _setScope(scope: string) {
+        this._scope = scope;
+        if (scope === this._loadedScope) return;
+        if (scope === '') {
+            // Nothing to show: drop what the previous scope loaded.
+            this._loadGeneration++;
+            this._loadedScope = '';
+            this._loadedOnce = false;
+            this._counts = {};
+            this._truncated = {};
+            this._events = [];
+            this._eventsTruncated = false;
+            this._someCardsForbidden = false;
+            this._cardErrors = [];
+            this._nothingPermitted = false;
+            this._loading = false;
+            this._refreshing = false;
+            return;
+        }
+        void this._loadCounts();
+    }
+
+    /** Notes that the selected namespace is not in the list (see scopeNote). */
+    private async _refreshScopeNote() {
+        const token = ++this._scopeNoteToken;
+        this._scopeNote = null;
+        const ns = this._scope === SCOPE_ALL ? '' : this._scope;
+        const note = await scopeNote(this._access, ns, () => token === this._scopeNoteToken && this.isConnected);
+        if (token === this._scopeNoteToken) this._scopeNote = note;
+    }
+
+    /** What to gate on for a scope. For All Namespaces, the cluster-scoped summary. For a
+     * namespace, a summary for it: it is needed to see grants that come from a RoleBinding in it,
+     * and it is the per-namespace summary rather than a memoized one for good, so that a grant
+     * added while the page is open shows up within about a minute (see namespaceAccessSummaries).
+     * Fails open (null) when it cannot be fetched, and an item whose review failed carries
+     * `incomplete`, which does the same. */
+    private async _summaryForScope(ns: string): Promise<HasRules | null> {
+        if (!ns) return accessSummary().catch(() => null);
         try {
             return (await namespaceAccessSummaries([ns])).items[0] ?? null;
         } catch {
@@ -283,26 +404,38 @@ export class AntreaOverviewPage extends SessionAwarePage {
         }
     }
 
-    private _onNamespaceChange(e: Event) {
-        this._namespace = (e.target as HTMLSelectElement).value;
-        this._loadCounts();
+    /** The user chose a scope: a pick, or a name they typed. A name that is not a valid Namespace
+     * name is rejected and the scope stays as it was. */
+    private _onScopeSelect(value: string) {
+        if (value !== SCOPE_ALL && !isValidNamespaceName(value)) {
+            this._scopeError = `"${value}" is not a valid namespace name.`;
+            return;
+        }
+        this._scopeError = null;
+        dispatchScopeChosen(this, value);
+        // Chosen again, or chosen where the page was defaulted: the choice is still written, so
+        // that a reload keeps it as one.
+        this._appliedSearch = writeScopeToURL(this, value);
+        if (value === this._scope) return;
+        this._setScope(value);
+        void this._refreshScopeNote();
     }
 
     private async _loadCounts() {
         const generation = ++this._loadGeneration;
-        // Only the very first load blanks the page for a spinner. A namespace re-filter keeps the
-        // rendered page up and just marks it stale: tearing the page down mid-interaction would
-        // destroy the <select> the user is interacting with, and rebuilding it resets its
-        // selection (a fresh <select> has no options at the moment its value is assigned).
+        // Only the very first load replaces the page with a spinner. A namespace re-filter keeps
+        // the previous tiles visible and just marks them stale.
+        const scope = this._scope;
+        this._loadedScope = scope;
         if (this._loadedOnce) this._refreshing = true;
         else this._loading = true;
         this._someCardsForbidden = false;
         this._cardErrors = [];
-        // Reset with the other two: _namespace has already changed by now, and the stale page
+        // Reset with the other two: the scope has already changed by now, and the stale page
         // would otherwise tell the user they may see nothing in the namespace they just picked.
         this._nothingPermitted = false;
-        const namespace = this._namespace;
-        const summary = await this._summaryForNamespace(namespace);
+        const namespace = scope === SCOPE_ALL ? '' : scope;
+        const summary = await this._summaryForScope(namespace);
         if (generation !== this._loadGeneration) return;
 
         // A cluster-scoped resource is not asked about while a namespace is selected: see
@@ -327,9 +460,6 @@ export class AntreaOverviewPage extends SessionAwarePage {
         const truncated: Record<string, boolean> = {};
         // Whether anything was shown or failed for a reason other than permission.
         let anythingShown = false;
-        // Keeps the previous namespace list (and thus the dropdown) intact for a user who can't
-        // list namespaces themselves but can read other resources scoped by one.
-        let namespaces = this._namespaces;
         let events: K8sEvent[] = [];
         let eventsTruncated = false;
 
@@ -347,9 +477,7 @@ export class AntreaOverviewPage extends SessionAwarePage {
                 const remaining = result.value.metadata?.remainingItemCount;
                 counts[r.key] = result.value.items.length + (remaining ?? 0);
                 truncated[r.key] = Boolean(result.value.metadata?.continue) && remaining === undefined;
-                if (r.key === 'namespaces') {
-                    namespaces = [...new Set([...result.value.items.map(it => it.metadata.name), ...this._grantedNamespaces])].sort();
-                } else if (r.key === 'events') {
+                if (r.key === 'events') {
                     // Newest first, then capped for display — EVENTS_LIMIT bounds the fetch, not
                     // what's shown. The page is sorted client-side because the API returns it in
                     // key order, which also means a truncated page may lack the newest events.
@@ -370,7 +498,6 @@ export class AntreaOverviewPage extends SessionAwarePage {
 
         this._counts = counts;
         this._truncated = truncated;
-        this._namespaces = namespaces;
         this._events = events;
         this._eventsTruncated = eventsTruncated;
         this._loading = false;
@@ -445,52 +572,73 @@ export class AntreaOverviewPage extends SessionAwarePage {
         `;
     }
 
-    override render() {
-        if (this._loading) {
-            return html`<main><div class="loading-row"><span class="spinner"></span><span>Loading…</span></div></main>`;
-        }
+    private _renderScopeSelect() {
+        return html`
+            <div class="row">
+                <antrea-namespace-picker
+                    label="Namespace" inputId="ns-picker"
+                    .access=${this._access}
+                    .scope=${this._scope}
+                    .offerAll=${(this._access?.clusterWide ?? 'unknown') !== 'denied'}
+                    .note=${this._scopeNote?.text ?? ''}
+                    @antrea-scope-select=${(e: CustomEvent<ScopeSelectDetail>) => this._onScopeSelect(e.detail.value)}>
+                </antrea-namespace-picker>
+            </div>
+        `;
+    }
 
+    /** What the page shows while no scope is selected: an explanation, and the picker above it is
+     * the way out (including the box to name a namespace, when the list cannot be relied on). */
+    private _renderNoScope() {
+        if (!this._access && !this._scopeError) {
+            return html`<div class="loading-row"><span class="spinner"></span><span>Loading…</span></div>`;
+        }
+        return html`
+            <p class="text-muted">${SELECT_SCOPE_MESSAGE}</p>
+            ${mayNameNamespace(this._access) ? html`<p class="text-muted">${UNKNOWN_NAMESPACES_NOTE}</p>` : nothing}
+        `;
+    }
+
+    override render() {
+        const namespace = this._scope === SCOPE_ALL ? '' : this._scope;
         return html`
             <main>
                 <div class="page-layout">
+                    ${this._scopeError ? html`<antrea-alert status="danger">${this._scopeError}</antrea-alert>` : nothing}
                     ${this._nothingPermitted ? html`
                         <antrea-alert status="warning">
-                            Your account does not have permission to view any of this information
-                            ${this._namespace ? html`in namespace ${this._namespace}` : 'cluster-wide'}.
+                            ${this._scopeNote?.kind === 'missing'
+                            // For a user whose grants come from RoleBindings, every tile is denied
+                            // for a Namespace that does not exist, as the access summary does not
+                            // check existence, so "no permission" would give the wrong reason.
+                            ? this._scopeNote.text
+                            : html`Your account does not have permission to view any of this information
+                            ${namespace ? html`in namespace ${namespace}` : 'cluster-wide'}.`}
                         </antrea-alert>
                     ` : this._someCardsForbidden ? html`
                         <antrea-alert status="info">
                             Some information is not shown because your account does not have permission to view it.
                         </antrea-alert>
-                    ` : ''}
+                    ` : nothing}
                     ${this._cardErrors.length > 0 ? html`
                         <antrea-alert status="danger">
                             ${this._cardErrors.join('; ')}
                         </antrea-alert>
-                    ` : ''}
+                    ` : nothing}
 
-                    ${this._namespaces.length > 0 ? html`
-                        <div class="row">
-                            <label class="field-label" for="ns-select">Namespace</label>
-                            <!-- ?selected on each option rather than .value on the <select>: a
-                                 property binding is committed while the option list may still be
-                                 empty, which silently resets the selection to the first entry. -->
-                            <select id="ns-select" class="field-select" style="max-width:240px" @change=${this._onNamespaceChange}>
-                                ${this._allNamespacesUseful || this._namespace === '' ? html`
-                                    <option value="" ?selected=${this._namespace === ''}>All Namespaces</option>
-                                ` : ''}
-                                ${this._namespaces.map(ns => html`<option value=${ns} ?selected=${ns === this._namespace}>${ns}</option>`)}
-                            </select>
+                    ${this._renderScopeSelect()}
+
+                    ${this._scope === '' ? this._renderNoScope()
+                    : this._loading ? html`<div class="loading-row"><span class="spinner"></span><span>Loading…</span></div>`
+                    : html`
+                        <div class="stat-grid ${this._refreshing ? 'stale' : ''}">
+                            ${TILES.map(tile => this._renderTile(tile))}
                         </div>
-                    ` : ''}
 
-                    <div class="stat-grid ${this._refreshing ? 'stale' : ''}">
-                        ${TILES.map(tile => this._renderTile(tile))}
-                    </div>
-
-                    <div class=${this._refreshing ? 'stale' : ''}>
-                        ${this._renderEvents()}
-                    </div>
+                        <div class=${this._refreshing ? 'stale' : ''}>
+                            ${this._renderEvents()}
+                        </div>
+                    `}
                 </div>
             </main>
         `;

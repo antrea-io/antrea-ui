@@ -17,9 +17,9 @@ import { resetAccessSummary } from './access-api.js';
 import type { AccessSummary, SubjectRules } from './access-api.js';
 import { setApiBase } from './api.js';
 import {
-    flowAccess, searchFlowNamespaces, mayNameNamespace, namespaceExists, isValidNamespaceName, LIST_SAFEGUARD,
-} from './flow-access.js';
-import type { FlowAccess } from './flow-access.js';
+    flowAccess, searchNamespaces, mayNameNamespace, namespaceExists, isValidNamespaceName, LIST_SAFEGUARD,
+} from './namespace-access.js';
+import type { NamespaceAccess } from './namespace-access.js';
 
 const watchFlows = {
     verbs: ['watch'], apiGroups: ['observability.antrea.io'], resources: ['flows'],
@@ -33,38 +33,38 @@ function summary(over: Partial<AccessSummary> = {}): AccessSummary {
     return { username: 'alice', groups: [], clusterAdmin: false, rules: rules(), namespaces: [], ...over };
 }
 
-function access(over: Partial<FlowAccess> = {}): FlowAccess {
+function access(over: Partial<NamespaceAccess> = {}): NamespaceAccess {
     return { clusterWide: 'denied', candidates: [], mayList: false, cut: false, ...over };
 }
 
-describe('searchFlowNamespaces', () => {
+describe('searchNamespaces', () => {
     const names = (n: number) => Array.from({ length: n }, (_, i) => `ns-${String(i).padStart(2, '0')}`);
 
     it('offers the first page of the candidates, and says there are more', () => {
-        expect(searchFlowNamespaces(access({ clusterWide: 'allowed', candidates: names(25) }), ''))
+        expect(searchNamespaces(access({ clusterWide: 'allowed', candidates: names(25) }), ''))
             .toEqual({ items: names(10), more: true });
-        expect(searchFlowNamespaces(access({ candidates: names(25) }), '')).toEqual({ items: names(10), more: true });
+        expect(searchNamespaces(access({ candidates: names(25) }), '')).toEqual({ items: names(10), more: true });
     });
 
     it('does not say there are more when a page holds them all', () => {
-        expect(searchFlowNamespaces(access({ candidates: names(10) }), '')).toEqual({ items: names(10), more: false });
+        expect(searchNamespaces(access({ candidates: names(10) }), '')).toEqual({ items: names(10), more: false });
     });
 
     it('matches by prefix, ignoring case and surrounding space', () => {
         const candidates = ['alpha', 'beta', 'betamax', 'gamma'];
-        expect(searchFlowNamespaces(access({ clusterWide: 'allowed', candidates }), ' BETA '))
+        expect(searchNamespaces(access({ clusterWide: 'allowed', candidates }), ' BETA '))
             .toEqual({ items: ['beta', 'betamax'], more: false });
     });
 
     it('searches the whole list, not the page that was offered', () => {
-        expect(searchFlowNamespaces(access({ candidates: names(25) }), 'ns-2')).toEqual({
+        expect(searchNamespaces(access({ candidates: names(25) }), 'ns-2')).toEqual({
             items: ['ns-20', 'ns-21', 'ns-22', 'ns-23', 'ns-24'], more: false,
         });
     });
 
     it('has nothing to search when the candidates are not known', () => {
-        expect(searchFlowNamespaces(access({ candidates: null }), '')).toEqual({ items: [], more: false });
-        expect(searchFlowNamespaces(null, '')).toEqual({ items: [], more: false });
+        expect(searchNamespaces(access({ candidates: null }), '')).toEqual({ items: [], more: false });
+        expect(searchNamespaces(null, '')).toEqual({ items: [], more: false });
     });
 });
 

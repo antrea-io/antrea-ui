@@ -14,8 +14,8 @@
 
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import './antrea-flow-visibility-page';
-import { SCOPE_CHANGE_EVENT, SCOPE_CHOSEN_EVENT } from './antrea-flow-visibility-page';
-import type { ScopeChangeDetail, ScopeChosenDetail } from './antrea-flow-visibility-page';
+import { SCOPE_CHANGE_EVENT, SCOPE_CHOSEN_EVENT } from '../lib/namespace-scope';
+import type { ScopeChangeDetail, ScopeChosenDetail } from '../lib/namespace-scope';
 import type { AntreaFlowVisibilityPage } from './antrea-flow-visibility-page';
 import type { FlowStreamFilter } from '../lib/flow-stream';
 import { resetAccessSummary } from '../lib/access-api';

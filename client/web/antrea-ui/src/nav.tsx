@@ -14,14 +14,14 @@
  * limitations under the License.
  */
 
-import React from 'react';
+import React, { useSyncExternalStore } from 'react';
 import { useLocation } from 'react-router';
 import { Link } from 'react-router';
 import '@antrea/ui-components';
 import { can, canViewSummary, canViewFlows, canViewOverview, GATE_TRACEFLOW_CREATE } from '@antrea/ui-components';
 import type { PluginSidebarEntry } from './plugins';
 import { useAccess, useScopeUser } from './access';
-import { getLastScope, scopeSearch } from './lastScope';
+import { getLastScope, scopeSearch, subscribeLastScope } from './lastScope';
 
 function OverviewIcon() {
     return (
@@ -117,6 +117,8 @@ function renderPluginNavItem(entry: PluginSidebarEntry, pathname: string) {
 export default function NavTab({ pluginSidebarEntries }: { pluginSidebarEntries: PluginSidebarEntry[] }) {
     const { pathname, search } = useLocation();
     const user = useScopeUser();
+    // Subscribed: a page sets it after the navigation has rendered, when it takes a scope from its URL.
+    const lastScope = useSyncExternalStore(subscribeLastScope, () => getLastScope(user));
     const { summary, loaded } = useAccess();
 
     // While the access summary hasn't loaded yet, render no core items: entries popping in once
@@ -187,20 +189,22 @@ export default function NavTab({ pluginSidebarEntries }: { pluginSidebarEntries:
         );
     }
 
-    // The scope the flow entries carry: the one in the page's URL while on it (or none, when the
-    // page has none), so switching between its views keeps a scope the user chose, and otherwise
-    // the last scope chosen. Only `namespace`, so an unrelated query parameter is not carried.
-    // A URL that gives `namespace` more than once names no scope, as on the page.
+    // The scope a Namespace-aware page's entries carry: the one in the page's URL while on it (or
+    // none, when the page has none), so switching between its views keeps a scope the user chose,
+    // and otherwise the last scope chosen. Only `namespace`, so an unrelated query parameter is
+    // not carried. A URL that gives `namespace` more than once names no scope, as on the page.
     const pageScopes = new URLSearchParams(search).getAll('namespace');
-    const flowsSearch = scopeSearch(pathStartsWith(pathname, '/flows')
+    const entryScope = (onPage: boolean) => scopeSearch(onPage
         ? (pageScopes.length === 1 ? pageScopes[0] : null)
-        : getLastScope(user));
+        : lastScope);
+    const flowsSearch = entryScope(pathStartsWith(pathname, '/flows'));
+    const overviewSearch = entryScope(pathEquals(pathname, '/overview') || pathname === '/');
 
     return (
         <antrea-nav>
             {withNestedChildren('overview', showOverview, (
                 <antrea-nav-item {...(pathEquals(pathname, '/overview') || pathname === '/' ? { active: true } : {})}>
-                    <Link to="/overview">
+                    <Link to={`/overview${overviewSearch}`}>
                         <OverviewIcon />
                         <span className="nav-label">Overview</span>
                     </Link>
