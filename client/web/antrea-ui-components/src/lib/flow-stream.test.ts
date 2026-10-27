@@ -101,6 +101,7 @@ describe('FlowStreamClient', () => {
         dropped: number[];
         connected: number;
         disconnected: number;
+        reconnectDelays: number[];
         authErrors: number;
         disabled: number;
     } {
@@ -110,6 +111,7 @@ describe('FlowStreamClient', () => {
             dropped: [] as number[],
             connected: 0,
             disconnected: 0,
+            reconnectDelays: [] as number[],
             authErrors: 0,
             disabled: 0,
             forbidden: 0,
@@ -118,6 +120,7 @@ describe('FlowStreamClient', () => {
             onDropped: (count: number) => { cb.dropped.push(count); },
             onConnected: () => { cb.connected++; },
             onDisconnected: () => { cb.disconnected++; },
+            onReconnectScheduled: (delayMs: number) => { cb.reconnectDelays.push(delayMs); },
             onAuthError: () => { cb.authErrors++; },
             onDisabled: () => { cb.disabled++; },
             onForbidden: () => { cb.forbidden++; },
@@ -134,6 +137,7 @@ describe('FlowStreamClient', () => {
     afterEach(() => {
         vi.useRealTimers();
         vi.unstubAllGlobals();
+        vi.restoreAllMocks(); // the visibilityState spies would otherwise leak into later tests
         setApiBase(''); // apiBase is module-level state — reset it so tests don't leak into each other
     });
 
@@ -392,6 +396,67 @@ describe('FlowStreamClient', () => {
         expect(fetchMock).toHaveBeenCalledTimes(8);
 
         expect(cb.errors.every(e => e.message === 'network down')).toBe(true);
+    });
+
+    // The page tells a disconnect that will resolve itself from one that will not by whether this
+    // fires, so it must fire for every retry and carry the backoff delay.
+    test('dispatches onReconnectScheduled with the backoff delay on each retryable failure', async () => {
+        stubFetch(async () => { throw new Error('network down'); });
+        const cb = makeCallbacks();
+        const client = new FlowStreamClient({}, cb, 10);
+        client.start();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(cb.reconnectDelays).toEqual([1000]);
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(cb.reconnectDelays).toEqual([1000, 2000]);
+        client.stop();
+    });
+
+    test.each([
+        ['401', 401],
+        ['501', 501],
+        ['403', 403],
+    ])('does not dispatch onReconnectScheduled on a terminal HTTP %s', async (_name, status) => {
+        stubFetch(async () => sseResponse([], status));
+        const cb = makeCallbacks();
+        const client = new FlowStreamClient({}, cb, 10);
+        client.start();
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(cb.disconnected).toBe(1);
+        expect(cb.reconnectDelays).toEqual([]);
+    });
+
+    test('does not dispatch onReconnectScheduled for a non-retryable stream error event', async () => {
+        stubFetch(async () => closingSseResponse(['event: error\ndata: {"message":"rejected","retryable":false}\n\n']));
+        const cb = makeCallbacks();
+        const client = new FlowStreamClient({}, cb, 10);
+        client.start();
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(cb.disconnected).toBe(1);
+        expect(cb.reconnectDelays).toEqual([]);
+    });
+
+    test('dispatches onReconnectScheduled for a retryable stream error event', async () => {
+        stubFetch(async () => closingSseResponse(['event: error\ndata: {"message":"blip","retryable":true}\n\n']));
+        const cb = makeCallbacks();
+        const client = new FlowStreamClient({}, cb, 10);
+        client.start();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(cb.reconnectDelays).toEqual([1000]);
+        client.stop();
+    });
+
+    test('a reconnect deferred while the tab is hidden has already been announced', async () => {
+        stubFetch(async () => { throw new Error('network down'); });
+        vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
+        const cb = makeCallbacks();
+        const client = new FlowStreamClient({}, cb, 10);
+        client.start();
+        await vi.advanceTimersByTimeAsync(60_000);
+        // Announced once when scheduled; the deferral adds no second call and no terminal one.
+        expect(cb.reconnectDelays).toEqual([1000]);
+        expect(cb.disconnected).toBe(1);
+        client.stop();
     });
 
     // Reconnecting while the tab is hidden would open a new stream - and with it a new

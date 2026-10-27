@@ -780,6 +780,9 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
     // Stream
     @state() private _entries: FlowEntry[] = [];
     @state() private _connected = false;
+    // True between a retryable failure and the next successful connect: the client has scheduled
+    // a retry, so the disconnect will resolve itself, unlike one where the client has stopped.
+    @state() private _reconnecting = false;
     @state() private _error: string | TemplateResult | null = null;
     // Set on 501: Flow Aggregator integration is off for this deployment, a fixed fact about the
     // server that no filter or scope change on this page can affect. Terminal for the session,
@@ -1137,8 +1140,11 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
             },
             onError: err => { this._error = err.message; },
             onDropped: count => { this._droppedCount = count; },
-            onConnected: () => { this._connected = true; this._error = null; },
-            onDisconnected: () => { this._connected = false; },
+            onConnected: () => { this._connected = true; this._reconnecting = false; this._error = null; },
+            // onReconnectScheduled follows onDisconnected for a retryable failure, so it sets the
+            // flag back; a terminal failure and stop() fire onDisconnected alone, which clears it.
+            onDisconnected: () => { this._connected = false; this._reconnecting = false; },
+            onReconnectScheduled: () => { this._reconnecting = true; },
             onAuthError: () => {
                 // A 401 means the session is over; there is no refresh left to attempt. The
                 // client has already stopped itself, and the host will log the user out.
@@ -1784,8 +1790,10 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
     }
 
     private _renderFilters() {
-        const statusColor = this._connected ? 'var(--antrea-color-success, #60b515)' : 'var(--antrea-color-danger, #f54f47)';
-        const statusText = this._connected ? 'Connected' : (this._paused ? 'Paused' : 'Disconnected');
+        const statusColor = this._connected ? 'var(--antrea-color-success, #60b515)'
+            : this._reconnecting ? 'var(--antrea-color-warning, #f5a623)' : 'var(--antrea-color-danger, #f54f47)';
+        const statusText = this._connected ? 'Connected'
+            : this._paused ? 'Paused' : this._reconnecting ? 'Reconnecting' : 'Disconnected';
         return html`
             <div class="filter-bar">
                 <div class="filter-row">

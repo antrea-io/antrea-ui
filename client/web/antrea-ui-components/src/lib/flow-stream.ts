@@ -72,6 +72,13 @@ export interface FlowStreamCallbacks {
     onDropped?: (droppedCount: number) => void;
     onConnected?: () => void;
     onDisconnected?: () => void;
+    /** Called when a retryable failure has scheduled another connection attempt, after the
+     * onDisconnected for that failure. It tells a disconnect that will resolve itself (the
+     * stream is retried indefinitely) apart from one that will not: a terminal failure fires
+     * onDisconnected without this. It also fires when the attempt comes due while the tab is
+     * hidden and is deferred until the tab is visible, since a reconnect is still pending then.
+     * delayMs is the backoff before the attempt is due, not a promise of when it will connect. */
+    onReconnectScheduled?: (delayMs: number) => void;
     /** Called on HTTP 401, i.e. the antrea-ui session is over. There is nothing to retry: the host
      * should log the user out. Note that the Flow Aggregator rejecting the credential is *not*
      * this: it reaches onError with an "unauthenticated" code and never a 401, because it says
@@ -386,6 +393,7 @@ export class FlowStreamClient {
         const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 30000);
         this.reconnectAttempts++;
         this.reconnectTimer = setTimeout(() => this.dueForReconnect(), delay);
+        this.callbacks.onReconnectScheduled?.(delay);
     }
 
     // A reconnect due while the tab is hidden does not fire: retrying here would open a new

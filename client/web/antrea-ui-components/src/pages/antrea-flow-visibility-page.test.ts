@@ -1843,6 +1843,40 @@ describe('AntreaFlowVisibilityPage — flow visibility disabled server-side', ()
     });
 });
 
+// A retryable failure is retried indefinitely, so its disconnect resolves itself once the Flow
+// Aggregator or the network recovers; a terminal one never will. The status must tell them apart.
+describe('AntreaFlowVisibilityPage — stream status', () => {
+    const statusText = (page: AntreaFlowVisibilityPage) =>
+        page.shadowRoot!.querySelector('.status-row')?.textContent?.trim();
+
+    test('shows Reconnecting while a retry is scheduled, then Connected once it succeeds', async () => {
+        let calls = 0;
+        const fetchMock = vi.fn(async (url: string) => {
+            if (!url.includes('/api/v1/flows/stream')) return jsonResponse({});
+            if (++calls === 1) throw new Error('network down');
+            return sseResponse([]);
+        });
+        const page = await mount(fetchMock);
+        await vi.advanceTimersByTimeAsync(0);
+        await page.updateComplete;
+        expect(statusText(page)).toContain('Reconnecting');
+
+        await vi.advanceTimersByTimeAsync(1000);
+        await page.updateComplete;
+        expect(statusText(page)).toContain('Connected');
+    });
+
+    test('shows Disconnected, not Reconnecting, once the client has stopped for good', async () => {
+        const fetchMock = vi.fn(async () => sseResponse([], 501));
+        const page = await mount(fetchMock);
+        await vi.advanceTimersByTimeAsync(0);
+        await page.updateComplete;
+
+        expect(statusText(page)).toContain('Disconnected');
+        expect(statusText(page)).not.toContain('Reconnecting');
+    });
+});
+
 // The 403 twin of the 501 case above: since nothing on the frontend gates access to this page
 // anymore (authorization is entirely FA's), a real per-scope denial has to render a terminal panel
 // naming the restriction on its own, rather than leaving the page retrying or showing nothing.
