@@ -208,6 +208,9 @@ func (s *Server) DownloadSupportBundle(c *gin.Context) {
 	c.Header("Access-Control-Expose-Headers", "Content-Disposition")
 	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
 	c.Header("Content-Type", "application/gzip")
+	// ServeContent sets Last-Modified, which lets a cache reuse the tarball without asking us, and
+	// so without authentication: after a logout, or once the user lost access to bundles.
+	c.Header("Cache-Control", "no-store")
 	http.ServeContent(c.Writer, c.Request, filename, bundle.CreatedAt, f)
 }
 

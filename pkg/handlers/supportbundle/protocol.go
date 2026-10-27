@@ -116,9 +116,32 @@ func statusError(resp *http.Response) error {
 	return fmt.Errorf("source returned HTTP %d: %s", resp.StatusCode, msg)
 }
 
+// errReadingResponse marks a create or status response whose body was cut short by the connection.
+var errReadingResponse = errors.New("failed to read the response from source")
+
+// errRecorder remembers the last error its reader returned, other than io.EOF.
+type errRecorder struct {
+	r   io.Reader
+	err error
+}
+
+func (e *errRecorder) Read(p []byte) (int, error) {
+	n, err := e.r.Read(p)
+	if err != nil && err != io.EOF {
+		e.err = err
+	}
+	return n, err
+}
+
+// decodeBundle decodes a create or status response. It stops at the end of the first JSON value,
+// so what follows it does not matter. A failure to read the body is an errReadingResponse.
 func decodeBundle(resp *http.Response) (*apisv1.SourceBundle, error) {
+	body := &errRecorder{r: resp.Body}
 	var b apisv1.SourceBundle
-	if err := json.NewDecoder(io.LimitReader(resp.Body, maxJSONBodyBytes)).Decode(&b); err != nil {
+	if err := json.NewDecoder(io.LimitReader(body, maxJSONBodyBytes)).Decode(&b); err != nil {
+		if body.err != nil {
+			return nil, fmt.Errorf("%w: %w", errReadingResponse, body.err)
+		}
 		return nil, fmt.Errorf("invalid response from source: %w", err)
 	}
 	return &b, nil
@@ -201,6 +224,10 @@ func (p *protocolClient) status(ctx context.Context, id string) (*apisv1.SourceB
 	}
 	b, err := decodeBundle(resp)
 	if err != nil {
+		// A body cut short by the connection is retried like any transport error.
+		if errors.Is(err, errReadingResponse) && ctx.Err() == nil {
+			return nil, 0, &transientError{err: err, retryAfter: defaultRetryAfter}
+		}
 		return nil, 0, err
 	}
 	return b, retryAfter(resp), nil

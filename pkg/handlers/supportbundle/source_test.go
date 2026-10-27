@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -28,6 +29,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/iotest"
 
 	"github.com/go-logr/logr/testr"
 	"github.com/stretchr/testify/assert"
@@ -155,6 +157,73 @@ func TestStatusTransportErrorIsTransient(t *testing.T) {
 	_, _, err = p.status(ctx, "remote-1")
 	require.Error(t, err)
 	assert.NotErrorAs(t, err, &transient)
+}
+
+// A status response whose body is cut short by the connection is retried, unless the collection is
+// over, but not a body that is invalid or too large. A read error after a complete value does not
+// matter.
+func TestStatusBodyReadErrorIsTransient(t *testing.T) {
+	cutShort := func(prefix string) func() io.Reader {
+		return func() io.Reader {
+			return io.MultiReader(strings.NewReader(prefix), iotest.ErrReader(errors.New("connection reset")))
+		}
+	}
+	for _, tc := range []struct {
+		name          string
+		body          func() io.Reader
+		canceled      bool
+		wantErr       bool
+		wantTransient bool
+	}{
+		{
+			name:          "read error",
+			body:          cutShort(`{"metadata":`),
+			wantErr:       true,
+			wantTransient: true,
+		},
+		{
+			name:     "read error after cancellation",
+			body:     cutShort(`{"metadata":`),
+			canceled: true,
+			wantErr:  true,
+		},
+		{
+			name: "read error after a complete value",
+			body: cutShort(`{"metadata":{"name":"remote-1"}}`),
+		},
+		{
+			name:    "invalid JSON",
+			body:    func() io.Reader { return strings.NewReader(`{"metadata":`) },
+			wantErr: true,
+		},
+		{
+			name:    "too large",
+			body:    func() io.Reader { return io.MultiReader(strings.NewReader(`{"metadata":{"name":"`), &countingReader{}) },
+			wantErr: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rt := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(tc.body()), Request: req}, nil
+			})
+			s := newAPIServerSource("foo", apisv1.SupportBundleSourceKindExtra, &url.URL{Scheme: "https", Host: testAPIServerHost}, "/apis/foo.example.com/v1", rt, testAdminUser)
+			p := &protocolClient{conn: s.connect(testCollection), maxBytes: 1024}
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			if tc.canceled {
+				cancel()
+			}
+			b, _, err := p.status(ctx, "remote-1")
+			if !tc.wantErr {
+				require.NoError(t, err)
+				assert.Equal(t, "remote-1", b.Metadata.Name)
+				return
+			}
+			require.Error(t, err)
+			var transient *transientError
+			assert.Equal(t, tc.wantTransient, errors.As(err, &transient), err.Error())
+		})
+	}
 }
 
 func TestNewManagerRequiresTokenSourceForHTTPSSource(t *testing.T) {

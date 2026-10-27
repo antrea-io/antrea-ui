@@ -350,6 +350,7 @@ func TestDownloadSupportBundle(t *testing.T) {
 	assert.Equal(t, "application/gzip", rr.Header().Get("Content-Type"))
 	assert.Equal(t, `attachment; filename="antrea-ui-supportbundle-20261002T130405Z.tar.gz"`, rr.Header().Get("Content-Disposition"))
 	assert.Equal(t, "Content-Disposition", rr.Header().Get("Access-Control-Expose-Headers"))
+	assert.Equal(t, "no-store", rr.Header().Get("Cache-Control"))
 	assert.True(t, tarball.closed)
 
 	// Downloads can be resumed.

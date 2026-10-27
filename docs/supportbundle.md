@@ -217,9 +217,10 @@ Antrea UI:
   the name of the bundle the source created and can `DELETE` it;
 - honors `Retry-After` in seconds, clamped to [1s, 30s], and polls every 2s
   without one;
-- keeps polling a bundle's status through a transport error or a 429, 502,
-  503 or 504, which can be a brief unavailability of the source or of the
-  apiserver in front of it. Any other error fails the source;
+- keeps polling a bundle's status through a transport error (a response cut
+  short included) or a 429, 502, 503 or 504, which can be a brief
+  unavailability of the source or of the apiserver in front of it. Any other
+  error fails the source;
 - fails the source if its tarball exceeds `supportBundle.maxSourceBytes`
   (256MiB by default), or if the whole collection exceeds
   `supportBundle.collectionTimeout` (10 minutes by default). A `POST` in
