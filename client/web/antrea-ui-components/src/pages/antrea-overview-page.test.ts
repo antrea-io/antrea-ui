@@ -417,6 +417,20 @@ describe('AntreaOverviewPage — namespace scope', () => {
             expect(await optionValues(page)).toEqual([ALL, 'default', 'kube-system']);
         });
 
+        // Listing namespaces is one of the permissions the page shows (the Namespaces tile), so it
+        // makes the verdict allowed. Without it the user would be denied, and defaulted into a
+        // Namespace where that tile is skipped, with nothing to show.
+        test('is All Namespaces for a user whose only cluster-wide grant is listing namespaces', async () => {
+            const onlyNamespaces: AccessSummary = {
+                username: 'bob', groups: [], clusterAdmin: false, namespaces: ['*'],
+                rules: rulesFor({ apiGroups: [''], resources: ['namespaces'], verbs: ['list'] }),
+            };
+            const page = await mount({ namespaces: list(['default']) }, onlyNamespaces);
+            expect(pickerValue(page)).toBe(ALL);
+            expect(await optionValues(page)).toEqual([ALL, 'default']);
+            expect(tileValue(page, 'Namespaces')).toBe('1');
+        });
+
         test('builds the list when the page loads, not from the Namespaces tile', async () => {
             const seen: string[] = [];
             await mountWith(async (url: string) => {
@@ -607,15 +621,17 @@ describe('AntreaOverviewPage — namespace scope', () => {
             await settle(el);
             const before = window.history.length;
 
-            await choose(el, 'team-b');
-            expect(window.location.search).toBe('?namespace=team-b');
+            // The page defaulted to team-a, and picking it is still a choice: it is written.
+            await choose(el, 'team-a');
+            expect(window.location.search).toBe('?namespace=team-a');
             expect(window.history.length).toBe(before);
-            expect(chosen).toEqual(['team-b']);
-            expect(changes).toEqual(['?namespace=team-b']);
+            expect(chosen).toEqual(['team-a']);
+            expect(changes).toEqual(['?namespace=team-a']);
 
-            // Chosen again, though it is the one in force: the choice is written all the same.
             await choose(el, 'team-b');
             expect(window.location.search).toBe('?namespace=team-b');
+            expect(chosen).toEqual(['team-a', 'team-b']);
+            expect(changes).toEqual(['?namespace=team-a', '?namespace=team-b']);
         });
 
         test('typed text searches the list by prefix, ignoring case, and hides All Namespaces', async () => {
