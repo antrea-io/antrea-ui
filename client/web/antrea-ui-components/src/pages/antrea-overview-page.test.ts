@@ -15,6 +15,7 @@
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import './antrea-overview-page';
 import type { AntreaOverviewPage } from './antrea-overview-page';
+import type { AntreaNamespacePicker } from '../antrea-namespace-picker';
 import { resetAccessSummary } from '../lib/access-api';
 import type { AccessSummary } from '../lib/access-api';
 
@@ -83,6 +84,9 @@ function list1(single: unknown) {
     return { items: [single] };
 }
 
+// The picker's value for All Namespaces.
+const ALL = '__cluster_wide__';
+
 let el: AntreaOverviewPage | undefined;
 
 afterEach(() => {
@@ -90,13 +94,15 @@ afterEach(() => {
     el = undefined;
     vi.unstubAllGlobals();
     resetAccessSummary();
+    window.history.replaceState(null, '', '/');
 });
 
 /** Mounts the page against an arbitrary fetch handler, for cases mount()'s by-resource-key
  * stubbing cannot express (per-URL status codes, namespace-scoped path assertions). */
-async function mountWith(handler: (url: string) => Promise<Response>): Promise<AntreaOverviewPage> {
+async function mountWith(handler: (url: string) => Promise<Response>, search?: string): Promise<AntreaOverviewPage> {
     vi.stubGlobal('fetch', vi.fn(handler));
     el = document.createElement('antrea-overview-page') as AntreaOverviewPage;
+    if (search !== undefined) el.locationSearch = search;
     document.body.appendChild(el);
     await el.updateComplete;
     await new Promise(r => setTimeout(r, 0));
@@ -108,6 +114,7 @@ async function mountWith(handler: (url: string) => Promise<Response>): Promise<A
 async function mount(
     overrides: Partial<Record<string, unknown>> = {},
     summary: AccessSummary | null = fullAccessSummary(),
+    search?: string,
 ): Promise<AntreaOverviewPage> {
     return mountWith(async (url: string) => {
         const key = keyForUrl(url);
@@ -117,7 +124,49 @@ async function mount(
         if (key && key in overrides) return jsonResponse(overrides[key]);
         if (key) return jsonResponse({ items: [] });
         throw new Error(`unexpected fetch to ${url}`);
-    });
+    }, search);
+}
+
+async function settle(page: AntreaOverviewPage) {
+    await page.updateComplete;
+    await new Promise(r => setTimeout(r, 0));
+    await new Promise(r => setTimeout(r, 0));
+    await page.updateComplete;
+}
+
+function picker(page: AntreaOverviewPage): AntreaNamespacePicker {
+    return page.shadowRoot!.querySelector('antrea-namespace-picker') as AntreaNamespacePicker;
+}
+
+/** The scope the picker shows as selected: '__cluster_wide__' for All Namespaces, '' for none. */
+function pickerValue(page: AntreaOverviewPage): string {
+    return (page.shadowRoot!.querySelector('#ns-picker') as HTMLInputElement).dataset.value ?? '';
+}
+
+/** The values of the open menu's options, in order. */
+function menuValues(page: AntreaOverviewPage): string[] {
+    return Array.from(page.shadowRoot!.querySelectorAll('#ns-picker-list [role="option"]'))
+        .map(o => (o as HTMLElement).dataset.value!);
+}
+
+/** What the picker offers with nothing typed: opens the menu, reads it, and closes it. */
+async function optionValues(page: AntreaOverviewPage): Promise<string[]> {
+    const input = page.shadowRoot!.querySelector('#ns-picker') as HTMLInputElement;
+    input.dispatchEvent(new Event('focus'));
+    await picker(page).updateComplete;
+    const values = menuValues(page);
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    await picker(page).updateComplete;
+    return values;
+}
+
+/** Picks a scope in the picker, as a user does, and waits for the page to load it. */
+async function choose(page: AntreaOverviewPage, value: string) {
+    const input = page.shadowRoot!.querySelector('#ns-picker') as HTMLInputElement;
+    input.dispatchEvent(new Event('focus'));
+    await picker(page).updateComplete;
+    (page.shadowRoot!.querySelector(`#ns-picker-list [data-value="${value}"]`) as HTMLElement).click();
+    await settle(page);
 }
 
 function tileValue(page: AntreaOverviewPage, heading: string): string | null {
@@ -181,7 +230,7 @@ describe('AntreaOverviewPage — tiles', () => {
         expect(tileValue(page, 'Pods')).toBe('42');
     });
 
-    test('every list request carries a page limit sized to what it is used for', async () => {
+    test('every list request carries a page limit', async () => {
         const seenUrls: string[] = [];
         await mountWith(async (url: string) => {
             seenUrls.push(url);
@@ -193,13 +242,10 @@ describe('AntreaOverviewPage — tiles', () => {
 
         // An unlimited list would pull every Pod spec in the cluster through the proxy just to
         // count them, and would never set metadata.continue, making the truncation handling dead.
-        // A tile only needs a count, which a small page gives exactly (items plus the remainder);
-        // the namespace picker and the event rows are built from the page itself.
         const listUrls = seenUrls.filter(u => keyForUrl(u) !== 'access-summary');
         expect(listUrls.length).toBeGreaterThan(0);
         for (const url of listUrls) {
-            const expected = { namespaces: '500', events: '2000' }[keyForUrl(url)!] ?? '100';
-            expect([url, new URL(url, 'http://localhost').searchParams.get('limit')]).toEqual([url, expected]);
+            expect([url, new URL(url, 'http://localhost').searchParams.has('limit')]).toEqual([url, true]);
         }
     });
 });
@@ -294,9 +340,13 @@ describe('AntreaOverviewPage — per-resource degradation', () => {
         expect(alertText(page, 'danger')).toBeNull();
     });
 
-    test('access-summary fetch failure fails open: every resource is fetched', async () => {
+    // Rule 9 of the namespace scope design: the page still works, with All Namespaces offered and
+    // a way to name a namespace, and the API's answer decides what is shown.
+    test('access-summary fetch failure fails open: every resource is fetched once All Namespaces is picked', async () => {
         const page = await mount({ pods: list(['p1'], 'default') }, null);
+        expect(hasTile(page, 'Pods')).toBe(false);
 
+        await choose(page, ALL);
         expect(hasTile(page, 'Pods')).toBe(true);
         expect(hasTile(page, 'Services')).toBe(true);
         expect(alertText(page, 'info')).toBeNull();
@@ -328,67 +378,428 @@ describe('AntreaOverviewPage — per-resource degradation', () => {
     });
 });
 
-describe('AntreaOverviewPage — namespace filter', () => {
-    test('selecting a namespace re-fetches namespaced resources scoped to it', async () => {
-        const page = await mount({
-            namespaces: list(['default', 'kube-system']),
-            pods: list(['p1', 'p2'], 'default'),
-        });
-        expect(tileValue(page, 'Pods')).toBe('2');
+describe('AntreaOverviewPage — namespace scope', () => {
+    const rulesFor = (...rules: { apiGroups: string[], resources: string[], verbs: string[] }[]) =>
+        ({ resourceRules: rules, nonResourceRules: [], incomplete: false });
+    const podsList = { apiGroups: [''], resources: ['pods'], verbs: ['list'] };
 
-        const seenUrls: string[] = [];
-        vi.stubGlobal('fetch', vi.fn(async (url: string) => {
-            seenUrls.push(url);
+    /** A summary that grants nothing cluster-wide, with the namespaces RoleBindings name. */
+    function boundSummary(namespaces: string[], incomplete = false) {
+        return {
+            username: 'bob', groups: [], clusterAdmin: false, namespaces,
+            rules: { resourceRules: [], nonResourceRules: [], incomplete },
+        };
+    }
+
+    /** Serves the summaries of a user whose pods grant is in the namespaces of `grants`. */
+    function boundHandler(namespaces: string[], grants: string[], seen: string[] = [], incomplete = false) {
+        return async (url: string) => {
+            seen.push(url);
             const key = keyForUrl(url);
-            if (key === 'access-summary') return jsonResponse(fullAccessSummary());
-            if (key === 'pods') return jsonResponse(list(['p1'], 'kube-system'));
+            const u = new URL(url, 'http://x');
+            if (key === 'access-summary') return jsonResponse(boundSummary(namespaces, incomplete));
+            if (key === 'access-summary-namespaces') {
+                return jsonResponse({
+                    items: u.searchParams.getAll('namespace').map(namespace => ({
+                        namespace, rules: grants.includes(namespace) ? rulesFor(podsList) : rulesFor(),
+                    })),
+                });
+            }
+            if (key === 'pods') return jsonResponse(list(['p1', 'p2'], 'team-a'));
             return jsonResponse({ items: [] });
-        }));
+        };
+    }
 
-        const select = page.shadowRoot!.querySelector('#ns-select') as HTMLSelectElement;
-        select.value = 'kube-system';
-        select.dispatchEvent(new Event('change'));
-        await page.updateComplete;
-        await new Promise(r => setTimeout(r, 0));
-        await new Promise(r => setTimeout(r, 0));
-        await page.updateComplete;
+    describe('the default scope', () => {
+        test('is All Namespaces for a user whose verdict is allowed', async () => {
+            const page = await mount({ namespaces: list(['default', 'kube-system']) });
+            expect(pickerValue(page)).toBe(ALL);
+            expect(await optionValues(page)).toEqual([ALL, 'default', 'kube-system']);
+        });
 
-        expect(tileValue(page, 'Pods')).toBe('1');
-        expect(seenUrls.some(u => u.split('?')[0].endsWith('/api/v1/namespaces/kube-system/pods'))).toBe(true);
+        // Listing namespaces is one of the permissions the page shows (the Namespaces tile), so it
+        // makes the verdict allowed. Without it the user would be denied, and defaulted into a
+        // Namespace where that tile is skipped, with nothing to show.
+        test('is All Namespaces for a user whose only cluster-wide grant is listing namespaces', async () => {
+            const onlyNamespaces: AccessSummary = {
+                username: 'bob', groups: [], clusterAdmin: false, namespaces: ['*'],
+                rules: rulesFor({ apiGroups: [''], resources: ['namespaces'], verbs: ['list'] }),
+            };
+            const page = await mount({ namespaces: list(['default']) }, onlyNamespaces);
+            expect(pickerValue(page)).toBe(ALL);
+            expect(await optionValues(page)).toEqual([ALL, 'default']);
+            expect(tileValue(page, 'Namespaces')).toBe('1');
+        });
+
+        test('builds the list when the page loads, not from the Namespaces tile', async () => {
+            const seen: string[] = [];
+            await mountWith(async (url: string) => {
+                seen.push(url);
+                const key = keyForUrl(url);
+                if (key === 'access-summary') return jsonResponse(fullAccessSummary());
+                if (key === 'namespaces') return jsonResponse(list(['a', 'b']));
+                return jsonResponse({ items: [] });
+            });
+            expect(seen.some(u => u.includes('/api/v1/namespaces?limit=10000'))).toBe(true);
+        });
+
+        test('is the first namespace, unchecked, when the verdict is not allowed', async () => {
+            const seen: string[] = [];
+            const page = await mountWith(boundHandler(['team-a', 'team-b'], ['team-b'], seen));
+            expect(pickerValue(page)).toBe('team-a');
+            // Only the selected namespace is asked about: the choice was not made by checking.
+            const asked = seen.filter(u => keyForUrl(u) === 'access-summary-namespaces')
+                .map(u => new URL(u, 'http://x').searchParams.getAll('namespace'));
+            expect(asked).toEqual([['team-a']]);
+        });
+
+        test('is not All Namespaces when the verdict is unknown', async () => {
+            const page = await mountWith(boundHandler(['team-a', 'team-b'], [], [], true));
+            expect(pickerValue(page)).toBe('team-a');
+            // Offered, though: only a denied verdict hides it.
+            expect(await optionValues(page)).toEqual([ALL, 'team-a', 'team-b']);
+        });
+
+        test('leaves All Namespaces out when the verdict is denied', async () => {
+            const page = await mountWith(boundHandler(['team-a', 'team-b'], []));
+            expect(await optionValues(page)).toEqual(['team-a', 'team-b']);
+        });
+
+        test('is nothing, with an explanation and a box to name one, when there is no list', async () => {
+            const page = await mount({}, null);
+            expect(pickerValue(page)).toBe('');
+            expect(hasTile(page, 'Pods')).toBe(false);
+            expect(page.shadowRoot!.querySelector('.stat-grid')).toBeNull();
+            expect(page.shadowRoot!.textContent).toContain('Select a namespace');
+            expect(page.shadowRoot!.querySelector('#ns-picker-by-name')).not.toBeNull();
+            // All Namespaces is still offered when the summary could not be fetched.
+            expect(await optionValues(page)).toEqual([ALL]);
+        });
+
+        test('is nothing for a user with an empty list, who may name a namespace', async () => {
+            const page = await mountWith(boundHandler([], []));
+            expect(pickerValue(page)).toBe('');
+            expect(page.shadowRoot!.querySelector('#ns-picker-by-name')).not.toBeNull();
+        });
+
+        test('is not written to the URL, and is not a choice', async () => {
+            const chosen: string[] = [];
+            vi.stubGlobal('fetch', vi.fn(boundHandler(['team-a'], ['team-a'])));
+            el = document.createElement('antrea-overview-page') as AntreaOverviewPage;
+            el.addEventListener('antrea-namespace-scope-chosen', e => chosen.push((e as CustomEvent).detail.scope));
+            document.body.appendChild(el);
+            await settle(el);
+            expect(pickerValue(el)).toBe('team-a');
+            expect(window.location.search).toBe('');
+            expect(chosen).toEqual([]);
+        });
     });
 
-    test('the picked namespace stays selected after the reload it triggers', async () => {
-        const page = await mount({
-            namespaces: list(['default', 'kube-system']),
-            pods: list(['p1', 'p2'], 'default'),
+    describe('the scope in the URL', () => {
+        test('is used as given, without waiting for the list', async () => {
+            const seen: string[] = [];
+            const listGate = Promise.withResolvers<void>();
+            const page = await mountWith(async (url: string) => {
+                seen.push(url);
+                if (keyForUrl(url) === 'access-summary') await listGate.promise;
+                return boundHandler(['team-a'], ['team-b'])(url);
+            }, '?namespace=team-b');
+            // The summary has not answered, yet team-b's content is already being requested.
+            expect(seen.some(u => u.split('?')[0].endsWith('/namespaces/team-b/pods'))
+                || seen.some(u => u.includes('access-summary/namespaces?namespace=team-b'))).toBe(true);
+            expect(pickerValue(page)).toBe('team-b');
+            listGate.resolve();
         });
 
-        // The reload must be slow enough for at least one render to land while it is in flight.
-        // With instantly-resolved mocks Lit coalesces the whole reload into a single update, so
-        // the intermediate state this test is about never reaches the DOM.
-        vi.stubGlobal('fetch', vi.fn(async (url: string) => {
-            const key = keyForUrl(url);
-            await new Promise(r => setTimeout(r, 5));
-            if (key === 'access-summary') return jsonResponse(fullAccessSummary());
-            if (key === 'namespaces') return jsonResponse(list(['default', 'kube-system']));
-            return jsonResponse({ items: [] });
-        }));
+        test('is kept when it is not in the list, and the picker shows it', async () => {
+            const page = await mountWith(boundHandler(['team-a'], ['team-b']), '?namespace=team-b');
+            expect(pickerValue(page)).toBe('team-b');
+            expect(await optionValues(page)).toContain('team-b');
+        });
 
-        const select = page.shadowRoot!.querySelector('#ns-select') as HTMLSelectElement;
-        select.value = 'kube-system';
-        select.dispatchEvent(new Event('change'));
+        test('keeps All Namespaces on a page whose verdict is denied, with no fallback', async () => {
+            const seen: string[] = [];
+            const page = await mountWith(boundHandler(['team-a'], [], seen), '?namespace=_all');
+            expect(pickerValue(page)).toBe(ALL);
+            expect(await optionValues(page)).toEqual([ALL, 'team-a']);
+            // The page's verdict is denied, so the pods tile is left out without a request (rule 6
+            // of the design), but the scope stays, as the URL gave it.
+            expect(seen.some(u => keyForUrl(u) === 'pods' && u.includes('/api/v1/pods'))).toBe(false);
+            expect(page.shadowRoot!.textContent).toContain('does not have permission to view any');
+        });
 
-        // Render once mid-flight: this is where the old code swapped the page for a spinner.
-        await page.updateComplete;
-        for (let i = 0; i < 10; i++) await new Promise(r => setTimeout(r, 5));
-        await page.updateComplete;
+        test('is reported, with nothing selected, when it is not a valid scope', async () => {
+            for (const search of ['?namespace=', '?namespace=Not_Valid', '?namespace=a&namespace=b']) {
+                const page = await mountWith(boundHandler(['team-a'], ['team-a']), search);
+                expect(pickerValue(page)).toBe('');
+                expect(alertText(page, 'danger')).not.toBeNull();
+                expect(hasTile(page, 'Pods')).toBe(false);
+                page.remove();
+            }
+        });
 
-        // Regression: the reload used to blank the page, so the <select> was torn down and
-        // rebuilt, and its value was assigned before its options existed — silently snapping the
-        // selection back to "All Namespaces" while the counts stayed namespace-scoped.
-        const after = page.shadowRoot!.querySelector('#ns-select') as HTMLSelectElement;
-        expect(after).not.toBeNull();
-        expect(after.value).toBe('kube-system');
+        test('is taken again when the URL changes', async () => {
+            const page = await mountWith(boundHandler(['team-a', 'team-b'], ['team-a', 'team-b']), '?namespace=team-a');
+            expect(pickerValue(page)).toBe('team-a');
+            page.locationSearch = '?namespace=team-b';
+            await settle(page);
+            expect(pickerValue(page)).toBe('team-b');
+            // No scope in the new URL: the default order runs again.
+            page.locationSearch = '';
+            await settle(page);
+            expect(pickerValue(page)).toBe('team-a');
+        });
+
+        test('is said to the host when taken from the URL', async () => {
+            const chosen: string[] = [];
+            vi.stubGlobal('fetch', vi.fn(boundHandler(['team-a'], ['team-a'])));
+            el = document.createElement('antrea-overview-page') as AntreaOverviewPage;
+            el.locationSearch = '?namespace=_all';
+            el.addEventListener('antrea-namespace-scope-chosen', e => chosen.push((e as CustomEvent).detail.scope));
+            document.body.appendChild(el);
+            await settle(el);
+            expect(chosen).toContain('_all');
+        });
+    });
+
+    describe('choosing a scope', () => {
+        test('re-fetches namespaced resources scoped to it', async () => {
+            const page = await mount({
+                namespaces: list(['default', 'kube-system']),
+                pods: list(['p1', 'p2'], 'default'),
+            });
+            expect(tileValue(page, 'Pods')).toBe('2');
+
+            const seenUrls: string[] = [];
+            vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+                seenUrls.push(url);
+                const key = keyForUrl(url);
+                if (key === 'access-summary') return jsonResponse(fullAccessSummary());
+                if (key === 'pods') return jsonResponse(list(['p1'], 'kube-system'));
+                return jsonResponse({ items: [] });
+            }));
+            await choose(page, 'kube-system');
+
+            expect(tileValue(page, 'Pods')).toBe('1');
+            expect(seenUrls.some(u => u.split('?')[0].endsWith('/api/v1/namespaces/kube-system/pods'))).toBe(true);
+        });
+
+        test('the picked namespace stays selected after the reload it triggers', async () => {
+            const page = await mount({
+                namespaces: list(['default', 'kube-system']),
+                pods: list(['p1', 'p2'], 'default'),
+            });
+            // The reload must be slow enough for at least one render to land while it is in flight.
+            vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+                const key = keyForUrl(url);
+                await new Promise(r => setTimeout(r, 5));
+                if (key === 'access-summary') return jsonResponse(fullAccessSummary());
+                return jsonResponse({ items: [] });
+            }));
+
+            const input = page.shadowRoot!.querySelector('#ns-picker') as HTMLInputElement;
+            input.dispatchEvent(new Event('focus'));
+            await picker(page).updateComplete;
+            (page.shadowRoot!.querySelector('#ns-picker-list [data-value="kube-system"]') as HTMLElement).click();
+            await page.updateComplete;
+            for (let i = 0; i < 10; i++) await new Promise(r => setTimeout(r, 5));
+            await page.updateComplete;
+
+            const after = page.shadowRoot!.querySelector('#ns-picker') as HTMLInputElement;
+            expect(after).not.toBeNull();
+            expect(after.dataset.value).toBe('kube-system');
+        });
+
+        test('is written to the URL in place, and said to the host', async () => {
+            const chosen: string[] = [];
+            const changes: string[] = [];
+            vi.stubGlobal('fetch', vi.fn(boundHandler(['team-a', 'team-b'], ['team-a', 'team-b'])));
+            el = document.createElement('antrea-overview-page') as AntreaOverviewPage;
+            el.addEventListener('antrea-namespace-scope-chosen', e => chosen.push((e as CustomEvent).detail.scope));
+            el.addEventListener('antrea-namespace-scope-change', e => changes.push((e as CustomEvent).detail.search));
+            document.body.appendChild(el);
+            await settle(el);
+            const before = window.history.length;
+
+            // The page defaulted to team-a, and picking it is still a choice: it is written.
+            await choose(el, 'team-a');
+            expect(window.location.search).toBe('?namespace=team-a');
+            expect(window.history.length).toBe(before);
+            expect(chosen).toEqual(['team-a']);
+            expect(changes).toEqual(['?namespace=team-a']);
+
+            await choose(el, 'team-b');
+            expect(window.location.search).toBe('?namespace=team-b');
+            expect(chosen).toEqual(['team-a', 'team-b']);
+            expect(changes).toEqual(['?namespace=team-a', '?namespace=team-b']);
+        });
+
+        test('typed text searches the list by prefix, ignoring case, and hides All Namespaces', async () => {
+            const names = Array.from({ length: 25 }, (_, i) => `ns-${String(i).padStart(2, '0')}`);
+            const page = await mount({ namespaces: list([...names, 'other']) });
+
+            const input = page.shadowRoot!.querySelector('#ns-picker') as HTMLInputElement;
+            input.dispatchEvent(new Event('focus'));
+            await picker(page).updateComplete;
+            // Nothing typed: All Namespaces first, then the first ten.
+            expect(menuValues(page)).toEqual([ALL, ...names.slice(0, 10)]);
+            expect(page.shadowRoot!.textContent).toContain('type to search');
+
+            input.value = ' NS-1 ';
+            input.dispatchEvent(new Event('input'));
+            await picker(page).updateComplete;
+            expect(menuValues(page)).toEqual(names.slice(10, 20));
+
+            input.value = 'oth';
+            input.dispatchEvent(new Event('input'));
+            await picker(page).updateComplete;
+            expect(menuValues(page)).toEqual(['other']);
+        });
+
+        test('Enter on a typed name picks it', async () => {
+            const page = await mount({ namespaces: list(['default', 'kube-system']) });
+            const input = page.shadowRoot!.querySelector('#ns-picker') as HTMLInputElement;
+            input.dispatchEvent(new Event('focus'));
+            input.value = 'kube';
+            input.dispatchEvent(new Event('input'));
+            input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
+            await settle(page);
+            expect(pickerValue(page)).toBe('kube-system');
+        });
+
+        test('a typed name not in a complete list cannot be picked', async () => {
+            const page = await mount({ namespaces: list(['default', 'kube-system']) });
+            const input = page.shadowRoot!.querySelector('#ns-picker') as HTMLInputElement;
+            input.dispatchEvent(new Event('focus'));
+            input.value = 'nope';
+            input.dispatchEvent(new Event('input'));
+            input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
+            await settle(page);
+            expect(pickerValue(page)).toBe(ALL);
+        });
+
+        // The value of All Namespaces is not a valid Namespace name, but it can be typed, in the box
+        // or in the search. It is a name there, and so rejected: it must not select All Namespaces
+        // for a user who is not offered it.
+        test('the value of All Namespaces, typed as a name, is rejected', async () => {
+            const page = await mountWith(boundHandler([], []));
+            expect(await optionValues(page)).toEqual([]);
+
+            const byName = page.shadowRoot!.querySelector('#ns-picker-by-name') as HTMLInputElement;
+            byName.value = ALL;
+            byName.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
+            await settle(page);
+            expect(pickerValue(page)).toBe('');
+            expect(alertText(page, 'danger')).toContain('not a valid namespace name');
+            expect(window.location.search).toBe('');
+
+            const input = page.shadowRoot!.querySelector('#ns-picker') as HTMLInputElement;
+            input.dispatchEvent(new Event('focus'));
+            input.value = ALL;
+            input.dispatchEvent(new Event('input'));
+            input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
+            await settle(page);
+            expect(pickerValue(page)).toBe('');
+            expect(window.location.search).toBe('');
+        });
+
+        test('a name typed in the box is taken, and rejected when it is not a valid name', async () => {
+            const page = await mount({}, null);
+            const byName = page.shadowRoot!.querySelector('#ns-picker-by-name') as HTMLInputElement;
+            byName.value = 'Not_Valid';
+            byName.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
+            await settle(page);
+            expect(pickerValue(page)).toBe('');
+            expect(alertText(page, 'danger')).toContain('not a valid namespace name');
+
+            byName.value = 'team-a';
+            byName.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
+            await settle(page);
+            expect(pickerValue(page)).toBe('team-a');
+            expect(alertText(page, 'danger')).toBeNull();
+            expect(tileValue(page, 'Pods')).not.toBeNull();
+        });
+    });
+
+    describe('the note on a Namespace outside the list', () => {
+        const note = (page: AntreaOverviewPage) =>
+            page.shadowRoot!.querySelector('[data-testid="scope-note"]')?.textContent?.trim() ?? null;
+
+        test('says it is not in your list for a user who cannot list namespaces', async () => {
+            const page = await mountWith(boundHandler(['team-a'], ['team-b']), '?namespace=team-b');
+            expect(note(page)).toBe('Namespace team-b is not in your list: it may not exist, or you may not have access');
+        });
+
+        // The per-Namespace access summary does not check existence: a Namespace that is not there
+        // has no RoleBindings, so for a user whose grants come from them every tile is denied, and
+        // the permission notice would give the wrong reason.
+        test('says it does not exist in the banner, as well as in the note, once a check confirms it', async () => {
+            const page = await mountWith(async (url: string) => {
+                const key = keyForUrl(url);
+                if (key === 'access-summary') {
+                    return jsonResponse({
+                        username: 'bob', groups: [], clusterAdmin: false, namespaces: ['*'],
+                        rules: { resourceRules: [], nonResourceRules: [], incomplete: false },
+                    });
+                }
+                if (key === 'access-summary-namespaces') {
+                    return jsonResponse({ items: [{ namespace: 'ghost', rules: rulesFor() }] });
+                }
+                if (url.split('?')[0].endsWith('/api/v1/namespaces/ghost')) return jsonResponse({ message: 'nf' }, 404);
+                if (key === 'namespaces') return jsonResponse(list(['default']));
+                return jsonResponse({ items: [] });
+            }, '?namespace=ghost');
+            const alerts = Array.from(page.shadowRoot!.querySelectorAll('antrea-alert'))
+                .map(a => a.textContent!.replace(/\s+/g, ' ').trim());
+            expect(alerts).toEqual(['Namespace ghost does not exist']);
+            expect(note(page)).toBe('Namespace ghost does not exist');
+        });
+
+        // A tile granted cluster-wide is allowed for a Namespace that does not exist too, so a
+        // user with a partial view still has something hidden, and is told.
+        test('keeps the notice that something is hidden when only some tiles are denied', async () => {
+            const page = await mountWith(async (url: string) => {
+                const key = keyForUrl(url);
+                if (key === 'access-summary') {
+                    return jsonResponse({
+                        username: 'bob', groups: [], clusterAdmin: false, namespaces: ['*'],
+                        rules: rulesFor(podsList, { apiGroups: [''], resources: ['namespaces'], verbs: ['list'] }),
+                    });
+                }
+                // Events are granted only through a RoleBinding, which a missing Namespace has none of.
+                if (key === 'access-summary-namespaces') {
+                    return jsonResponse({ items: [{ namespace: 'typo', rules: rulesFor(podsList) }] });
+                }
+                if (url.split('?')[0].endsWith('/api/v1/namespaces/typo')) return jsonResponse({ message: 'nf' }, 404);
+                if (key === 'namespaces') return jsonResponse(list(['default']));
+                return jsonResponse({ items: [] });
+            }, '?namespace=typo');
+            const alerts = Array.from(page.shadowRoot!.querySelectorAll('antrea-alert'))
+                .map(a => a.textContent!.replace(/\s+/g, ' ').trim());
+            expect(alerts).toEqual([
+                'Some information is not shown because your account does not have permission to view it.',
+            ]);
+            expect(note(page)).toBe('Namespace typo does not exist');
+            expect(tileValue(page, 'Pods')).toBe('0');
+        });
+
+        test('is not shown when the list is empty, unknown or cut', async () => {
+            expect(note(await mount({}, null))).toBeNull();
+            const page = await mountWith(boundHandler([], []), '?namespace=team-a');
+            expect(note(page)).toBeNull();
+        });
+
+        test('is not shown when the list was cut at its safeguard', async () => {
+            const page = await mountWith(async (url: string) => {
+                const key = keyForUrl(url);
+                if (key === 'access-summary') return jsonResponse(fullAccessSummary());
+                // Not asked: a cut list says nothing about a Namespace outside it.
+                if (url.split('?')[0].endsWith('/api/v1/namespaces/other')) return jsonResponse({ message: 'nf' }, 404);
+                if (key === 'namespaces') return jsonResponse({ ...list(['default']), metadata: { continue: 'more' } });
+                return jsonResponse({ items: [] });
+            }, '?namespace=other');
+            expect(note(page)).toBeNull();
+        });
     });
 });
 
@@ -428,86 +839,14 @@ describe('AntreaOverviewPage — namespace-scoped access', () => {
         return { page, seenUrls };
     }
 
-    test('seeds the picker from summary.namespaces and starts in the first accessible namespace', async () => {
+    test('seeds the picker from summary.namespaces and starts in the first namespace', async () => {
         const { page, seenUrls } = await mountRoleBound();
 
-        const select = page.shadowRoot!.querySelector('#ns-select') as HTMLSelectElement;
-        expect(select.value).toBe('team-a');
-        // No All Namespaces: nothing is granted cluster-wide, so it could only be an empty page.
-        expect(Array.from(select.options).map(o => o.value)).toEqual(['team-a']);
+        expect(pickerValue(page)).toBe('team-a');
+        // No All Namespaces: nothing is granted cluster-wide, so the verdict is denied.
+        expect(await optionValues(page)).toEqual(['team-a']);
         expect(seenUrls.some(u => u.includes('access-summary/namespaces?namespace=team-a'))).toBe(true);
         expect(tileValue(page, 'Pods')).toBe('2');
-    });
-
-    // summary.namespaces is the RoleBinding-subject heuristic, a superset of what the user can see:
-    // its first entry may grant nothing this page shows. The per-namespace summaries say which do.
-    describe('choosing the namespace to start in', () => {
-        const podsList = { apiGroups: [''], resources: ['pods'], verbs: ['list'] };
-        function rulesFor(...rules: { apiGroups: string[], resources: string[], verbs: string[] }[]) {
-            return { resourceRules: rules, nonResourceRules: [], incomplete: false };
-        }
-
-        async function mountNamespaces(
-            namespaces: string[],
-            perNamespace: Record<string, unknown>,
-            batch: 'ok' | 'fails' = 'ok',
-        ) {
-            const asked: string[][] = [];
-            const page = await mountWith(async (url: string) => {
-                const key = keyForUrl(url);
-                const u = new URL(url, 'http://x');
-                if (key === 'access-summary') {
-                    return jsonResponse({
-                        username: 'bob', groups: [], clusterAdmin: false, rules: rulesFor(), namespaces,
-                        ...(u.searchParams.get('namespace') ? { namespace: u.searchParams.get('namespace') } : {}),
-                    });
-                }
-                if (key === 'access-summary-namespaces') {
-                    asked.push(u.searchParams.getAll('namespace'));
-                    if (batch === 'fails') return jsonResponse({ message: 'boom' }, 503);
-                    return jsonResponse({
-                        items: u.searchParams.getAll('namespace').map(namespace => ({
-                            namespace, rules: perNamespace[namespace] ?? rulesFor(),
-                        })),
-                    });
-                }
-                return jsonResponse({ items: [] });
-            });
-            return { page, asked };
-        }
-
-        const selected = (page: AntreaOverviewPage) =>
-            (page.shadowRoot!.querySelector('#ns-select') as HTMLSelectElement).value;
-
-        test('starts in the first namespace that grants something to show, not the first listed', async () => {
-            const { page, asked } = await mountNamespaces(['team-a', 'team-b'], { 'team-b': rulesFor(podsList) });
-            // The first question picks the namespace; the second is the one that gates its tiles.
-            expect(asked).toEqual([['team-a', 'team-b'], ['team-b']]);
-            expect(selected(page)).toBe('team-b');
-        });
-
-        test('prefers a namespace that is merely unknown to one known to grant nothing', async () => {
-            const { page } = await mountNamespaces(['team-a', 'team-b'], {
-                'team-b': { resourceRules: [], nonResourceRules: [], incomplete: true },
-            });
-            expect(selected(page)).toBe('team-b');
-        });
-
-        test('falls back to the first namespace when none is known to grant anything', async () => {
-            const { page } = await mountNamespaces(['team-a', 'team-b'], {});
-            expect(selected(page)).toBe('team-a');
-        });
-
-        test('fails open to the first namespace when the answer cannot be fetched', async () => {
-            const { page } = await mountNamespaces(['team-a', 'team-b'], { 'team-b': rulesFor(podsList) }, 'fails');
-            expect(selected(page)).toBe('team-a');
-        });
-
-        test('asks about no more namespaces than a request allows', async () => {
-            const many = Array.from({ length: 12 }, (_, i) => `ns-${String(i).padStart(2, '0')}`);
-            const { asked } = await mountNamespaces(many, {});
-            expect(asked[0]).toEqual(many.slice(0, 10));
-        });
     });
 
     // The per-namespace answer is cached for a short while and no longer, so a grant added while
@@ -539,63 +878,21 @@ describe('AntreaOverviewPage — namespace-scoped access', () => {
                 if (key === 'pods' || key === 'services') return jsonResponse(list(['x'], 'team-a'));
                 return jsonResponse({ items: [] });
             });
-            const choose = async (ns: string) => {
-                const select = page.shadowRoot!.querySelector('#ns-select') as HTMLSelectElement;
-                select.value = ns;
-                select.dispatchEvent(new Event('change'));
-                await page.updateComplete;
-                await new Promise(r => setTimeout(r, 0));
-                await new Promise(r => setTimeout(r, 0));
-                await page.updateComplete;
-            };
             expect(hasTile(page, 'Services')).toBe(false);
 
             servicesGranted = true;
-            await choose('team-b');
+            await choose(page, 'team-b');
             // Within the cache's lifetime the earlier answer for team-a is still what is known.
-            await choose('team-a');
+            await choose(page, 'team-a');
             expect(hasTile(page, 'Services')).toBe(false);
 
             vi.setSystemTime(Date.now() + 31_000);
-            await choose('team-b');
-            await choose('team-a');
+            await choose(page, 'team-b');
+            await choose(page, 'team-a');
             expect(hasTile(page, 'Services')).toBe(true);
         } finally {
             vi.useRealTimers();
         }
-    });
-
-    // All Namespaces is gated on the cluster-scoped summary, so for a user whose grants all come
-    // from RoleBindings it can only show the access notice.
-    describe('the All Namespaces option', () => {
-        const optionValues = (page: AntreaOverviewPage) =>
-            Array.from((page.shadowRoot!.querySelector('#ns-select') as HTMLSelectElement).options).map(o => o.value);
-
-        test('is offered to a user with a cluster-wide grant for something the page shows', async () => {
-            const page = await mount({ namespaces: list(['default', 'kube-system']) });
-            expect(optionValues(page)).toEqual(['', 'default', 'kube-system']);
-        });
-
-        // Unlike the choice of where to start, this keeps namespaces in the check. This user starts
-        // on All Namespaces, so hiding it would leave the <select> showing a namespace while the
-        // page shows the cluster view, and picking that namespace would fire no change event.
-        test('is offered to a user whose only cluster-wide grant is listing namespaces', async () => {
-            const onlyNamespaces: AccessSummary = {
-                username: 'bob', groups: [], clusterAdmin: false, namespaces: ['*'],
-                rules: {
-                    resourceRules: [{ apiGroups: [''], resources: ['namespaces'], verbs: ['list'] }],
-                    nonResourceRules: [], incomplete: false,
-                },
-            };
-            const page = await mount({ namespaces: list(['default']) }, onlyNamespaces);
-            expect(optionValues(page)).toEqual(['', 'default']);
-            expect((page.shadowRoot!.querySelector('#ns-select') as HTMLSelectElement).value).toBe('');
-        });
-
-        test('is not offered to a user whose grants all come from RoleBindings', async () => {
-            const { page } = await mountRoleBound();
-            expect(optionValues(page)).not.toContain('');
-        });
     });
 
     // "Some information is not shown" reads as if something else were shown. When the selected
@@ -605,18 +902,18 @@ describe('AntreaOverviewPage — namespace-scoped access', () => {
             Array.from(page.shadowRoot!.querySelectorAll('antrea-alert')).map(a => ({
                 status: a.getAttribute('status'), text: a.textContent!.replace(/\s+/g, ' ').trim(),
             }));
+        const podsList = { apiGroups: [''], resources: ['pods'], verbs: ['list'] };
+        const rules = (namespace: string) => ({
+            resourceRules: namespace === 'team-a' ? [podsList] : [],
+            nonResourceRules: [],
+            incomplete: false,
+        });
 
         test('says the account has nothing it may see here, in place of the partial notice', async () => {
-            const podsList = { apiGroups: [''], resources: ['pods'], verbs: ['list'] };
             const page = await mountWith(async (url: string) => {
                 const key = keyForUrl(url);
                 const u = new URL(url, 'http://x');
                 const ns = u.searchParams.get('namespace') ?? '';
-                const rules = (namespace: string) => ({
-                    resourceRules: namespace === 'team-a' ? [podsList] : [],
-                    nonResourceRules: [],
-                    incomplete: false,
-                });
                 if (key === 'access-summary') {
                     return jsonResponse({
                         username: 'bob', groups: [], clusterAdmin: false, rules: rules(ns),
@@ -634,36 +931,25 @@ describe('AntreaOverviewPage — namespace-scoped access', () => {
             // team-a grants pods and nothing else, which is a partial view.
             expect(alerts(page).map(a => a.status)).toEqual(['info']);
 
-            // team-b grants nothing at all.
-            const select = page.shadowRoot!.querySelector('#ns-select') as HTMLSelectElement;
-            select.value = 'team-b';
-            select.dispatchEvent(new Event('change'));
-            await page.updateComplete;
-            await new Promise(r => setTimeout(r, 0));
-            await new Promise(r => setTimeout(r, 0));
-            await page.updateComplete;
+            // team-b grants nothing at all. The scope and the picker stay as they are.
+            await choose(page, 'team-b');
 
             const shown = alerts(page);
             expect(shown).toHaveLength(1);
             expect(shown[0].status).toBe('warning');
             expect(shown[0].text).toContain('does not have permission to view any of this information');
             expect(shown[0].text).toContain('team-b');
+            expect(pickerValue(page)).toBe('team-b');
         });
 
-        // The page stays up, dimmed, while the next namespace loads, and _namespace has already
+        // The page stays up, dimmed, while the next namespace loads, and the scope has already
         // changed: the previous namespace's notice must not be restated for the new one.
         test('is not shown for the namespace just picked while it loads', async () => {
-            const podsList = { apiGroups: [''], resources: ['pods'], verbs: ['list'] };
             let releasePods: () => void = () => {};
             let holdPods = false;
             const page = await mountWith(async (url: string) => {
                 const key = keyForUrl(url);
                 const u = new URL(url, 'http://x');
-                const rules = (namespace: string) => ({
-                    resourceRules: namespace === 'team-a' ? [podsList] : [],
-                    nonResourceRules: [],
-                    incomplete: false,
-                });
                 if (key === 'access-summary') {
                     return jsonResponse({
                         username: 'bob', groups: [], clusterAdmin: false, rules: rules(''),
@@ -681,20 +967,11 @@ describe('AntreaOverviewPage — namespace-scoped access', () => {
                 }
                 return jsonResponse({ items: [] });
             });
-            const choose = async (ns: string) => {
-                const select = page.shadowRoot!.querySelector('#ns-select') as HTMLSelectElement;
-                select.value = ns;
-                select.dispatchEvent(new Event('change'));
-                await page.updateComplete;
-                await new Promise(r => setTimeout(r, 0));
-                await new Promise(r => setTimeout(r, 0));
-                await page.updateComplete;
-            };
-            await choose('team-b');
+            await choose(page, 'team-b');
             expect(alerts(page).map(a => a.status)).toEqual(['warning']);
 
             holdPods = true;
-            await choose('team-a');
+            await choose(page, 'team-a');
             // team-a's pods request is still in flight: the load has not finished.
             expect(alerts(page).filter(a => a.status === 'warning')).toEqual([]);
 
@@ -764,13 +1041,7 @@ describe('AntreaOverviewPage — namespace-scoped access', () => {
         expect(hasTile(page, 'Antrea Cluster Network Policies')).toBe(true);
         seenUrls.length = 0;
 
-        const select = page.shadowRoot!.querySelector('#ns-select') as HTMLSelectElement;
-        select.value = 'kube-system';
-        select.dispatchEvent(new Event('change'));
-        await page.updateComplete;
-        await new Promise(r => setTimeout(r, 0));
-        await new Promise(r => setTimeout(r, 0));
-        await page.updateComplete;
+        await choose(page, 'kube-system');
 
         expect(hasTile(page, 'Namespaces')).toBe(false);
         expect(hasTile(page, 'Antrea Cluster Network Policies')).toBe(false);
@@ -781,8 +1052,7 @@ describe('AntreaOverviewPage — namespace-scoped access', () => {
         // Not hidden from the user either, so the partial notice stays away.
         expect(alertText(page, 'info')).toBeNull();
         // And the picker keeps the list it had.
-        expect(Array.from(page.shadowRoot!.querySelectorAll('#ns-select option')).map(o => o.textContent))
-            .toEqual(['All Namespaces', 'default', 'kube-system']);
+        expect(await optionValues(page)).toEqual([ALL, 'default', 'kube-system']);
     });
 
     test('a namespace selected by a user with no cluster-wide grant gets no 403 from the cluster-scoped kinds', async () => {

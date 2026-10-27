@@ -930,7 +930,10 @@ registerLandingPageTab({ id: 'my-plugin', label: 'My Plugin', tag: 'antrea-plugi
 built-in tab) nor an id another plugin already claimed; the host drops (and
 logs) whichever registration loses the race, as it does for a colliding
 route. The tab is part of the `/overview` route, so it is only reachable by a
-user the Overview page itself is visible to.
+user the Overview page itself is visible to. The route's `namespace` query
+parameter is the page's Namespace scope (`?namespace=<name>`, or
+`?namespace=_all`): it is kept when the user switches tabs, and a tab must not
+use `namespace` for anything else.
 
 Two things in what these functions receive can trip up a plugin written
 against an earlier version:

@@ -16,7 +16,11 @@ import { html, css, nothing } from 'lit';
 import type { TemplateResult } from 'lit';
 import { state, query, property } from 'lit/decorators.js';
 import * as d3 from 'd3';
-import { pageStyles } from '../lib/styles.js';
+import { pageStyles, pickerStyles } from '../lib/styles.js';
+import {
+    SCOPE_ALL, parseScopeParam, dispatchScopeChosen, writeScopeToURL,
+} from '../lib/namespace-scope.js';
+import type { ScopeSelectDetail } from '../antrea-namespace-picker.js';
 import { SessionAwarePage } from '../lib/session-aware-page.js';
 import { FlowStore, FlowEntry, entryBitRate } from '../lib/flow-store.js';
 import {
@@ -43,11 +47,12 @@ import {
     streamFilterKey,
 } from '../lib/flow-stream.js';
 import {
-    flowAccess, searchFlowNamespaces, mayNameNamespace, namespaceExists, isValidNamespaceName,
-} from '../lib/flow-access.js';
-import type { FlowAccess } from '../lib/flow-access.js';
+    flowAccess, mayNameNamespace, scopeNote, isValidNamespaceName,
+} from '../lib/namespace-access.js';
+import type { NamespaceAccess, ScopeNote } from '../lib/namespace-access.js';
 import '../antrea-button';
 import '../antrea-alert';
+import '../antrea-namespace-picker';
 
 // ── Graph types & helpers ────────────────────────────────────────────────────
 
@@ -97,36 +102,9 @@ const FLOW_VISIBILITY_FORBIDDEN_MESSAGE = () => html`${
     'flow stream with Kubernetes RBAC, against the "flows" resource in API group ' +
     'observability.antrea.io'} ${flowAuthorizationDocsLink()}.`;
 
-// The observed-namespace selector's value for cluster scope. Not a namespace name, so it cannot
-// collide with one: a namespace may not contain an underscore.
-const SCOPE_CLUSTER_WIDE = '__cluster_wide__';
-
-// The query parameter the scope travels in on the page URL, so a refresh or a shared link keeps
-// it: `?namespace=<name>`, or `?namespace=_all` for All Namespaces (`_all` cannot be a Namespace
-// name). Every Namespace-aware page uses the same one, so a link from one page can carry its
-// scope to another, and nothing else uses `namespace`. It is not the stream's own backend
-// parameters (`observedNamespace` and `clusterWide`, see flow-stream.ts), which stay as they are.
-const NAMESPACE_PARAM = 'namespace';
-const ALL_NAMESPACES_PARAM_VALUE = '_all';
-
-/** The event the page dispatches after it rewrites its own query string, so a host router can
- * adopt the new location: the page changes the URL with history.replaceState, which no router
- * is told about. */
-export const SCOPE_CHANGE_EVENT = 'antrea-flow-scope-change';
-/** Detail of SCOPE_CHANGE_EVENT. */
-export interface ScopeChangeDetail {
-    /** The page's new query string, with its leading "?" (empty when there is none). */
-    search: string;
-}
-
-/** The event the page dispatches when it takes a valid scope from its picker or its URL, so the
- * host can remember it as the last scope chosen. Not for a default, which is not a choice. */
-export const SCOPE_CHOSEN_EVENT = 'antrea-namespace-scope-chosen';
-/** Detail of SCOPE_CHOSEN_EVENT. */
-export interface ScopeChosenDetail {
-    /** The scope as it appears in a URL: a Namespace name, or `_all`. */
-    scope: string;
-}
+// The scope parameter, events and URL helpers are shared by every Namespace-aware page (see
+// lib/namespace-scope.ts). The stream's own backend parameters (`observedNamespace` and
+// `clusterWide`, see flow-stream.ts) stay as they are.
 
 // Shown when no scope is selected. The page opens no stream at all in that state: the Flow
 // Aggregator requires every stream to name exactly one scope, and defaulting to cluster-wide
@@ -164,8 +142,6 @@ const UNKNOWN_NAMESPACES_NOTE =
 // redaction, and the peers this selects are exactly the ones whose names did not. It is the only
 // way to ask how much of a namespace's traffic goes somewhere the user cannot see.
 const UNIDENTIFIED_PEERS_OPTION = 'Unidentified peers';
-interface ScopeItem { value: string; label: string }
-const ALL_NAMESPACES_LABEL = 'All Namespaces';
 
 // Said on the two controls that match on an identity the Flow tier clears. Not a limitation to
 // engineer around: filters run on the redacted record, which is also what stops them being an
@@ -678,7 +654,7 @@ const BASE_COLUMNS: (FlowTableColumn & { field?: SortField })[] = [
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export class AntreaFlowVisibilityPage extends SessionAwarePage {
-    static styles = [pageStyles, css`
+    static styles = [pageStyles, pickerStyles, css`
         .filter-bar { display: flex; flex-direction: column; gap: 0.75rem; }
         .filter-row { display: flex; align-items: flex-end; gap: 1rem; flex-wrap: wrap; }
         .filter-actions { display: flex; gap: 0.5rem; align-items: flex-end; flex-shrink: 0; }
@@ -711,22 +687,6 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         }
         .multiselect-option.selected { background: var(--antrea-color-bg-hover, #2e3f4d); }
         .multiselect-hint { padding: 5px 10px; font-size: 11px; color: var(--antrea-color-text-muted, #adbbc4); }
-
-        .combobox { position: relative; }
-        .combobox-list {
-            position: absolute; top: 100%; left: 0; right: 0; margin: 0; padding: 0; list-style: none;
-            max-height: 240px; overflow-y: auto;
-            background: var(--antrea-color-bg, #1b2a32);
-            border: 1px solid var(--antrea-color-border, #314351);
-            border-radius: 0 0 4px 4px; z-index: 50;
-        }
-        .combobox-option {
-            padding: 5px 10px; cursor: pointer; font-size: 12px;
-            color: var(--antrea-color-text, #e9ecef);
-        }
-        .combobox-option.selected { font-weight: 600; }
-        .combobox-option.active { background: var(--antrea-color-bg-hover, #2e3f4d); }
-        .combobox-empty { padding: 5px 10px; font-size: 11px; color: var(--antrea-color-text-muted, #adbbc4); }
 
         .flow-list-header { display: flex; align-items: center; gap: 1rem; }
         .flow-list-scroll { max-height: 70vh; overflow-x: auto; overflow-y: auto; }
@@ -805,7 +765,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
     // they typed is not a valid Namespace name. Reported on the page.
     @state() private _scopeError: string | null = null;
     // A note on the selected namespace: that it is not in a complete list.
-    @state() private _scopeNote: string | null = null;
+    @state() private _scopeNote: ScopeNote | null = null;
     private _scopeNoteToken = 0;
     // The query string of the URL as the page last took it, whether it wrote it or read it, so
     // that the host handing back what the page wrote is not mistaken for a navigation.
@@ -814,12 +774,8 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
     // The selector's options, derived from the access summary. Null until it resolves; a fetch
     // that fails resolves to an answer with no candidates rather than to null, so the page is never
     // left without a way to choose a scope.
-    @state() private _flowAccess: FlowAccess | null = null;
+    @state() private _flowAccess: NamespaceAccess | null = null;
     @state() private _flowAccessLoaded = false;
-    @state() private _scopeQuery = '';
-    @state() private _scopeOpen = false;
-    // Which item of the open menu the keyboard is on, or -1 for none.
-    @state() private _scopeActive = -1;
 
     // Stream
     @state() private _entries: FlowEntry[] = [];
@@ -897,9 +853,6 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         if (!path.some(el => el instanceof Element && (el as Element).closest?.('.multiselect'))) {
             this._nsOpen = false; this._podOpen = false; this._svcOpen = false;
         }
-        if (!path.some(el => el instanceof Element && (el as Element).closest?.('.combobox'))) {
-            this._scopeOpen = false;
-        }
     };
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
@@ -934,8 +887,6 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         if (!this.isConnected) return;
         this._flowAccess = access;
         this._flowAccessLoaded = true;
-        // The items the highlighted row indexed were the ones before the list loaded.
-        this._scopeActive = -1;
         // The URL the page last took or wrote, not the location prop: a scope picked while the
         // list loaded is in the former, and the router may not have delivered it to the latter.
         this._applyScopeFromURL(this._appliedSearch);
@@ -970,14 +921,14 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
      * scope replaces it. An invalid one is reported and nothing is selected.
      */
     private _applyScopeFromURL(search: string = this._search) {
-        const parsed = this._parseScopeParam(search);
+        const parsed = parseScopeParam(search);
         if (parsed.kind === 'invalid') {
             this._scopeError = parsed.message;
             this._setScope('');
         } else if (parsed.kind === 'scope') {
             this._scopeError = null;
             this._setScope(parsed.value);
-            this._dispatchScopeChosen(parsed.value);
+            dispatchScopeChosen(this, parsed.value);
         } else {
             this._scopeError = null;
             // The default needs the list and the verdict, so it waits for them. Nothing is
@@ -986,26 +937,6 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         }
         this._refreshStream();
         void this._refreshScopeNote();
-    }
-
-    /** Reads the scope out of a query string. `namespace` is `_all` or a valid Namespace name,
-     * given once. */
-    private _parseScopeParam(search: string):
-        | { kind: 'none' }
-        | { kind: 'invalid', message: string }
-        | { kind: 'scope', value: string } {
-        const values = new URLSearchParams(search).getAll(NAMESPACE_PARAM);
-        if (values.length === 0) return { kind: 'none' };
-        if (values.length > 1) {
-            return { kind: 'invalid', message: `The URL names more than one namespace ("${NAMESPACE_PARAM}" is given ${values.length} times). Pick one.` };
-        }
-        const [value] = values;
-        if (value === ALL_NAMESPACES_PARAM_VALUE) return { kind: 'scope', value: SCOPE_CLUSTER_WIDE };
-        if (value === '') return { kind: 'invalid', message: 'The URL names an empty namespace. Pick one.' };
-        if (!isValidNamespaceName(value)) {
-            return { kind: 'invalid', message: `"${value}" in the URL is not a valid namespace name. Pick one.` };
-        }
-        return { kind: 'scope', value };
     }
 
     /**
@@ -1028,16 +959,16 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
      * the default order again.
      */
     private _defaultScope(): string {
-        if (this._flowAccess?.clusterWide === 'allowed') return SCOPE_CLUSTER_WIDE;
+        if (this._flowAccess?.clusterWide === 'allowed') return SCOPE_ALL;
         // No namespace and no cluster scope is the one case that still lands with nothing
         // selected, and it is not a default worth inventing: there is nothing to select.
         return this._flowAccess?.candidates?.[0] ?? '';
     }
 
-    /** Sets the scope: SCOPE_CLUSTER_WIDE, a namespace, or '' for none. The one place that does,
+    /** Sets the scope: SCOPE_ALL, a namespace, or '' for none. The one place that does,
      * so that exactly one of the two fields is ever set. */
     private _setScope(value: string) {
-        const clusterWide = value === SCOPE_CLUSTER_WIDE;
+        const clusterWide = value === SCOPE_ALL;
         const observedNs = clusterWide ? '' : value;
         // Unidentified peers only exist where something is withheld, which cluster scope never
         // does (see _availableNs). Dropped from the pending selection too, even when not applied:
@@ -1066,57 +997,17 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         }
     }
 
-    /** Notes that the selected namespace is not in the list, when the list is complete and not
-     * empty: the page still loads it, since the list is a hint, but a user who holds flows
-     * cluster-wide gets an empty stream rather than a 403 for a misspelled or deleted namespace,
-     * which would otherwise read as a quiet one. For a user who may list namespaces the list is
-     * every namespace, so "does not exist", once a fresh check confirms it: it may have been
-     * created since the list was loaded. No note when the list is empty, unknown or cut. */
+    /** Notes that the selected namespace is not in the list (see scopeNote). */
     private async _refreshScopeNote() {
         const token = ++this._scopeNoteToken;
         this._scopeNote = null;
-        const access = this._flowAccess;
-        const ns = this._observedNs;
-        if (!ns || !access || mayNameNamespace(access) || access.candidates?.includes(ns)) return;
-        if (!access.mayList) {
-            this._scopeNote = `Namespace ${ns} is not in your list: it may not exist, or you may not have access`;
-            return;
-        }
-        const exists = await namespaceExists(ns);
-        if (token !== this._scopeNoteToken || !this.isConnected) return;
-        if (exists === false) this._scopeNote = `Namespace ${ns} does not exist`;
+        const note = await scopeNote(this._flowAccess, this._observedNs, () => token === this._scopeNoteToken && this.isConnected);
+        if (token === this._scopeNoteToken) this._scopeNote = note;
     }
 
-    /** Writes the current scope back to the URL, in place: this is page state a refresh should
-     * keep, not a navigation worth a history entry. Only for a scope the user chose. */
+    /** Writes the current scope back to the URL. Only for a scope the user chose. */
     private _writeScopeToURL() {
-        const url = new URL(window.location.href);
-        url.searchParams.delete(NAMESPACE_PARAM);
-        if (this._clusterWide) url.searchParams.set(NAMESPACE_PARAM, ALL_NAMESPACES_PARAM_VALUE);
-        else if (this._observedNs) url.searchParams.set(NAMESPACE_PARAM, this._observedNs);
-        this._appliedSearch = url.search;
-        if (url.toString() === window.location.href) return;
-        window.history.replaceState(window.history.state, '', url.toString());
-        // replaceState mutates the URL without telling anyone. A router that reads the location
-        // through its own abstraction - react-router's useLocation(), in this repo's host - goes
-        // on serving the value it last saw, so links it builds from the query string carry a
-        // stale scope, or none at all on a fresh load. The host is told explicitly: dispatching
-        // popstate instead would reach every listener on the window with a navigation that did
-        // not happen. A host that does not listen simply keeps the URL replaceState wrote.
-        this.dispatchEvent(new CustomEvent<ScopeChangeDetail>(SCOPE_CHANGE_EVENT, {
-            detail: { search: url.search },
-            bubbles: true,
-            composed: true,
-        }));
-    }
-
-    private _dispatchScopeChosen(value: string) {
-        const scope = value === SCOPE_CLUSTER_WIDE ? ALL_NAMESPACES_PARAM_VALUE : value;
-        this.dispatchEvent(new CustomEvent<ScopeChosenDetail>(SCOPE_CHOSEN_EVENT, {
-            detail: { scope },
-            bubbles: true,
-            composed: true,
-        }));
+        this._appliedSearch = writeScopeToURL(this, this._clusterWide ? SCOPE_ALL : this._observedNs);
     }
 
     /** Whether the cluster scope is worth offering: unless the user is known not to hold it. A
@@ -1139,101 +1030,17 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         return scope ? { ...this._peerFilter, ...scope } : null;
     }
 
-    /** The items the picker offers. The scope in force always appears among them, even one the
-     * list would not offer (see _applyScopeFromURL): All Namespaces on a page where the user is
-     * known not to hold it, or a namespace the list does not return. Only while nothing is typed:
-     * a search only filters the list, so what is typed never offers a name the list lacks. */
-    private get _scopeItems(): ScopeItem[] {
-        const typed = this._scopeQuery.trim();
-        const items: ScopeItem[] = [];
-        if (!typed && (this._mayHoldClusterWide || this._clusterWide)) {
-            items.push({ value: SCOPE_CLUSTER_WIDE, label: ALL_NAMESPACES_LABEL });
-        }
-        // The scope in force is kept among the options, whether or not the list holds it.
-        const ns = new Set(this._scopeSearch.items);
-        if (!typed && this._observedNs) ns.add(this._observedNs);
-        for (const n of Array.from(ns).sort()) items.push({ value: n, label: n });
-        return items;
-    }
-
-    /** The namespaces matching what is typed, derived rather than stored so that they cannot
-     * drift from the query or from the list. */
-    private get _scopeSearch(): { items: string[], more: boolean } {
-        return searchFlowNamespaces(this._flowAccess, this._scopeQuery);
-    }
-
-    private _onScopeSearch(value: string) {
-        this._scopeQuery = value;
-        // The highlighted row indexed the list that was just replaced, and may be past the end
-        // of this one.
-        this._scopeActive = -1;
-    }
-
-    private _openScopeMenu() {
-        if (this._scopeOpen) return;
-        this._scopeOpen = true;
-        this._scopeActive = -1;
-        // A menu that was last left narrowed starts from the whole list again.
-        this._scopeQuery = '';
-    }
-
-    private _chooseScope(value: string) {
-        this._scopeOpen = false;
-        this._scopeQuery = '';
-        this._scopeActive = -1;
-        this._onScopeChange(value);
-    }
-
-    private _onScopeKeydown(e: KeyboardEvent) {
-        const items = this._scopeItems;
-        switch (e.key) {
-        case 'ArrowDown':
-        case 'ArrowUp': {
-            e.preventDefault();
-            this._openScopeMenu();
-            if (items.length === 0) return;
-            const step = e.key === 'ArrowDown' ? 1 : -1;
-            // With nothing highlighted, ArrowDown starts at the first option and ArrowUp at the last.
-            this._scopeActive = this._scopeActive < 0
-                ? (step > 0 ? 0 : items.length - 1)
-                : (this._scopeActive + step + items.length) % items.length;
-            break;
-        }
-        case 'Enter': {
-            e.preventDefault();
-            const typed = this._scopeQuery.trim();
-            // The highlighted row only counts while the menu is open: once closed it indexes a list
-            // the user is no longer looking at.
-            if (this._scopeOpen && this._scopeActive >= 0 && this._scopeActive < items.length) this._chooseScope(items[this._scopeActive].value);
-            // A name typed in full is the one meant, even when it also starts another Namespace.
-            else if (typed && items.some(i => i.value === typed.toLowerCase())) this._chooseScope(typed.toLowerCase());
-            // A single match is the one meant; and where the list is empty, unknown or cut there
-            // may be nothing to match against, so the typed name is the scope (FA authorizes it).
-            else if (typed && items.length === 1) this._chooseScope(items[0].value);
-            else if (typed && mayNameNamespace(this._flowAccess)) this._chooseScope(typed);
-            break;
-        }
-        case 'Escape':
-            this._scopeOpen = false;
-            this._scopeQuery = '';
-            this._scopeActive = -1;
-            break;
-        case 'Tab':
-            this._scopeOpen = false;
-            break;
-        }
-    }
-
     /** The user chose a scope: a pick, or a name they typed. A name that is not a valid Namespace
      * name is rejected and the scope stays as it was. */
-    private _onScopeChange(value: string) {
-        if (value !== SCOPE_CLUSTER_WIDE && !isValidNamespaceName(value)) {
+    private _onScopeChange(value: string, typed: boolean) {
+        // A typed value is a name even when it is SCOPE_ALL, which is not a valid one.
+        if ((typed || value !== SCOPE_ALL) && !isValidNamespaceName(value)) {
             this._scopeError = `"${value}" is not a valid namespace name.`;
             return;
         }
         this._scopeError = null;
-        this._dispatchScopeChosen(value);
-        const clusterWide = value === SCOPE_CLUSTER_WIDE;
+        dispatchScopeChosen(this, value);
+        const clusterWide = value === SCOPE_ALL;
         if (clusterWide === this._clusterWide && (clusterWide || value === this._observedNs)) {
             // Chosen again, or chosen where the page was defaulted: the choice is still written, so
             // that a reload keeps it as one.
@@ -1271,8 +1078,8 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         // The scope taken from the URL at mount was dispatched before the host could listen: the
         // element is connected before its listeners are attached. Say it again once mounted.
         if (this._sessionStarted) {
-            const parsed = this._parseScopeParam(this._appliedSearch);
-            if (parsed.kind === 'scope') this._dispatchScopeChosen(parsed.value);
+            const parsed = parseScopeParam(this._appliedSearch);
+            if (parsed.kind === 'scope') dispatchScopeChosen(this, parsed.value);
         }
     }
 
@@ -1936,81 +1743,26 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         return [...current.filter(v => v !== UNIDENTIFIED_PEERS_OPTION), value];
     }
 
-    /** The observed-namespace selector: required, single-select, and the same control in both
-     * views so the two cannot disagree about what is being observed. A combobox, so that one
-     * control both searches the namespaces by prefix and picks one. All Namespaces is offered
-     * unless the user is known not to hold it (see _mayHoldClusterWide). The placeholder is not
-     * where the page starts (see _defaultScope); it shows because no scope remains a state the
-     * page can hold.
-     *
-     * The input shows the scope in force while closed and what is being typed while open;
-     * data-value carries the scope itself, since the text is only its label. */
-    private _renderScopeSelect() {
-        const value = this._clusterWide ? SCOPE_CLUSTER_WIDE : this._observedNs;
-        const label = this._clusterWide ? ALL_NAMESPACES_LABEL : this._observedNs;
-        const items = this._scopeItems;
-        const open = this._scopeOpen;
-        return html`
-            <div class="field-group scope-select combobox" style="min-width:220px">
-                <label class="field-label" for="observed-ns">Observed namespace</label>
-                <input id="observed-ns" class="field-input" type="text" role="combobox" autocomplete="off"
-                    placeholder="Select a namespace…"
-                    aria-expanded=${open ? 'true' : 'false'} aria-controls="observed-ns-list"
-                    aria-activedescendant=${open && this._scopeActive >= 0 ? `observed-ns-opt-${this._scopeActive}` : nothing}
-                    data-value=${value}
-                    .value=${open ? this._scopeQuery : label}
-                    @focus=${() => this._openScopeMenu()}
-                    @click=${() => this._openScopeMenu()}
-                    @input=${(e: Event) => { this._openScopeMenu(); this._onScopeSearch((e.target as HTMLInputElement).value); }}
-                    @keydown=${(e: KeyboardEvent) => this._onScopeKeydown(e)}>
-                ${open ? html`
-                    <ul id="observed-ns-list" class="combobox-list" role="listbox">
-                        ${items.length === 0 ? html`<li class="combobox-empty">No matching namespaces</li>` : nothing}
-                        ${items.map((item, i) => html`
-                            <li id="observed-ns-opt-${i}" role="option" data-value=${item.value}
-                                aria-selected=${item.value === value ? 'true' : 'false'}
-                                class="combobox-option ${item.value === value ? 'selected' : ''} ${i === this._scopeActive ? 'active' : ''}"
-                                @mousedown=${(e: Event) => e.preventDefault()}
-                                @click=${() => this._chooseScope(item.value)}>${item.label}</li>
-                        `)}
-                        ${this._scopeSearch.more ? html`<li class="combobox-empty">${this._scopeQuery.trim() ? 'More matches, keep typing' : 'Showing the first 10 - type to search'}</li>` : nothing}
-                    </ul>
-                ` : nothing}
-                ${this._scopeNote ? html`<p class="text-muted" data-testid="scope-note">${this._scopeNote}</p>` : nothing}
-            </div>
-            ${mayNameNamespace(this._flowAccess) ? this._renderScopeByName() : nothing}
-        `;
+    private _closeScopeMenu() {
+        this.renderRoot.querySelector('antrea-namespace-picker')?.close();
     }
 
-    /**
-     * A free-text way to name a namespace the list does not offer.
-     *
-     * Only rendered when the list is empty, unknown or cut, and that condition is the point rather
-     * than tidiness: when the list is complete and not empty, a namespace absent from it is one
-     * the user most likely cannot observe, so a text box could only invite a request the Flow
-     * Aggregator will refuse. It replaces telling people to hand-edit ?namespace= into the URL,
-     * which worked but is not an instruction to put in front of a user. The list is empty for a
-     * user a webhook authorizer grants flows in a namespace no RoleBinding names.
-     *
-     * Only the name's form is checked, as for any typed name. Authorization is the Flow
-     * Aggregator's, and it already answers a namespace this user may not observe with a terminal,
-     * non-retryable error the page renders.
-     */
-    private _renderScopeByName() {
-        const submit = (e: Event) => {
-            const input = e.target as HTMLInputElement;
-            // Not trimmed: a name that is not a valid Namespace name is rejected as typed.
-            const ns = input.value;
-            if (!ns) return;
-            input.value = '';
-            this._onScopeChange(ns);
-        };
+    /** The observed-namespace selector: required, single-select, and the same control in both
+     * views so the two cannot disagree about what is being observed. It is the picker every
+     * Namespace-aware page shares (antrea-namespace-picker). All Namespaces is offered unless the
+     * user is known not to hold it (see _mayHoldClusterWide). The placeholder is not where the
+     * page starts (see _defaultScope); it shows because no scope remains a state the page can
+     * hold. */
+    private _renderScopeSelect() {
         return html`
-            <div class="field-group" style="min-width:200px">
-                <label class="field-label" for="observed-ns-by-name">Namespace not listed</label>
-                <input id="observed-ns-by-name" class="field-input" type="text" placeholder="Type a name, then Enter"
-                    @keydown=${(e: KeyboardEvent) => { if (e.key === 'Enter') submit(e); }}>
-            </div>
+            <antrea-namespace-picker
+                label="Observed namespace" inputId="observed-ns"
+                .access=${this._flowAccess}
+                .scope=${this._clusterWide ? SCOPE_ALL : this._observedNs}
+                .offerAll=${this._mayHoldClusterWide}
+                .note=${this._scopeNote?.text ?? ''}
+                @antrea-scope-select=${(e: CustomEvent<ScopeSelectDetail>) => this._onScopeChange(e.detail.value, e.detail.typed)}>
+            </antrea-namespace-picker>
         `;
     }
 
@@ -2038,9 +1790,9 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
             <div class="filter-bar">
                 <div class="filter-row">
                     ${this._renderScopeSelect()}
-                    ${this._renderMultiSelect('Peer namespace', this._availableNs, this._pendingNs, this._nsOpen, () => { this._nsOpen = !this._nsOpen; this._podOpen = false; this._svcOpen = false; this._scopeOpen = false; }, v => { this._pendingNs = this._toggleNamespaceSelection(this._pendingNs, v); }, PEER_NAMESPACE_HINT)}
-                    ${this._renderMultiSelect('Pod Names', this._availablePods, this._pendingPods, this._podOpen, () => { this._podOpen = !this._podOpen; this._nsOpen = false; this._svcOpen = false; this._scopeOpen = false; }, v => { this._pendingPods = this._toggleSelection(this._pendingPods, v); }, IDENTIFIED_ONLY_HINT)}
-                    ${this._renderMultiSelect('Service Names', this._availableServices, this._pendingServices, this._svcOpen, () => { this._svcOpen = !this._svcOpen; this._nsOpen = false; this._podOpen = false; this._scopeOpen = false; }, v => { this._pendingServices = this._toggleSelection(this._pendingServices, v); })}
+                    ${this._renderMultiSelect('Peer namespace', this._availableNs, this._pendingNs, this._nsOpen, () => { this._nsOpen = !this._nsOpen; this._podOpen = false; this._svcOpen = false; this._closeScopeMenu(); }, v => { this._pendingNs = this._toggleNamespaceSelection(this._pendingNs, v); }, PEER_NAMESPACE_HINT)}
+                    ${this._renderMultiSelect('Pod Names', this._availablePods, this._pendingPods, this._podOpen, () => { this._podOpen = !this._podOpen; this._nsOpen = false; this._svcOpen = false; this._closeScopeMenu(); }, v => { this._pendingPods = this._toggleSelection(this._pendingPods, v); }, IDENTIFIED_ONLY_HINT)}
+                    ${this._renderMultiSelect('Service Names', this._availableServices, this._pendingServices, this._svcOpen, () => { this._svcOpen = !this._svcOpen; this._nsOpen = false; this._podOpen = false; this._closeScopeMenu(); }, v => { this._pendingServices = this._toggleSelection(this._pendingServices, v); })}
 
                     <div class="field-group" style="min-width:140px">
                         <label class="field-label">Flow Type</label>

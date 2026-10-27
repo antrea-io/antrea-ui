@@ -90,7 +90,7 @@ const namespaceAccessMemos = new Map<string, NamespaceAccessMemo>();
 
 /**
  * How long namespaceAccessSummaries() reuses a successful answer. It matches the backend's cache:
- * the answer is what a Namespace selector offers, so a grant added or revoked should show up
+ * the answer decides what a page shows for a Namespace, so a grant added or revoked should show up
  * without the user logging out, and keeping it any longer here would defeat that. The two
  * lifetimes add up: the backend can serve a review it cached 29 seconds ago, and this memo then
  * keeps the answer for another 30, so a change can take up to about a minute to show. What the memo is
@@ -246,6 +246,16 @@ export function verdict(s: HasRules | null, q: ResourceQuery): Verdict {
     });
     if (granted) return 'allowed';
     return s.rules.incomplete ? 'unknown' : 'denied';
+}
+
+/**
+ * A page's verdict: the verdict for the page's set of permissions (the data it shows). Allowed if
+ * any of them is allowed, denied if all of them are denied, and unknown otherwise.
+ */
+export function pageVerdict(s: HasRules | null, queries: ResourceQuery[]): Verdict {
+    const verdicts = queries.map(q => verdict(s, q));
+    if (verdicts.includes('allowed')) return 'allowed';
+    return verdicts.every(v => v === 'denied') ? 'denied' : 'unknown';
 }
 
 /**

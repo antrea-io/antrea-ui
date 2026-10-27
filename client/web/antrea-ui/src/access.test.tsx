@@ -215,6 +215,24 @@ describe('HomeRedirect', () => {
             .toBe('/flows/list?namespace=ns-last'));
     });
 
+    // Both redirects to /overview carry it: the one for a cluster-wide grant, and the one that
+    // ranks a caller named in a RoleBinding after the other pages.
+    test('carries the last scope chosen into /overview', async () => {
+        sessionStorage.setItem('antrea-ui:last-scope', JSON.stringify({ user: 'alice', scope: 'ns-last' }));
+        renderAt(summaryWith({
+            rules: { resourceRules: [{ apiGroups: [''], resources: ['pods'], verbs: ['list'] }], nonResourceRules: [], incomplete: false },
+        }));
+        await waitFor(() => expect(document.querySelector('[data-testid="where"]')?.textContent)
+            .toBe('/overview?namespace=ns-last'));
+    });
+
+    test('carries the last scope chosen into /overview from the RoleBinding fallback', async () => {
+        sessionStorage.setItem('antrea-ui:last-scope', JSON.stringify({ user: 'alice', scope: 'ns-last' }));
+        renderAt(summaryWith({ namespaces: ['team-a'] }));
+        await waitFor(() => expect(document.querySelector('[data-testid="where"]')?.textContent)
+            .toBe('/overview?namespace=ns-last'));
+    });
+
     // The grant has to be cluster-wide (see holdsFlowsClusterWide's own doc comment): a caller
     // holding flows only in their own Namespace does not land there, since the redirect is for
     // whoever can observe the whole cluster. The namespace field here stands in for what a

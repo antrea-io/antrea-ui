@@ -14,8 +14,8 @@
 
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import './antrea-flow-visibility-page';
-import { SCOPE_CHANGE_EVENT, SCOPE_CHOSEN_EVENT } from './antrea-flow-visibility-page';
-import type { ScopeChangeDetail, ScopeChosenDetail } from './antrea-flow-visibility-page';
+import { SCOPE_CHANGE_EVENT, SCOPE_CHOSEN_EVENT } from '../lib/namespace-scope';
+import type { ScopeChangeDetail, ScopeChosenDetail } from '../lib/namespace-scope';
 import type { AntreaFlowVisibilityPage } from './antrea-flow-visibility-page';
 import type { FlowStreamFilter } from '../lib/flow-stream';
 import { resetAccessSummary } from '../lib/access-api';
@@ -1137,6 +1137,35 @@ describe('AntreaFlowVisibilityPage — the scope in the URL', () => {
             expect(streamCalls(fetchMock)).toHaveLength(0);
             expect(scopeValue(page)).toBe('');
             expect(page.shadowRoot!.querySelector('antrea-alert[status="danger"]')).not.toBeNull();
+        });
+
+        // The value of All Namespaces is not a valid Namespace name, but it can be typed, in the box
+        // or in the search. It is a name there, and so rejected: it must not select All Namespaces
+        // for a user who is not offered it.
+        test('the value of All Namespaces, typed as a name, is rejected', async () => {
+            const fetchMock = vi.fn(async () => sseResponse([]));
+            const page = await mount(fetchMock, {
+                search: '/',
+                flowAccess: () => flowAccessFixture({ namespaces: [], clusterWide: 'denied' }),
+            });
+            const input = page.shadowRoot!.querySelector<HTMLInputElement>('#observed-ns-by-name')!;
+            input.value = '__cluster_wide__';
+            input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+            await page.updateComplete;
+
+            expect(streamCalls(fetchMock)).toHaveLength(0);
+            expect(scopeValue(page)).toBe('');
+            expect(page.shadowRoot!.querySelector('antrea-alert[status="danger"]')).not.toBeNull();
+            expect(window.location.search).toBe('');
+
+            await openScope(page);
+            await typeScope(page, '__cluster_wide__');
+            await pressInScope(page, 'Enter');
+            await page.updateComplete;
+
+            expect(streamCalls(fetchMock)).toHaveLength(0);
+            expect(scopeValue(page)).toBe('');
+            expect(window.location.search).toBe('');
         });
 
         // A webhook authorizer may grant flows in a namespace no RoleBinding names, and the user
