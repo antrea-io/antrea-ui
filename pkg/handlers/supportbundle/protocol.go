@@ -106,7 +106,7 @@ func sourceMessage(msg string) string {
 	return strings.TrimSpace(strings.ToValidUTF8(msg, ""))
 }
 
-// statusError describes an unexpected response, which fails the source.
+// statusError describes an unexpected response.
 func statusError(resp *http.Response) error {
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
 	msg := sourceMessage(string(body))
