@@ -678,6 +678,31 @@ describe('AntreaOverviewPage — namespace scope', () => {
             expect(pickerValue(page)).toBe(ALL);
         });
 
+        // The value of All Namespaces is not a valid Namespace name, but it can be typed, in the box
+        // or in the search. It is a name there, and so rejected: it must not select All Namespaces
+        // for a user who is not offered it.
+        test('the value of All Namespaces, typed as a name, is rejected', async () => {
+            const page = await mountWith(boundHandler([], []));
+            expect(await optionValues(page)).toEqual([]);
+
+            const byName = page.shadowRoot!.querySelector('#ns-picker-by-name') as HTMLInputElement;
+            byName.value = ALL;
+            byName.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
+            await settle(page);
+            expect(pickerValue(page)).toBe('');
+            expect(alertText(page, 'danger')).toContain('not a valid namespace name');
+            expect(window.location.search).toBe('');
+
+            const input = page.shadowRoot!.querySelector('#ns-picker') as HTMLInputElement;
+            input.dispatchEvent(new Event('focus'));
+            input.value = ALL;
+            input.dispatchEvent(new Event('input'));
+            input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
+            await settle(page);
+            expect(pickerValue(page)).toBe('');
+            expect(window.location.search).toBe('');
+        });
+
         test('a name typed in the box is taken, and rejected when it is not a valid name', async () => {
             const page = await mount({}, null);
             const byName = page.shadowRoot!.querySelector('#ns-picker-by-name') as HTMLInputElement;

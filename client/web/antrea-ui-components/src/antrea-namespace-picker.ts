@@ -25,6 +25,10 @@ export interface ScopeSelectDetail {
     /** SCOPE_ALL, or a Namespace name as chosen or typed (not checked: the page rejects a name
      * that is not a valid Namespace name). */
     value: string;
+    /** Whether the user typed the value, in the search or in the box to name a Namespace, as
+     * opposed to picking an item of the menu. A page checks every typed value as a Namespace name,
+     * SCOPE_ALL included: it is not a valid name, but it can be typed. */
+    typed: boolean;
 }
 
 interface ScopeItem { value: string; label: string }
@@ -118,14 +122,14 @@ export class AntreaNamespacePicker extends LitElement {
         this._active = -1;
     }
 
-    private _choose(value: string) {
+    private _choose(value: string, typed = false) {
         this.close();
-        this._emit(value);
+        this._emit(value, typed);
     }
 
-    private _emit(value: string) {
+    private _emit(value: string, typed: boolean) {
         this.dispatchEvent(new CustomEvent<ScopeSelectDetail>(SCOPE_SELECT_EVENT, {
-            detail: { value },
+            detail: { value, typed },
             bubbles: true,
             composed: true,
         }));
@@ -157,7 +161,7 @@ export class AntreaNamespacePicker extends LitElement {
             // A single match is the one meant; and where the list is empty, unknown or cut there
             // may be nothing to match against, so the typed name is the scope (the API decides).
             else if (typed && items.length === 1) this._choose(items[0].value);
-            else if (typed && mayNameNamespace(this.access)) this._choose(typed);
+            else if (typed && mayNameNamespace(this.access)) this._choose(typed, true);
             break;
         }
         case 'Escape':
@@ -218,7 +222,7 @@ export class AntreaNamespacePicker extends LitElement {
             const ns = input.value;
             if (!ns) return;
             input.value = '';
-            this._emit(ns);
+            this._emit(ns, true);
         };
         return html`
             <div class="field-group" style="min-width:200px">

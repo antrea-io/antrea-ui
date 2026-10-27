@@ -1032,8 +1032,9 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
 
     /** The user chose a scope: a pick, or a name they typed. A name that is not a valid Namespace
      * name is rejected and the scope stays as it was. */
-    private _onScopeChange(value: string) {
-        if (value !== SCOPE_ALL && !isValidNamespaceName(value)) {
+    private _onScopeChange(value: string, typed: boolean) {
+        // A typed value is a name even when it is SCOPE_ALL, which is not a valid one.
+        if ((typed || value !== SCOPE_ALL) && !isValidNamespaceName(value)) {
             this._scopeError = `"${value}" is not a valid namespace name.`;
             return;
         }
@@ -1760,7 +1761,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
                 .scope=${this._clusterWide ? SCOPE_ALL : this._observedNs}
                 .offerAll=${this._mayHoldClusterWide}
                 .note=${this._scopeNote?.text ?? ''}
-                @antrea-scope-select=${(e: CustomEvent<ScopeSelectDetail>) => this._onScopeChange(e.detail.value)}>
+                @antrea-scope-select=${(e: CustomEvent<ScopeSelectDetail>) => this._onScopeChange(e.detail.value, e.detail.typed)}>
             </antrea-namespace-picker>
         `;
     }
