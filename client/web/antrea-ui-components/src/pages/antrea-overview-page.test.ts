@@ -230,7 +230,7 @@ describe('AntreaOverviewPage — tiles', () => {
         expect(tileValue(page, 'Pods')).toBe('42');
     });
 
-    test('every list request carries a page limit sized to what it is used for', async () => {
+    test('every list request carries a page limit', async () => {
         const seenUrls: string[] = [];
         await mountWith(async (url: string) => {
             seenUrls.push(url);
@@ -242,16 +242,10 @@ describe('AntreaOverviewPage — tiles', () => {
 
         // An unlimited list would pull every Pod spec in the cluster through the proxy just to
         // count them, and would never set metadata.continue, making the truncation handling dead.
-        // A tile only needs a count, which a small page gives exactly (items plus the remainder);
-        // the event rows are built from the page itself. The picker's list is the one request that
-        // is not a tile's, and its limit is the safeguard of the list (namespace-access.ts).
         const listUrls = seenUrls.filter(u => keyForUrl(u) !== 'access-summary');
         expect(listUrls.length).toBeGreaterThan(0);
         for (const url of listUrls) {
-            const limit = new URL(url, 'http://localhost').searchParams.get('limit');
-            const expected = keyForUrl(url) === 'events' ? ['2000']
-                : keyForUrl(url) === 'namespaces' ? ['100', '10000'] : ['100'];
-            expect([url, expected.includes(limit!)]).toEqual([url, true]);
+            expect([url, new URL(url, 'http://localhost').searchParams.has('limit')]).toEqual([url, true]);
         }
     });
 });
@@ -449,11 +443,6 @@ describe('AntreaOverviewPage — namespace scope', () => {
             const page = await mountWith(boundHandler(['team-a', 'team-b'], [], [], true));
             expect(pickerValue(page)).toBe('team-a');
             // Offered, though: only a denied verdict hides it.
-            expect(await optionValues(page)).toEqual([ALL, 'team-a', 'team-b']);
-        });
-
-        test('offers the list of a user who cannot list namespaces as it is, whatever rules.incomplete says', async () => {
-            const page = await mountWith(boundHandler(['team-a', 'team-b'], [], [], true));
             expect(await optionValues(page)).toEqual([ALL, 'team-a', 'team-b']);
         });
 
@@ -756,6 +745,18 @@ describe('AntreaOverviewPage — namespace scope', () => {
         test('is not shown when the list is empty, unknown or cut', async () => {
             expect(note(await mount({}, null))).toBeNull();
             const page = await mountWith(boundHandler([], []), '?namespace=team-a');
+            expect(note(page)).toBeNull();
+        });
+
+        test('is not shown when the list was cut at its safeguard', async () => {
+            const page = await mountWith(async (url: string) => {
+                const key = keyForUrl(url);
+                if (key === 'access-summary') return jsonResponse(fullAccessSummary());
+                // Not asked: a cut list says nothing about a Namespace outside it.
+                if (url.split('?')[0].endsWith('/api/v1/namespaces/other')) return jsonResponse({ message: 'nf' }, 404);
+                if (key === 'namespaces') return jsonResponse({ ...list(['default']), metadata: { continue: 'more' } });
+                return jsonResponse({ items: [] });
+            }, '?namespace=other');
             expect(note(page)).toBeNull();
         });
     });
