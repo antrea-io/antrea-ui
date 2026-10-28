@@ -226,6 +226,16 @@ func TestValidateSupportBundleConfig(t *testing.T) {
 			},
 			expectedErr: "https.caData",
 		},
+		{
+			name: "both caData and caFile",
+			mutate: func(c *Config) {
+				s := httpsSource("foo", "https://foo")
+				s.HTTPS.CAData = string(ca)
+				s.HTTPS.CAFile = "/ca.crt"
+				c.SupportBundle.ExtraSources = []SupportBundleExtraSource{s}
+			},
+			expectedErr: "must not set both https.caData and https.caFile",
+		},
 		{name: "log maxSizeMB", mutate: func(c *Config) { c.Log.MaxSizeMB = 0 }, expectedErr: "log.maxSizeMB"},
 		{name: "log maxBackups", mutate: func(c *Config) { c.Log.MaxBackups = 0 }, expectedErr: "log.maxBackups"},
 		{
@@ -293,6 +303,10 @@ supportBundle:
       apiServer:
         path: /apis/bar.example.com/v1alpha1
       maxConcurrent: 1
+    - name: baz
+      https:
+        url: https://baz.ns.svc/api/v1
+        caFile: /app/supportbundle-ca/2/ca.crt
 `)))
 	var c Config
 	require.NoError(t, v.Unmarshal(&c))
@@ -310,6 +324,7 @@ supportBundle:
 		ExtraSources: []SupportBundleExtraSource{
 			{Name: "foo", HTTPS: &SupportBundleHTTPSSource{URL: "https://foo.ns.svc/api/v1", CAData: "PEM", ServerName: "foo.example.com", InsecureSkipVerify: true}},
 			{Name: "bar", APIServer: &apisv1.APIServerSourceSpec{Path: "/apis/bar.example.com/v1alpha1"}, MaxConcurrent: 1},
+			{Name: "baz", HTTPS: &SupportBundleHTTPSSource{URL: "https://baz.ns.svc/api/v1", CAFile: "/app/supportbundle-ca/2/ca.crt"}},
 		},
 	}, c.SupportBundle)
 }

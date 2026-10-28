@@ -160,6 +160,9 @@ supportBundle:
         caData: |               # optional; the system trust store otherwise
           -----BEGIN CERTIFICATE-----
           ...
+        # caConfigMap:          # or the CA from a ConfigMap, instead of caData
+        #   name: foo-ca
+        #   key: ca.crt         # optional; ca.crt by default
         serverName: ""          # optional
         insecureSkipVerify: false
     - name: bar
@@ -168,10 +171,16 @@ supportBundle:
       maxConcurrent: 1          # optional; see "Concurrent collections"
 ```
 
-Exactly one of `https` and `apiServer` must be set. `insecureSkipVerify` is
-for development only, and logs a warning at startup. As for a plugin's source,
-`antrea-ui-admin` must be granted access to an `apiServer` source, through an
-aggregated ClusterRole (see
+Exactly one of `https` and `apiServer` must be set. An `https` source may set at
+most one of `caData` and `caConfigMap`. `caConfigMap` selects a ConfigMap in the
+release namespace, which you create, e.g. with `kubectl create configmap foo-ca
+-n <release-namespace> --from-file=ca.crt`. The chart mounts it into the backend
+container, which reads it once at startup: a missing ConfigMap or key, or a key
+with no valid PEM certificate, fails the backend's startup, and a CA that
+changes afterwards only takes effect once the backend restarts.
+`insecureSkipVerify` is for development only, and logs a warning at startup. As
+for a plugin's source, `antrea-ui-admin` must be granted access to an
+`apiServer` source, through an aggregated ClusterRole (see
 [plugins.md](plugins.md#support-bundle-sources)): otherwise every collection
 from it fails with a 403.
 

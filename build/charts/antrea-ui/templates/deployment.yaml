@@ -126,6 +126,14 @@ spec:
             {{- if .Values.supportBundle.enabled }}
             - name: supportbundles
               mountPath: /var/run/antrea-ui/supportbundles
+            {{- /* A directory rather than a subPath, as for the plugin keys below. */}}
+            {{- range $i, $source := .Values.supportBundle.extraSources }}
+            {{- if dig "https" "caConfigMap" nil $source }}
+            - name: supportbundle-ca-{{ $i }}
+              mountPath: {{ include "antrea-ui.supportBundleCADir" $i }}
+              readOnly: true
+            {{- end }}
+            {{- end }}
             {{- end }}
             {{- if .Values.plugins.signature.enabled }}
             # One directory per trusted key, not a subPath: a subPath mount is resolved once at
@@ -171,6 +179,16 @@ spec:
         - name: supportbundles
           emptyDir:
             sizeLimit: {{ add (int64 .Values.supportBundle.maxTotalBytes) (div (int64 .Values.supportBundle.maxTotalBytes) 10) }}
+        {{- /* Not created by this chart, and optional, as for the plugin keys below. Volumes are
+        named by index for the same reason. */}}
+        {{- range $i, $source := .Values.supportBundle.extraSources }}
+        {{- with dig "https" "caConfigMap" nil $source }}
+        - name: supportbundle-ca-{{ $i }}
+          configMap:
+            name: {{ .name }}
+            optional: true
+        {{- end }}
+        {{- end }}
         {{- end }}
         {{- if .Values.plugins.signature.enabled }}
         {{- include "antrea-ui.validatePluginTrustedKeys" . }}

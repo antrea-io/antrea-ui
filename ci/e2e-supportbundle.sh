@@ -19,7 +19,7 @@
 #   - as an APIService (v1alpha1.supportbundle.e2e.antrea.io), which the supportbundle-plugin
 #     installed by ci/e2e-plugins.sh declares as its apiServer source;
 #   - directly over HTTPS, as an extra source configured through the chart values written by
-#     configure-cluster.
+#     configure-cluster, which trust the server's CA from a ConfigMap (https.caConfigMap).
 #
 # The server's CA is generated here and never leaves the machine.
 #
@@ -50,6 +50,11 @@ VERSION="v1alpha1"
 # Matches extraSourceName in test/e2e/supportbundle_test.go. The source's default
 # --https-audience, supportbundle.ui.antrea.io/e2e-https, is derived from it.
 EXTRA_SOURCE_NAME="e2e-https"
+# The namespace Antrea UI is installed into, where the extra source's CA ConfigMap has to be (the
+# backend Pod can only mount ConfigMaps from its own namespace). Overridable so this works against
+# a non-default install.
+RELEASE_NAMESPACE="${RELEASE_NAMESPACE:-kube-system}"
+CA_CONFIGMAP="antrea-ui-e2e-supportbundle-ca"
 
 function log() {
     echo "[e2e-supportbundle] $*"
@@ -176,6 +181,11 @@ EOF
 
     e2e_wait_for_apiservice "${NAMESPACE}" "${NAME}" "${VERSION}.${GROUP}"
 
+    log "Publishing the CA as ConfigMap ${CA_CONFIGMAP} in ${RELEASE_NAMESPACE}"
+    kubectl create configmap "${CA_CONFIGMAP}" --namespace "${RELEASE_NAMESPACE}" \
+        --from-file=ca.crt="${WORK_DIR}/ca.crt" \
+        --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+
     log "Writing ${VALUES_FILE}"
     {
         echo "supportBundle:"
@@ -183,8 +193,8 @@ EOF
         echo "    - name: ${EXTRA_SOURCE_NAME}"
         echo "      https:"
         echo "        url: https://${SERVICE_HOSTNAME}/api/v1"
-        echo "        caData: |"
-        sed 's/^/          /' "${WORK_DIR}/ca.crt"
+        echo "        caConfigMap:"
+        echo "          name: ${CA_CONFIGMAP}"
     } > "${VALUES_FILE}"
 }
 
@@ -197,6 +207,7 @@ function clean() {
     kubectl delete apiservice "${VERSION}.${GROUP}" --ignore-not-found
     kubectl delete clusterrolebinding "antrea-ui-e2e-${NAME}-auth-delegator" --ignore-not-found
     kubectl delete clusterrole antrea-ui-e2e-supportbundle-source --ignore-not-found
+    kubectl delete configmap "${CA_CONFIGMAP}" --namespace "${RELEASE_NAMESPACE}" --ignore-not-found
     kubectl delete namespace "${NAMESPACE}" --ignore-not-found
     rm -rf "${WORK_DIR}"
 }

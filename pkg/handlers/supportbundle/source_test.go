@@ -26,6 +26,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -252,6 +254,33 @@ func TestHTTPSSourceVerifiesServerCertificate(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, createOnce(t, s))
 	assert.Len(t, received(), 1)
+}
+
+func TestHTTPSSourceCAFile(t *testing.T) {
+	srv, received := newTLSSourceServer(t)
+	caFile := filepath.Join(t.TempDir(), "ca.crt")
+	require.NoError(t, os.WriteFile(caFile, []byte(httpsConfig(srv).CAData), 0o600))
+	config := httpsConfig(srv)
+	config.CAData = ""
+	config.CAFile = caFile
+	s, err := newHTTPSSource(testr.New(t), "foo", config, newFakeTokenSource("foo"))
+	require.NoError(t, err)
+	require.NoError(t, createOnce(t, s))
+	assert.Len(t, received(), 1)
+
+	t.Run("missing file", func(t *testing.T) {
+		config.CAFile = filepath.Join(t.TempDir(), "ca.crt")
+		_, err := newHTTPSSource(testr.New(t), "foo", config, newFakeTokenSource("foo"))
+		assert.ErrorContains(t, err, "failed to read caFile")
+	})
+
+	// An empty file must not fall back to the system trust store.
+	t.Run("empty file", func(t *testing.T) {
+		config.CAFile = filepath.Join(t.TempDir(), "ca.crt")
+		require.NoError(t, os.WriteFile(config.CAFile, nil, 0o600))
+		_, err := newHTTPSSource(testr.New(t), "foo", config, newFakeTokenSource("foo"))
+		assert.ErrorContains(t, err, "holds no valid PEM certificate")
+	})
 }
 
 func TestHTTPSSourceServerName(t *testing.T) {
