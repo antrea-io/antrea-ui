@@ -37,7 +37,12 @@ func (s *Server) GetPluginsIndex(c *gin.Context) {
 	// a stale index (or worse, a stale plugin bundle below) after an upgrade, with no visible
 	// error.
 	c.Header("Cache-Control", "no-store")
-	c.JSON(http.StatusOK, s.pluginRegistry.Index())
+	index := s.pluginRegistry.Index()
+	// Only the backend collects a plugin's support bundle source.
+	for i := range index {
+		index[i].SupportBundle = nil
+	}
+	c.JSON(http.StatusOK, index)
 }
 
 // GetPluginFile serves one file from a plugin's bundle.zip, so the frontend can import() it at

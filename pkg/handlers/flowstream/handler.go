@@ -79,7 +79,7 @@ const keepAliveInterval = 5 * time.Second
 // Subscribe's stream epoch check), so this only fires when FA accepts the call and then never
 // responds, either because it hung or because it predates per-user flow authorization and has no
 // flow matching the request to send. It has to clear the worst-case time for a valid open rather
-// than the common case - up to 10s for the admin-token mint (see AdminTokenSource), FA's
+// than the common case - up to 10s for the admin-token mint (see k8s.AdminTokenSource), FA's
 // own 30s tokenAuthenticationTimeout, then the SubjectAccessReview - while staying under the 60s
 // read timeout common in external proxies (ingress-nginx, AWS ALB), which would otherwise cut the
 // response off before this fires.

@@ -40,6 +40,9 @@
 
 set -eo pipefail
 
+THIS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${THIS_DIR}/e2e-lib.sh"
+
 # Kept in sync with ci/kind-config.yml, which mounts this directory into the control-plane node so
 # the apiserver can read the CA. It is a fixed path rather than a mktemp one precisely so that the
 # Kind config can refer to it.
@@ -72,42 +75,10 @@ generate_certs() {
     log "Generating CA and server certificate for ${DEX_HOSTNAME} in ${DEX_DIR}"
     rm -rf "${DEX_DIR}"
     mkdir -p "${DEX_DIR}"
-
-    # An openssl.cnf is used rather than -addext so that this works with the LibreSSL that ships
-    # with macOS, which does not support -addext.
-    cat > "${DEX_DIR}/openssl.cnf" <<EOF
-[req]
-distinguished_name = dn
-[dn]
-[v3_ca]
-basicConstraints = critical,CA:TRUE
-keyUsage = critical,keyCertSign,cRLSign
-[v3_server]
-basicConstraints = critical,CA:FALSE
-keyUsage = critical,digitalSignature,keyEncipherment
-extendedKeyUsage = serverAuth
-subjectAltName = DNS:${DEX_HOSTNAME}
-EOF
-
-    openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
-        -keyout "${DEX_DIR}/ca.key" -out "${DEX_DIR}/ca.crt" \
-        -subj "/CN=antrea-ui-e2e-dex-ca" \
-        -config "${DEX_DIR}/openssl.cnf" -extensions v3_ca 2>/dev/null
-
-    openssl req -newkey rsa:2048 -nodes \
-        -keyout "${DEX_DIR}/tls.key" -out "${DEX_DIR}/tls.csr" \
-        -subj "/CN=${DEX_HOSTNAME}" \
-        -config "${DEX_DIR}/openssl.cnf" 2>/dev/null
-
-    openssl x509 -req -in "${DEX_DIR}/tls.csr" -days 3650 \
-        -CA "${DEX_DIR}/ca.crt" -CAkey "${DEX_DIR}/ca.key" -CAcreateserial \
-        -out "${DEX_DIR}/tls.crt" \
-        -extfile "${DEX_DIR}/openssl.cnf" -extensions v3_server 2>/dev/null
-
+    e2e_generate_ca_and_cert "${DEX_DIR}" "antrea-ui-e2e-dex-ca" "${DEX_HOSTNAME}"
     # The apiserver runs as a non-root user in the Kind node and reads ca.crt through a hostPath
     # mount, so it has to be world-readable.
     chmod 644 "${DEX_DIR}/ca.crt" "${DEX_DIR}/tls.crt" "${DEX_DIR}/tls.key"
-    rm -f "${DEX_DIR}/tls.csr"
 }
 
 write_dex_config() {

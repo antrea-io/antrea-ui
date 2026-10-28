@@ -21,14 +21,13 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"regexp"
 	"strings"
 	"time"
 
-	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/rest"
 
 	apisv1 "antrea.io/antrea-ui/apis/v1"
+	"antrea.io/antrea-ui/pkg/utils/k8sapipath"
 )
 
 // bundleURLKey is the ConfigMap data key holding the URL of a bundleSource.http plugin's bundle.
@@ -158,7 +157,10 @@ func validateBundleSource(source *apisv1.PluginBundleSource) error {
 	case source.APIServer != nil && source.HTTP != nil:
 		return errors.New("manifest's 'bundleSource' must set only one of 'apiServer' and 'http'")
 	case source.APIServer != nil:
-		return validateBundleAPIServerPath(source.APIServer.Path)
+		if err := k8sapipath.ValidateGroupPath(source.APIServer.Path); err != nil {
+			return fmt.Errorf("manifest's 'bundleSource.apiServer.path' is invalid: %w", err)
+		}
+		return nil
 	case source.HTTP != nil:
 		return nil
 	default:
@@ -187,30 +189,6 @@ func validateBundleURL(raw string) (string, error) {
 		return "", fmt.Errorf("ConfigMap key %q must not carry a fragment", bundleURLKey)
 	}
 	return raw, nil
-}
-
-// apiVersionRegexp matches a Kubernetes API version: v1, v1beta2, v2alpha1...
-var apiVersionRegexp = regexp.MustCompile(`^v[1-9][0-9]*((alpha|beta)[1-9][0-9]*)?$`)
-
-// validateBundleAPIServerPath checks that p is exactly /apis/<group>/<version>. The backend
-// appends "/uipluginbundles/<sha256>/download" to it, so a manifest can only make it request the
-// download subresource of a uipluginbundles object of an aggregated API group: no core "/api/..."
-// path, no "../" traversal, no ".../proxy" subresource, no query.
-func validateBundleAPIServerPath(p string) error {
-	if p == "" {
-		return errors.New("manifest's 'bundleSource.apiServer.path' is missing")
-	}
-	parts := strings.Split(p, "/")
-	if len(parts) != 4 || parts[0] != "" || parts[1] != "apis" {
-		return fmt.Errorf("manifest's 'bundleSource.apiServer.path' %q must be of the form /apis/<group>/<version>", p)
-	}
-	if errs := validation.IsDNS1123Subdomain(parts[2]); len(errs) > 0 {
-		return fmt.Errorf("manifest's 'bundleSource.apiServer.path' %q has an invalid group %q: %s", p, parts[2], strings.Join(errs, "; "))
-	}
-	if !apiVersionRegexp.MatchString(parts[3]) {
-		return fmt.Errorf("manifest's 'bundleSource.apiServer.path' %q has an invalid version %q", p, parts[3])
-	}
-	return nil
 }
 
 // bundleRequestPath builds the path a bundle is requested from: the manifest's

@@ -97,14 +97,16 @@ func newTestAuthenticatorWithValidator(t *testing.T, mutators ...func(*Config)) 
 
 func newRouter(a *Authenticator) *gin.Engine {
 	router := gin.New()
-	router.GET("/protected", a.Middleware(), func(c *gin.Context) {
+	handler := func(c *gin.Context) {
 		ra, ok := RequestAuthFromGin(c)
 		if !ok {
 			c.String(http.StatusInternalServerError, "middleware did not attach an identity")
 			return
 		}
 		c.String(http.StatusOK, string(ra.Mode))
-	})
+	}
+	router.GET("/protected", a.Middleware(), handler)
+	router.POST("/protected", a.Middleware(), handler)
 	return router
 }
 
@@ -125,8 +127,10 @@ func TestDevModeOriginExemption(t *testing.T) {
 	testCases := []struct {
 		name         string
 		devMode      bool
+		method       string
 		origin       string
 		fetchSite    string
+		navigation   bool
 		expectedCode int
 	}{
 		{
@@ -151,16 +155,58 @@ func TestDevModeOriginExemption(t *testing.T) {
 			fetchSite:    "cross-site",
 			expectedCode: http.StatusForbidden,
 		},
+		{
+			// A native download from the dev server: a GET navigation carries no Origin.
+			name:         "GET navigation, dev mode on",
+			devMode:      true,
+			fetchSite:    "same-site",
+			navigation:   true,
+			expectedCode: http.StatusOK,
+		},
+		{
+			name:         "GET navigation, dev mode off",
+			devMode:      false,
+			fetchSite:    "same-site",
+			navigation:   true,
+			expectedCode: http.StatusForbidden,
+		},
+		{
+			// The navigation exemption is for the dev server, not for any other site.
+			name:         "cross-site GET navigation, dev mode on",
+			devMode:      true,
+			fetchSite:    "cross-site",
+			navigation:   true,
+			expectedCode: http.StatusForbidden,
+		},
+		{
+			// A form submission is a navigation too, and is not exempted.
+			name:         "POST navigation, dev mode on",
+			devMode:      true,
+			method:       "POST",
+			fetchSite:    "same-site",
+			navigation:   true,
+			expectedCode: http.StatusForbidden,
+		},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			devMode := tc.devMode
 			a, store := newTestAuthenticator(t, func(c *Config) { c.DevMode = devMode })
-			req := httptest.NewRequest("GET", "/protected", nil)
+			method := tc.method
+			if method == "" {
+				method = "GET"
+			}
+			req := httptest.NewRequest(method, "/protected", nil)
 			req.AddCookie(newSessionCookie(t, store))
-			req.Header.Set("Origin", tc.origin)
+			if tc.origin != "" {
+				req.Header.Set("Origin", tc.origin)
+			}
 			req.Header.Set("Sec-Fetch-Site", tc.fetchSite)
+			if tc.navigation {
+				req.Header.Set("Sec-Fetch-Mode", "navigate")
+				req.Header.Set("Sec-Fetch-Dest", "document")
+			}
 			rr := httptest.NewRecorder()
 			newRouter(a).ServeHTTP(rr, req)
 			assert.Equal(t, tc.expectedCode, rr.Code)
