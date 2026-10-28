@@ -185,7 +185,7 @@ spec:
         {{- with dig "https" "caConfigMap" nil $source }}
         - name: supportbundle-ca-{{ $i }}
           configMap:
-            name: {{ .name }}
+            name: {{ .name | quote }}
             optional: true
         {{- end }}
         {{- end }}
@@ -202,7 +202,7 @@ spec:
         {{- range $i, $key := .Values.plugins.signature.trustedKeys }}
         - name: plugin-keys-{{ $i }}
           configMap:
-            name: {{ $key.configMap.name }}
+            name: {{ $key.configMap.name | quote }}
             optional: true
         {{- end }}
         {{- end }}
@@ -213,7 +213,7 @@ spec:
         {{- end }}
         - name: nginx-tls
           secret:
-            secretName: {{ $secretName }}
+            secretName: {{ $secretName | quote }}
             defaultMode: 0400
         {{- end }}
         {{- with .Values.extraVolumes }}
