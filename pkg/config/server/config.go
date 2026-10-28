@@ -185,9 +185,12 @@ type SupportBundleExtraSource struct {
 type SupportBundleHTTPSSource struct {
 	// URL is the base URL of the source; antrea-ui appends /supportbundles to it.
 	URL string
-	// CAData is a PEM bundle used to verify the server certificate. Empty means the system
-	// trust store.
+	// CAData is a PEM bundle used to verify the server certificate. When neither CAData nor
+	// CAFile is set, the system trust store is used.
 	CAData string
+	// CAFile is the path, inside the backend container, to a PEM bundle used like CAData. It is
+	// read once at startup. At most one of CAData and CAFile may be set.
+	CAFile string
 	// ServerName overrides the name used to verify the server certificate.
 	ServerName string
 	// InsecureSkipVerify disables server certificate verification, for development only.
@@ -523,6 +526,9 @@ func validateSupportBundleConfig(c *SupportBundleConfig) error {
 		// or that would carry a credential of its own, is a mistake.
 		if u.User != nil || u.RawQuery != "" || u.Fragment != "" {
 			return fmt.Errorf("supportBundle.extraSources[%d] (%s) https.url must not have user info, a query or a fragment", i, source.Name)
+		}
+		if source.HTTPS.CAData != "" && source.HTTPS.CAFile != "" {
+			return fmt.Errorf("supportBundle.extraSources[%d] (%s) must not set both https.caData and https.caFile", i, source.Name)
 		}
 		if source.HTTPS.CAData != "" && !x509.NewCertPool().AppendCertsFromPEM([]byte(source.HTTPS.CAData)) {
 			return fmt.Errorf("supportBundle.extraSources[%d] (%s) https.caData holds no valid PEM certificate", i, source.Name)

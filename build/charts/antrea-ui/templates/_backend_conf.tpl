@@ -41,9 +41,9 @@ supportBundle:
   maxSourceBytes: {{ int64 .Values.supportBundle.maxSourceBytes }}
   ttl: {{ .Values.supportBundle.ttl | quote }}
   collectionTimeout: {{ .Values.supportBundle.collectionTimeout | quote }}
-  {{- with .Values.supportBundle.extraSources }}
+  {{- if and .Values.supportBundle.enabled .Values.supportBundle.extraSources }}
   extraSources:
-    {{- toYaml . | nindent 4 }}
+    {{- include "antrea-ui.supportBundleExtraSources" . | nindent 4 }}
   {{- end }}
 plugins:
   labelSelector: {{ .Values.plugins.labelSelector | quote }}

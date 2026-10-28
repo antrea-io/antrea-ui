@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
 
 	"github.com/go-logr/logr"
 	"k8s.io/client-go/transport"
@@ -148,10 +149,17 @@ func newHTTPSSource(logger logr.Logger, name string, cfg *serverconfig.SupportBu
 		MinVersion: tls.VersionTLS12,
 		ServerName: cfg.ServerName,
 	}
-	if cfg.CAData != "" {
+	if cfg.CAData != "" || cfg.CAFile != "" {
+		caData, caSource := []byte(cfg.CAData), "caData"
+		if cfg.CAFile != "" {
+			caSource = "caFile " + cfg.CAFile
+			if caData, err = os.ReadFile(cfg.CAFile); err != nil {
+				return nil, fmt.Errorf("failed to read caFile: %w", err)
+			}
+		}
 		pool := x509.NewCertPool()
-		if !pool.AppendCertsFromPEM([]byte(cfg.CAData)) {
-			return nil, fmt.Errorf("caData holds no valid PEM certificate")
+		if !pool.AppendCertsFromPEM(caData) {
+			return nil, fmt.Errorf("%s holds no valid PEM certificate", caSource)
 		}
 		tlsConfig.RootCAs = pool
 	}

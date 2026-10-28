@@ -168,3 +168,30 @@ ones exist, and fails at startup on one it doesn't. */ -}}
 {{- $_ := required (printf "plugins.signature.trustedKeys[%d].configMap.key is required" $i) $configMap.key -}}
 {{- end -}}
 {{- end -}}
+
+{{- /* The directory an extra source's https.caConfigMap is mounted at, given the entry's index. It is
+named by index rather than by the entry's name, which only the backend validates, so that the name
+never reaches a path. */ -}}
+{{- define "antrea-ui.supportBundleCADir" -}}
+{{- printf "/app/supportbundle-ca/%d" . -}}
+{{- end -}}
+
+{{- /* supportBundle.extraSources as the backend reads them: https.caConfigMap is replaced with the
+caFile it is mounted as (key ca.crt by default). The backend validates the rest of each entry, but
+never sees https.caConfigMap, so mistakes in it are reported here. */ -}}
+{{- define "antrea-ui.supportBundleExtraSources" -}}
+{{- $sources := list -}}
+{{- range $i, $source := .Values.supportBundle.extraSources -}}
+{{- with dig "caConfigMap" nil ($source.https | default dict) -}}
+{{- if $source.https.caData -}}
+{{- fail (printf "supportBundle.extraSources[%d] must not set both https.caData and https.caConfigMap" $i) -}}
+{{- end -}}
+{{- $_ := required (printf "supportBundle.extraSources[%d].https.caConfigMap.name is required" $i) .name -}}
+{{- $https := omit $source.https "caConfigMap" -}}
+{{- $_ := set $https "caFile" (printf "%s/%s" (include "antrea-ui.supportBundleCADir" $i) (.key | default "ca.crt")) -}}
+{{- $source = set (omit $source "https") "https" $https -}}
+{{- end -}}
+{{- $sources = append $sources $source -}}
+{{- end -}}
+{{- toYaml $sources -}}
+{{- end -}}

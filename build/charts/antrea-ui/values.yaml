@@ -139,15 +139,18 @@ supportBundle:
   # source's collection that is in flight when it expires, and the clean-up request that follows,
   # still complete, which can take up to 50s more.
   collectionTimeout: 10m
-  # -- Extra sources to collect diagnostics from, each implementing the source protocol described
-  # in docs/supportbundle.md. Each entry has a `name` (a DNS-1123 label, unique within the list)
-  # and exactly one of `apiServer` (`path`, of the form /apis/<group>/<version>, reached through
-  # the Kubernetes apiserver) or `https` (`url`, plus optional `caData`, `serverName` and
-  # `insecureSkipVerify`), plus an optional `maxConcurrent`: how many collections may be
-  # outstanding against that one source at once (0, the default, means no limit; 1 for a source
-  # that can only hold one bundle at a time). Every source is called as antrea-ui-admin, whoever
-  # requested the bundle: an `https` source receives a short-lived token for antrea-ui-admin whose
-  # audience is supportbundle.ui.antrea.io/<name>, so only point it at a service you trust. An
+  # -- Extra sources to collect diagnostics from, each implementing the source protocol described in
+  # docs/supportbundle.md. Each entry has a `name` (a DNS-1123 label, unique within the list) and
+  # exactly one of `apiServer` (`path`, of the form /apis/<group>/<version>, reached through the
+  # Kubernetes apiserver) or `https` (`url`, plus optional `caData`, `caConfigMap`, `serverName` and
+  # `insecureSkipVerify`), plus an optional `maxConcurrent`: how many collections may be outstanding
+  # against that one source at once (0, the default, means no limit; 1 for a source that can only
+  # hold one bundle at a time). An `https` source's certificate is verified against the system trust
+  # store, unless the entry sets either `caData`, a PEM bundle, or `caConfigMap`, a ConfigMap in the
+  # release namespace that holds one: `name`, plus `key` (ca.crt by default). You create that
+  # ConfigMap yourself; it is read once at startup. Every source is called as antrea-ui-admin,
+  # whoever requested the bundle: an `https` source receives a short-lived token for antrea-ui-admin
+  # whose audience is supportbundle.ui.antrea.io/<name>, so only point it at a service you trust. An
   # `apiServer` source needs antrea-ui-admin to be granted access to it (see docs/plugins.md).
   extraSources: []
   # - name: foo
@@ -160,6 +163,12 @@ supportBundle:
   #   apiServer:
   #     path: /apis/bar.example.com/v1alpha1
   #   maxConcurrent: 1
+  # - name: baz
+  #   https:
+  #     url: https://baz.baz-ns.svc/api/v1
+  #     caConfigMap:
+  #       name: baz-ca
+  #       key: ca.crt
 
 # Flow Aggregator gRPC integration (live flow visibility in the UI).
 flowAggregator:
