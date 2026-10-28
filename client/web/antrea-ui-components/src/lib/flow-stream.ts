@@ -75,9 +75,10 @@ export interface FlowStreamCallbacks {
     /** Called when a retryable failure has scheduled another connection attempt, after the
      * onDisconnected for that failure. It tells a disconnect that will resolve itself (the
      * stream is retried indefinitely) apart from one that will not: a terminal failure fires
-     * onDisconnected without this. It also fires when the attempt comes due while the tab is
-     * hidden and is deferred until the tab is visible, since a reconnect is still pending then.
-     * delayMs is the backoff before the attempt is due, not a promise of when it will connect. */
+     * onDisconnected without this. It fires once, when the attempt is scheduled; an attempt that
+     * comes due while the tab is hidden is deferred without a further call, and the reconnect
+     * this call announced is still pending until the tab is visible again. delayMs is the backoff
+     * before the attempt is due, not a promise of when it will connect. */
     onReconnectScheduled?: (delayMs: number) => void;
     /** Called on HTTP 401, i.e. the antrea-ui session is over. There is nothing to retry: the host
      * should log the user out. Note that the Flow Aggregator rejecting the credential is *not*

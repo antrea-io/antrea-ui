@@ -1866,12 +1866,26 @@ describe('AntreaFlowVisibilityPage — stream status', () => {
         expect(statusText(page)).toContain('Connected');
     });
 
-    test('shows Disconnected, not Reconnecting, once the client has stopped for good', async () => {
-        const fetchMock = vi.fn(async () => sseResponse([], 501));
+    // The first attempt fails retryably so Reconnecting is showing when the retry hits the
+    // terminal answer: only onDisconnected clearing it gets the page to Disconnected, since a
+    // terminal failure fires no onReconnectScheduled.
+    test.each([
+        ['501', 501],
+        ['403', 403],
+    ])('shows Disconnected, not Reconnecting, once a retry hits a terminal %s', async (_name, status) => {
+        let calls = 0;
+        const fetchMock = vi.fn(async (url: string) => {
+            if (!url.includes('/api/v1/flows/stream')) return jsonResponse({});
+            if (++calls === 1) throw new Error('network down');
+            return sseResponse([], status);
+        });
         const page = await mount(fetchMock);
         await vi.advanceTimersByTimeAsync(0);
         await page.updateComplete;
+        expect(statusText(page)).toContain('Reconnecting');
 
+        await vi.advanceTimersByTimeAsync(1000);
+        await page.updateComplete;
         expect(statusText(page)).toContain('Disconnected');
         expect(statusText(page)).not.toContain('Reconnecting');
     });
