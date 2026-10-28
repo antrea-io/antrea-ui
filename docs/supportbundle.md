@@ -62,6 +62,48 @@ configured source and every installed plugin's source returns to
 list, download and delete every bundle, whoever requested it. Only grant it to
 users who may see all of these diagnostics.
 
+## Using the Support Bundle page
+
+Open **Support Bundle** in the navigation bar (`/supportbundle`) to collect,
+list, download and delete bundles. The link and page require `list` on
+`supportbundles.ui.antrea.io`; each action independently requires its verb
+from the authorization table above. A deployment with the feature disabled
+shows "Support bundles are not enabled for this deployment."
+
+**Collect** starts a collection. The optional **Rotated logs since** field
+accepts a positive Go duration such as `1h` or `30m`. Leave it empty to include
+all logs. It only filters Antrea UI's rotated log files: the current log and
+other diagnostics are always collected. The value is also forwarded to every
+source. Collection continues if you leave the page or log out.
+
+The table lists each bundle's ID, status, size in bytes, creation time,
+requester and expiration time. Expand **Sources** to see each source's kind,
+progress, size and error. A collected bundle with a failed source is marked as
+partial and can still be downloaded. A failed bundle shows its error.
+
+While a bundle is collecting, the page re-lists every two seconds, including
+for users with `list` but no `get` permission. Automatic requests pause while
+the browser tab is hidden and stop when no collection is running. Returning
+to the tab or clicking **Refresh** reloads the shared list, so bundles deleted
+by another user or expired are removed. A failed list request stops automatic
+retries; **Refresh** retries it.
+
+**Download** is available for collected bundles. The page checks the status
+first to catch a missing bundle or expired session before starting a native
+browser download. The link uses the API base URL and a `download` attribute;
+the archive is never fetched into JavaScript memory. A deletion or session
+expiry between the check and the download can still fail. In local development,
+the browser ignores `download` for a different origin, so an error in that
+interval can navigate the tab to the backend's error response.
+
+**Delete** asks for confirmation and removes the bundle for all users. For a
+running collection it also requests cancellation; its concurrency slot and
+disk space can take up to about 50 seconds to be released. A new collection
+may therefore still be refused immediately after deletion. Collection limits
+are shared and checked by the backend: the page displays its reason for a
+429, or explains the hourly rate limit when the response is empty. Deleting a
+bundle does not reset the hourly limit.
+
 ## API
 
 | Route | Behavior |

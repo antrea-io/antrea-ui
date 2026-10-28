@@ -305,6 +305,10 @@ export function accessibleNamespaces(s: AccessSummary | null): string[] | null {
 // Gate constants live here too, so the React nav, the Lit pages and any plugin share one
 // definition — one predicate per page, so the nav entry and the route guard cannot drift apart.
 export const GATE_TRACEFLOW_CREATE = { group: 'crd.antrea.io', resource: 'traceflows', verb: 'create' };
+export const GATE_SUPPORTBUNDLE_LIST = { group: 'ui.antrea.io', resource: 'supportbundles', verb: 'list' };
+export const GATE_SUPPORTBUNDLE_CREATE = { ...GATE_SUPPORTBUNDLE_LIST, verb: 'create' };
+export const GATE_SUPPORTBUNDLE_GET = { ...GATE_SUPPORTBUNDLE_LIST, verb: 'get' };
+export const GATE_SUPPORTBUNDLE_DELETE = { ...GATE_SUPPORTBUNDLE_LIST, verb: 'delete' };
 export const GATE_AGENT_INFO_LIST = { group: 'crd.antrea.io', resource: 'antreaagentinfos', verb: 'list' };
 // name: the summary page fetches exactly antreacontrollerinfos/antrea-controller, so a role that
 // narrows the grant with resourceNames: ["antrea-controller"] does authorize that request — and

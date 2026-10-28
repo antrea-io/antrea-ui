@@ -21,6 +21,7 @@ export { AntreaInput } from './antrea-input.js';
 export { AntreaSummaryPage } from './pages/antrea-summary-page.js';
 export { AntreaOverviewPage } from './pages/antrea-overview-page.js';
 export { AntreaSettingsPage } from './pages/antrea-settings-page.js';
+export { AntreaSupportBundlePage } from './pages/antrea-support-bundle-page.js';
 export { AntreaTraceflowPage } from './pages/antrea-traceflow-page.js';
 export { AntreaFlowVisibilityPage } from './pages/antrea-flow-visibility-page.js';
 export type {
@@ -71,6 +72,10 @@ export {
     canViewOverview,
     holdsOverviewResources,
     GATE_TRACEFLOW_CREATE,
+    GATE_SUPPORTBUNDLE_LIST,
+    GATE_SUPPORTBUNDLE_CREATE,
+    GATE_SUPPORTBUNDLE_GET,
+    GATE_SUPPORTBUNDLE_DELETE,
     GATE_AGENT_INFO_LIST,
     GATE_CONTROLLER_INFO_GET,
     GATE_FEATUREGATES,

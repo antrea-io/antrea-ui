@@ -19,7 +19,7 @@ import { useSelector } from 'react-redux';
 import '@antrea/ui-components';
 import {
     can, canViewSummary, canViewOverview, holdsOverviewResources, canViewFlows, holdsFlowsClusterWide,
-    sessionIdentity, GATE_TRACEFLOW_CREATE, SCOPE_CHANGE_EVENT, SCOPE_CHOSEN_EVENT,
+    sessionIdentity, GATE_TRACEFLOW_CREATE, GATE_SUPPORTBUNDLE_LIST, SCOPE_CHANGE_EVENT, SCOPE_CHOSEN_EVENT,
 } from '@antrea/ui-components';
 import type { ScopeChangeDetail, ScopeChosenDetail } from '@antrea/ui-components';
 import { Navigate, useLocation, useSearchParams } from 'react-router';
@@ -57,6 +57,7 @@ export function HomeRedirect() {
     if (holdsFlowsClusterWide(summary)) {
         return <Navigate to={`/flows/list${lastScope}`} replace />;
     }
+    if (can(summary, GATE_SUPPORTBUNDLE_LIST)) return <Navigate to="/supportbundle" replace />;
     if (canViewOverview(summary)) return <Navigate to={`/overview${lastScope}`} replace />;
     // A user permitted none of these lands on Settings, which needs no permission at all - the
     // floor everyone can reach.
@@ -189,6 +190,16 @@ export function TraceflowPage() {
     return (
         <RequirePermission allowed={can(summary, GATE_TRACEFLOW_CREATE)} loaded={loaded}>
             <antrea-traceflow-page ref={ref} />
+        </RequirePermission>
+    );
+}
+
+export function SupportBundlePage() {
+    const { ref } = useLitPage();
+    const { summary, loaded } = useAccess();
+    return (
+        <RequirePermission allowed={can(summary, GATE_SUPPORTBUNDLE_LIST)} loaded={loaded}>
+            <antrea-support-bundle-page ref={ref} />
         </RequirePermission>
     );
 }

@@ -163,6 +163,7 @@ describe('HomeRedirect', () => {
                             <Route path="/traceflow" element={<div data-testid="landed">traceflow</div>} />
                             <Route path="/flows/list" element={<div data-testid="landed">flows</div>} />
                             <Route path="/settings" element={<div data-testid="landed">settings</div>} />
+                            <Route path="/supportbundle" element={<div data-testid="landed">supportbundle</div>} />
                         </Routes>
                     </MemoryRouter>
                 </AccessProvider>
@@ -191,7 +192,14 @@ describe('HomeRedirect', () => {
         await waitFor(() => expect(document.querySelector('[data-testid="landed"]')?.textContent).toBe('traceflow'));
     });
 
-    test('falls back to /settings when neither Summary, Traceflow nor Flows is granted', async () => {
+    test('lands on /supportbundle when only support bundle listing is granted', async () => {
+        renderAt(summaryWith({
+            rules: { resourceRules: [{ apiGroups: ['ui.antrea.io'], resources: ['supportbundles'], verbs: ['list'] }], nonResourceRules: [], incomplete: false },
+        }));
+        await waitFor(() => expect(document.querySelector('[data-testid="landed"]')?.textContent).toBe('supportbundle'));
+    });
+
+    test('falls back to /settings when no core page is granted', async () => {
         // Settings needs no permission at all, so it is the floor here instead of a guess that
         // could land on a 403.
         renderAt(summaryWith());

@@ -152,8 +152,8 @@ describe('dedupeByPath', () => {
         expect(dedupeByPath([], 'route')).toEqual([]);
     });
 
-    test('a path colliding with a built-in route is dropped', () => {
-        const items = [{ path: '/settings' }];
+    test.each(['/settings', 'supportbundle', '/supportbundle'])('built-in path %s is reserved', path => {
+        const items = [{ path }];
         const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
         expect(dedupeByPath(items, 'route')).toEqual([]);
@@ -184,9 +184,9 @@ describe('resolveParentPaths', () => {
         expect(resolveParentPaths([entry()])).toEqual([entry()]);
     });
 
-    test('a parentPath matching a built-in page is kept and normalized', () => {
-        const result = resolveParentPaths([entry({ parentPath: '/flows' })]);
-        expect(result).toEqual([entry({ parentPath: 'flows' })]);
+    test.each(['flows', 'supportbundle'])('built-in parent %s is kept and normalized', parentPath => {
+        const result = resolveParentPaths([entry({ parentPath: `/${parentPath}` })]);
+        expect(result).toEqual([entry({ parentPath })]);
     });
 
     test('a parentPath matching another top-level plugin entry is kept', () => {

@@ -69,6 +69,7 @@ declare global {
                 locationSearch?: string;
             };
             'antrea-settings-page': React.HTMLAttributes<HTMLElement> & React.ClassAttributes<HTMLElement>;
+            'antrea-support-bundle-page': React.HTMLAttributes<HTMLElement> & React.ClassAttributes<HTMLElement>;
             'antrea-traceflow-page': React.HTMLAttributes<HTMLElement> & React.ClassAttributes<HTMLElement>;
             'antrea-flow-visibility-page': React.HTMLAttributes<HTMLElement> & React.ClassAttributes<HTMLElement> & {
                 edgeExtraRenderers?: EdgeExtraRenderer[];

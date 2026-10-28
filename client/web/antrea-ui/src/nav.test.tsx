@@ -84,6 +84,30 @@ describe('NavTab', () => {
     });
 });
 
+describe('NavTab — Support Bundle', () => {
+    test.each([
+        { verbs: ['list'], visible: true },
+        { verbs: ['create', 'get', 'delete'], visible: false },
+        { verbs: [], visible: false },
+    ])('gates the link on list: $verbs', ({ verbs, visible }) => {
+        mockUseAccess.mockReturnValue({ summary: summaryAllowing({
+            resourceRules: [{ apiGroups: ['ui.antrea.io'], resources: ['supportbundles'], verbs }],
+        }), loaded: true });
+        render(<NavTab pluginSidebarEntries={[]} />, { wrapper: MemoryRouter });
+        expect(!!document.querySelector('a[href="/supportbundle"]')).toBe(visible);
+    });
+
+    test.each([true, false])('renders nested plugins when the parent grant is %j', allowed => {
+        mockUseAccess.mockReturnValue({ summary: allowed ? null : summaryAllowing(), loaded: true });
+        render(<NavTab pluginSidebarEntries={[
+            { label: 'Extra diagnostics', path: '/plugin/diagnostics', parentPath: 'supportbundle' },
+        ]} />, { wrapper: MemoryRouter });
+        const child = document.querySelector('a[href="/plugin/diagnostics"]');
+        expect(child).not.toBeNull();
+        expect(!!child!.closest('antrea-nav-group')).toBe(allowed);
+    });
+});
+
 describe('NavTab — Flow Visibility built-in nesting', () => {
     beforeEach(() => {
         mockUseAccess.mockReturnValue({ summary: null, loaded: true });
@@ -239,6 +263,7 @@ describe('NavTab — permission gating', () => {
         expect(document.querySelector('a[href="/traceflow"]')).toBeNull();
         // Flows is gated the same way as Summary/Traceflow now, so it is also hidden on load.
         expect(document.querySelector('a[href="/flows/list"]')).toBeNull();
+        expect(document.querySelector('a[href="/supportbundle"]')).toBeNull();
         // Settings has no per-user RBAC, so it is not gated on load.
         expect(document.querySelector('a[href="/settings"]')).not.toBeNull();
     });
@@ -251,6 +276,7 @@ describe('NavTab — permission gating', () => {
         expect(document.querySelector('a[href="/summary"]')).not.toBeNull();
         expect(document.querySelector('a[href="/traceflow"]')).not.toBeNull();
         expect(document.querySelector('a[href="/flows/list"]')).not.toBeNull();
+        expect(document.querySelector('a[href="/supportbundle"]')).not.toBeNull();
     });
 
     test('Traceflow is hidden without create permission, Summary still shows', () => {
