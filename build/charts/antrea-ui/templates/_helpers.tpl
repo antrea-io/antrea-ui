@@ -182,7 +182,7 @@ never sees https.caConfigMap, so mistakes in it are reported here. */ -}}
 {{- define "antrea-ui.supportBundleExtraSources" -}}
 {{- $sources := list -}}
 {{- range $i, $source := .Values.supportBundle.extraSources -}}
-{{- with dig "https" "caConfigMap" nil $source -}}
+{{- with dig "caConfigMap" nil ($source.https | default dict) -}}
 {{- if $source.https.caData -}}
 {{- fail (printf "supportBundle.extraSources[%d] must not set both https.caData and https.caConfigMap" $i) -}}
 {{- end -}}

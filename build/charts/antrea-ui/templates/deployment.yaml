@@ -128,7 +128,7 @@ spec:
               mountPath: /var/run/antrea-ui/supportbundles
             {{- /* A directory rather than a subPath, as for the plugin keys below. */}}
             {{- range $i, $source := .Values.supportBundle.extraSources }}
-            {{- if dig "https" "caConfigMap" nil $source }}
+            {{- if dig "caConfigMap" nil ($source.https | default dict) }}
             - name: supportbundle-ca-{{ $i }}
               mountPath: {{ include "antrea-ui.supportBundleCADir" $i }}
               readOnly: true
@@ -182,7 +182,7 @@ spec:
         {{- /* Not created by this chart, and optional, as for the plugin keys below. Volumes are
         named by index for the same reason. */}}
         {{- range $i, $source := .Values.supportBundle.extraSources }}
-        {{- with dig "https" "caConfigMap" nil $source }}
+        {{- with dig "caConfigMap" nil ($source.https | default dict) }}
         - name: supportbundle-ca-{{ $i }}
           configMap:
             name: {{ .name | quote }}
