@@ -185,6 +185,7 @@ type Flow struct {
 // When Flows is non-empty, the SSE handler emits a "flow" event.
 // When DroppedCount is non-zero, the SSE handler emits a "dropped" event.
 type FlowStreamEvent struct {
+	Source       string `json:"source,omitempty"`
 	Flows        []Flow `json:"flows,omitempty"`
 	DroppedCount uint64 `json:"droppedCount,omitempty"`
 }

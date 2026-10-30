@@ -75,6 +75,8 @@ export interface AppSettings {
     }
     features?: {
         flowVisibilityEnabled?: boolean
+        /** Configured history capability, independent of service health and caller RBAC. */
+        flowHistoryEnabled?: boolean
     }
 }
 

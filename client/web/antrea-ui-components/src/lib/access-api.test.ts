@@ -576,6 +576,11 @@ describe('canViewFlows', () => {
     const listOn = (resource: string, apiGroup = '') =>
         rules({ resourceRules: [{ apiGroups: [apiGroup], resources: [resource], verbs: ['list'] }] });
 
+    test('offers history to a cluster-wide list-only user', () => {
+        expect(canViewFlows(summary({ rules: listOn('flows', 'observability.antrea.io') }))).toBe(true);
+        expect(canViewFlows(summary({ rules: listOn('flows', 'observability.antrea.io'), namespace: 'ns-a' }))).toBe(false);
+    });
+
     test('true on a cluster-wide watch grant', () => {
         const flowsWatch = rules({ resourceRules: [{ apiGroups: ['observability.antrea.io'], resources: ['flows'], verbs: ['watch'] }] });
         expect(canViewFlows(summary({ rules: flowsWatch }))).toBe(true);

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { accessSummary, onAccessSummaryReset, verdict, GATE_FLOWS_WATCH } from './access-api.js';
+import { accessSummary, onAccessSummaryReset, verdict, GATE_FLOWS_WATCH, GATE_FLOWS_LIST } from './access-api.js';
 import type { AccessSummary, Verdict } from './access-api.js';
 import { apiFetchJSON, APIError } from './api.js';
 
@@ -142,12 +142,12 @@ export async function namespaceAccess(
     };
 }
 
-/** What the observed-namespace selector of the flow page offers. Its cluster-wide verdict is
- * watch on flows, the only scope in which the Flow Aggregator redacts nothing; the Flow
- * Aggregator authorizes and redacts every stream itself. */
-export async function flowAccess(): Promise<NamespaceAccess> {
+/** What the observed-namespace selector of the flow page offers. Its cluster-wide verdict uses
+ * watch on flows for live streams and list for historical queries. The selected flow service
+ * authorizes and redacts every response itself. */
+export async function flowAccess(follow = true): Promise<NamespaceAccess> {
     const summary = await accessSummary().catch(() => null);
-    return namespaceAccess(summary, s => verdict(s, GATE_FLOWS_WATCH));
+    return namespaceAccess(summary, s => verdict(s, follow ? GATE_FLOWS_WATCH : GATE_FLOWS_LIST));
 }
 
 /**

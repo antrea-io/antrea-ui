@@ -28,6 +28,8 @@ type FrontendAuthSettings struct {
 
 type FrontendFeatureSettings struct {
 	FlowVisibilityEnabled bool `json:"flowVisibilityEnabled"`
+	// FlowHistoryEnabled reports whether historical flow queries are enabled in the server configuration.
+	FlowHistoryEnabled bool `json:"flowHistoryEnabled"`
 	// MetricsEnabled reports whether the live metrics tap API (/api/v1/metrics) is available.
 	MetricsEnabled bool `json:"metricsEnabled"`
 }

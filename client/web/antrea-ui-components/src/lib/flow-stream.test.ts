@@ -715,4 +715,67 @@ describe('FlowStreamClient', () => {
         expect(url).toContain('namespaces=default');
         client.stop();
     });
+    test('historical completion flushes the final batch and never reconnects', async () => {
+        stubFetch(async () => closingSseResponse([
+            'event: source\ndata: {"source":"historical"}\n\n',
+            'event: flow\ndata: {"flows":[{"id":"last"}]}\n\n',
+            'event: complete\ndata: {"snapshotCount":1,"maxCount":10000}\n\n',
+        ]));
+        const cb = makeCallbacks();
+        cb.onSource = vi.fn();
+        cb.onCompleted = vi.fn(() => expect(cb.flows).toEqual([{ id: 'last' }]));
+        const client = new FlowStreamClient({ clusterWide: true, follow: false, since: '2026-10-23T00:00:00Z', maxCount: 10000 }, cb, 10_000);
+        client.start();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(cb.onCompleted).toHaveBeenCalledWith({ snapshotCount: 1, maxCount: 10000 });
+        expect(cb.onSource).toHaveBeenCalledWith({ source: 'historical' });
+        const params = new URL(fetchMock.mock.calls[0][0], 'http://test').searchParams;
+        expect(params.get('follow')).toBe('false');
+        expect(params.get('since')).toBe('2026-10-23T00:00:00Z');
+        expect(params.get('maxCount')).toBe('10000');
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        expect(vi.getTimerCount()).toBe(0);
+        client.stop();
+    });
+
+    test.each(['empty success', 'EOF', 'server error'])('finite query: %s', async scenario => {
+        const chunks = scenario === 'empty success'
+            ? ['event: complete\ndata: {"snapshotCount":0,"maxCount":10000}\n\n']
+            : scenario === 'server error' ? ['event: error\ndata: {"message":"query failed","retryable":true}\n\n'] : [];
+        stubFetch(async () => closingSseResponse(chunks));
+        const cb = makeCallbacks();
+        cb.onCompleted = vi.fn();
+        const client = new FlowStreamClient({ clusterWide: true, follow: false }, cb);
+        client.start();
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        expect(cb.onCompleted).toHaveBeenCalledTimes(scenario === 'empty success' ? 1 : 0);
+        expect(cb.errors).toHaveLength(scenario === 'empty success' ? 0 : 1);
+        expect(vi.getTimerCount()).toBe(0);
+        client.stop();
+    });
+
+    test('a canceled query cannot deliver stale records into its replacement', async () => {
+        let oldStream!: ReadableStreamDefaultController<Uint8Array>;
+        const response = new Response(new ReadableStream<Uint8Array>({ start(c) { oldStream = c; } }));
+        let calls = 0;
+        stubFetch(async () => ++calls === 1 ? response : closingSseResponse([
+            'event: flow\ndata: {"flows":[{"id":"new"}]}\n\n',
+            'event: complete\ndata: {"snapshotCount":1,"maxCount":10000}\n\n',
+        ]));
+        const cb = makeCallbacks();
+        cb.onCompleted = vi.fn();
+        const client = new FlowStreamClient({ observedNamespace: 'old', follow: false }, cb);
+        client.start();
+        await vi.advanceTimersByTimeAsync(0);
+        client.updateFilter({ observedNamespace: 'new', follow: false });
+        oldStream.enqueue(new TextEncoder().encode('event: flow\ndata: {"flows":[{"id":"old"}]}\n\n'));
+        oldStream.close();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(cb.flows).toEqual([{ id: 'new' }]);
+        expect(cb.onCompleted).toHaveBeenCalledTimes(1);
+        client.stop();
+    });
+
 });

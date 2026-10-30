@@ -109,12 +109,25 @@ type FlowAggregatorConfig struct {
 	InsecureSkipVerify bool
 }
 
+// FlowHistoryConfig connects the UI to an optional historical FlowStreamService.
+// It configures a client only; storage and the query service are deployed separately.
+type FlowHistoryConfig struct {
+	Enabled bool
+	Address string
+	// Namespace and CAConfigMap locate a public CA bundle (key ca.crt). When no
+	// ConfigMap is set, TLS uses the system trust store and needs no namespace.
+	Namespace   string
+	CAConfigMap string
+	ServerName  string
+}
+
 type Config struct {
 	Addr           string
 	URL            string
 	Auth           AuthConfig
 	Session        SessionConfig
 	FlowAggregator FlowAggregatorConfig
+	FlowHistory    FlowHistoryConfig
 	Limits         struct {
 		MaxLoginsPerSecond       int
 		MaxTraceflowsPerHour     int
@@ -366,6 +379,23 @@ func (c *Config) Redacted() Config {
 }
 
 func validateConfig(config *Config) error {
+	if config.FlowAggregator.Enabled {
+		if config.FlowAggregator.CAConfigMap != "" && len(validation.IsDNS1123Label(config.FlowAggregator.Namespace)) != 0 {
+			return fmt.Errorf("flowAggregator.namespace must be a valid Kubernetes namespace name (DNS-1123 label) when flowAggregator.caConfigMap is set")
+		}
+		if config.FlowAggregator.Address == "" {
+			return fmt.Errorf("flowAggregator.address must not be empty")
+		}
+	}
+	if config.FlowHistory.Enabled {
+		if config.FlowHistory.Address == "" {
+			return fmt.Errorf("flowHistory.address must not be empty")
+		}
+		if config.FlowHistory.CAConfigMap != "" && len(validation.IsDNS1123Label(config.FlowHistory.Namespace)) != 0 {
+			return fmt.Errorf("flowHistory.namespace must be a valid Kubernetes namespace name (DNS-1123 label) when flowHistory.caConfigMap is set")
+		}
+	}
+
 	if config.LogVerbosity < 0 || config.LogVerbosity >= 128 {
 		return fmt.Errorf("invalid verbosity level %d: it should be >= 0 and < 128", config.LogVerbosity)
 	}
@@ -614,6 +644,11 @@ func LoadConfig() (*Config, error) {
 	v.SetDefault("flowAggregator.namespace", "flow-aggregator")
 	v.SetDefault("flowAggregator.serverName", "")
 	v.SetDefault("flowAggregator.insecureSkipVerify", false)
+	v.SetDefault("flowHistory.enabled", false)
+	v.SetDefault("flowHistory.address", "")
+	v.SetDefault("flowHistory.namespace", "")
+	v.SetDefault("flowHistory.caConfigMap", "")
+	v.SetDefault("flowHistory.serverName", "")
 	v.SetDefault("metrics.enabled", true)
 	v.SetDefault("metrics.minScrapeInterval", DefaultMetricsMinScrapeInterval)
 	v.SetDefault("metrics.maxTaps", DefaultMetricsMaxTaps)

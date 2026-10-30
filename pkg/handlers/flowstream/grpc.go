@@ -30,6 +30,7 @@ import (
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 
 	apisv1 "antrea.io/antrea-ui/apis/v1"
@@ -134,7 +135,9 @@ func isMessageSizeErr(err error) bool {
 // GRPCFlowStreamSubscriber connects to the FlowAggregator's FlowStreamService
 // over gRPC and implements the FlowStreamSubscriber interface.
 type GRPCFlowStreamSubscriber struct {
-	logger logr.Logger
+	historical    bool
+	connectionKey string
+	logger        logr.Logger
 	// address and tlsConfig are kept so that a per-credential connection (KindCert) can be
 	// dialed with the same server-verification settings as the shared one.
 	address   string
@@ -150,7 +153,11 @@ type GRPCFlowStreamSubscriber struct {
 
 // GRPCConfig holds the connection parameters for the FlowAggregator gRPC server.
 type GRPCConfig struct {
-	Address string
+	// Historical selects the trusted Reader contract, which has no resume token.
+	Historical bool
+	// ConnectionKey separates endpoints and trust generations for certificate sessions.
+	ConnectionKey string
+	Address       string
 	// TLSConfig is the TLS configuration used for the gRPC connection. Its Certificates field
 	// is left unset here: a KindCert session credential adds its own, on a separate
 	// per-session connection (see connFor).
@@ -179,6 +186,8 @@ func NewGRPCFlowStreamSubscriber(logger logr.Logger, cfg GRPCConfig) (*GRPCFlowS
 	logger.Info("FlowAggregator gRPC client created", "address", cfg.Address)
 
 	return &GRPCFlowStreamSubscriber{
+		historical:       cfg.Historical,
+		connectionKey:    cfg.ConnectionKey,
 		logger:           logger,
 		address:          cfg.Address,
 		tlsConfig:        cfg.TLSConfig,
@@ -235,7 +244,11 @@ func (h *GRPCFlowStreamSubscriber) resolveCall(ctx context.Context) (flowpb.Flow
 	case session.KindBearer:
 		return h.client, metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+string(cred.Token)), nil
 	case session.KindCert:
-		conn, err := ra.ConnFor(flowStreamConnKey, h.buildCertConn)
+		key := h.connectionKey
+		if key == "" {
+			key = flowStreamConnKey
+		}
+		conn, err := ra.ConnFor(key, h.buildCertConn)
 		if err != nil {
 			return nil, nil, internalStreamError(fmt.Errorf("failed to build FlowAggregator client certificate connection: %w", err))
 		}
@@ -314,8 +327,12 @@ func (h *GRPCFlowStreamSubscriber) Subscribe(ctx context.Context, scope *FlowStr
 		// "supported" verdict would let a rollback, or a rolling update briefly routing to an
 		// old replica, stream unredacted data with no error for as long as the verdict stayed
 		// trusted.
-		if firstResp.GetResumeToken().GetStreamEpoch() == "" {
+		if !h.historical && firstResp.GetResumeToken().GetStreamEpoch() == "" {
 			errCh <- flowAggregatorTooOldErr(h.address)
+			return
+		}
+		if h.historical && firstResp == nil {
+			errCh <- retryableInternalStreamError(fmt.Errorf("historical reader closed before acknowledging the query"))
 			return
 		}
 		close(ready)
@@ -332,6 +349,10 @@ func (h *GRPCFlowStreamSubscriber) Subscribe(ctx context.Context, scope *FlowStr
 		for {
 			resp, err := stream.Recv()
 			if err != nil {
+				if !filter.following() && ctx.Err() == nil && status.Code(err) == codes.Canceled {
+					errCh <- retryableInternalStreamError(fmt.Errorf("historical query was canceled before completion"))
+					return
+				}
 				if errors.Is(err, io.EOF) || ctx.Err() != nil || status.Code(err) == codes.Canceled {
 					// A Canceled Recv with ctx still alive means the connection itself was
 					// closed out from under this call - e.g. a KindCert session logging out
@@ -446,6 +467,9 @@ func (h *GRPCFlowStreamSubscriber) forwardResp(ctx context.Context, resp *flowpb
 //     own reconnect loop recovered from exactly these the same way. A permanent failure gets its
 //     own case above instead of falling through to a non-retryable default here.
 func (h *GRPCFlowStreamSubscriber) classifyStreamErr(err error) *StreamError {
+	if h.historical && (status.Code(err) == codes.FailedPrecondition || status.Code(err) == codes.Unavailable) {
+		return dependencyUnavailable("historical reader is unavailable")
+	}
 	switch status.Code(err) {
 	case codes.Unauthenticated:
 		return &StreamError{
@@ -534,11 +558,12 @@ func filterToGetFlowsRequest(scope *FlowStreamScope, filter *FlowStreamFilter) *
 		pbFilter.FlowTypes = append(pbFilter.FlowTypes, flowpb.FlowType(ft))
 	}
 	req := &flowpb.GetFlowsRequest{
-		Filters: []*flowpb.FlowFilter{pbFilter},
-		// The SSE flow stream always requires follow mode so the Flow Aggregator does not
-		// close the gRPC stream on the first empty ring-buffer read (!follow && n==0).
-		// It is also why the RBAC verb the Flow Aggregator checks is watch, not list.
-		Follow: true,
+		Filters:  []*flowpb.FlowFilter{pbFilter},
+		Follow:   filter.following(),
+		MaxCount: filter.resultLimit(),
+	}
+	if !filter.Since.IsZero() {
+		req.Since = timestamppb.New(filter.Since)
 	}
 	if scope != nil {
 		req.ClusterWide = scope.ClusterWide

@@ -74,6 +74,12 @@ flowAggregator:
   serverName: {{ .Values.flowAggregator.serverName | quote }}
   insecureSkipVerify: {{ .Values.flowAggregator.insecureSkipVerify }}
 {{- end }}
+flowHistory:
+  enabled: {{ .Values.flowHistory.enabled }}
+  address: {{ .Values.flowHistory.address | quote }}
+  namespace: {{ .Values.flowHistory.namespace | quote }}
+  caConfigMap: {{ .Values.flowHistory.caConfigMap | quote }}
+  serverName: {{ .Values.flowHistory.serverName | quote }}
 metrics:
   enabled: {{ .Values.metrics.enabled }}
 {{- if .Values.metrics.enabled }}
