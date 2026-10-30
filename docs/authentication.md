@@ -204,25 +204,44 @@ installed next month adds".
 The flow visibility stream (`GET /api/v1/flows/stream`) is authenticated and
 authorized per caller: for most login modes, the backend presents the
 signed-in user's own credential (their bearer token, or their client
-certificate on the connection) to the Flow Aggregator's FlowStreamService,
-which rejects a call that presents neither. The one exception is the
-admin-password login mode: it normally reaches the kube-apiserver by
-impersonating the `antrea-ui-admin` ServiceAccount, but FA accepts no
-impersonation header, so the backend instead mints a short-lived, real token
+certificate on the connection) to the selected FlowStreamService: the Flow
+Aggregator (FA) for live data, or the configured historical service. The service
+must authenticate that credential and reject a call that presents neither. The
+one exception is the admin-password login mode: it normally reaches the
+kube-apiserver by
+impersonating the `antrea-ui-admin` ServiceAccount, but FlowStreamService accepts
+no impersonation header, so the backend instead mints a short-lived, real token
 for that same ServiceAccount (via the TokenRequest API) and presents that —
-the one case where the credential FA sees is not literally the signed-in
-user's own.
+the one case where the credential the flow service sees is not literally the
+signed-in user's own.
+
+The time selector chooses the query mode. Both modes use the same SSE endpoint,
+but require different verbs on the virtual `flows.observability.antrea.io`
+resource:
+
+- **Live Data** sends `follow=true` (the default) and requires `watch` in the
+  requested scope. FA supplies the following stream.
+- **Historical ranges** send `follow=false` and require `list` in the requested
+  scope. The historical service supplies a finite result and closes the stream.
+
+A `list` grant does not authorize live data, and a `watch` grant does not
+necessarily authorize history. Historical choices appear only when
+`features.flowHistoryEnabled` is true; this reflects server configuration,
+independently of the caller's permissions or service health. The page initially
+selects Live Data, so a list-only caller may need to select a historical range
+after a live request is refused. See [Historical flows](getting-started.md#historical-flows)
+for configuration and service requirements.
 
 Every request also names a **scope**: either `clusterWide=true` or a single
-`observedNamespace`, never both. FA authorizes the stream against that scope
-with the caller's Kubernetes RBAC on the virtual `flows.observability.antrea.io`
-resource — `watch` for the SSE stream, since it always follows — and resolves
-every endpoint of every record to a disclosure tier (full, identity, or flow)
-relative to what the caller may see there. An
-endpoint is disclosed in full when its Namespace is in the requested scope, or
-when the caller holds the stream's own verb (`watch`) on `flows` in that
-Namespace; a caller holding only `get` on the `flows/identity` subresource there
-sees it at the identity tier, and one holding neither sees it at the flow tier:
+`observedNamespace`, never both. The selected service authorizes the request
+against that scope using the mode's verb and the caller's Kubernetes RBAC, and
+resolves every endpoint of every record to a disclosure tier (full, identity,
+or flow) relative to what the caller may see there. An endpoint is disclosed in
+full when its Namespace is in the requested scope, or
+when the caller holds the query's own verb (`watch` for live data, `list` for
+history) on `flows` in that Namespace; a caller holding only `get` on the
+`flows/identity` subresource there sees it at the identity tier, and one holding
+neither sees it at the flow tier:
 the addresses and the Namespace, but no Pod, except that the Namespace of the
 destination of a denied connection is withheld too. An endpoint with no
 Namespace at all, such as a Service backend outside the Pod network (the
@@ -232,25 +251,26 @@ So a caller with `flows` cluster-wide sees every peer that has a Namespace in
 full whether it asks for the whole cluster or for a single Namespace, and the
 `flows` rule alone is enough — `flows/identity` is only for being recognizable in records the
 caller receives through some other Namespace. A request naming no scope, or
-both, is rejected before it ever reaches FA. The frontend picks the scope from
-a Namespace selector, which offers All Namespaces (the `clusterWide` scope)
+both, is rejected before it ever reaches the flow service. The frontend picks
+the scope from a Namespace selector, which offers All Namespaces (the `clusterWide` scope)
 unless the caller is known not to hold it. The page's URL carries the scope the
 user chose as `?namespace=<name>`, or `?namespace=_all` for All Namespaces, so a
 reload or a shared link keeps it. The scope in the URL is used as given: the
 stream opens on it without waiting for the Namespace list, it is not checked
 against the list, and it is not replaced by a default even when it is All
-Namespaces and the caller is known not to hold it. FA then answers, and the page
-shows the refusal. An invalid value (one that is neither `_all` nor a valid
-Namespace name, an empty value, or `namespace` given more than once) is reported
+Namespaces and the caller is known not to hold it. The selected service then
+answers, and the page shows any refusal. An invalid value (one that is neither
+`_all` nor a valid Namespace name, an empty value, or `namespace` given more than once) is reported
 on the page and nothing is selected. The page follows its URL when it changes,
 as with Back and Forward or a switch between Flow List and Service Map.
 
 Only a scope the user chose is written to the URL, in place, without a history
 entry: a pick, a typed name or a link followed. When the URL names none, the page
 takes a default, once the Namespace list and the verdict are known: All
-Namespaces where the caller is known to hold `watch` on `flows` cluster-wide,
-since that is the only scope in which nothing is redacted, and an *unknown*
-verdict never makes it the default; otherwise the first Namespace of the list,
+Namespaces where the caller is known to hold the selected mode's verb on `flows`
+cluster-wide, since that is the only scope in which nothing is redacted. An
+*unknown* verdict never makes it the default; otherwise the first Namespace of
+the list is selected,
 unchecked. The default is not written to the URL, so a reload runs it again. The
 page opens no stream while no scope is selected: the URL scope is invalid, or the
 URL names none and there is no default to take, because the cluster-wide verdict
@@ -262,11 +282,11 @@ scope.
 
 Antrea UI performs no RBAC decision of its own here and must not: a wrong
 answer on antrea-ui's side would either hide flow data a caller is entitled to
-or expose data they are not, and FA is the only party positioned to tell the
-two apart. A `403` from the stream (`StreamErrorCodeForbidden`) means FA
+or expose data they are not. The selected flow service makes that decision. A
+`403` from the stream (`StreamErrorCodeForbidden`) means the service
 authenticated the credential but refused the scope, and the frontend renders a
-panel naming the restriction. FA revalidates a stream's authorization
-periodically while it is open, so a grant revoked mid-stream ends the stream
+panel naming the restriction. For live data, FA revalidates a stream's
+authorization periodically while it is open, so a grant revoked mid-stream ends the stream
 too, not just at open time - but arriving mid-stream, it is one more SSE
 `error` event rather than a fresh HTTP status, so it reaches only the generic
 error banner today, with FA's own message text, not the dedicated panel a
@@ -283,24 +303,32 @@ one cannot produce. When the first response has no stream epoch, or the
 stream ends before sending one, antrea-ui refuses the stream
 (`StreamErrorCodeFlowAggregatorTooOld`) instead of forwarding unredacted
 data. Antrea UI v1.0.0 requires Antrea and the Flow Aggregator at v2.8 or
-later; flow visibility is unavailable against an older deployment.
+later for live flow visibility. These epoch checks apply to live FA streams;
+the explicitly configured historical service may return an empty first response
+without an epoch, as described in its
+[contract](../pkg/flowpb/README.md#historical-query-contract).
 
 The Flow Visibility navigation entry and page are gated like the Overview
 page: from the cluster-scoped access summary alone, with no per-namespace review
-at login. The caller sees them if they hold `watch` on `flows` cluster-wide, may
-list namespaces, or are named in any RoleBinding (a non-empty
+at login. The caller sees them if they hold `watch` **or** `list` on `flows`
+cluster-wide, may list namespaces, or are named in any RoleBinding (a non-empty
 `summary.namespaces`). This is a rendering hint, not an authorization decision,
-and it fails open: a summary that could not be fetched shows the page and lets FA
-answer. The price of the wider test is that a caller with a RoleBinding but no
-`flows` grant, `edit` in their Namespace say, sees the entry and gets FA's 403
-message on the page. The `/` redirect is narrower, and lands on Flow Visibility
-only for a caller who holds `flows` cluster-wide, so a caller who merely has a
-RoleBinding lands on Overview instead of a page that may be refused.
+and it fails open: a summary that could not be fetched shows the page and lets
+the selected service answer. Showing the entry neither enables historical
+queries nor grants access to either mode. The price of the wider test is that a
+caller with a RoleBinding but no `flows` grant, `edit` in their Namespace say,
+sees the entry and gets a 403 message on the page. The `/` redirect retains the
+narrower `watch` check for Flow Visibility, matching the initial Live Data mode;
+a `list` grant alone does not select it as the landing page.
 
 That question is answered from the access summary described in [What the
 frontend knows about your permissions](#what-the-frontend-knows-about-your-permissions),
-with nothing flow-specific on the backend. The summary says whether the caller
-holds `watch` on `flows` cluster-wide, which is *allowed* when a rule grants it
+with nothing flow-specific on the backend. The scope selector uses `watch` on
+`flows` for live data (`flowAccess(true)`) and `list` for history
+(`flowAccess(false)`), refreshing its verdict when the mode changes. An explicit
+URL scope remains selected even when the new mode's verdict denies it; the
+selected service authorizes the request. The cluster-wide verdict for the
+selected verb is *allowed* when a rule grants it
 or `clusterAdmin` is true, *denied* when none does in a rule list the API server
 says is exhaustive, and *unknown* when none does but the API server could not enumerate its rules, as
 with a webhook authorizer, or the summary could not be fetched. The selector
@@ -317,8 +345,8 @@ RoleBindings naming the caller or their groups, as the summary has them, whateve
 every caller, and a caller with RoleBindings must still get their list. The
 selector does not review the candidates. It offers each of them, whether or not
 the caller may observe flows there, and says nothing about access in the list. A
-Namespace the caller may not observe is refused by FA with a 403 when they open
-it, and the page shows that error.
+Namespace the caller may not observe in the selected mode is refused by the
+flow service with a 403 when they open it, and the page shows that error.
 
 A caller who may list namespaces has none named in the access summary (it says
 `"*"`), so the page lists them itself through the Kubernetes API proxy, with the
@@ -332,8 +360,8 @@ first 10 - type to search" with nothing typed, "More matches, keep typing"
 otherwise), and hides All Namespaces while something is typed.
 
 When the list is empty, not known, or cut, the selector lets a caller name a
-Namespace directly instead, and FA authorizes it either way. The list is empty
-for a caller a webhook authorizer grants `flows` in a Namespace that no
+Namespace directly instead, and the selected service authorizes it either way.
+The list is empty for a caller a webhook authorizer grants `flows` in a Namespace that no
 RoleBinding names; it is not known when the summary could not be fetched or a
 caller who may list namespaces could not list them. A typed name, in the
 combobox or in that box, must be a valid Namespace name (an RFC 1123 label) and
@@ -354,8 +382,8 @@ shows cluster-wide, *denied* if the rules are complete and deny every one of
 them, and *unknown* otherwise (the rules are incomplete, as with a webhook
 authorizer, or the summary could not be fetched), and it decides the default in
 the same way. Where Flow Visibility opens a stream for the selected
-scope and reports FA's refusal, Overview asks for the access summary of the
-selected Namespace and leaves out the tiles it denies. See
+scope and reports the flow service's refusal, Overview asks for the access
+summary of the selected Namespace and leaves out the tiles it denies. See
 `docs/design/namespace-scope-ux.md`.
 
 The Dest Service column shows `-` for a destination outside the Pod network on a
@@ -527,10 +555,10 @@ than reusing a failure.
   RoleBinding names the user, or one of their groups, as a subject. Kubernetes
   has no self-service API for "which namespaces can I see", so this is a
   heuristic and may under-report; it is never used to block access. This is
-  one of the two privileged reads antrea-ui performs on the user's behalf, and
+  one of the privileged reads antrea-ui performs on the user's behalf, and
   it is why the `antrea-ui` ClusterRole (antrea-ui's own operations role, not
   `antrea-ui-admin`) grants `list`/`watch` on
-  `rolebindings.rbac.authorization.k8s.io` cluster-wide. The other one is the
+  `rolebindings.rbac.authorization.k8s.io` cluster-wide. Another is the
   discovery of Antrea Agents for live metrics taps, when `metrics.enabled` is
   set: antrea-ui watches AntreaAgentInfos and Nodes as itself, and answers from
   what it knows for users it has first checked the `metrics.ui.antrea.io` grant

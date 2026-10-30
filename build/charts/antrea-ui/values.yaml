@@ -443,3 +443,16 @@ extraVolumes: []
 # outside the cluster, for example - without having to touch CoreDNS. Each entry is
 # `{ip: <address>, hostnames: [<name>, ...]}`.
 hostAliases: []
+
+# Client settings only; deploy a compatible historical query service separately.
+flowHistory:
+  # -- Enable historical queries and the time-range selector. Requires flowAggregator.enabled.
+  enabled: false
+  # -- Historical FlowStreamService gRPC address (host:port). Required when enabled.
+  address: ""
+  # -- Trusted namespace containing caConfigMap. Required only when caConfigMap is set.
+  namespace: ""
+  # -- Public CA ConfigMap (key ca.crt). Empty uses the system trust store; TLS is always verified.
+  caConfigMap: ""
+  # -- Override the TLS server name; empty uses the hostname in address.
+  serverName: ""

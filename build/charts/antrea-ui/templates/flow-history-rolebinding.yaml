@@ -1,0 +1,33 @@
+{{- if .Values.flowHistory.enabled }}
+{{- $_ := required "flowHistory.address is required when history is enabled" .Values.flowHistory.address }}
+{{- end }}
+{{- if and .Values.flowAggregator.enabled .Values.flowHistory.enabled .Values.flowHistory.caConfigMap }}
+{{- if not .Values.flowHistory.namespace }}
+{{- fail "flowHistory.namespace is required when caConfigMap is set" }}
+{{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ .Release.Name }}-historical-flow-ca-reader
+  namespace: {{ .Values.flowHistory.namespace | quote }}
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: [{{ required "flowHistory.caConfigMap is required" .Values.flowHistory.caConfigMap | quote }}]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ .Release.Name }}-historical-flow-ca-reader
+  namespace: {{ .Values.flowHistory.namespace | quote }}
+subjects:
+  - kind: ServiceAccount
+    name: antrea-ui
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: Role
+  name: {{ .Release.Name }}-historical-flow-ca-reader
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}

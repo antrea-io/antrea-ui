@@ -50,6 +50,11 @@ Kubernetes: `>= 1.28.0-0`
 | flowAggregator.insecureSkipVerify | bool | `false` | Disable TLS server certificate verification. Should only be used for development or testing; never enable this in production. With this on, any server answering at `address` is trusted: the backend hands it every flow viewer's bearer token and, for admin-password sessions, a freshly minted antrea-ui-admin token - all replayable against the real Kubernetes API server by whoever controls that address. A client certificate cannot be replayed, since its private key never leaves antrea-ui, but the server still learns the viewer's identity and can serve fake flow data. |
 | flowAggregator.namespace | string | `"flow-aggregator"` | Namespace where the Flow Aggregator is installed. |
 | flowAggregator.serverName | string | `""` | Override the TLS server name used for certificate verification. Useful when dialing via kubectl port-forward (loopback address) while the server cert is issued for the in-cluster Service DNS name (e.g. flow-aggregator.flow-aggregator.svc). Leave empty to use the hostname from the address field. |
+| flowHistory.address | string | `""` | Historical FlowStreamService gRPC address (host:port). Required when enabled. |
+| flowHistory.caConfigMap | string | `""` | Public CA ConfigMap (key ca.crt). Empty uses the system trust store; TLS is always verified. |
+| flowHistory.enabled | bool | `false` | Enable historical queries and the time-range selector. Requires flowAggregator.enabled. |
+| flowHistory.namespace | string | `""` | Trusted namespace containing caConfigMap. Required only when caConfigMap is set. |
+| flowHistory.serverName | string | `""` | Override the TLS server name; empty uses the hostname in address. |
 | frontend.extraVolumeMounts | list | `[]` | Additional volumeMounts. |
 | frontend.image | object | `{"pullPolicy":"IfNotPresent","repository":"antrea/antrea-ui-frontend","tag":""}` | Container image to use for the Antrea UI frontend. |
 | frontend.port | int | `3000` | Container port on which the frontend will listen. |

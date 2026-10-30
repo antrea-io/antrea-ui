@@ -116,7 +116,7 @@ export class FlowStore {
         this.maxEntries = maxEntries;
     }
 
-    upsert(flow: Flow): void {
+    upsert(flow: Flow, historical = false): void {
         const key = connectionKey(flow);
         const existing = this.entries.get(key);
         const now = Date.now();
@@ -130,7 +130,7 @@ export class FlowStore {
             flow,
             firstSeen: existing ? existing.firstSeen : now,
             lastSeen: now,
-            samples: nextSamples(existing ? existing.samples : [], flow),
+            samples: historical ? [] : nextSamples(existing ? existing.samples : [], flow),
         };
         this.entries.set(key, entry);
 
@@ -143,9 +143,9 @@ export class FlowStore {
         }
     }
 
-    upsertBatch(flows: Flow[]): void {
+    upsertBatch(flows: Flow[], historical = false): void {
         for (const flow of flows) {
-            this.upsert(flow);
+            this.upsert(flow, historical);
         }
     }
 

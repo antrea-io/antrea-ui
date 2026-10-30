@@ -218,3 +218,16 @@ describe('namespaceExists', () => {
         expect(String(fetchMock.mock.calls[0][0])).toContain('/k8s/api/v1/namespaces/ns-a');
     });
 });
+
+
+describe('historical flow scope permissions', () => {
+    afterEach(() => { vi.unstubAllGlobals(); resetAccessSummary(); });
+    it('uses list for history while retaining watch for live', async () => {
+        resetAccessSummary();
+        vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(summary({
+            rules: rules({ resourceRules: [{ ...watchFlows, verbs: ['list'] }] }),
+        })), { status: 200 })));
+        expect((await flowAccess(false)).clusterWide).toBe('allowed');
+        expect((await flowAccess(true)).clusterWide).toBe('denied');
+    });
+});

@@ -41,7 +41,16 @@ export type FlowStreamScope =
     | { observedNamespace: string; clusterWide?: never }
     | { observedNamespace?: never; clusterWide: true };
 
-export type FlowStreamFilter = FlowPeerFilter & FlowStreamScope;
+export interface FlowQueryOptions {
+    follow?: boolean;
+    since?: string;
+    maxCount?: number;
+}
+export type FlowStreamFilter = FlowPeerFilter & FlowStreamScope & FlowQueryOptions;
+export interface FlowQuerySource {
+    source: 'live' | 'historical';
+}
+export interface FlowQueryCompletion { snapshotCount: number; maxCount: number; }
 
 export function streamFilterKey(f: FlowStreamFilter): string {
     const namespaces = [...(f.namespaces ?? [])].sort();
@@ -54,6 +63,9 @@ export function streamFilterKey(f: FlowStreamFilter): string {
     // did not alter the key would leave the old stream running while the UI claimed to be showing
     // a different namespace — the one way this feature can silently show wrong data.
     return JSON.stringify({
+        follow: f.follow ?? true,
+        since: f.since ?? '',
+        maxCount: f.maxCount ?? 0,
         namespaces,
         pods,
         podLabelSelector: f.podLabelSelector ?? '',
@@ -67,6 +79,8 @@ export function streamFilterKey(f: FlowStreamFilter): string {
 }
 
 export interface FlowStreamCallbacks {
+    onSource?: (source: FlowQuerySource) => void;
+    onCompleted?: (result: FlowQueryCompletion) => void;
     onFlows: (flows: Flow[]) => void;
     onError: (error: Error) => void;
     onDropped?: (droppedCount: number) => void;
@@ -104,6 +118,9 @@ interface FlowStreamErrorPayload { message: string; code?: string; retryable?: b
 
 function buildStreamURL(filter: FlowStreamFilter): string {
     const params = new URLSearchParams();
+    if (filter.follow !== undefined) params.set('follow', String(filter.follow));
+    if (filter.since) params.set('since', filter.since);
+    if (filter.maxCount !== undefined) params.set('maxCount', String(filter.maxCount));
     if (filter.namespaces?.length) params.set('namespaces', filter.namespaces.join(','));
     if (filter.pods?.length) params.set('pods', filter.pods.join(','));
     if (filter.podLabelSelector) params.set('podLabelSelector', filter.podLabelSelector);
@@ -141,6 +158,8 @@ export class FlowStreamClient {
     // 200-then-error-event shape otherwise looks identical to a healthy connection that happened
     // to drop, which is what reconnectAttempts is normally reset for.
     private streamErrorIsPermanent = false;
+    private queryFailed = false;
+    private completion: FlowQueryCompletion | null = null;
     private filter: FlowStreamFilter;
     private callbacks: FlowStreamCallbacks;
     private batchIntervalMs: number;
@@ -241,15 +260,21 @@ export class FlowStreamClient {
         // this one, orphaning it (stop() can only abort the abortController this call is about
         // to overwrite).
         this.reconnectPendingVisibility = false;
-        this.abortController = new AbortController();
+        const controller = new AbortController();
+        this.abortController = controller;
+        const current = () => this.running && this.abortController === controller;
         this.streamErrorIsPermanent = false;
+        this.queryFailed = false;
+        this.completion = null;
         const url = buildStreamURL(this.filter);
         try {
             const response = await fetch(url, {
                 credentials: 'include',
                 headers: { 'Accept': 'text/event-stream' },
-                signal: this.abortController.signal,
+                signal: controller.signal,
             });
+
+            if (!current()) return;
 
             if (response.status === 401) {
                 this.haltPermanently();
@@ -287,6 +312,7 @@ export class FlowStreamClient {
                 // failure, except a 400, which (like 403) means this client built a request the
                 // backend will never accept, so no retry can help.
                 const payload = await FlowStreamClient.readErrorPayload(response);
+                if (!current()) return;
                 const message = payload?.message ?? `Flow stream: ${response.status} ${response.statusText}`;
                 if (payload?.retryable === false || response.status === 400) {
                     this.haltPermanently();
@@ -305,18 +331,37 @@ export class FlowStreamClient {
             let buffer = '';
             while (this.running) {
                 const { done, value } = await reader.read();
+                if (!current()) return;
                 if (done) break;
                 buffer += decoder.decode(value, { stream: true });
                 const { parsed, remaining } = this.parseSSEBuffer(buffer);
                 buffer = remaining;
                 for (const event of parsed) this.handleSSEEvent(event);
+                if (this.filter.follow === false && this.completion) {
+                    await reader.cancel();
+                    break;
+                }
+            }
+            if (!current()) return;
+            if (this.filter.follow === false) {
+                // A proxy closing the response is not proof the finite query succeeded.
+                if (!this.completion && !this.queryFailed) throw new Error('Historical query interrupted before completion. Refresh to retry.');
+                const completion = this.completion;
+                this.haltPermanently(); // Flush the last batch before the completion callback.
+                if (completion && !this.queryFailed) this.callbacks.onCompleted?.(completion);
+                this.callbacks.onDisconnected?.();
+                return;
             }
         } catch (err) {
-            if (!this.running) return;
+            if (!current()) return;
             if (err instanceof DOMException && err.name === 'AbortError') return;
             this.callbacks.onError(err instanceof Error ? err : new Error(String(err)));
         }
         this.callbacks.onDisconnected?.();
+        if (this.filter.follow === false) {
+            this.haltPermanently();
+            return;
+        }
         if (this.streamErrorIsPermanent) {
             // Same terminal treatment as onAuthError/onDisabled/onForbidden above: retrying
             // would just reproduce the same rejection every reconnectDelay, forever.
@@ -376,7 +421,15 @@ export class FlowStreamClient {
                 const payload = JSON.parse(event.data) as SSEDroppedEvent;
                 this.reconnectAttempts = 0;
                 this.callbacks.onDropped?.(payload.droppedCount);
+            } else if (event.type === 'source') {
+                const source = JSON.parse(event.data) as FlowQuerySource;
+                if (source.source === 'live' || source.source === 'historical') this.callbacks.onSource?.(source);
+            } else if (event.type === 'complete' && this.filter.follow === false) {
+                const result = JSON.parse(event.data) as FlowQueryCompletion;
+                if (Number.isInteger(result.snapshotCount) && result.snapshotCount >= 0 &&
+                    Number.isInteger(result.maxCount) && result.maxCount > 0) this.completion = result;
             } else if (event.type === 'error') {
+                this.queryFailed = true;
                 const payload = JSON.parse(event.data) as FlowStreamErrorPayload;
                 if (payload.retryable === false) this.streamErrorIsPermanent = true;
                 this.callbacks.onError(new Error(payload.message));

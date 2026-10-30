@@ -15,6 +15,8 @@
 package server
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -327,4 +329,40 @@ supportBundle:
 			{Name: "baz", HTTPS: &SupportBundleHTTPSSource{URL: "https://baz.ns.svc/api/v1", CAFile: "/app/supportbundle-ca/2/ca.crt"}},
 		},
 	}, c.SupportBundle)
+}
+
+func TestValidateStaticFlowEndpoint(t *testing.T) {
+	config := validConfig()
+	config.FlowAggregator.Enabled = true
+	require.ErrorContains(t, validateConfig(config), "address must not be empty")
+	config.FlowAggregator.Address = "fa.networking.svc:14740"
+	require.NoError(t, validateConfig(config))
+	config.FlowAggregator.CAConfigMap = "fa-ca"
+	require.ErrorContains(t, validateConfig(config), "namespace must be a valid Kubernetes namespace name")
+	config.FlowAggregator.Namespace = "networking"
+	require.NoError(t, validateConfig(config))
+}
+
+func TestValidateFlowHistory(t *testing.T) {
+	config := validConfig()
+	config.FlowHistory.Enabled = true
+	require.ErrorContains(t, validateConfig(config), "flowHistory.address")
+	config.FlowHistory.Address = "history.example.test:14740"
+	// Public PKI needs no Kubernetes namespace or CA grant.
+	require.NoError(t, validateConfig(config))
+	config.FlowHistory.CAConfigMap = "history-ca"
+	require.ErrorContains(t, validateConfig(config), "flowHistory.namespace")
+	config.FlowHistory.Namespace = "trusted-history"
+	require.NoError(t, validateConfig(config))
+}
+
+func TestFlowHistoryDefaultsDisabledWithoutDeploymentNames(t *testing.T) {
+	originalArgs := os.Args
+	t.Cleanup(func() { os.Args = originalArgs })
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	require.NoError(t, os.WriteFile(configPath, []byte(`{}`), 0600))
+	os.Args = []string{"server", "--config", configPath}
+	config, err := LoadConfig()
+	require.NoError(t, err)
+	require.Equal(t, FlowHistoryConfig{}, config.FlowHistory)
 }

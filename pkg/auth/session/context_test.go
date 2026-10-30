@@ -15,6 +15,8 @@
 package session
 
 import (
+	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -22,6 +24,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/connectivity"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 // ConnFor has no ephemeral (session-less) path, unlike TransportFor: a gRPC connection owns real
@@ -68,4 +72,54 @@ func TestConnForCachesPerSession(t *testing.T) {
 
 	assert.Same(t, conn1, conn2)
 	assert.Equal(t, 1, calls)
+}
+
+func TestConnForRetiresSupersededVersions(t *testing.T) {
+	store := NewStore(testr.New(t), Options{IdleTimeout: time.Hour, MaxLifetime: time.Hour, MaxSessions: 10})
+	sess, err := store.Create(&Spec{Mode: ModeKubeconfig, Credential: Credential{Kind: KindCert}})
+	require.NoError(t, err)
+	t.Cleanup(func() { store.Delete(sess.ID()) })
+	ra := NewSessionAuth(store, sess)
+	closed := map[*grpc.ClientConn]int{}
+	build := func(*Credential) (*grpc.ClientConn, func(), error) {
+		// NewClient is lazy: these tests use real connection lifecycles without network I/O.
+		conn, err := grpc.NewClient("passthrough:///unused", grpc.WithTransportCredentials(insecure.NewCredentials()))
+		if err != nil {
+			return nil, nil, err
+		}
+		closed[conn] = 0
+		return conn, func() { closed[conn]++; require.NoError(t, conn.Close()) }, nil
+	}
+	get := func(key string) *grpc.ClientConn {
+		conn, err := ra.ConnFor(key, build)
+		require.NoError(t, err)
+		return conn
+	}
+	legacy := get("unversioned")
+	reader := get("flow-reader-grpc/0")
+	live := get("flow-aggregator-grpc/0")
+	for i := 1; i <= 10; i++ {
+		previous := live
+		key := fmt.Sprintf("flow-aggregator-grpc/%d", i)
+		live = get(key)
+		require.Equal(t, connectivity.Shutdown, previous.GetState())
+		require.Equal(t, 1, closed[previous])
+		require.Same(t, live, get(key))
+		require.Len(t, sess.conns, 3, "rotations must not accumulate connections")
+		require.Equal(t, connectivity.Idle, reader.GetState(), "live rotation must not close Reader")
+		require.Equal(t, connectivity.Idle, legacy.GetState())
+	}
+	_, err = ra.ConnFor("flow-aggregator-grpc/failed", func(*Credential) (*grpc.ClientConn, func(), error) {
+		return nil, nil, errors.New("invalid replacement credential")
+	})
+	require.Error(t, err)
+	require.Equal(t, connectivity.Idle, live.GetState(), "a failed replacement must not close the working connection")
+	require.Len(t, sess.conns, 3)
+	get("flow-reader-grpc/1")
+	require.Equal(t, connectivity.Shutdown, reader.GetState())
+	require.Equal(t, connectivity.Idle, live.GetState())
+	store.Delete(sess.ID())
+	for _, n := range closed {
+		require.Equal(t, 1, n, "every connection must be cleaned up exactly once")
+	}
 }
