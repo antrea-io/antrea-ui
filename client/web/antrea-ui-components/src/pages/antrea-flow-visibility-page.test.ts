@@ -18,7 +18,8 @@ import { SCOPE_CHANGE_EVENT, SCOPE_CHOSEN_EVENT } from '../lib/namespace-scope';
 import type { ScopeChangeDetail, ScopeChosenDetail } from '../lib/namespace-scope';
 import type { AntreaFlowVisibilityPage } from './antrea-flow-visibility-page';
 import { searchFilterOptions, typedNamespace, typedPod, typedService } from './antrea-flow-visibility-page';
-import type { FlowStreamFilter } from '../lib/flow-stream';
+import { FLOW_QUERY_STATE_EVENT } from '../lib/flow-stream';
+import type { FlowQuery, FlowQueryStateDetail, FlowStreamFilter } from '../lib/flow-stream';
 import { resetAccessSummary } from '../lib/access-api';
 import {
     Flow,
@@ -180,6 +181,8 @@ interface FlowAccessFixture {
     alsoExist?: string[]
     /** Incomplete rules, as with a webhook authorizer, without anything else changing. */
     incomplete?: boolean
+    /** The verb of the cluster-wide flows grant when `clusterWide` is `allowed`. */
+    verb?: 'watch' | 'list'
 }
 
 function flowAccessFixture(
@@ -191,10 +194,11 @@ function flowAccessFixture(
         lister: opts.lister,
         alsoExist: opts.alsoExist,
         incomplete: opts.incomplete,
+        verb: opts.verb,
     };
 }
 
-const FLOWS_WATCH_RULE = { verbs: ['watch'], apiGroups: ['observability.antrea.io'], resources: ['flows'] };
+const flowsRule = (verb: 'watch' | 'list') => ({ verbs: [verb], apiGroups: ['observability.antrea.io'], resources: ['flows'] });
 
 /** GET /api/v1/access-summary: the cluster-scoped one, which holds the grant for a cluster-wide
  * caller and names the namespaces the page offers. */
@@ -203,7 +207,7 @@ function accessSummaryResponse(f: FlowAccessFixture): Response {
         username: 'alice', groups: [], clusterAdmin: false,
         namespaces: f.lister ? ['*'] : f.namespaces,
         rules: {
-            resourceRules: f.clusterWide === 'allowed' ? [FLOWS_WATCH_RULE] : [],
+            resourceRules: f.clusterWide === 'allowed' ? [flowsRule(f.verb ?? 'watch')] : [],
             nonResourceRules: [],
             incomplete: f.clusterWide === 'unknown' || !!f.incomplete,
         },
@@ -220,7 +224,7 @@ function accessSummaryResponse(f: FlowAccessFixture): Response {
 // describe the stream.
 async function mount(
     fetchImpl: (url: string, init?: RequestInit) => Promise<Response>,
-    opts: { search?: string; flowAccess?: () => FlowAccessFixture } = {},
+    opts: { search?: string; flowAccess?: () => FlowAccessFixture; flowQuery?: FlowQuery } = {},
 ): Promise<AntreaFlowVisibilityPage> {
     // A page that mounts twice in one test must not be answered from the first one's summaries.
     resetAccessSummary();
@@ -247,6 +251,7 @@ async function mount(
         return fetchImpl(url, init);
     }));
     el = document.createElement('antrea-flow-visibility-page') as AntreaFlowVisibilityPage;
+    el.flowQuery = opts.flowQuery;
     document.body.appendChild(el);
     await el.updateComplete;
     // The namespace list has to resolve before any stream can open (see onSessionReady), so let
@@ -2965,5 +2970,208 @@ describe('AntreaFlowVisibilityPage — collapsed peers in the service map', () =
         const named = graph.nodes.find(n => n.id !== 'default/client')!;
         expect(named.kind).toBe('workload');
         expect(named.shortName).toBe('10.1.0.8');
+    });
+});
+
+
+const FINITE_COMPLETE = 'event: complete\ndata: {"snapshotCount":2,"maxCount":10000}\n\n';
+
+function finiteResponse(chunks: string[]): Response {
+    return new Response(new ReadableStream<Uint8Array>({
+        start(c) { c.enqueue(new TextEncoder().encode(chunks.join(''))); c.close(); },
+    }));
+}
+
+function streamParams(call: unknown[]): URLSearchParams {
+    return new URL(call[0] as string, 'http://test').searchParams;
+}
+
+/** Hands the page a query and lets the request it causes, and the render after it, land. */
+async function setQuery(page: AntreaFlowVisibilityPage, flowQuery: FlowQuery | undefined): Promise<void> {
+    page.flowQuery = flowQuery;
+    await page.updateComplete;
+    await vi.advanceTimersByTimeAsync(0);
+    await page.updateComplete;
+}
+
+describe('flowQuery', () => {
+    test('with no query, the request is a plain live stream and the page owns no query controls', async () => {
+        const fetchMock = vi.fn(async () => sseResponse([]));
+        const page = await mount(fetchMock);
+        const params = streamParams(streamCalls(fetchMock)[0]);
+        expect(params.has('source')).toBe(false);
+        expect(params.has('follow')).toBe(false);
+        expect(params.has('since')).toBe(false);
+        expect(params.has('maxCount')).toBe(false);
+        expect(page.shadowRoot!.querySelector('#flow-time-range')).toBeNull();
+        expect(fetchMock.mock.calls.some(c => String(c[0]).endsWith('/api/v1/settings'))).toBe(false);
+        expect(page.shadowRoot!.querySelector('slot[name="controls"]')).not.toBeNull();
+    });
+
+    test('a finite query is sent as given and ends without reconnecting', async () => {
+        const fetchMock = vi.fn(async () => finiteResponse([flowEventChunk([makeFlow()]), FINITE_COMPLETE]));
+        const flowQuery = { source: 'flow-history', follow: false, since: '2026-03-25T00:00:00.000Z', maxCount: 500 };
+        const page = await mount(fetchMock, { flowQuery });
+        const params = streamParams(streamCalls(fetchMock)[0]);
+        expect(params.get('source')).toBe('flow-history');
+        expect(params.get('follow')).toBe('false');
+        expect(params.get('since')).toBe('2026-03-25T00:00:00.000Z');
+        expect(params.get('maxCount')).toBe('500');
+        expect(page.shadowRoot!.textContent).toContain('Query complete');
+        expect(page.shadowRoot!.textContent).toContain('2 snapshots received');
+        await vi.advanceTimersByTimeAsync(30_000);
+        expect(streamCalls(fetchMock)).toHaveLength(1);
+    });
+
+    test('a finite query has no Pause, Clear or throughput, and says Loading while it runs', async () => {
+        const page = await mount(() => new Promise<Response>(() => {}), { flowQuery: { follow: false } });
+        const text = page.shadowRoot!.textContent!;
+        expect(text).toContain('Loading');
+        expect(text).not.toContain('Pause');
+        expect(text).not.toContain('Clear');
+    });
+
+    test('a new query replaces the open one, and an equal one leaves it alone', async () => {
+        const signals: (AbortSignal | null | undefined)[] = [];
+        const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+            signals.push(init?.signal);
+            return finiteResponse([FINITE_COMPLETE]);
+        });
+        const first = { follow: false, since: '2026-03-25T00:00:00.000Z' };
+        const page = await mount(fetchMock, { flowQuery: first });
+        expect(streamCalls(fetchMock)).toHaveLength(1);
+
+        await setQuery(page, { ...first });
+        expect(streamCalls(fetchMock)).toHaveLength(1);
+
+        await setQuery(page, { follow: false, since: '2026-03-25T00:15:00.000Z' });
+        expect(streamCalls(fetchMock)).toHaveLength(2);
+        expect(streamParams(streamCalls(fetchMock)[1]).get('since')).toBe('2026-03-25T00:15:00.000Z');
+        expect(signals[0]?.aborted).toBe(true);
+    });
+
+    test('naming another source is another request', async () => {
+        const fetchMock = vi.fn(async () => finiteResponse([FINITE_COMPLETE]));
+        const page = await mount(fetchMock, { flowQuery: { follow: false, source: 'a' } });
+        await setQuery(page, { follow: false, source: 'b' });
+        expect(streamCalls(fetchMock).map(c => streamParams(c).get('source'))).toEqual(['a', 'b']);
+    });
+
+    test.each(['list', 'map'] as const)('switching between live and finite in %s view', async view => {
+        const fetchMock = vi.fn(async (url: string) => streamParams([url]).get('follow') === 'false'
+            ? finiteResponse([flowEventChunk([makeFlow()]), FINITE_COMPLETE])
+            : sseResponse([]));
+        const page = await mount(fetchMock);
+        page.viewMode = view;
+        await page.updateComplete;
+        await setQuery(page, { follow: false, since: '2026-03-25T00:00:00.000Z' });
+        expect(page.shadowRoot!.textContent).toContain('Query complete');
+        await setQuery(page, undefined);
+        const last = streamParams(streamCalls(fetchMock).at(-1)!);
+        expect(last.has('follow')).toBe(false);
+        expect(last.has('since')).toBe(false);
+        expect(page.shadowRoot!.textContent).not.toContain('snapshots received');
+        expect(page.shadowRoot!.textContent).not.toContain('Query complete');
+    });
+
+    test('a change of mode loads the selector options for the verb of the new mode', async () => {
+        const page = await mount(async () => sseResponse([]), {
+            search: '/',
+            flowAccess: () => flowAccessFixture({ namespaces: ['team-a'], clusterWide: 'allowed', verb: 'list' }),
+        });
+        expect((await scopeMenu(page)).map(o => o.value)).not.toContain('__cluster_wide__');
+        await setQuery(page, { follow: false });
+        expect((await scopeMenu(page)).map(o => o.value)).toContain('__cluster_wide__');
+        await setQuery(page, undefined);
+        expect((await scopeMenu(page)).map(o => o.value)).not.toContain('__cluster_wide__');
+    });
+
+    test('a refused finite query says which verb it needs, and does not retry', async () => {
+        const fetchMock = vi.fn(async () => jsonResponse({ message: 'forbidden', retryable: false }, 403));
+        const page = await mount(fetchMock, { flowQuery: { follow: false } });
+        expect(page.shadowRoot!.textContent).toContain('"list" verb');
+        await vi.advanceTimersByTimeAsync(30_000);
+        expect(streamCalls(fetchMock)).toHaveLength(1);
+    });
+
+    test('a source the backend rejects is reported and not retried', async () => {
+        const fetchMock = vi.fn(async () =>
+            jsonResponse({ message: 'flow source "x" cannot serve this request', code: 'flow_source_unsupported' }, 400));
+        const page = await mount(fetchMock, { flowQuery: { follow: false, source: 'x' } });
+        expect(page.shadowRoot!.textContent).toContain('cannot serve this request');
+        await vi.advanceTimersByTimeAsync(30_000);
+        expect(streamCalls(fetchMock)).toHaveLength(1);
+    });
+
+    test('Last Seen carries the date in a finite query', async () => {
+        const earlier = new Date(2026, 2, 23, 12, 34, 56);
+        const later = new Date(2026, 2, 24, 12, 34, 56);
+        const flows = [
+            { ...makeFlow({ srcIP: '10.0.0.1' }), endTs: earlier.toISOString() },
+            { ...makeFlow({ srcIP: '10.0.0.3' }), endTs: later.toISOString() },
+        ];
+        const page = await mount(async url => streamParams([url]).get('follow') === 'false'
+            ? finiteResponse([flowEventChunk(flows), FINITE_COMPLETE])
+            : sseResponse([flowEventChunk(flows)]));
+        page.viewMode = 'list';
+        await vi.advanceTimersByTimeAsync(1000);
+        await page.updateComplete;
+        const lastSeen = () => Array.from(page.shadowRoot!.querySelectorAll('tbody tr'))
+            .map(row => row.querySelector('td')!.textContent!.trim());
+        expect(lastSeen()).toEqual([later.toLocaleTimeString(), earlier.toLocaleTimeString()]);
+
+        await setQuery(page, { follow: false });
+        await vi.advanceTimersByTimeAsync(1000);
+        await page.updateComplete;
+        const cells = lastSeen();
+        expect(cells).toHaveLength(2);
+        expect(cells[0]).toContain(later.toLocaleDateString());
+        expect(cells[1]).toContain(earlier.toLocaleDateString());
+        expect(cells[0]).toContain(later.toLocaleTimeString());
+
+        await setQuery(page, undefined);
+        await vi.advanceTimersByTimeAsync(1000);
+        await page.updateComplete;
+        expect(lastSeen()).toEqual([later.toLocaleTimeString(), earlier.toLocaleTimeString()]);
+    });
+});
+
+describe('flow query state event', () => {
+    function collect(page: AntreaFlowVisibilityPage): FlowQueryStateDetail[] {
+        const seen: FlowQueryStateDetail[] = [];
+        page.addEventListener(FLOW_QUERY_STATE_EVENT, e => seen.push((e as CustomEvent<FlowQueryStateDetail>).detail));
+        return seen;
+    }
+
+    test('reports loading, then the count and limit at completion', async () => {
+        const page = await mount(async () => sseResponse([]));
+        const seen = collect(page);
+        let finish!: () => void;
+        const fetchMock = vi.mocked(fetch);
+        fetchMock.mockImplementation(async () => new Promise<Response>(resolve => {
+            finish = () => resolve(finiteResponse([flowEventChunk([makeFlow(), makeFlow({ srcIP: '10.0.0.9' })]), FINITE_COMPLETE]));
+        }));
+        await setQuery(page, { follow: false, since: '2026-03-25T00:00:00.000Z' });
+        expect(seen.at(-1)).toEqual({ state: 'loading', snapshotCount: 0, maxCount: 0 });
+        finish();
+        await vi.advanceTimersByTimeAsync(0);
+        await page.updateComplete;
+        expect(seen.at(-1)).toEqual({ state: 'complete', snapshotCount: 2, maxCount: 10000 });
+    });
+
+    test('reports a failed query as an error', async () => {
+        const page = await mount(async () => sseResponse([]));
+        const seen = collect(page);
+        vi.mocked(fetch).mockImplementation(async () => jsonResponse({ message: 'down', retryable: false }, 503));
+        await setQuery(page, { follow: false });
+        expect(seen.at(-1)?.state).toBe('error');
+    });
+
+    test('is back to idle once the page returns to live data', async () => {
+        const page = await mount(async () => sseResponse([]), { flowQuery: { follow: false } });
+        const seen = collect(page);
+        vi.mocked(fetch).mockImplementation(async () => sseResponse([]));
+        await setQuery(page, undefined);
+        expect(seen.at(-1)).toEqual({ state: 'idle', snapshotCount: 0, maxCount: 0 });
     });
 });

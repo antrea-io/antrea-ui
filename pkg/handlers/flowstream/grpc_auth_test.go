@@ -490,7 +490,7 @@ func TestSubscribeReportsMissingStreamEpochAsFlowAggregatorTooOld(t *testing.T) 
 func TestSubscribeReportsUnknownCodeAsRetryable(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		fake := &fakeFlowStreamServer{handle: func(_ int, _ string) error {
-			return status.Error(codes.Unavailable, "connection reset")
+			return status.Error(codes.Aborted, "connection reset")
 		}}
 		h := newTestSubscriber(t, fake)
 

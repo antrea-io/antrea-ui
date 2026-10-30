@@ -42,6 +42,9 @@ import {
     FlowStreamFilter,
     FlowPeerFilter,
     FlowStreamScope,
+    FlowQuery,
+    FlowQueryStateDetail,
+    FLOW_QUERY_STATE_EVENT,
     FlowFilterDirection,
     FlowTypeName,
     streamFilterKey,
@@ -97,10 +100,10 @@ const FLOW_AUTHORIZATION_DOCS_URL =
     'https://github.com/antrea-io/antrea-ui/blob/main/docs/authentication.md#flow-data-is-per-user';
 const flowAuthorizationDocsLink = () => html`(see <a href=${FLOW_AUTHORIZATION_DOCS_URL} target="_blank" rel="noopener noreferrer">the authorization docs</a>)`;
 
-const FLOW_VISIBILITY_FORBIDDEN_MESSAGE = () => html`${
-    'You are not authorized to observe flows in this scope. The Flow Aggregator authorizes each ' +
-    'flow stream with Kubernetes RBAC, against the "flows" resource in API group ' +
-    'observability.antrea.io'} ${flowAuthorizationDocsLink()}.`;
+const FLOW_VISIBILITY_FORBIDDEN_MESSAGE = (follow = true) => html`${
+    'You are not authorized to observe flows in this scope. The flow source authorizes each ' +
+    `request with Kubernetes RBAC, against the "flows" resource in API group ` +
+    `observability.antrea.io, with the "${follow ? 'watch' : 'list'}" verb`} ${flowAuthorizationDocsLink()}.`;
 
 // The scope parameter, events and URL helpers are shared by every Namespace-aware page (see
 // lib/namespace-scope.ts). The stream's own backend parameters (`observedNamespace` and
@@ -115,8 +118,8 @@ const SELECT_SCOPE_MESSAGE =
 
 // Shown once the namespace list has resolved and turned out to be empty: a real answer, not a
 // failure, so it is an explanation rather than an error toast.
-const NO_OBSERVABLE_NAMESPACES_MESSAGE = () => html`${
-    'You are not authorized to observe flows in any namespace. Flow visibility needs "watch" on ' +
+const NO_OBSERVABLE_NAMESPACES_MESSAGE = (follow = true) => html`${
+    `You are not authorized to observe flows in any namespace. Flow visibility needs "${follow ? 'watch' : 'list'}" on ` +
     'the "flows" resource in API group observability.antrea.io, in the namespace you want to ' +
     'observe'} ${flowAuthorizationDocsLink()}.`;
 
@@ -161,7 +164,8 @@ const SOURCE_WITH_SERVICES_HINT = 'A Service is always the destination of a flow
 
 const FLOW_VISIBILITY_DISABLED_MESSAGE =
     'Flow visibility is disabled on this Antrea UI server. Install or upgrade the chart with ' +
-    '--set flowAggregator.enabled=true and a reachable flowAggregator.address (see antrea-ui/hack/deploy-kind.sh).';
+    '--set flowAggregator.enabled=true and a reachable flowAggregator.address, or configure ' +
+    'flowSources (see antrea-ui/hack/deploy-kind.sh).';
 
 const WELL_KNOWN_APP_LABELS = ['app.kubernetes.io/name', 'app.kubernetes.io/instance', 'app', 'k8s-app', 'name'];
 
@@ -721,6 +725,7 @@ const BASE_COLUMNS: (FlowTableColumn & { field?: SortField })[] = [
 
 export class AntreaFlowVisibilityPage extends SessionAwarePage {
     static styles = [pageStyles, pickerStyles, css`
+        .flow-controls { margin-inline-start: auto; display: flex; align-items: center; gap: 0.5rem; }
         .filter-bar { display: flex; flex-direction: column; gap: 0.75rem; }
         /* The groups of a line stretch to the same height, and each keeps its controls at the
            bottom, padded as the Endpoint fieldset pads its own, so that every control of a line
@@ -838,6 +843,19 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
     // the host drives this from the URL — there is no in-page control for it any more.
     @property() viewMode: 'list' | 'map' = 'list';
     @state() private _paused = false;
+    /** What to show: unset is live data from the default source, with no source named in the
+     * request. Set by the host, which owns the controls that choose it (see the `controls` slot),
+     * and refreshed by handing over a new query, with a new `since` for a finite one. Only a query
+     * that differs from the one open changes the stream. */
+    @property({ attribute: false }) flowQuery?: FlowQuery;
+    // A finite query's progress, reported to the host in a FLOW_QUERY_STATE_EVENT. _resultLimit is
+    // the limit the source applied, known only once the query completes.
+    @state() private _queryState: FlowQueryStateDetail['state'] = 'idle';
+    @state() private _snapshotCount = 0;
+    @state() private _resultLimit = 0;
+    private _flowAccessToken = 0;
+
+    private get _following(): boolean { return this.flowQuery?.follow ?? true; }
 
     /** The page URL's query string, passed by a host whose router owns the location, so the page
      * follows it when it changes: Back, Forward, or switching between this page's own views. A
@@ -872,11 +890,11 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
     // a retry, so the disconnect will resolve itself, unlike one where the client has stopped.
     @state() private _reconnecting = false;
     @state() private _error: string | TemplateResult | null = null;
-    // Set on 501: Flow Aggregator integration is off for this deployment, a fixed fact about the
+    // Set on 501: no flow source is configured for this deployment, a fixed fact about the
     // server that no filter or scope change on this page can affect. Terminal for the session,
     // and must keep _startStream from re-opening the stream on any later filter change.
     private _integrationDisabled = false;
-    // Set to _filterKey on 403: FA refused this user the scope that request asked for. Unlike
+    // Set to _filterKey on 403: the flow source refused this user the scope that request asked for. Unlike
     // _integrationDisabled this is not terminal - authorization is per-scope, so it only needs to
     // block _startStream from retrying the exact same request that was just refused, not every
     // request forever. _refreshStream clears it whenever the request changes (a peer-filter edit
@@ -978,11 +996,12 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
 
     /** Loads the selector's options, then settles on a default scope if the URL named none. */
     private async _loadFlowAccess() {
-        const access = await flowAccess();
+        const token = ++this._flowAccessToken;
+        const access = await flowAccess(this._following);
         // The page may have been left while this loaded, after disconnectedCallback already tore
         // the stream down: going on would rewrite the URL of whatever page is current and open a
         // stream nothing will ever close.
-        if (!this.isConnected) return;
+        if (!this.isConnected || token !== this._flowAccessToken) return;
         this._flowAccess = access;
         this._flowAccessLoaded = true;
         // The URL the page last took or wrote, not the location prop: a scope picked while the
@@ -1105,7 +1124,11 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
 
     private _composeFilter(): FlowStreamFilter | null {
         const scope = this._scope;
-        return scope ? { ...this._peerFilter, ...scope } : null;
+        const q = this.flowQuery;
+        return scope ? {
+            ...this._peerFilter, ...scope,
+            ...(q ? { source: q.source, follow: q.follow, since: q.since, maxCount: q.maxCount } : {}),
+        } : null;
     }
 
     /** The user chose a scope: a pick, or a name they typed. A name that is not a valid Namespace
@@ -1152,6 +1175,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         if (changed.has('_menuQuery') || changed.has('_pendingDirection') || changed.has('_nsOpen') || changed.has('_podOpen') || changed.has('_svcOpen')) {
             this._menuRows = null;
         }
+        if (changed.has('flowQuery')) this._onFlowQueryChange(changed.get('flowQuery') as FlowQuery | undefined);
     }
 
     override firstUpdated(changed: Map<string, unknown>) {
@@ -1168,6 +1192,12 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         super.updated(changed);
         if ((changed.has('_nsOpen') || changed.has('_podOpen') || changed.has('_svcOpen'))) {
             this.renderRoot.querySelector<HTMLInputElement>('.multiselect-search')?.focus();
+        }
+        if (changed.has('_queryState') || changed.has('_snapshotCount') || changed.has('_resultLimit')) {
+            this.dispatchEvent(new CustomEvent<FlowQueryStateDetail>(FLOW_QUERY_STATE_EVENT, {
+                detail: { state: this._queryState, snapshotCount: this._snapshotCount, maxCount: this._resultLimit },
+                bubbles: true, composed: true,
+            }));
         }
         // Setup ResizeObserver once the DOM is ready
         if (changed.has('viewMode') && this.viewMode === 'map') {
@@ -1213,13 +1243,20 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         if (!this._filter) return;
         if (this._paused || this._integrationDisabled || this._filterKey === this._forbiddenFilterKey) return;
         this._client?.stop();
+        this._queryState = this._following ? 'idle' : 'loading';
         this._client = new FlowStreamClient(this._filter, {
             onFlows: flows => {
-                this._store.upsertBatch(flows);
+                this._store.upsertBatch(flows, !this._following);
+                if (!this._following) this._snapshotCount += flows.length;
                 this._entries = this._store.getAll();
                 this._evictionWarning = this._store.hasEvicted();
             },
-            onError: err => { this._error = err.message; },
+            onError: err => { this._error = err.message; this._queryState = 'error'; },
+            onCompleted: result => {
+                this._snapshotCount = result.snapshotCount;
+                this._resultLimit = result.maxCount;
+                this._queryState = 'complete';
+            },
             onDropped: count => { this._droppedCount = count; },
             onConnected: () => { this._connected = true; this._reconnecting = false; this._error = null; },
             // onReconnectScheduled follows onDisconnected for a retryable failure, so it sets the
@@ -1232,23 +1269,25 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
                 this.dispatchSessionExpired();
             },
             onDisabled: () => {
-                // A 501 means Flow Aggregator integration is off for this deployment. The
+                // A 501 means no flow source is configured for this deployment. The
                 // client has already stopped itself; there is nothing to retry.
                 this._integrationDisabled = true;
                 this._client = null;
                 this._connected = false;
+                this._queryState = 'error';
                 this._error = FLOW_VISIBILITY_DISABLED_MESSAGE;
             },
             onForbidden: () => {
-                // A 403 means FA refused this user the scope _filter asked for. The client has
+                // A 403 means the flow source refused this user the scope _filter asked for. The client has
                 // already stopped itself; record which request was refused so _startStream does
                 // not retry it, without blocking a later request for a different scope (there is
-                // no route guard upstream of this page - authorization is entirely FA's, so this
+                // no route guard upstream of this page - authorization is entirely the source's, so this
                 // is the only place that can react to it).
                 this._forbiddenFilterKey = this._filterKey;
                 this._client = null;
                 this._connected = false;
-                this._error = FLOW_VISIBILITY_FORBIDDEN_MESSAGE();
+                this._queryState = 'error';
+                this._error = FLOW_VISIBILITY_FORBIDDEN_MESSAGE(this._following);
             },
         });
         this._client.start();
@@ -1289,11 +1328,31 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         this._entries = [];
         this._evictionWarning = false;
         this._droppedCount = 0;
+        this._snapshotCount = 0;
+        this._resultLimit = 0;
+        this._queryState = 'idle';
+        this._connected = false;
         this._selectedEdgeKey = null;
         // The banner went with the stream, which is what it described: a refusal of the old
         // scope says nothing about the new one. Not the 501 one, which no scope change can fix.
         if (!this._integrationDisabled) this._error = null;
         if (!this._paused) this._startStream();
+    }
+
+    /** The host handed over a different query. A change of mode needs the selector's options
+     * again, because the verb they are decided by differs (see flowAccess). */
+    private _onFlowQueryChange(previous: FlowQuery | undefined) {
+        if (!this._sessionStarted) return;
+        const modeChanged = (previous?.follow ?? true) !== this._following;
+        const filter = this._composeFilter();
+        // A new question starts afresh, so a pause belongs to the one it replaces.
+        if ((filter ? streamFilterKey(filter) : '') !== this._filterKey) this._paused = false;
+        if (modeChanged) {
+            this._flowAccess = null;
+            this._flowAccessLoaded = false;
+        }
+        this._refreshStream();
+        if (modeChanged) void this._loadFlowAccess();
     }
 
     // ── Filter actions ────────────────────────────────────────────────────────
@@ -1735,7 +1794,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         tip.append(div(portParts.join(', ') || '-'));
         tip.append(div(`${edge.connectionCount} connection${edge.connectionCount !== 1 ? 's' : ''}`));
         tip.append(div(`↑ ${formatBytes(edge.totalBytesForward)}   ↓ ${formatBytes(edge.totalBytesReverse)}`));
-        if (edge.bitRate > 0) tip.append(div(`Throughput: ${formatBitRate(edge.bitRate)}`));
+        if (this._following && edge.bitRate > 0) tip.append(div(`Throughput: ${formatBitRate(edge.bitRate)}`));
         if (edge.ingressPolicies.size > 0 || edge.egressPolicies.size > 0) {
             const hr = document.createElement('hr');
             hr.style.borderColor = 'var(--antrea-color-map-tooltip-border, #555)';
@@ -1878,16 +1937,17 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         const none = this._flowAccess !== null && this._flowAccess.candidates?.length === 0
             && this._flowAccess.clusterWide === 'denied';
         return html`
-            <p class="text-muted">${none ? NO_OBSERVABLE_NAMESPACES_MESSAGE() : SELECT_SCOPE_MESSAGE}</p>
+            <p class="text-muted">${none ? NO_OBSERVABLE_NAMESPACES_MESSAGE(this._following) : SELECT_SCOPE_MESSAGE}</p>
             ${mayNameNamespace(this._flowAccess) ? html`<p class="text-muted">${UNKNOWN_NAMESPACES_NOTE}</p>` : nothing}
         `;
     }
 
     private _renderFilters() {
-        const statusColor = this._connected ? 'var(--antrea-color-success, #60b515)'
-            : this._reconnecting ? 'var(--antrea-color-warning, #f5a623)' : 'var(--antrea-color-danger, #f54f47)';
-        const statusText = this._connected ? 'Connected'
-            : this._paused ? 'Paused' : this._reconnecting ? 'Reconnecting' : 'Disconnected';
+        const statusColor = this._connected || this._queryState === 'complete' ? 'var(--antrea-color-success, #60b515)'
+            : this._following && this._reconnecting ? 'var(--antrea-color-warning, #f5a623)' : 'var(--antrea-color-danger, #f54f47)';
+        const statusText = this._following
+            ? (this._connected ? 'Connected' : this._paused ? 'Paused' : this._reconnecting ? 'Reconnecting' : 'Disconnected')
+            : ({ idle: 'Select a scope', loading: 'Loading', complete: 'Query complete', error: 'Query failed' }[this._queryState]);
         return html`
             <div class="filter-bar">
                 <div class="filter-row">
@@ -1929,8 +1989,8 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
                     <div class="filter-actions">
                         <antrea-button type="button" @click=${this._onApplyFilters}>Apply Filters</antrea-button>
                         <antrea-button type="button" action="outline" @click=${this._onResetFilters}>Reset</antrea-button>
-                        <antrea-button type="button" action="outline" @click=${this._onPauseToggle}>${this._paused ? 'Resume' : 'Pause'}</antrea-button>
-                        <antrea-button type="button" action="outline" @click=${this._onClear}>Clear</antrea-button>
+                        ${this._following ? html`<antrea-button type="button" action="outline" @click=${this._onPauseToggle}>${this._paused ? 'Resume' : 'Pause'}</antrea-button>` : nothing}
+                        ${this._following ? html`<antrea-button type="button" action="outline" @click=${this._onClear}>Clear</antrea-button>` : nothing}
                     </div>
                 </div>
                 <div class="status-row">
@@ -1939,6 +1999,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
                         ${statusText}
                     </span>
                     <span>${this._entries.length} connections</span>
+                    ${!this._following ? html`<span>${this._snapshotCount} snapshots received</span>` : nothing}
                     ${this._droppedCount > 0 ? html`<span class="warn">${this._droppedCount} flows dropped (buffer overflow)</span>` : nothing}
                     ${this._evictionWarning ? html`<span class="warn">Store limit reached, oldest entries evicted</span>` : nothing}
                 </div>
@@ -1962,6 +2023,9 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         // Plugin-inserted columns (via registerFlowTableColumnsProcessor) have no `field`, so
         // they render but aren't sortable — see BASE_COLUMNS' comment. Each processor is
         // isolated: a throwing plugin drops its own contribution instead of breaking the page.
+        const baseColumns = this._following ? BASE_COLUMNS : BASE_COLUMNS.map(col => col.key === 'lastSeen'
+            ? { ...col, render: (entry: FlowEntry) => new Date(entry.flow.endTs).toLocaleString() }
+            : col);
         const columns: (FlowTableColumn & { field?: SortField })[] =
             this.flowTableColumnsProcessors.reduce((cols, fn) => {
                 try {
@@ -1970,7 +2034,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
                     console.error('plugin flow table columns processor threw, skipping it', e);
                     return cols;
                 }
-            }, BASE_COLUMNS as FlowTableColumn[]);
+            }, baseColumns as FlowTableColumn[]);
         return html`
             <div style="display:flex;flex-direction:column;gap:1rem;max-width:100%">
                 <div class="flow-list-header">
@@ -2024,7 +2088,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
                     <div><strong>Connections:</strong> ${d.connectionCount}</div>
                     <div><strong>Bytes (Fwd):</strong> ${formatBytes(d.totalBytesForward)}</div>
                     <div><strong>Bytes (Rev):</strong> ${formatBytes(d.totalBytesReverse)}</div>
-                    ${d.bitRate > 0 ? html`<div><strong>Bit Rate:</strong> ${formatBitRate(d.bitRate)}</div>` : nothing}
+                    ${this._following && d.bitRate > 0 ? html`<div><strong>Bit Rate:</strong> ${formatBitRate(d.bitRate)}</div>` : nothing}
                     <div><strong>Dest Ports:</strong> ${d.destPortsStr || '-'}</div>
                     ${d.ingressPolicies.length ? html`<div><strong>Ingress Policies:</strong> ${d.ingressPolicies.join(', ')}</div>` : nothing}
                     ${d.egressPolicies.length ? html`<div><strong>Egress Policies:</strong> ${d.egressPolicies.join(', ')}</div>` : nothing}
@@ -2058,6 +2122,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
                 <div class="page-layout" style="max-width:100%">
                     <div class="row">
                         <p class="page-title">${this.viewMode === 'list' ? 'Flow List' : 'Service Map'}</p>
+                        <div class="flow-controls"><slot name="controls"></slot></div>
                     </div>
 
                     ${this._renderFilters()}

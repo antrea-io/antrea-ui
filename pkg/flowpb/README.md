@@ -44,3 +44,32 @@ antrea-io/antrea#8569 changed when a stream that does not follow closes, and so 
 `GetFlowsRequest.follow` comment. antrea-io/antrea#8564 added
 `FlowKubernetes.destination_service_disclosure`: the destination Service is disclosed at the tier
 of its own Namespace, and `destination_disclosure` no longer covers it.
+
+## Flow source contract
+
+A flow source is any service the UI backend is configured to read flows from
+(`flowSources`). It implements `FlowStreamService.GetFlows` as
+upstream `service.proto` describes. A source declares which capabilities
+it serves: `watch` for `follow=true` and `list` for `follow=false`, which the
+UI sends with `since`, `max_count`, scope and peer filters. A compatible source
+must:
+
+- Authenticate the forwarded user credential, authorize the verb for the
+  requested mode (`watch` or `list` on `flows.observability.antrea.io`) in the
+  requested scope, and apply the `EndpointDisclosure` rules.
+- Send a non-empty `stream_epoch`, stable for the server process, in the first
+  response of every stream, even when no record matches.
+- Honor `max_count` and cancellation, and finish a finite query with a
+  successful EOF. The UI caps requests at 10,000 snapshots and has no resume
+  logic. `max_count` follows the order in which the source examines records, as
+  `service.proto` says, so a source cannot be assumed to return the newest
+  records; any such promise belongs to the UI using that source.
+- Return errors for failed or interrupted queries. `Unavailable` and
+  `FailedPrecondition` indicate an unavailable dependency; the backend never
+  falls back to another source.
+
+The backend sends an SSE completion event only after the successful completion
+of a finite query; EOF at the browser without that event means the query was
+interrupted. The current protocol has no aggregation granularity or exact
+truncation indicator. See [Flow sources](../../docs/getting-started.md#flow-sources)
+for configuration.

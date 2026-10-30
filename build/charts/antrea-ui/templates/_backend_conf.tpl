@@ -65,14 +65,9 @@ plugins:
         file: {{ printf "/app/plugin-keys/%s/%s" .name .configMap.key | quote }}
     {{- end }}
 {{- end }}
-flowAggregator:
-  enabled: {{ .Values.flowAggregator.enabled }}
-  address: {{ .Values.flowAggregator.address | quote }}
-{{- if .Values.flowAggregator.enabled }}
-  caConfigMap: {{ .Values.flowAggregator.caConfigMap | quote }}
-  namespace: {{ .Values.flowAggregator.namespace | default "flow-aggregator" | quote }}
-  serverName: {{ .Values.flowAggregator.serverName | quote }}
-  insecureSkipVerify: {{ .Values.flowAggregator.insecureSkipVerify }}
+{{- if or .Values.flowAggregator.enabled .Values.flowSources }}
+flowSources:
+  {{- include "antrea-ui.flowSources" . | nindent 2 }}
 {{- end }}
 metrics:
   enabled: {{ .Values.metrics.enabled }}
