@@ -27,6 +27,7 @@ type FrontendAuthSettings struct {
 }
 
 type FrontendFeatureSettings struct {
+	// FlowVisibilityEnabled reports whether at least one flow source is configured.
 	FlowVisibilityEnabled bool `json:"flowVisibilityEnabled"`
 	// MetricsEnabled reports whether the live metrics tap API (/api/v1/metrics) is available.
 	MetricsEnabled bool `json:"metricsEnabled"`

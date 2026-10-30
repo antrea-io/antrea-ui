@@ -116,7 +116,9 @@ export class FlowStore {
         this.maxEntries = maxEntries;
     }
 
-    upsert(flow: Flow): void {
+    // finite marks a snapshot from a finite query: it is the latest total, not one more sample of a
+    // live rate.
+    upsert(flow: Flow, finite = false): void {
         const key = connectionKey(flow);
         const existing = this.entries.get(key);
         const now = Date.now();
@@ -130,7 +132,7 @@ export class FlowStore {
             flow,
             firstSeen: existing ? existing.firstSeen : now,
             lastSeen: now,
-            samples: nextSamples(existing ? existing.samples : [], flow),
+            samples: finite ? [] : nextSamples(existing ? existing.samples : [], flow),
         };
         this.entries.set(key, entry);
 
@@ -143,9 +145,9 @@ export class FlowStore {
         }
     }
 
-    upsertBatch(flows: Flow[]): void {
+    upsertBatch(flows: Flow[], finite = false): void {
         for (const flow of flows) {
-            this.upsert(flow);
+            this.upsert(flow, finite);
         }
     }
 

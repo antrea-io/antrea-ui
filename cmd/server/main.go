@@ -16,8 +16,6 @@ package main
 
 import (
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -26,7 +24,6 @@ import (
 	"strings"
 	"time"
 
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 
 	"github.com/gin-contrib/cors"
@@ -268,43 +265,13 @@ func run() error {
 	}
 
 	var flowStreamSubscriber flowstream.FlowStreamSubscriber
-	if config.FlowAggregator.Enabled {
-		logger.Info("FlowAggregator integration enabled", "address", config.FlowAggregator.Address)
-
-		var caData []byte
-		if config.FlowAggregator.CAConfigMap != "" {
-			ns := config.FlowAggregator.Namespace
-			if ns == "" {
-				ns = "flow-aggregator"
-			}
-			fetchCtx, fetchCancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer fetchCancel()
-			logger.Info("Fetching FlowAggregator CA cert", "namespace", ns, "configMap", config.FlowAggregator.CAConfigMap)
-			cm, err := k8sClientset.CoreV1().ConfigMaps(ns).Get(fetchCtx, config.FlowAggregator.CAConfigMap, metav1.GetOptions{})
-			if err != nil {
-				return fmt.Errorf("failed to get FlowAggregator CA configmap %s/%s: %w", ns, config.FlowAggregator.CAConfigMap, err)
-			}
-			caCert, ok := cm.Data["ca.crt"]
-			if !ok || caCert == "" {
-				return fmt.Errorf("FlowAggregator CA configmap %s/%s is missing or has empty 'ca.crt' key", ns, config.FlowAggregator.CAConfigMap)
-			}
-			caData = []byte(caCert)
-		}
-
-		tlsCfg, err := buildFlowAggregatorTLSConfig(logger, config.FlowAggregator, caData)
+	if len(config.FlowSources) > 0 {
+		router, err := flowstream.NewRoutedSubscriber(context.Background(), logger, k8sClientset, config.FlowSources, adminTokenSource)
 		if err != nil {
-			return fmt.Errorf("failed to build TLS config for FlowAggregator: %w", err)
+			return err
 		}
-		grpcSubscriber, err := flowstream.NewGRPCFlowStreamSubscriber(logger, flowstream.GRPCConfig{
-			Address:          config.FlowAggregator.Address,
-			TLSConfig:        tlsCfg,
-			AdminTokenSource: adminTokenSource,
-		})
-		if err != nil {
-			return fmt.Errorf("failed to create gRPC flow stream handler: %w", err)
-		}
-		defer grpcSubscriber.Close()
-		flowStreamSubscriber = grpcSubscriber
+		defer router.Close()
+		flowStreamSubscriber = router
 	}
 
 	// The backend instruments itself whether or not metrics are enabled: the setting only decides
@@ -447,28 +414,6 @@ func run() error {
 	}
 
 	return nil
-}
-
-func buildFlowAggregatorTLSConfig(logger logr.Logger, cfg serverconfig.FlowAggregatorConfig, caData []byte) (*tls.Config, error) {
-	if cfg.InsecureSkipVerify {
-		logger.Info("WARNING: TLS certificate verification is disabled for the FlowAggregator gRPC connection. This should only be used for development/testing.")
-	}
-	tlsCfg := &tls.Config{
-		MinVersion: tls.VersionTLS12,
-	}
-	if cfg.InsecureSkipVerify {
-		tlsCfg.InsecureSkipVerify = true
-	} else if len(caData) > 0 {
-		pool := x509.NewCertPool()
-		if !pool.AppendCertsFromPEM(caData) {
-			return nil, fmt.Errorf("failed to parse FlowAggregator CA cert")
-		}
-		tlsCfg.RootCAs = pool
-	}
-	if cfg.ServerName != "" {
-		tlsCfg.ServerName = cfg.ServerName
-	}
-	return tlsCfg, nil
 }
 
 // newFileLogCore returns a zap core that writes the same JSON lines as zc to a rotated log file in

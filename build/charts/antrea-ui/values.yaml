@@ -443,3 +443,20 @@ extraVolumes: []
 # outside the cluster, for example - without having to touch CoreDNS. Each entry is
 # `{ip: <address>, hostnames: [<name>, ...]}`.
 hostAliases: []
+
+# -- Additional flow sources: endpoints implementing FlowStreamService, besides the Flow
+# Aggregator (see flowAggregator). The UI connects as a client only; deploy a source separately.
+# The first source with the capability a request needs is its default, and the Flow Aggregator,
+# when enabled, always comes first. Each entry is
+# `{name, capabilities, address, namespace, caConfigMap, serverName, insecureSkipVerify}`:
+# `name` is a unique DNS-1123 label, used in requests as `source=<name>` (`flow-aggregator` is
+# reserved while `flowAggregator.enabled` is true); `capabilities` lists `watch` (live streams)
+# and/or `list` (finite queries), at least one; `address` is the gRPC address (host:port);
+# `namespace` and `caConfigMap` locate a ConfigMap (key `ca.crt`) with the CA used to verify the
+# server, `namespace` is required when `caConfigMap` is set, and the chart grants the UI read
+# access to that ConfigMap (leave both empty to use the system trust store); `serverName`
+# overrides the TLS server name used for verification; `insecureSkipVerify` disables
+# verification, for development and testing only, with the same caveats as
+# `flowAggregator.insecureSkipVerify`. The UI in this chart only reads `watch` sources: other
+# capabilities are for other UIs built on the same components.
+flowSources: []

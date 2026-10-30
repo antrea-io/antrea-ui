@@ -31,9 +31,9 @@ rules:
       - "impersonate"
   # Lets antrea-ui mint real, short-lived tokens for antrea-ui-admin (see serviceaccounts.yaml),
   # to present to services that do not support impersonation:
-  # - the Flow Aggregator's FlowStreamService, for admin-password sessions
-  #   (session.KindImpersonate), the one login mode with no bearer token or client cert of its
-  #   own.
+  # - a flow source's FlowStreamService (the Flow Aggregator, for example), for admin-password
+  #   sessions (session.KindImpersonate), the one login mode with no bearer token or client cert
+  #   of its own.
   # - support bundle sources reached by URL, which are always called as antrea-ui-admin. Those
   #   tokens are minted with an audience of the source's own, which the apiserver rejects.
   # antrea-ui can already act as antrea-ui-admin through the impersonation rule above, so this

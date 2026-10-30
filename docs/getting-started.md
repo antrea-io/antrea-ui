@@ -48,8 +48,64 @@ helm upgrade antrea-ui antrea/antrea-ui --namespace kube-system [--version <TAG>
 
 ## Chart Values
 
-The list of values supported by the chart can be found
-[here](../build/charts/antrea-ui/README.md).
+See the [chart values reference](../build/charts/antrea-ui/README.md) for all
+supported settings.
+
+## Flow visibility
+
+Flow visibility reads flows from one or more flow sources: endpoints implementing
+FlowStreamService, such as the Flow Aggregator (FA). With no flow source
+configured, flow visibility is disabled.
+
+The shorthand `flowAggregator.enabled` configures FA as a source. By default, the
+UI connects to `flow-aggregator.flow-aggregator.svc:14740`; configure
+`flowAggregator.address` and `flowAggregator.namespace` for a different
+deployment. See [flow sources](#flow-sources) for configuring other sources.
+
+For every source, `caConfigMap` names a ConfigMap containing the public CA in
+`ca.crt`. The backend reads it once at startup, in the configured `namespace`,
+and fails to start if it cannot; leaving `caConfigMap` empty uses the system
+trust store. TLS checks the certificate and server name; use `serverName` to
+override the name when connecting through a port-forward. See the
+[chart values](../build/charts/antrea-ui/README.md) for all options and
+[flow permissions](authentication.md#flow-data-is-per-user) for user access
+requirements.
+
+### Flow sources
+
+`flowSources` configures flow sources besides `flowAggregator`, each with a
+unique `name`, an `address` and the `capabilities` it serves, `watch` (live
+streams) and/or `list` (finite queries):
+
+```yaml
+flowAggregator:
+  enabled: true
+flowSources:
+  - name: flow-history
+    capabilities: [list]
+    address: history.example.test:14740
+    namespace: flow-history
+    caConfigMap: history-ca
+```
+
+The chart renders the Flow Aggregator first, as a `watch` source named
+`flow-aggregator`, followed by `flowSources`, so it stays the default for live
+requests. The UI chart does not deploy any source. With `caConfigMap` set,
+create that ConfigMap in the specified `namespace`; the chart grants the UI read
+access to it. Without a CA ConfigMap, no namespace is needed. A source must
+satisfy the [flow source contract](../pkg/flowpb/README.md#flow-source-contract).
+
+The UI in this repository only reads `watch` sources: a source with only the
+`list` capability has no effect here. Other capabilities are for other UIs built
+on the same components. See [flow sources](authentication.md#flow-sources) for
+how requests choose a source.
+
+The Helm chart keeps accepting `flowAggregator`, so upgrading it needs no
+change. The backend itself no longer reads a `flowAggregator` key: a
+hand-written backend configuration that still sets it fails at startup with a
+message pointing to `flowSources`, instead of silently running with no flow
+source. Move such a configuration to a `flowSources` entry with the `watch`
+capability.
 
 ## Accessing the web UI
 

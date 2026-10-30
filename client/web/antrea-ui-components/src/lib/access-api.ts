@@ -313,12 +313,15 @@ export const GATE_CONTROLLER_INFO_GET = { group: 'crd.antrea.io', resource: 'ant
 // A nonResourceURL because that is how antrea-ui-admin-core grants it (clusterroles.yaml), and
 // the Antrea Service delegates authorization to the same RBAC.
 export const GATE_FEATUREGATES = { verb: 'get', url: '/featuregates' };
-// This is a rendering hint, not an authorization decision: the Flow Aggregator is still what
+// This is a rendering hint, not an authorization decision: the flow source is still what
 // authorizes and redacts each stream, and can() fails open on an incomplete/unloaded summary, so
 // this can only ever hide the entry for a user who would be refused anyway - never show it to one
-// who wouldn't. watch, not list: the page only ever opens a following stream, and that is the verb
-// the Flow Aggregator checks for one.
+// who wouldn't. watch, not list: this repo's UI only opens live streams, and that is the verb a
+// flow source checks for one.
 export const GATE_FLOWS_WATCH = { group: 'observability.antrea.io', resource: 'flows', verb: 'watch' };
+// The verb of a finite query (follow=false), for a shell that offers one. This page's own
+// navigation entry and route guard are decided from watch alone.
+export const GATE_FLOWS_LIST = { group: 'observability.antrea.io', resource: 'flows', verb: 'list' };
 
 // Whether the caller holds watch on flows cluster-wide, the one scope in which nothing is redacted.
 // Fails open like every can() gate.
@@ -339,7 +342,7 @@ export function holdsFlowsClusterWide(s: AccessSummary | null): boolean {
 // summary.namespaces, the RoleBinding-subject heuristic) may hold flows in one of them, which only
 // a per-namespace review would say, and a caller who may list namespaces (summary.namespaces is
 // ["*"]) may hold it in any. The price is that a caller with a RoleBinding but no flows grant sees
-// the entry and gets the Flow Aggregator's 403 on the page.
+// the entry and gets the flow source's 403 on the page.
 export function canViewFlows(s: AccessSummary | null): boolean {
     return holdsFlowsClusterWide(s) || can(s, GATE_NAMESPACES_LIST) || Boolean(accessibleNamespaces(s)?.length);
 }

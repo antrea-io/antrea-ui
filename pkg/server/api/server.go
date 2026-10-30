@@ -179,13 +179,13 @@ func (s *Server) AddFlowStreamRoutes(r *gin.RouterGroup) {
 	flows.GET("/stream", s.flowStreamSSEHandler.StreamFlows)
 }
 
-// flowStreamDisabled handles GET /api/v1/flows/stream when Flow Aggregator integration is off.
+// flowStreamDisabled handles GET /api/v1/flows/stream when no flow source is configured.
 //
 // 501, not 503: this is a static per-deployment configuration choice, not a transient condition
 // that a retry could resolve. The frontend treats 501 on this endpoint as terminal.
 func (s *Server) flowStreamDisabled(c *gin.Context) {
 	c.JSON(http.StatusNotImplemented, gin.H{
-		"error": "Flow Aggregator integration is not enabled for this Antrea UI instance (set flowAggregator.enabled in the Helm chart).",
+		"error": "No flow source is configured for this Antrea UI instance (set flowAggregator.enabled or flowSources in the Helm chart).",
 	})
 }
 
