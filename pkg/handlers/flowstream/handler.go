@@ -15,6 +15,7 @@
 package flowstream
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -40,6 +41,9 @@ const (
 	FlowFilterDirectionTo   FlowFilterDirection = 2
 )
 
+// MaxHistoricalSnapshots matches the Reader and the browser's bounded flow store.
+const MaxHistoricalSnapshots uint32 = 10000
+
 // FlowStreamFilter represents the parsed query parameters for the flow stream endpoint.
 // All specified filters are AND-ed. Within each filter, values are OR-ed.
 //
@@ -48,6 +52,10 @@ const (
 // explicitly allows naming a Namespace that is outside the stream's scope, which is how a flow is
 // selected by its peer rather than by its own end.
 type FlowStreamFilter struct {
+	// Nil preserves live streaming for clients predating historical queries.
+	Follow           *bool
+	Since            time.Time
+	MaxCount         uint32
 	Namespaces       []string
 	PodNames         []string
 	PodLabelSelector string
@@ -55,6 +63,18 @@ type FlowStreamFilter struct {
 	FlowTypes        []apisv1.FlowType
 	IPs              []string
 	Direction        FlowFilterDirection
+}
+
+func (f *FlowStreamFilter) following() bool { return f.Follow == nil || *f.Follow }
+
+func (f *FlowStreamFilter) resultLimit() uint32 {
+	if f.MaxCount != 0 {
+		return f.MaxCount
+	}
+	if !f.following() {
+		return MaxHistoricalSnapshots
+	}
+	return 0
 }
 
 // FlowStreamScope is the authorization scope of a stream, distinct from the filters that narrow
@@ -118,6 +138,11 @@ func streamErrorEvent(streamErr error) apisv1.FlowStreamErrorEvent {
 func statusForStreamErr(err error) int {
 	if streamErr, ok := errors.AsType[*StreamError](err); ok {
 		switch streamErr.Code {
+		case historyDisabledCode:
+			// Keep this distinct from 501, which disables all flow visibility in clients.
+			return http.StatusBadRequest
+		case dependencyUnavailableCode:
+			return http.StatusServiceUnavailable
 		case StreamErrorCodeResourceExhausted:
 			// Capacity, not a broken upstream: the one pre-200 failure worth retrying, and
 			// 503 is the status that says so.
@@ -200,6 +225,33 @@ func parseFlowType(s string) (apisv1.FlowType, error) {
 
 func parseFlowStreamFilter(c *gin.Context) (*FlowStreamFilter, error) {
 	filter := &FlowStreamFilter{}
+	for _, key := range []string{"follow", "since", "maxCount"} {
+		values, present := c.Request.URL.Query()[key]
+		if present && (len(values) != 1 || values[0] == "") {
+			return nil, fmt.Errorf("%s must have exactly one non-empty value", key)
+		}
+	}
+	if value, present := c.GetQuery("follow"); present {
+		if value != "true" && value != "false" {
+			return nil, fmt.Errorf("follow must be true or false")
+		}
+		follow := value == "true"
+		filter.Follow = &follow
+	}
+	if value, present := c.GetQuery("since"); present {
+		since, err := time.Parse(time.RFC3339Nano, value)
+		if err != nil || since.Year() < 1 {
+			return nil, fmt.Errorf("since must be an RFC3339 timestamp")
+		}
+		filter.Since = since
+	}
+	if value, present := c.GetQuery("maxCount"); present {
+		limit, err := strconv.ParseUint(value, 10, 32)
+		if err != nil || limit == 0 || limit > uint64(MaxHistoricalSnapshots) {
+			return nil, fmt.Errorf("maxCount must be between 1 and %d", MaxHistoricalSnapshots)
+		}
+		filter.MaxCount = uint32(limit)
+	}
 
 	if ns := c.Query("namespaces"); ns != "" {
 		filter.Namespaces = splitTrimmed(ns)
@@ -294,7 +346,8 @@ func (h *SSEHandler) StreamFlows(c *gin.Context) {
 		return
 	}
 
-	ctx := c.Request.Context()
+	ctx, cancel := context.WithCancel(c.Request.Context())
+	defer cancel()
 	flowsCh, errCh, readyCh := h.handler.Subscribe(ctx, scope, filter)
 
 	// Every failure this endpoint can hit today - a rejected credential, FA at capacity, a dial
@@ -392,6 +445,7 @@ func (h *SSEHandler) StreamFlows(c *gin.Context) {
 		return false
 	}
 
+	var received uint64
 	c.Stream(func(w io.Writer) bool {
 		select {
 		case <-ctx.Done():
@@ -426,7 +480,13 @@ func (h *SSEHandler) StreamFlows(c *gin.Context) {
 					}
 				default:
 				}
+				if !filter.following() && ctx.Err() == nil {
+					c.SSEvent("complete", map[string]any{"snapshotCount": received, "maxCount": filter.resultLimit()})
+				}
 				return false
+			}
+			if event.Source != "" {
+				c.SSEvent("source", map[string]any{"source": event.Source})
 			}
 			if event.DroppedCount > 0 {
 				droppedEvt := apisv1.FlowStreamDroppedEvent{DroppedCount: event.DroppedCount}
@@ -438,6 +498,7 @@ func (h *SSEHandler) StreamFlows(c *gin.Context) {
 				c.SSEvent("dropped", string(data))
 			}
 			if len(event.Flows) > 0 {
+				received += uint64(len(event.Flows))
 				flowEvt := apisv1.FlowStreamEvent{Flows: event.Flows}
 				data, err := json.Marshal(flowEvt)
 				if err != nil {

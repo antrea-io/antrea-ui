@@ -48,8 +48,84 @@ helm upgrade antrea-ui antrea/antrea-ui --namespace kube-system [--version <TAG>
 
 ## Chart Values
 
-The list of values supported by the chart can be found
-[here](../build/charts/antrea-ui/README.md).
+See the [chart values reference](../build/charts/antrea-ui/README.md) for all
+supported settings.
+
+## Flow visibility
+
+Enable `flowAggregator.enabled` to view live flows from an existing Flow
+Aggregator (FA) with FlowStreamService enabled. By default, the UI connects to
+`flow-aggregator.flow-aggregator.svc:14740`; configure `flowAggregator.address`
+and `flowAggregator.namespace` for a different deployment. Setting
+`flowAggregator.enabled=false` disables all flow visibility, including history.
+
+The `caConfigMap` setting names a ConfigMap containing the public CA in
+`ca.crt`. Static connections read it in the configured `namespace`; leaving
+`caConfigMap` empty uses the system trust store. TLS checks the certificate and
+server name; use `serverName` to override the name when connecting through a
+port-forward. See the [chart values](../build/charts/antrea-ui/README.md) for
+all options and [flow permissions](authentication.md#flow-data-is-per-user)
+for user access requirements.
+
+### Historical flows
+
+Deploy a compatible historical query service and its storage separately, then
+configure the UI client through Helm values:
+
+```yaml
+flowAggregator:
+  enabled: true
+flowHistory:
+  enabled: true
+  address: history.example.test:14740
+  namespace: flow-history
+  caConfigMap: history-ca
+```
+
+History is disabled by default and requires an explicit address. The UI chart
+does not deploy the query service or database. With `caConfigMap` set, create
+that ConfigMap in the specified namespace; the chart grants the UI access to
+it. Without a CA ConfigMap, no history namespace is needed. The service must
+satisfy the [historical query contract](../pkg/flowpb/README.md#historical-query-contract).
+
+Select a historical range in Flow List or Service Map to query past flows.
+Change the range or click Refresh to update the result. A failed historical
+query reports an error and never substitutes live FA data.
+
+Results contain at most 10,000 snapshots, and multiple snapshots may describe
+one connection. They are not full-period aggregates: selecting seven days does
+not guarantee seven days of retained data or that every match fits within the
+limit. Aggregation granularity and an exact truncation indicator are not
+supported; live throughput is not calculated for historical results.
+
+### Flow Aggregator discovery
+
+A cluster may run multiple FAs, only some of which expose FlowStreamService.
+To discover the service instead of configuring its address, enable:
+
+```yaml
+flowAggregator:
+  enabled: true
+  discovery:
+    enabled: true
+  caConfigMap: flow-aggregator-ca
+```
+
+Discovery is disabled by default. When enabled, the UI watches Services across
+all namespaces for `observability.antrea.io/flow-stream-service=true` and
+selects the `flowstream-grpc` TCP port. Antrea's FA chart adds the label when
+FlowStreamService is enabled. The UI ignores the static address and namespace
+and reads the named CA ConfigMap in the selected Service's namespace.
+
+No match returns a waiting-for-source error; multiple matches report the
+candidates. The rest of the UI remains available, and Service changes trigger
+reconnection. Use a static address if several Services match. The historical
+Reader retains its separate static configuration.
+
+The chart grants cluster-wide Service list/watch and get access to ConfigMaps
+with the configured CA name. Matching Services and their CA ConfigMaps must be
+controlled by trusted administrators because the UI forwards user credentials
+to the endpoint; see the [trust requirements](authentication.md#flow-service-discovery-trust).
 
 ## Accessing the web UI
 

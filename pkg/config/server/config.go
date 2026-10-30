@@ -89,15 +89,18 @@ type MetricsConfig struct {
 }
 
 type FlowAggregatorConfig struct {
-	Enabled bool
-	Address string
-	// CAConfigMap is the name of the ConfigMap (in Namespace) containing the CA
-	// certificate (key: ca.crt) used to verify the FlowStreamService server cert.
+	Discovery struct{ Enabled bool }
+	Enabled   bool
+	Address   string
+	// CAConfigMap names the ConfigMap whose ca.crt verifies the FlowStreamService
+	// server certificate. Discovery reads it in the selected Service namespace;
+	// static connections use Namespace.
 	// When empty, verification falls back to the system trust store, which will not verify
 	// the Flow Aggregator's self-signed certificate: the connection fails rather than skipping
 	// verification. Use InsecureSkipVerify for that (dev/test only).
 	CAConfigMap string
-	// Namespace is the Kubernetes namespace where the Flow Aggregator is installed.
+	// Namespace locates the CA ConfigMap for a static Flow Aggregator address.
+	// Ignored when discovery is enabled; the selected Service supplies its namespace.
 	Namespace string
 	// ServerName overrides the TLS server name used for certificate verification.
 	// Useful when dialing via kubectl port-forward, where the address is loopback
@@ -109,12 +112,25 @@ type FlowAggregatorConfig struct {
 	InsecureSkipVerify bool
 }
 
+// FlowHistoryConfig connects the UI to an optional historical FlowStreamService.
+// It configures a client only; storage and the query service are deployed separately.
+type FlowHistoryConfig struct {
+	Enabled bool
+	Address string
+	// Namespace and CAConfigMap locate a public CA bundle (key ca.crt). When no
+	// ConfigMap is set, TLS uses the system trust store and needs no namespace.
+	Namespace   string
+	CAConfigMap string
+	ServerName  string
+}
+
 type Config struct {
 	Addr           string
 	URL            string
 	Auth           AuthConfig
 	Session        SessionConfig
 	FlowAggregator FlowAggregatorConfig
+	FlowHistory    FlowHistoryConfig
 	Limits         struct {
 		MaxLoginsPerSecond       int
 		MaxTraceflowsPerHour     int
@@ -366,6 +382,23 @@ func (c *Config) Redacted() Config {
 }
 
 func validateConfig(config *Config) error {
+	if config.FlowAggregator.Enabled && !config.FlowAggregator.Discovery.Enabled {
+		if config.FlowAggregator.CAConfigMap != "" && len(validation.IsDNS1123Label(config.FlowAggregator.Namespace)) != 0 {
+			return fmt.Errorf("flowAggregator.namespace must be a valid Kubernetes namespace name (DNS-1123 label) when flowAggregator.caConfigMap is set and discovery is disabled")
+		}
+		if config.FlowAggregator.Address == "" {
+			return fmt.Errorf("flowAggregator.address must not be empty")
+		}
+	}
+	if config.FlowHistory.Enabled {
+		if config.FlowHistory.Address == "" {
+			return fmt.Errorf("flowHistory.address must not be empty")
+		}
+		if config.FlowHistory.CAConfigMap != "" && len(validation.IsDNS1123Label(config.FlowHistory.Namespace)) != 0 {
+			return fmt.Errorf("flowHistory.namespace must be a valid Kubernetes namespace name (DNS-1123 label) when flowHistory.caConfigMap is set")
+		}
+	}
+
 	if config.LogVerbosity < 0 || config.LogVerbosity >= 128 {
 		return fmt.Errorf("invalid verbosity level %d: it should be >= 0 and < 128", config.LogVerbosity)
 	}
@@ -609,11 +642,17 @@ func LoadConfig() (*Config, error) {
 	v.SetDefault("plugins.maxBundleBytes", DefaultMaxBundleBytes)
 	v.SetDefault("plugins.bundleSource.http.enabled", true)
 	v.SetDefault("flowAggregator.enabled", false)
+	v.SetDefault("flowAggregator.discovery.enabled", false)
 	v.SetDefault("flowAggregator.address", "flow-aggregator.flow-aggregator.svc:14740")
 	v.SetDefault("flowAggregator.caConfigMap", "flow-aggregator-ca")
 	v.SetDefault("flowAggregator.namespace", "flow-aggregator")
 	v.SetDefault("flowAggregator.serverName", "")
 	v.SetDefault("flowAggregator.insecureSkipVerify", false)
+	v.SetDefault("flowHistory.enabled", false)
+	v.SetDefault("flowHistory.address", "")
+	v.SetDefault("flowHistory.namespace", "")
+	v.SetDefault("flowHistory.caConfigMap", "")
+	v.SetDefault("flowHistory.serverName", "")
 	v.SetDefault("metrics.enabled", true)
 	v.SetDefault("metrics.minScrapeInterval", DefaultMetricsMinScrapeInterval)
 	v.SetDefault("metrics.maxTaps", DefaultMetricsMaxTaps)

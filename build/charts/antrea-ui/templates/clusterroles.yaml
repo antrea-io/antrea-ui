@@ -18,8 +18,9 @@ rules:
       - antrea-ca
   # Namespace discovery for GET /api/v1/access-summary: Kubernetes has no self-service API for
   # "which namespaces can I see", so antrea-ui watches RoleBindings and reports the ones naming the
-  # user as a subject. This is a cluster-wide read of RBAC topology. Along with the discovery of
-  # Antrea Agents below, it is the only privileged read antrea-ui performs on the user's behalf.
+  # user as a subject. This is a cluster-wide read of RBAC topology. Antrea Agent discovery below
+  # supports metrics views; optional Flow Aggregator discovery permissions are defined separately
+  # in flow-aggregator-rolebinding.yaml.
   - apiGroups:
       - rbac.authorization.k8s.io
     resources:

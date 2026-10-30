@@ -313,14 +313,14 @@ export const GATE_CONTROLLER_INFO_GET = { group: 'crd.antrea.io', resource: 'ant
 // A nonResourceURL because that is how antrea-ui-admin-core grants it (clusterroles.yaml), and
 // the Antrea Service delegates authorization to the same RBAC.
 export const GATE_FEATUREGATES = { verb: 'get', url: '/featuregates' };
-// This is a rendering hint, not an authorization decision: the Flow Aggregator is still what
-// authorizes and redacts each stream, and can() fails open on an incomplete/unloaded summary, so
-// this can only ever hide the entry for a user who would be refused anyway - never show it to one
-// who wouldn't. watch, not list: the page only ever opens a following stream, and that is the verb
-// the Flow Aggregator checks for one.
+// These are rendering hints, not authorization decisions: the selected flow service authorizes
+// and redacts each response. Live streams require watch; finite historical queries require list.
+// can() fails open on an incomplete/unloaded summary. History availability is separately gated
+// by the server's configured capability, regardless of these permissions.
+export const GATE_FLOWS_LIST = { group: 'observability.antrea.io', resource: 'flows', verb: 'list' };
 export const GATE_FLOWS_WATCH = { group: 'observability.antrea.io', resource: 'flows', verb: 'watch' };
 
-// Whether the caller holds watch on flows cluster-wide, the one scope in which nothing is redacted.
+// Whether the caller holds watch on flows cluster-wide, used by the Live Data landing redirect.
 // Fails open like every can() gate.
 //
 // Hence the s.namespace guard: a namespace-scoped summary can show a namespaced Role's grant on
@@ -335,13 +335,13 @@ export function holdsFlowsClusterWide(s: AccessSummary | null): boolean {
 
 // Whether Flow Visibility is worth offering to this caller at all, for the nav entry and the route
 // guard. Decided from the cluster-scoped summary alone, as canViewOverview is. Wider than
-// holdsFlowsClusterWide: a caller with RoleBindings in specific namespaces (a non-empty
-// summary.namespaces, the RoleBinding-subject heuristic) may hold flows in one of them, which only
-// a per-namespace review would say, and a caller who may list namespaces (summary.namespaces is
+// holdsFlowsClusterWide: a cluster-wide list grant admits history-only callers, and a caller
+// with RoleBindings in specific namespaces (a non-empty summary.namespaces, the RoleBinding-subject
+// heuristic) may hold flows in one of them, which only a per-namespace review would say, and a caller who may list namespaces (summary.namespaces is
 // ["*"]) may hold it in any. The price is that a caller with a RoleBinding but no flows grant sees
-// the entry and gets the Flow Aggregator's 403 on the page.
+// the entry and gets the selected flow service's 403 on the page.
 export function canViewFlows(s: AccessSummary | null): boolean {
-    return holdsFlowsClusterWide(s) || can(s, GATE_NAMESPACES_LIST) || Boolean(accessibleNamespaces(s)?.length);
+    return holdsFlowsClusterWide(s) || (!s?.namespace && can(s, GATE_FLOWS_LIST)) || can(s, GATE_NAMESPACES_LIST) || Boolean(accessibleNamespaces(s)?.length);
 }
 
 export function canViewSummary(s: AccessSummary | null): boolean {

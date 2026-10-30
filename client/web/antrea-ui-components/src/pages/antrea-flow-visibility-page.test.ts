@@ -218,12 +218,16 @@ function accessSummaryResponse(f: FlowAccessFixture): Response {
 // describe the stream.
 async function mount(
     fetchImpl: (url: string, init?: RequestInit) => Promise<Response>,
-    opts: { search?: string; flowAccess?: () => FlowAccessFixture } = {},
+    opts: { search?: string; flowAccess?: () => FlowAccessFixture; history?: boolean | 'unavailable' | 'legacy' } = {},
 ): Promise<AntreaFlowVisibilityPage> {
     // A page that mounts twice in one test must not be answered from the first one's summaries.
     resetAccessSummary();
     window.history.replaceState(null, '', opts.search ?? '/?namespace=default');
     vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+        if (url.endsWith('/api/v1/settings')) {
+            if (opts.history === 'unavailable') return jsonResponse({}, 503);
+            return jsonResponse({ features: opts.history === 'legacy' ? {} : { flowHistoryEnabled: opts.history === true } });
+        }
         const single = typeof url === 'string' ? /\/api\/v1\/k8s\/api\/v1\/namespaces\/([^/?]+)$/.exec(url) : null;
         if (single) {
             const f = (opts.flowAccess ?? flowAccessFixture)();
@@ -2522,5 +2526,142 @@ describe('AntreaFlowVisibilityPage — collapsed peers in the service map', () =
         const named = graph.nodes.find(n => n.id !== 'default/client')!;
         expect(named.kind).toBe('workload');
         expect(named.shortName).toBe('10.1.0.8');
+    });
+});
+
+
+describe('historical snapshots', () => {
+    test.each(['10080', '43200'])('Last Seen distinguishes dates in a %s-minute historical query', async range => {
+        const earlier = new Date(2026, 2, 23, 12, 34, 56);
+        const later = new Date(2026, 2, 24, 12, 34, 56);
+        const flows = [
+            { ...makeFlow({ srcIP: '10.0.0.1' }), endTs: earlier.toISOString() },
+            { ...makeFlow({ srcIP: '10.0.0.3' }), endTs: later.toISOString() },
+        ];
+        const page = await mount(async url => {
+            const history = new URL(url, 'http://test').searchParams.get('follow') === 'false';
+            return sseResponse([
+                flowEventChunk(flows),
+                ...(history ? ['event: complete\ndata: {"snapshotCount":2,"maxCount":10000}\n\n'] : []),
+            ]);
+        }, { history: true });
+        page.viewMode = 'list';
+        await vi.advanceTimersByTimeAsync(1000);
+        await page.updateComplete;
+        const lastSeen = () => Array.from(page.shadowRoot!.querySelectorAll('tbody tr'))
+            .map(row => row.querySelector('td')!.textContent!.trim());
+        expect(lastSeen()).toEqual([later.toLocaleTimeString(), earlier.toLocaleTimeString()]);
+
+        const selector = page.shadowRoot!.querySelector<HTMLSelectElement>('#flow-time-range')!;
+        selector.value = range;
+        selector.dispatchEvent(new Event('change'));
+        await vi.advanceTimersByTimeAsync(1000);
+        await page.updateComplete;
+        const cells = lastSeen();
+        expect(cells).toHaveLength(2);
+        expect(cells[0]).toContain(later.toLocaleDateString());
+        expect(cells[1]).toContain(earlier.toLocaleDateString());
+        expect(cells[0]).toContain(later.toLocaleTimeString());
+        expect(cells[1]).toContain(earlier.toLocaleTimeString());
+        expect(cells[0]).not.toBe(cells[1]);
+
+        selector.value = 'live';
+        selector.dispatchEvent(new Event('change'));
+        await vi.advanceTimersByTimeAsync(1000);
+        await page.updateComplete;
+        expect(lastSeen()).toEqual([later.toLocaleTimeString(), earlier.toLocaleTimeString()]);
+    });
+
+    test.each(['list', 'map'] as const)('time range selector / Refresh lifecycle in %s view', async view => {
+        const requests: { url: string; signal?: AbortSignal | null }[] = [];
+        const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+            if (!url.includes('/flows/stream')) return jsonResponse({});
+            requests.push({ url, signal: init?.signal });
+            const params = new URL(url, 'http://test').searchParams;
+            if (params.get('follow') !== 'false') return sseResponse([]);
+            const payload = [
+                'event: source\ndata: {"source":"historical"}\n\n',
+                `event: flow\ndata: ${JSON.stringify({ flows: [makeFlow()] })}\n\n`,
+                'event: complete\ndata: {"snapshotCount":10000,"maxCount":10000}\n\n',
+            ].join('');
+            return new Response(new ReadableStream<Uint8Array>({ start(c) { c.enqueue(new TextEncoder().encode(payload)); c.close(); } }));
+        });
+        const page = await mount(fetchMock, { history: true });
+        page.viewMode = view;
+        await page.updateComplete;
+        const timeRange = page.shadowRoot!.querySelector<HTMLSelectElement>('#flow-time-range')!;
+        expect(timeRange.value).toBe('live');
+        timeRange.value = '15';
+        timeRange.dispatchEvent(new Event('change'));
+        await vi.advanceTimersByTimeAsync(0);
+        await page.updateComplete;
+        expect(requests[0].signal?.aborted).toBe(true);
+        expect(Date.now() - Date.parse(new URL(requests.at(-1)!.url, 'http://test').searchParams.get('since')!)).toBe(15 * 60 * 1000);
+        expect(page.shadowRoot!.textContent).toContain('Query complete');
+        expect(page.shadowRoot!.textContent).toContain('10000 snapshots received');
+        expect(page.shadowRoot!.textContent).toContain('Result limit reached');
+        const callsAfterCompletion = requests.length;
+        await vi.advanceTimersByTimeAsync(30_000);
+        expect(requests).toHaveLength(callsAfterCompletion);
+        timeRange.value = '10080';
+        timeRange.dispatchEvent(new Event('change'));
+        await vi.advanceTimersByTimeAsync(0);
+        const params = new URL(requests.at(-1)!.url, 'http://test').searchParams;
+        expect(params.get('follow')).toBe('false');
+        expect(params.get('maxCount')).toBe('10000');
+        expect(Date.now() - Date.parse(params.get('since')!)).toBe(7 * 24 * 60 * 60 * 1000);
+        await page.updateComplete;
+        page.shadowRoot!.querySelector<HTMLElement>('#flow-history-refresh')!.click();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(requests).toHaveLength(callsAfterCompletion + 2);
+        timeRange.value = 'live';
+        timeRange.dispatchEvent(new Event('change'));
+        await vi.advanceTimersByTimeAsync(0);
+        await page.updateComplete;
+        expect(new URL(requests.at(-1)!.url, 'http://test').searchParams.get('follow')).toBe('true');
+        expect(new URL(requests.at(-1)!.url, 'http://test').searchParams.has('since')).toBe(false);
+        expect(page.shadowRoot!.textContent).not.toContain('Persisted history is unavailable');
+        expect(page.shadowRoot!.textContent).not.toContain('10000 snapshots received');
+    });
+});
+
+describe('history capability', () => {
+    test.each([false, 'legacy', 'unavailable'] as const)('keeps live usable without history: %s', async history => {
+        const page = await mount(async () => sseResponse([]), { history });
+        const selector = page.shadowRoot!.querySelector<HTMLSelectElement>('#flow-time-range')!;
+        expect(selector.disabled).toBe(true);
+        expect(Array.from(selector.options).map(o => o.text)).toEqual(['Live Data']);
+        const fetchMock = vi.mocked(fetch);
+        expect(streamCalls(fetchMock)).toHaveLength(1);
+        // A forged UI event must not enable a history request either.
+        const option = document.createElement('option');
+        option.value = '15';
+        selector.add(option);
+        selector.value = '15';
+        selector.dispatchEvent(new Event('change'));
+        await vi.advanceTimersByTimeAsync(0);
+        expect(streamCalls(fetchMock)).toHaveLength(1);
+    });
+
+    test('history failure preserves the selector and live remains usable', async () => {
+        const page = await mount(async url => url.includes('follow=false')
+            ? jsonResponse({ message: 'Historical query service is unavailable', retryable: true }, 503)
+            : sseResponse([]), { history: true });
+        const selector = page.shadowRoot!.querySelector<HTMLSelectElement>('#flow-time-range')!;
+        selector.value = '15';
+        selector.dispatchEvent(new Event('change'));
+        await vi.advanceTimersByTimeAsync(0);
+        await page.updateComplete;
+        expect(page.shadowRoot!.textContent).toContain('Historical query service is unavailable');
+        expect(page.shadowRoot!.textContent).not.toContain('Query complete');
+        expect(selector.disabled).toBe(false);
+        const calls = streamCalls(vi.mocked(fetch)).length;
+        await vi.advanceTimersByTimeAsync(30_000);
+        expect(streamCalls(vi.mocked(fetch))).toHaveLength(calls);
+        selector.value = 'live';
+        selector.dispatchEvent(new Event('change'));
+        await vi.advanceTimersByTimeAsync(0);
+        expect(streamCalls(vi.mocked(fetch))).toHaveLength(calls + 1);
+        expect(String(streamCalls(vi.mocked(fetch)).at(-1)![0])).toContain('follow=true');
     });
 });

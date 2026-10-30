@@ -38,3 +38,28 @@ client holds the stream's own verb on `flows` in the endpoint's Namespace) and
 so only the `EndpointDisclosure` comments, and antrea-io/antrea#8491, which limits the
 Namespace withheld at the Flow tier to the destination of a denied connection the client
 initiated, again only in the `EndpointDisclosure` comments.
+
+## Historical query contract
+
+The optional historical service implements `FlowStreamService.GetFlows` with
+these messages. The UI sends `follow=false`, `since`, `max_count`, scope and
+peer filters. A compatible service must:
+
+- Authenticate the forwarded user credential, authorize `list` on
+  `flows.observability.antrea.io` in the requested scope, and apply endpoint
+  disclosure rules. Live FA streams require `watch`.
+- Acknowledge authorized requests promptly, even with no matching records.
+  An empty first response is valid and does not need a stream epoch.
+- Return at most `max_count` snapshots, choosing the newest matches and sending
+  them chronologically, then successful EOF. The UI caps requests at 10,000
+  snapshots and does not resume historical queries.
+- Provide cumulative connection counters for the returned result, honor
+  cancellation, and return errors for failed or interrupted queries.
+  `Unavailable` and historical `FailedPrecondition` indicate unavailable
+  dependencies; they never trigger fallback to live FA data.
+
+The backend sends an SSE completion event only after successful completion;
+EOF at the browser without that event means the query was interrupted. The
+current protocol has no aggregation granularity or exact truncation indicator.
+See [Historical flows](../../docs/getting-started.md#historical-flows) for
+configuration and user-facing limitations.

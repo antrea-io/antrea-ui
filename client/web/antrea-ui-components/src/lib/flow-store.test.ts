@@ -196,3 +196,16 @@ describe('FlowStore', () => {
         expect(store.get('nonexistent')).toBeUndefined();
     });
 });
+
+
+test('historical snapshots preserve the latest total without becoming live rate samples', () => {
+    const store = new FlowStore();
+    const first = makeFlow('10.0.0.2', 80);
+    first.stats.octetTotalCount = 100;
+    store.upsert(first, true);
+    const last = { ...first, endTs: '2026-03-25T00:02:00Z', stats: { ...first.stats, octetTotalCount: 500 } };
+    store.upsert(last, true);
+    expect(store.getAll()).toHaveLength(1);
+    expect(store.getAll()[0].flow.stats.octetTotalCount).toBe(500);
+    expect(store.getAll()[0].samples).toEqual([]);
+});
