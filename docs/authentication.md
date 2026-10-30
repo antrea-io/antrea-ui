@@ -402,6 +402,21 @@ access to it, and holding a credential FA accepts, can read flow data
 directly (subject to FA's own RBAC check), regardless of what Antrea UI's
 frontend shows or hides.
 
+#### Flow service discovery trust
+
+Cluster-wide FA discovery assumes that matching Services and their CA
+ConfigMaps are controlled by trusted administrators. The UI forwards user
+credentials to the discovered endpoint and trusts the CA read from that
+Service's namespace. A label is not proof of identity: TLS cannot establish
+independent trust if an untrusted actor can supply both the endpoint and its
+CA. The UI does not enforce ownership of these resources.
+
+Discovery grants the UI ServiceAccount cluster-wide Service list/watch and
+ConfigMap get restricted to the configured CA name. Kubernetes RBAC does not
+restrict Service list/watch by label; the selector filters discovery results.
+Static connections use namespaced CA permissions instead. See
+[configuration](getting-started.md#flow-aggregator-discovery).
+
 ### Metrics are authorized by Antrea UI itself
 
 Everywhere else, Antrea UI forwards the user's own credential and lets the
@@ -564,6 +579,10 @@ than reusing a failure.
   what it knows for users it has first checked the `metrics.ui.antrea.io` grant
   of (see [Metrics are authorized by Antrea UI
   itself](#metrics-are-authorized-by-antrea-ui-itself)).
+  Optional [Flow Aggregator discovery](getting-started.md#flow-aggregator-discovery) also uses the UI
+  ServiceAccount to watch Services cluster-wide and read the configured CA
+  ConfigMap name in the selected Service namespace. Flow queries themselves
+  continue to use the caller's credential.
 
   The scan sees RoleBindings only, so it cannot see a **ClusterRoleBinding**: a
   user granted namespaced access cluster-wide is the subject of no RoleBinding

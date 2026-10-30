@@ -31,14 +31,15 @@ import (
 	"antrea.io/antrea-ui/pkg/k8s"
 )
 
-// EndpointSubscriber loads the current CA bundle for each request. Missing CA
-// dependencies do not prevent the UI server from starting.
+// EndpointSubscriber loads current public trust for each request. Missing Service
+// or CA dependencies never stop the UI server from starting.
 type EndpointSubscriber struct {
 	Logger                                      logr.Logger
 	Client                                      kubernetes.Interface
 	Address, Namespace, CAConfigMap, ServerName string
 	InsecureSkipVerify                          bool
 	Historical                                  bool
+	Discovery                                   *ServiceDiscovery
 	AdminTokenSource                            *k8s.AdminTokenSource
 }
 
@@ -51,7 +52,7 @@ func (s *EndpointSubscriber) Subscribe(ctx context.Context, scope *FlowStreamSco
 		defer close(flows)
 		ctx, cancel := context.WithCancel(ctx)
 		defer cancel()
-		cfg, err := s.connectionConfig(ctx)
+		cfg, changed, err := s.connectionConfig(ctx)
 		if err != nil {
 			errs <- err
 			return
@@ -62,7 +63,7 @@ func (s *EndpointSubscriber) Subscribe(ctx context.Context, scope *FlowStreamSco
 			return
 		}
 		defer subscriber.Close()
-		err = relay(ctx, subscriber, scope, filter, func() error { close(ready); return nil }, func(event apisv1.FlowStreamEvent) error {
+		err = relay(ctx, subscriber, scope, filter, changed, func() error { close(ready); return nil }, func(event apisv1.FlowStreamEvent) error {
 			select {
 			case flows <- event:
 				return nil
@@ -77,18 +78,30 @@ func (s *EndpointSubscriber) Subscribe(ctx context.Context, scope *FlowStreamSco
 	return flows, errs, ready
 }
 
-func (s *EndpointSubscriber) connectionConfig(ctx context.Context) (GRPCConfig, error) {
-	address := s.Address
+func (s *EndpointSubscriber) connectionConfig(ctx context.Context) (GRPCConfig, <-chan struct{}, error) {
+	address, namespace := s.Address, s.Namespace
+	var revision string
+	var changed <-chan struct{}
+	if s.Discovery != nil {
+		var endpoint DiscoveredEndpoint
+		var err error
+		endpoint, changed, err = s.Discovery.Current()
+		if err != nil {
+			return GRPCConfig{}, changed, err
+		}
+		address, namespace = endpoint.Address, endpoint.Namespace
+		revision = endpoint.Revision
+	}
 	var ca []byte
 	if s.CAConfigMap != "" {
 		fetchCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
-		cm, err := s.Client.CoreV1().ConfigMaps(s.Namespace).Get(fetchCtx, s.CAConfigMap, metav1.GetOptions{})
+		cm, err := s.Client.CoreV1().ConfigMaps(namespace).Get(fetchCtx, s.CAConfigMap, metav1.GetOptions{})
 		if err != nil {
 			if apierrors.IsForbidden(err) || apierrors.IsUnauthorized(err) {
-				return GRPCConfig{}, internalStreamError(fmt.Errorf("backend is not allowed to read flow source CA %s/%s", s.Namespace, s.CAConfigMap))
+				return GRPCConfig{}, changed, internalStreamError(fmt.Errorf("backend is not allowed to read flow source CA %s/%s", namespace, s.CAConfigMap))
 			}
-			return GRPCConfig{}, dependencyUnavailable(fmt.Sprintf("cannot read flow source CA %s/%s: %v", s.Namespace, s.CAConfigMap, err))
+			return GRPCConfig{}, changed, dependencyUnavailable(fmt.Sprintf("cannot read flow source CA %s/%s: %v", namespace, s.CAConfigMap, err))
 		}
 		ca = []byte(cm.Data["ca.crt"])
 	}
@@ -96,7 +109,7 @@ func (s *EndpointSubscriber) connectionConfig(ctx context.Context) (GRPCConfig, 
 	if s.CAConfigMap != "" {
 		roots := x509.NewCertPool()
 		if !roots.AppendCertsFromPEM(ca) {
-			return GRPCConfig{}, internalStreamError(fmt.Errorf("flow source CA %s/%s is empty or invalid", s.Namespace, s.CAConfigMap))
+			return GRPCConfig{}, changed, internalStreamError(fmt.Errorf("flow source CA %s/%s is empty or invalid", namespace, s.CAConfigMap))
 		}
 		tlsConfig.RootCAs = roots
 	}
@@ -106,7 +119,7 @@ func (s *EndpointSubscriber) connectionConfig(ctx context.Context) (GRPCConfig, 
 	}
 	// Versioned cache keys retire connections when endpoint or trust changes, while
 	// keeping live and historical client-certificate sessions in separate pools.
-	digest := sha256.Sum256(fmt.Appendf(ca, "|%s|%s|%t", address, s.ServerName, s.InsecureSkipVerify))
+	digest := sha256.Sum256(fmt.Appendf(ca, "|%s|%s|%t|%s", address, s.ServerName, s.InsecureSkipVerify, revision))
 	return GRPCConfig{Address: address, TLSConfig: tlsConfig, Historical: s.Historical,
-		ConnectionKey: fmt.Sprintf("%s/%x", role, digest), AdminTokenSource: s.AdminTokenSource}, nil
+		ConnectionKey: fmt.Sprintf("%s/%x", role, digest), AdminTokenSource: s.AdminTokenSource}, changed, nil
 }

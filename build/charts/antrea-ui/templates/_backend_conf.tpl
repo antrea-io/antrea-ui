@@ -66,6 +66,8 @@ plugins:
     {{- end }}
 {{- end }}
 flowAggregator:
+  discovery:
+    enabled: {{ .Values.flowAggregator.discovery.enabled }}
   enabled: {{ .Values.flowAggregator.enabled }}
   address: {{ .Values.flowAggregator.address | quote }}
 {{- if .Values.flowAggregator.enabled }}

@@ -65,7 +65,7 @@ func (s *RoutedSubscriber) Subscribe(ctx context.Context, scope *FlowStreamScope
 			requestCtx, cancel := context.WithCancel(ctx)
 			defer cancel()
 			var count uint64
-			err := relay(requestCtx, upstream, scope, filter, func() error {
+			err := relay(requestCtx, upstream, scope, filter, nil, func() error {
 				markReady()
 				return send(apisv1.FlowStreamEvent{Source: source})
 			}, func(event apisv1.FlowStreamEvent) error {
@@ -97,7 +97,7 @@ func (s *RoutedSubscriber) Subscribe(ctx context.Context, scope *FlowStreamScope
 
 // relay drains both channels before declaring success. A final buffered error
 // must never be lost to a simultaneous close of the flow channel.
-func relay(ctx context.Context, upstream FlowStreamSubscriber, scope *FlowStreamScope, filter *FlowStreamFilter, ready func() error, send func(apisv1.FlowStreamEvent) error) error {
+func relay(ctx context.Context, upstream FlowStreamSubscriber, scope *FlowStreamScope, filter *FlowStreamFilter, changed <-chan struct{}, ready func() error, send func(apisv1.FlowStreamEvent) error) error {
 	flows, errs, started := upstream.Subscribe(ctx, scope, filter)
 	announced := false
 	announce := func() error {
@@ -112,6 +112,8 @@ func relay(ctx context.Context, upstream FlowStreamSubscriber, scope *FlowStream
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case <-changed:
+			return dependencyUnavailable("Flow Aggregator Service changed; reconnecting")
 		case <-started:
 			if err := announce(); err != nil {
 				return err

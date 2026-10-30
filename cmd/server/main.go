@@ -276,6 +276,16 @@ func run() error {
 				Historical: historical, AdminTokenSource: adminTokenSource}
 		}
 		live := endpoint(config.FlowAggregator, false)
+		if config.FlowAggregator.Discovery.Enabled {
+			discovery, err := flowstream.NewServiceDiscovery(k8sClientset)
+			if err != nil {
+				return err
+			}
+			flowCtx, stopDiscovery := context.WithCancel(context.Background())
+			defer stopDiscovery()
+			go discovery.Run(flowCtx)
+			live.Discovery = discovery
+		}
 		router := &flowstream.RoutedSubscriber{Live: live}
 		if config.FlowHistory.Enabled {
 			history := config.FlowHistory

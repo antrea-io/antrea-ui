@@ -98,6 +98,35 @@ not guarantee seven days of retained data or that every match fits within the
 limit. Aggregation granularity and an exact truncation indicator are not
 supported; live throughput is not calculated for historical results.
 
+### Flow Aggregator discovery
+
+A cluster may run multiple FAs, only some of which expose FlowStreamService.
+To discover the service instead of configuring its address, enable:
+
+```yaml
+flowAggregator:
+  enabled: true
+  discovery:
+    enabled: true
+  caConfigMap: flow-aggregator-ca
+```
+
+Discovery is disabled by default. When enabled, the UI watches Services across
+all namespaces for `observability.antrea.io/flow-stream-service=true` and
+selects the `flowstream-grpc` TCP port. Antrea's FA chart adds the label when
+FlowStreamService is enabled. The UI ignores the static address and namespace
+and reads the named CA ConfigMap in the selected Service's namespace.
+
+No match returns a waiting-for-source error; multiple matches report the
+candidates. The rest of the UI remains available, and Service changes trigger
+reconnection. Use a static address if several Services match. The historical
+Reader retains its separate static configuration.
+
+The chart grants cluster-wide Service list/watch and get access to ConfigMaps
+with the configured CA name. Matching Services and their CA ConfigMaps must be
+controlled by trusted administrators because the UI forwards user credentials
+to the endpoint; see the [trust requirements](authentication.md#flow-service-discovery-trust).
+
 ## Accessing the web UI
 
 If you installed the Helm chart using the command above, without overriding any

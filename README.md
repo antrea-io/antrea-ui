@@ -32,7 +32,7 @@ The default `admin` password is `admin`.
 
 For more installation options, refer to the [Getting
 Started](docs/getting-started.md) document.
-For live and historical flow queries,
+For live and historical flow queries and optional Flow Aggregator discovery,
 see [Flow visibility](docs/getting-started.md#flow-visibility).
 
 Antrea UI also supports loading frontend plugins at runtime, without

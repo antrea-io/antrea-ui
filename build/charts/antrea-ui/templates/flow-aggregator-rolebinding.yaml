@@ -1,22 +1,60 @@
-{{- if .Values.flowAggregator.enabled -}}
-kind: RoleBinding
+{{- if .Values.flowAggregator.enabled }}
+{{- if .Values.flowAggregator.discovery.enabled }}
 apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
 metadata:
-  labels:
-    app: antrea-ui
-  name: {{ .Release.Name }}-flow-aggregator-ca-reader
-  # This RoleBinding is in the flow-aggregator namespace so the antrea-ui
-  # ServiceAccount can read the flow-aggregator-ca ConfigMap across namespaces.
-  # It references flow-aggregator-exporter-role which is created by the
-  # flow-aggregator Helm chart. The flow-aggregator chart must be installed
-  # before (or alongside) antrea-ui for this RoleBinding to be effective.
-  namespace: {{ .Values.flowAggregator.namespace | default "flow-aggregator" }}
+  name: {{ .Release.Name }}-flow-source-discovery
+rules:
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["list", "watch"]
+{{- if .Values.flowAggregator.caConfigMap }}
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: [{{ .Values.flowAggregator.caConfigMap | quote }}]
+    verbs: ["get"]
+{{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ .Release.Name }}-flow-source-discovery
 subjects:
-- kind: ServiceAccount
-  name: antrea-ui
-  namespace: {{ .Release.Namespace }}
+  - kind: ServiceAccount
+    name: antrea-ui
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: ClusterRole
+  name: {{ .Release.Name }}-flow-source-discovery
+  apiGroup: rbac.authorization.k8s.io
+{{- else if .Values.flowAggregator.caConfigMap }}
+{{- if not .Values.flowAggregator.namespace }}
+{{- fail "flowAggregator.namespace is required when caConfigMap is set and discovery is disabled" }}
+{{- end }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ .Release.Name }}-flow-source-reader
+  namespace: {{ .Values.flowAggregator.namespace }}
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: [{{ .Values.flowAggregator.caConfigMap | quote }}]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  # Use a new name: the legacy CA binding references a different, immutable roleRef.
+  name: {{ .Release.Name }}-flow-source-reader
+  namespace: {{ .Values.flowAggregator.namespace }}
+subjects:
+  - kind: ServiceAccount
+    name: antrea-ui
+    namespace: {{ .Release.Namespace }}
 roleRef:
   kind: Role
-  name: flow-aggregator-exporter-role
+  name: {{ .Release.Name }}-flow-source-reader
   apiGroup: rbac.authorization.k8s.io
+{{- end }}
 {{- end }}

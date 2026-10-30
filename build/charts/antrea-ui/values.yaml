@@ -172,22 +172,28 @@ supportBundle:
 
 # Flow Aggregator gRPC integration (live flow visibility in the UI).
 flowAggregator:
+  # -- Discover the labeled FlowStreamService across all namespaces. Matching Services and
+  # their CA ConfigMaps must be controlled by trusted administrators.
+  # Opt in explicitly; by default, preserve the configured address.
+  discovery:
+    enabled: false
   # -- When true, the backend connects to Flow Aggregator's FlowStreamService over gRPC.
   enabled: false
-  # -- gRPC address (host:port) of the FlowStreamService.
+  # -- gRPC address (host:port) of the FlowStreamService. Ignored when discovery is enabled.
   address: "flow-aggregator.flow-aggregator.svc:14740"
-  # -- Name of the ConfigMap (in namespace below) containing the CA certificate (key: ca.crt)
-  # used to verify the FlowStreamService server certificate.
+  # -- Name of the ConfigMap containing the CA certificate (key: ca.crt) used to verify
+  # the FlowStreamService server certificate. Discovery reads it in the selected Service
+  # namespace; static connections use the namespace below.
   # Leaving this empty does not skip server certificate verification: it falls back to the
   # system trust store, which will not verify the Flow Aggregator's self-signed certificate, and
   # the connection will fail. Use insecureSkipVerify below for that (dev/test only).
   caConfigMap: flow-aggregator-ca
-  # -- Namespace where the Flow Aggregator is installed.
+  # -- Namespace of the CA ConfigMap for static connections. Ignored when discovery is enabled.
   namespace: flow-aggregator
   # -- Override the TLS server name used for certificate verification. Useful when dialing
   # via kubectl port-forward (loopback address) while the server cert is issued for the
   # in-cluster Service DNS name (e.g. flow-aggregator.flow-aggregator.svc).
-  # Leave empty to use the hostname from the address field.
+  # Leave empty to use the hostname from the discovered or configured address.
   serverName: ""
   # -- Disable TLS server certificate verification. Should only be used for development
   # or testing; never enable this in production. With this on, any server answering at

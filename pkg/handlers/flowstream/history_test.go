@@ -131,7 +131,7 @@ func TestHistoricalRouting(t *testing.T) {
 					f.Follow = nil
 				}
 				var events []apisv1.FlowStreamEvent
-				err := relay(t.Context(), router, &FlowStreamScope{ClusterWide: true}, f, func() error { return nil }, func(e apisv1.FlowStreamEvent) error { events = append(events, e); return nil })
+				err := relay(t.Context(), router, &FlowStreamScope{ClusterWide: true}, f, nil, func() error { return nil }, func(e apisv1.FlowStreamEvent) error { events = append(events, e); return nil })
 				synctest.Wait()
 				if tc.live {
 					require.Equal(t, 1, liveCalls)
@@ -200,7 +200,7 @@ func TestReaderAllowsEmptyHandshakeAndClassifiesUnavailable(t *testing.T) {
 		subscriber.historical = true
 		ctx, _ := ctxWithSessionAuth(t, newTestStore(t), &session.Spec{Mode: session.ModeToken, Credential: session.Credential{Kind: session.KindBearer, Token: []byte("token")}})
 		ready := false
-		err := relay(ctx, subscriber, &FlowStreamScope{ClusterWide: true}, historyFilter(), func() error { ready = true; return nil }, func(apisv1.FlowStreamEvent) error { t.Fatal("unexpected records"); return nil })
+		err := relay(ctx, subscriber, &FlowStreamScope{ClusterWide: true}, historyFilter(), nil, func() error { ready = true; return nil }, func(apisv1.FlowStreamEvent) error { t.Fatal("unexpected records"); return nil })
 		require.NoError(t, err)
 		require.True(t, ready)
 		require.Equal(t, dependencyUnavailableCode, subscriber.classifyStreamErr(status.Error(codes.FailedPrecondition, "offline")).Code)
@@ -214,25 +214,25 @@ func TestEndpointReloadsTrustAndSeparatesConnectionCaches(t *testing.T) {
 	require.NoError(t, err)
 	client := fake.NewClientset()
 	endpoint := &EndpointSubscriber{Client: client, Address: "reader.trusted.svc:14740", Namespace: "trusted", CAConfigMap: "reader-ca", Historical: true}
-	_, err = endpoint.connectionConfig(ctx)
+	_, _, err = endpoint.connectionConfig(ctx)
 	var unavailable *StreamError
 	require.ErrorAs(t, err, &unavailable)
 	require.Equal(t, dependencyUnavailableCode, unavailable.Code)
 	_, err = client.CoreV1().ConfigMaps("trusted").Create(ctx, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "reader-ca"}, Data: map[string]string{"ca.crt": string(pair.PublicKey())}}, metav1.CreateOptions{})
 	require.NoError(t, err)
-	reader, err := endpoint.connectionConfig(ctx)
+	reader, _, err := endpoint.connectionConfig(ctx)
 	require.NoError(t, err)
 	require.NotNil(t, reader.TLSConfig.RootCAs)
 	require.False(t, reader.TLSConfig.InsecureSkipVerify)
 	endpoint.Historical = false
-	live, err := endpoint.connectionConfig(ctx)
+	live, _, err := endpoint.connectionConfig(ctx)
 	require.NoError(t, err)
 	require.NotEqual(t, reader.ConnectionKey, live.ConnectionKey)
 	replacement, err := testcerts.NewCA().NewKeyPair("flow.test")
 	require.NoError(t, err)
 	_, err = client.CoreV1().ConfigMaps("trusted").Update(ctx, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "reader-ca"}, Data: map[string]string{"ca.crt": string(replacement.PublicKey())}}, metav1.UpdateOptions{})
 	require.NoError(t, err)
-	rotated, err := endpoint.connectionConfig(ctx)
+	rotated, _, err := endpoint.connectionConfig(ctx)
 	require.NoError(t, err)
 	require.NotEqual(t, live.ConnectionKey, rotated.ConnectionKey)
 }
@@ -261,7 +261,7 @@ func TestCertificateSessionUsesSeparateLiveAndReaderConnections(t *testing.T) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	for _, upstream := range []FlowStreamSubscriber{fa, reader} {
-		err := relay(ctx, upstream, &FlowStreamScope{ClusterWide: true}, historyFilter(), func() error { return nil }, func(apisv1.FlowStreamEvent) error { return nil })
+		err := relay(ctx, upstream, &FlowStreamScope{ClusterWide: true}, historyFilter(), nil, func() error { return nil }, func(apisv1.FlowStreamEvent) error { return nil })
 		require.NoError(t, err)
 	}
 	require.EqualValues(t, 1, faServer.calls.Load())
@@ -279,7 +279,7 @@ func TestFiniteCancellationDoesNotReportSuccess(t *testing.T) {
 		subscriber := newTestSubscriber(t, server)
 		subscriber.historical = true
 		ctx, _ := ctxWithSessionAuth(t, newTestStore(t), &session.Spec{Mode: session.ModeToken, Credential: session.Credential{Kind: session.KindBearer, Token: []byte("token")}})
-		err := relay(ctx, subscriber, &FlowStreamScope{ClusterWide: true}, historyFilter(), func() error { return nil }, func(apisv1.FlowStreamEvent) error { return nil })
+		err := relay(ctx, subscriber, &FlowStreamScope{ClusterWide: true}, historyFilter(), nil, func() error { return nil }, func(apisv1.FlowStreamEvent) error { return nil })
 		require.ErrorContains(t, err, "canceled before completion")
 	})
 }
@@ -345,7 +345,7 @@ func TestHistoricalResultLimitAcrossBatches(t *testing.T) {
 					filter.Follow = nil
 				}
 				received := 0
-				err := relay(t.Context(), router, &FlowStreamScope{ClusterWide: true}, filter,
+				err := relay(t.Context(), router, &FlowStreamScope{ClusterWide: true}, filter, nil,
 					func() error { return nil },
 					func(e apisv1.FlowStreamEvent) error { received += len(e.Flows); return nil })
 				if tc.wantError {
