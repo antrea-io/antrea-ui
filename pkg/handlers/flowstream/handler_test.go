@@ -299,6 +299,10 @@ func newCloseNotifyRecorder() *closeNotifyRecorder {
 	return &closeNotifyRecorder{ResponseRecorder: httptest.NewRecorder(), closec: make(chan bool)}
 }
 
+// SetWriteDeadline lets these in-memory tests exercise the stream's event handling. Actual
+// deadline enforcement is covered by TestStreamFlowsUnreadStream against net.Pipe.
+func (r *closeNotifyRecorder) SetWriteDeadline(time.Time) error { return nil }
+
 func (r *closeNotifyRecorder) CloseNotify() <-chan bool { return r.closec }
 
 // writeGate blocks the first Write to the underlying recorder until told to proceed, signaling
