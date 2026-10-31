@@ -19,11 +19,10 @@ import (
 	"net/http"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
-	"k8s.io/utils/clock"
-	clocktesting "k8s.io/utils/clock/testing"
 )
 
 func TestClientKeyIP(t *testing.T) {
@@ -96,103 +95,93 @@ func TestClientKeyIP(t *testing.T) {
 	}
 }
 
-type testClientRateLimiter struct {
-	*ClientRateLimiter
-	clock clock.Clock
-}
-
-func newTestClientRateLimiter(clock clock.Clock, rateStr string, burstSize int, maxSize int) *testClientRateLimiter {
-	return &testClientRateLimiter{
-		ClientRateLimiter: NewClientRateLimiterOrDie(rateStr, burstSize, maxSize, ClientKeyIP),
-		clock:             clock,
-	}
-}
-
-func (l *testClientRateLimiter) testAllow(clientIP string) bool {
+// testAllow sends a request from clientIP to rl, at the current time. In a synctest bubble,
+// time.Now follows the fake clock, which advances when every goroutine is durably blocked.
+func testAllow(rl *ClientRateLimiter, clientIP string) bool {
 	req := &http.Request{
 		RemoteAddr: clientIP,
 		Header:     make(http.Header),
 	}
-	return l.Allow(l.clock.Now(), req)
+	return rl.Allow(time.Now(), req)
 }
 
 func TestClientRateLimiter(t *testing.T) {
-	const cacheSize = 10
-	start := time.Now()
-	clock := clocktesting.NewFakeClock(start)
-	rl := newTestClientRateLimiter(clock, "3/h", 2, cacheSize)
+	synctest.Test(t, func(t *testing.T) {
+		const cacheSize = 10
+		rl := NewClientRateLimiterOrDie("3/h", 2, cacheSize, ClientKeyIP)
 
-	const client1 = "192.168.1.1"
-	const client2 = "192.168.1.2"
+		const client1 = "192.168.1.1"
+		const client2 = "192.168.1.2"
 
-	assert.True(t, rl.testAllow(client1))
-	assert.True(t, rl.testAllow(client1))
-	// we have exceeded burst size for client1
-	assert.False(t, rl.testAllow(client1))
-	// client2 can send requests
-	assert.True(t, rl.testAllow(client2))
+		assert.True(t, testAllow(rl, client1))
+		assert.True(t, testAllow(rl, client1))
+		// we have exceeded burst size for client1
+		assert.False(t, testAllow(rl, client1))
+		// client2 can send requests
+		assert.True(t, testAllow(rl, client2))
 
-	// we should get about 1 token every 20 minutes, so client1 should still fail after 15 minutes...
-	clock.SetTime(start.Add(15 * time.Minute))
-	assert.False(t, rl.testAllow(client1))
-	// ... but not client2
-	assert.True(t, rl.testAllow(client2))
-	// ... except once we exceed the burst size
-	assert.False(t, rl.testAllow(client2))
+		// we should get about 1 token every 20 minutes, so client1 should still fail after 15 minutes...
+		time.Sleep(15 * time.Minute)
+		assert.False(t, testAllow(rl, client1))
+		// ... but not client2
+		assert.True(t, testAllow(rl, client2))
+		// ... except once we exceed the burst size
+		assert.False(t, testAllow(rl, client2))
 
-	// ... but should succeed after 25 minutes
-	clock.SetTime(start.Add(25 * time.Minute))
-	assert.True(t, rl.testAllow(client1))
-	assert.True(t, rl.testAllow(client2))
+		// ... but should succeed after 25 minutes
+		time.Sleep(10 * time.Minute)
+		assert.True(t, testAllow(rl, client1))
+		assert.True(t, testAllow(rl, client2))
+	})
 }
 
 func TestClientRateLimiterMaxCacheSize(t *testing.T) {
-	const cacheSize = 1
-	start := time.Now()
-	clock := clocktesting.NewFakeClock(start)
-	rl := newTestClientRateLimiter(clock, "3/h", 1, cacheSize)
+	synctest.Test(t, func(t *testing.T) {
+		const cacheSize = 1
+		rl := NewClientRateLimiterOrDie("3/h", 1, cacheSize, ClientKeyIP)
 
-	const client1 = "192.168.1.1"
-	const client2 = "192.168.1.2"
+		const client1 = "192.168.1.1"
+		const client2 = "192.168.1.2"
 
-	assert.True(t, rl.testAllow(client1))
-	assert.False(t, rl.testAllow(client1))
-	assert.True(t, rl.testAllow(client2))
-	// the cache size is 1, so client1 was previously evicted by client2
-	assert.True(t, rl.testAllow(client1))
+		assert.True(t, testAllow(rl, client1))
+		assert.False(t, testAllow(rl, client1))
+		assert.True(t, testAllow(rl, client2))
+		// the cache size is 1, so client1 was previously evicted by client2
+		assert.True(t, testAllow(rl, client1))
+	})
 }
 
 func TestClientRateLimiterConcurrent(t *testing.T) {
-	const cacheSize = 10
-	const numClients = 10
-	const numRequestsPerClient = 100
-	const burstSize = 100
-	start := time.Now()
-	clock := clocktesting.NewFakeClock(start)
-	rl := newTestClientRateLimiter(clock, "1/s", burstSize, cacheSize)
-	resultsCh := make(chan bool, numClients*numRequestsPerClient)
+	synctest.Test(t, func(t *testing.T) {
+		const cacheSize = 10
+		const numClients = 10
+		const numRequestsPerClient = 100
+		const burstSize = 100
+		rl := NewClientRateLimiterOrDie("1/s", burstSize, cacheSize, ClientKeyIP)
+		resultsCh := make(chan bool, numClients*numRequestsPerClient)
 
-	clientIP := func(i int) string {
-		return fmt.Sprintf("192.168.1.%d", i+1)
-	}
-
-	var wg sync.WaitGroup
-	for i := range numClients {
-		ip := clientIP(i)
-		for range numRequestsPerClient {
-			wg.Go(func() {
-				resultsCh <- rl.testAllow(ip)
-			})
+		clientIP := func(i int) string {
+			return fmt.Sprintf("192.168.1.%d", i+1)
 		}
-	}
-	wg.Wait()
-	close(resultsCh)
 
-	for result := range resultsCh {
-		assert.True(t, result)
-	}
+		var wg sync.WaitGroup
+		for i := range numClients {
+			ip := clientIP(i)
+			for range numRequestsPerClient {
+				wg.Go(func() {
+					resultsCh <- testAllow(rl, ip)
+				})
+			}
+		}
+		wg.Wait()
+		close(resultsCh)
 
-	for i := range numClients {
-		assert.False(t, rl.testAllow(clientIP(i)))
-	}
+		for result := range resultsCh {
+			assert.True(t, result)
+		}
+
+		for i := range numClients {
+			assert.False(t, testAllow(rl, clientIP(i)))
+		}
+	})
 }

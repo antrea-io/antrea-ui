@@ -18,12 +18,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	clocktesting "k8s.io/utils/clock/testing"
 )
 
 func init() {
@@ -32,26 +32,26 @@ func init() {
 }
 
 func TestMiddleware(t *testing.T) {
-	start := time.Now()
-	clock := clocktesting.NewFakeClock(start)
-	rl, err := NewGlobalRateLimiter("2/h", 1)
-	require.NoError(t, err)
-	middleware := MiddlewareWithClock(rl, clock)
+	synctest.Test(t, func(t *testing.T) {
+		rl, err := NewGlobalRateLimiter("2/h", 1)
+		require.NoError(t, err)
+		middleware := Middleware(rl)
 
-	sendRequest := func() int {
-		rr := httptest.NewRecorder()
-		c, _ := gin.CreateTestContext(rr)
-		middleware(c)
-		return rr.Code
-	}
+		sendRequest := func() int {
+			rr := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rr)
+			middleware(c)
+			return rr.Code
+		}
 
-	assert.Equal(t, http.StatusOK, sendRequest())
-	// we have exceeded burst size of 1
-	assert.Equal(t, http.StatusTooManyRequests, sendRequest())
-	// we should get about 1 token every 30 minutes, so should still fail after 25 minutes...
-	clock.SetTime(start.Add(25 * time.Minute))
-	assert.Equal(t, http.StatusTooManyRequests, sendRequest())
-	// ... but should succeed after 35 minutes
-	clock.SetTime(start.Add(35 * time.Minute))
-	assert.Equal(t, http.StatusOK, sendRequest())
+		assert.Equal(t, http.StatusOK, sendRequest())
+		// we have exceeded burst size of 1
+		assert.Equal(t, http.StatusTooManyRequests, sendRequest())
+		// we should get about 1 token every 30 minutes, so should still fail after 25 minutes...
+		time.Sleep(25 * time.Minute)
+		assert.Equal(t, http.StatusTooManyRequests, sendRequest())
+		// ... but should succeed after 35 minutes
+		time.Sleep(10 * time.Minute)
+		assert.Equal(t, http.StatusOK, sendRequest())
+	})
 }
