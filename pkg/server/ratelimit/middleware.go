@@ -16,18 +16,14 @@ package ratelimit
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
-	"k8s.io/utils/clock"
 )
 
 func Middleware(rateLimiter Interface) gin.HandlerFunc {
-	return MiddlewareWithClock(rateLimiter, &clock.RealClock{})
-}
-
-func MiddlewareWithClock(rateLimiter Interface, clock clock.Clock) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if rateLimiter.Allow(clock.Now(), c.Request) {
+		if rateLimiter.Allow(time.Now(), c.Request) {
 			return
 		}
 		// TODO: consider including the X-Rate-Limit-* headers (and/or Retry-After)
