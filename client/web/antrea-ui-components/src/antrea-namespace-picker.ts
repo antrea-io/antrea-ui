@@ -182,7 +182,7 @@ export class AntreaNamespacePicker extends LitElement {
         return html`
             <div class="field-group scope-select combobox" style="min-width:220px">
                 <label class="field-label" for=${id}>${this.label}</label>
-                <input id=${id} class="field-input" type="text" role="combobox" autocomplete="off"
+                <input id=${id} class="field-input field-chevron" type="text" role="combobox" autocomplete="off"
                     placeholder="Select a namespace…"
                     aria-expanded=${open ? 'true' : 'false'} aria-controls="${id}-list"
                     aria-activedescendant=${open && this._active >= 0 ? `${id}-opt-${this._active}` : nothing}
