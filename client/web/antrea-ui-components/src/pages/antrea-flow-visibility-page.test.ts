@@ -17,6 +17,7 @@ import './antrea-flow-visibility-page';
 import { SCOPE_CHANGE_EVENT, SCOPE_CHOSEN_EVENT } from '../lib/namespace-scope';
 import type { ScopeChangeDetail, ScopeChosenDetail } from '../lib/namespace-scope';
 import type { AntreaFlowVisibilityPage } from './antrea-flow-visibility-page';
+import { searchFilterOptions, typedNamespace, typedPod, typedService } from './antrea-flow-visibility-page';
 import type { FlowStreamFilter } from '../lib/flow-stream';
 import { resetAccessSummary } from '../lib/access-api';
 import {
@@ -117,17 +118,17 @@ function flowEventChunk(flows: Flow[]): string {
     return `event: flow\ndata: ${JSON.stringify({ flows })}\n\n`;
 }
 
-/** Ticks a peer-namespace menu option by its label. The menu's first entry is the
- * "Unidentified peers" pseudo-option, so an index would be picking that one. */
+/** Ticks an option of the open filter menu by its label. The Namespaces menu's first entry is
+ * the "Unidentified peers" pseudo-option, so an index would be picking that one. */
 function toggleOption(page: AntreaFlowVisibilityPage, label: string): void {
     const option = Array.from(page.shadowRoot!.querySelectorAll('.multiselect-option'))
         .find(el => el.textContent!.trim() === label);
-    if (!option) throw new Error(`no filter option "${label}" in [${peerNamespaceOptions(page).join(', ')}]`);
+    if (!option) throw new Error(`no filter option "${label}" in [${menuOptions(page).join(', ')}]`);
     option.querySelector<HTMLInputElement>('input[type="checkbox"]')!
         .dispatchEvent(new Event('change', { bubbles: true }));
 }
 
-function peerNamespaceOptions(page: AntreaFlowVisibilityPage): string[] {
+function menuOptions(page: AntreaFlowVisibilityPage): string[] {
     return Array.from(page.shadowRoot!.querySelectorAll('.multiselect-option')).map(el => el.textContent!.trim());
 }
 
@@ -1629,8 +1630,6 @@ describe('AntreaFlowVisibilityPage — filters, sort, text filter, pause/resume,
             makeFlow({ srcPod: 'zzz-xyz34', srcIP: '10.0.0.2' }),
         ]),
     ]))): Promise<{ page: AntreaFlowVisibilityPage; fetchMock: typeof fetchMock }> {
-        // Observes a namespace the fixtures' flows are not in, so that their own namespace shows
-        // up as a peer: the observed namespace is excluded from its own peer list.
         const page = await mount(fetchMock, { search: '/?namespace=ns-a' });
         // The SSE reader needs several microtask turns to drain the chunk, and the client only
         // hands flows over on its batch interval. Pump until the rows show up rather than
@@ -1998,9 +1997,9 @@ describe('AntreaFlowVisibilityPage — returning to a refused scope', () => {
     });
 });
 
-// The namespace multi-select is a peer filter now, not a second scope control: it selects flows
-// by their far end, which upstream explicitly supports naming an out-of-scope namespace for.
-describe('AntreaFlowVisibilityPage — peer namespace filter', () => {
+// The Namespaces multi-select is a filter, not a second scope control: it selects flows by an
+// endpoint's namespace, which upstream explicitly supports naming an out-of-scope namespace for.
+describe('AntreaFlowVisibilityPage — Namespaces filter', () => {
     async function mountWithPeers(search = '/?namespace=ns-a'): Promise<AntreaFlowVisibilityPage> {
         const flows = [
             makeFlow({ srcPod: 'a-abc12', srcIP: '10.0.0.1' }),
@@ -2022,14 +2021,33 @@ describe('AntreaFlowVisibilityPage — peer namespace filter', () => {
     // decided this user may identify.
     test('offers every namespace seen in the current flows', async () => {
         const page = await mountWithPeers();
-        expect(peerNamespaceOptions(page)).toEqual(['Unidentified peers', 'default', 'kube-system']);
+        expect(menuOptions(page)).toEqual(['Unidentified peers', 'default', 'kube-system']);
         expect(page.shadowRoot!.querySelector('.multiselect-hint')!.textContent)
             .toContain('seen in current flows');
     });
 
-    test('the observed namespace is not offered as its own peer', async () => {
+    // With the endpoint on the source or the destination, the observed namespace selects the
+    // traffic leaving or entering it.
+    test('the observed namespace is offered too', async () => {
         const page = await mountWithPeers('/?namespace=default');
-        expect(peerNamespaceOptions(page)).not.toContain('default');
+        expect(menuOptions(page)).toContain('default');
+    });
+
+    // The Flow Aggregator places such a destination in its Service's namespace, so a filter on
+    // that namespace selects it.
+    test('offers the Service namespace of a destination without a Pod namespace', async () => {
+        const flows = [makeFlow({
+            srcNs: 'ns-a', srcPod: 'client', srcIP: '10.0.0.1',
+            dstNs: '', dstPod: '', dstIP: '172.19.0.3', destService: 'default/kubernetes:https',
+        })];
+        const page = await mount(async () => sseResponse([flowEventChunk(flows)]), { search: '/?namespace=ns-a' });
+        for (let i = 0; i < 5 && page.shadowRoot!.querySelectorAll('tbody tr').length < 1; i++) {
+            await vi.advanceTimersByTimeAsync(1000);
+            await page.updateComplete;
+        }
+        page.shadowRoot!.querySelector<HTMLButtonElement>('.multiselect-btn')!.click();
+        await page.updateComplete;
+        expect(menuOptions(page)).toContain('default');
     });
 
     test('a selection stays in the menu once its traffic goes quiet', async () => {
@@ -2039,26 +2057,366 @@ describe('AntreaFlowVisibilityPage — peer namespace filter', () => {
 
         (page as unknown as { _entries: unknown[] })._entries = [];
         await page.updateComplete;
-        expect(peerNamespaceOptions(page)).toContain('kube-system');
+        expect(menuOptions(page)).toContain('kube-system');
     });
 
-    test('it is labelled Peer namespace, in both views', async () => {
+    test('it is labelled Namespaces, in both views', async () => {
         const page = await mountWithPeers();
         const label = () => Array.from(page.shadowRoot!.querySelectorAll('.multiselect-label'))
             .map(el => el.textContent!.trim());
-        expect(label()).toContain('Peer namespace');
+        expect(label()).toContain('Namespaces');
 
         page.viewMode = 'map';
         await page.updateComplete;
-        expect(label()).toContain('Peer namespace');
+        expect(label()).toContain('Namespaces');
+    });
+
+    // The Flow Aggregator matches the endpoint filters against a single endpoint. Grouping them
+    // under Endpoint is what sets this Namespaces filter apart from the scope.
+    test('it sits in the Endpoint group, which says the group matches one endpoint', async () => {
+        const page = await mountWithPeers();
+        const group = page.shadowRoot!.querySelector<HTMLFieldSetElement>('fieldset.endpoint-group')!;
+        const legend = group.querySelector<HTMLElement>('legend')!;
+        expect(legend.textContent!.trim()).toBe('Endpoint');
+        expect(legend.title).toContain('all match the same endpoint');
+        const labels = Array.from(group.querySelectorAll('.multiselect-label, .field-label'))
+            .map(el => el.textContent!.trim());
+        expect(labels).toEqual(['Endpoint', 'Namespaces', 'Pods', 'Pod labels', 'IPs']);
     });
 });
 
-// The applied peer filter is what the stream asks for, and the control shows what is selected: when
-// the scope moves onto a namespace the filter names, both have to drop it, or the stream goes on
-// asking for something the control no longer shows.
-describe('AntreaFlowVisibilityPage — a scope change and the applied peer filter', () => {
-    test('drops the new scope from the applied peer namespaces', async () => {
+// The endpoint filters describe one endpoint, so the Pods menu only offers the Pods that can be
+// that endpoint: on the end the Endpoint select picks, and in a selected namespace.
+describe('AntreaFlowVisibilityPage — Pods filter', () => {
+    async function mountWithPods(): Promise<AntreaFlowVisibilityPage> {
+        const flows = [
+            makeFlow({ srcNs: 'ns-a', srcPod: 'client', srcIP: '10.0.0.1', dstNs: 'ns-b', dstPod: 'frontend', dstIP: '10.0.0.2' }),
+            makeFlow({ srcNs: 'ns-a', srcPod: 'client', srcIP: '10.0.0.1', dstNs: 'ns-c', dstPod: 'backend', dstIP: '10.0.0.3' }),
+        ];
+        const page = await mount(async () => sseResponse([flowEventChunk(flows)]), { search: '/?namespace=ns-a' });
+        for (let i = 0; i < 5 && page.shadowRoot!.querySelectorAll('tbody tr').length < 2; i++) {
+            await vi.advanceTimersByTimeAsync(1000);
+            await page.updateComplete;
+        }
+        return page;
+    }
+
+    async function openMenu(page: AntreaFlowVisibilityPage, label: string): Promise<void> {
+        const menu = Array.from(page.shadowRoot!.querySelectorAll('.multiselect'))
+            .find(el => el.querySelector('.multiselect-label')!.textContent!.trim() === label)!;
+        menu.querySelector<HTMLButtonElement>('.multiselect-btn')!.click();
+        await page.updateComplete;
+    }
+
+    async function chooseEndpoint(page: AntreaFlowVisibilityPage, value: string): Promise<void> {
+        const select = page.shadowRoot!.querySelector<HTMLSelectElement>('fieldset.endpoint-group select')!;
+        select.value = value;
+        select.dispatchEvent(new Event('change'));
+        await page.updateComplete;
+    }
+
+    test('offers every Pod with no namespace selected', async () => {
+        const page = await mountWithPods();
+        await openMenu(page, 'Pods');
+        expect(menuOptions(page)).toEqual(['backend', 'client', 'frontend']);
+    });
+
+    test('offers only the Pods of the selected namespaces', async () => {
+        const page = await mountWithPods();
+        await openMenu(page, 'Namespaces');
+        toggleOption(page, 'ns-b');
+        await page.updateComplete;
+        await openMenu(page, 'Pods');
+        expect(menuOptions(page)).toEqual(['frontend']);
+    });
+
+    test('offers only the Pods on the end the Endpoint select picks', async () => {
+        const page = await mountWithPods();
+        await chooseEndpoint(page, 'from');
+        await openMenu(page, 'Pods');
+        expect(menuOptions(page)).toEqual(['client']);
+
+        await chooseEndpoint(page, 'to');
+        expect(menuOptions(page)).toEqual(['backend', 'frontend']);
+    });
+
+    // Left selected, a Pod that cannot be the endpoint could only make the filter match nothing.
+    test('drops a selected Pod that a namespace selection rules out', async () => {
+        const page = await mountWithPods();
+        await openMenu(page, 'Pods');
+        toggleOption(page, 'client');
+        toggleOption(page, 'frontend');
+        await page.updateComplete;
+
+        await openMenu(page, 'Namespaces');
+        toggleOption(page, 'ns-b');
+        await page.updateComplete;
+        expect((page as unknown as { _pendingPods: string[] })._pendingPods).toEqual(['frontend']);
+    });
+
+    test('drops a selected Pod that the Endpoint select rules out', async () => {
+        const page = await mountWithPods();
+        await openMenu(page, 'Pods');
+        toggleOption(page, 'frontend');
+        await page.updateComplete;
+
+        await chooseEndpoint(page, 'from');
+        expect((page as unknown as { _pendingPods: string[] })._pendingPods).toEqual([]);
+    });
+});
+
+describe('searchFilterOptions', () => {
+    const options = ['ns-b/backend', 'ns-b/frontend', 'ns-c/frontend'];
+
+    test('matches by prefix, ignoring case and surrounding spaces', () => {
+        expect(searchFilterOptions(options, [], '  NS-B/F ').items).toEqual(['ns-b/frontend']);
+    });
+
+    test('matches a Service by its name alone', () => {
+        expect(searchFilterOptions(options, [], 'front').items).toEqual(['ns-b/frontend', 'ns-c/frontend']);
+    });
+
+    test('does not match inside a name', () => {
+        expect(searchFilterOptions(options, [], 'end').items).toEqual([]);
+    });
+
+    test('lists the selected options first, whatever is typed', () => {
+        expect(searchFilterOptions(options, ['ns-c/frontend'], 'ns-b').items)
+            .toEqual(['ns-c/frontend', 'ns-b/backend', 'ns-b/frontend']);
+    });
+
+    test('shows at most 10 unselected matches, in the order given, and says there are more', () => {
+        const many = Array.from({ length: 12 }, (_, i) => `pod-${String(i).padStart(2, '0')}`);
+        const { items, more } = searchFilterOptions(many, ['pod-11'], '');
+        expect(items).toEqual(['pod-11', ...many.slice(0, 10)]);
+        expect(more).toBe(true);
+        expect(searchFilterOptions(many, [], 'pod-1').more).toBe(false);
+    });
+});
+
+describe('typed names in the filter menus', () => {
+    test('a Namespace is an RFC 1123 label', () => {
+        expect(typedNamespace('ns-x')).toEqual({ value: 'ns-x' });
+        expect(typedNamespace('Unidentified peers').error).toBeDefined();
+    });
+
+    test('a Pod is an RFC 1123 subdomain', () => {
+        expect(typedPod('redis-0')).toEqual({ value: 'redis-0' });
+        expect(typedPod('web.v2')).toEqual({ value: 'web.v2' });
+        expect(typedPod('Redis').error).toBeDefined();
+    });
+
+    test('a Service is namespace/name', () => {
+        expect(typedService('ns-b/frontend', '')).toEqual({ value: 'ns-b/frontend' });
+        expect(typedService('ns-b/', 'ns-a').error).toBeDefined();
+        expect(typedService('a/b/c', 'ns-a').error).toBeDefined();
+    });
+
+    // A bare name across every namespace rarely means anything to a user, so it is only taken
+    // where the scope gives it a namespace, and the result shows that namespace.
+    test('a bare Service name takes the observed namespace, and needs one', () => {
+        expect(typedService('frontend', 'ns-a')).toEqual({ value: 'ns-a/frontend' });
+        expect(typedService('frontend', '').error).toContain('namespace/name');
+    });
+});
+
+describe('AntreaFlowVisibilityPage — filter menu search', () => {
+    test('typing in an open menu narrows it, and reopening the menu clears the search', async () => {
+        const flows = Array.from({ length: 12 }, (_, i) => makeFlow({
+            srcNs: 'ns-a', srcPod: `client-${String(i).padStart(2, '0')}`, srcIP: `10.0.0.${i + 1}`,
+            dstNs: 'ns-b', dstPod: 'server', dstIP: '10.0.1.1',
+        }));
+        const page = await mount(async () => sseResponse([flowEventChunk(flows)]), { search: '/?namespace=ns-a' });
+        for (let i = 0; i < 5 && page.shadowRoot!.querySelectorAll('tbody tr').length < 12; i++) {
+            await vi.advanceTimersByTimeAsync(1000);
+            await page.updateComplete;
+        }
+        const menu = () => Array.from(page.shadowRoot!.querySelectorAll('.multiselect'))
+            .find(el => el.querySelector('.multiselect-label')!.textContent!.trim() === 'Pods')!;
+        const toggleMenu = async () => {
+            menu().querySelector<HTMLButtonElement>('.multiselect-btn')!.click();
+            await page.updateComplete;
+        };
+
+        await toggleMenu();
+        const search = menu().querySelector<HTMLInputElement>('.multiselect-search')!;
+        expect(page.shadowRoot!.activeElement).toBe(search);
+        expect(menuOptions(page)).toHaveLength(10);
+        expect(menu().querySelector('.multiselect-hint:last-child')!.textContent).toContain('type to search');
+
+        search.value = 'serv';
+        search.dispatchEvent(new Event('input'));
+        await page.updateComplete;
+        expect(menuOptions(page)).toEqual(['server']);
+
+        await toggleMenu();
+        await toggleMenu();
+        expect(menu().querySelector<HTMLInputElement>('.multiselect-search')!.value).toBe('');
+        expect(menuOptions(page)).toHaveLength(10);
+    });
+
+    async function mountForTyping(): Promise<AntreaFlowVisibilityPage> {
+        const flows = [makeFlow({ srcNs: 'ns-a', srcPod: 'client', srcIP: '10.0.0.1', dstNs: 'ns-b', dstPod: 'server', dstIP: '10.0.1.1' })];
+        const page = await mount(async () => sseResponse([flowEventChunk(flows)]), { search: '/?namespace=ns-a' });
+        for (let i = 0; i < 5 && page.shadowRoot!.querySelectorAll('tbody tr').length < 1; i++) {
+            await vi.advanceTimersByTimeAsync(1000);
+            await page.updateComplete;
+        }
+        return page;
+    }
+
+    function menuOf(page: AntreaFlowVisibilityPage, label: string): Element {
+        return Array.from(page.shadowRoot!.querySelectorAll('.multiselect'))
+            .find(el => el.querySelector('.multiselect-label')!.textContent!.trim() === label)!;
+    }
+
+    async function typeIn(page: AntreaFlowVisibilityPage, label: string, text: string): Promise<HTMLInputElement> {
+        menuOf(page, label).querySelector<HTMLButtonElement>('.multiselect-btn')!.click();
+        await page.updateComplete;
+        const search = menuOf(page, label).querySelector<HTMLInputElement>('.multiselect-search')!;
+        search.value = text;
+        search.dispatchEvent(new Event('input'));
+        await page.updateComplete;
+        return search;
+    }
+
+    // The Flow Aggregator applies the filter, so a name no flow shows yet still matches the
+    // traffic that arrives later.
+    test('a name no flow shows can be added from the search box', async () => {
+        const page = await mountForTyping();
+        await typeIn(page, 'Pods', 'redis-0');
+        const add = menuOf(page, 'Pods').querySelector<HTMLButtonElement>('.multiselect-add')!;
+        expect(add.textContent).toContain('Add "redis-0"');
+        // As from the keyboard: focus on the button, which adding removes.
+        add.focus();
+        add.click();
+        await page.updateComplete;
+        await page.updateComplete;
+        expect((page as unknown as { _pendingPods: string[] })._pendingPods).toEqual(['redis-0']);
+        expect(menuOptions(page)).toContain('redis-0');
+        // The button is gone, so the focus goes back to the search box rather than nowhere.
+        expect(page.shadowRoot!.activeElement).toBe(menuOf(page, 'Pods').querySelector('.multiselect-search'));
+    });
+
+    test('Enter adds the typed name', async () => {
+        const page = await mountForTyping();
+        const search = await typeIn(page, 'Namespaces', 'ns-x');
+        search.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
+        await page.updateComplete;
+        expect((page as unknown as { _pendingNs: string[] })._pendingNs).toEqual(['ns-x']);
+    });
+
+    test('a bare Service name is added in the observed namespace', async () => {
+        const page = await mountForTyping();
+        await typeIn(page, 'Services', 'frontend');
+        expect(menuOf(page, 'Services').querySelector('.multiselect-add')!.textContent).toContain('Add "ns-a/frontend"');
+    });
+
+    test('an invalid name is not offered, and the menu says why', async () => {
+        const page = await mountForTyping();
+        await typeIn(page, 'Pods', 'Bad_Name');
+        expect(menuOf(page, 'Pods').querySelector('.multiselect-add')).toBeNull();
+        expect(menuOf(page, 'Pods').textContent).toContain('Not a valid Pod name');
+    });
+
+    // The page cannot tell where a Pod that is in no flow runs, so narrowing leaves it selected.
+    test('a typed Pod survives a Namespaces selection, a Pod the flows show elsewhere does not', async () => {
+        const page = await mountForTyping();
+        await typeIn(page, 'Pods', 'redis-0');
+        menuOf(page, 'Pods').querySelector<HTMLButtonElement>('.multiselect-add')!.click();
+        await page.updateComplete;
+        toggleOption(page, 'client');
+        await page.updateComplete;
+
+        const search = await typeIn(page, 'Namespaces', 'ns-b');
+        search.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
+        await page.updateComplete;
+        expect((page as unknown as { _pendingPods: string[] })._pendingPods).toEqual(['redis-0']);
+    });
+});
+
+// The Flow Aggregator rejects a Service filter with the endpoint filters on the source (a Service
+// is only ever a flow's destination), so the page never lets the two be applied together.
+describe('AntreaFlowVisibilityPage — Services filter', () => {
+    async function mountWithServices(): Promise<{ page: AntreaFlowVisibilityPage; fetchMock: ReturnType<typeof vi.fn> }> {
+        const fetchMock = vi.fn(async () => sseResponse([flowEventChunk([
+            makeFlow({ srcIP: '10.0.0.1', destService: 'ns-b/frontend:http' }),
+            makeFlow({ srcIP: '10.0.0.2', destService: 'ns-c/frontend:http' }),
+        ])]));
+        const page = await mount(fetchMock, { search: '/?namespace=ns-a' });
+        for (let i = 0; i < 5 && page.shadowRoot!.querySelectorAll('tbody tr').length < 2; i++) {
+            await vi.advanceTimersByTimeAsync(1000);
+            await page.updateComplete;
+        }
+        return { page, fetchMock };
+    }
+
+    async function openServiceMenu(page: AntreaFlowVisibilityPage): Promise<void> {
+        const menu = Array.from(page.shadowRoot!.querySelectorAll('.multiselect'))
+            .find(el => el.querySelector('.multiselect-label')!.textContent!.trim() === 'Services')!;
+        menu.querySelector<HTMLButtonElement>('.multiselect-btn')!.click();
+        await page.updateComplete;
+    }
+
+    function endpointSelect(page: AntreaFlowVisibilityPage): HTMLSelectElement {
+        return page.shadowRoot!.querySelector<HTMLSelectElement>('fieldset.endpoint-group select')!;
+    }
+
+    // The Flow Aggregator matches a namespace/name value against that Service only: the same name
+    // in two Namespaces is two Services, and selecting one must not ask for the other.
+    test('applying a Service sends it with its namespace', async () => {
+        const { page, fetchMock } = await mountWithServices();
+        await openServiceMenu(page);
+        expect(menuOptions(page)).toEqual(['ns-b/frontend', 'ns-c/frontend']);
+        toggleOption(page, 'ns-b/frontend');
+        await page.updateComplete;
+
+        page.shadowRoot!.querySelector<HTMLElement>('.filter-actions antrea-button')!.click();
+        await page.updateComplete;
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(streamCalls(fetchMock)).toHaveLength(2);
+        const url = new URL(streamCalls(fetchMock)[1][0] as string, 'http://localhost');
+        expect(url.searchParams.get('services')).toBe('ns-b/frontend');
+    });
+
+    test('the endpoint cannot be the source while a Service is selected', async () => {
+        const { page } = await mountWithServices();
+        const from = () => endpointSelect(page).querySelector<HTMLOptionElement>('option[value="from"]')!;
+        expect(from().disabled).toBe(false);
+
+        await openServiceMenu(page);
+        toggleOption(page, 'ns-b/frontend');
+        await page.updateComplete;
+        expect(from().disabled).toBe(true);
+        expect(from().title).toContain('Source is not available while a Service is selected');
+        expect(endpointSelect(page).title).toContain('Source is not available while a Service is selected');
+
+        toggleOption(page, 'ns-b/frontend');
+        await page.updateComplete;
+        expect(from().disabled).toBe(false);
+    });
+
+    test('with the endpoint on the source, the Services menu offers no Service and says why', async () => {
+        const { page } = await mountWithServices();
+        const select = endpointSelect(page);
+        select.value = 'from';
+        select.dispatchEvent(new Event('change'));
+        await page.updateComplete;
+
+        await openServiceMenu(page);
+        expect(menuOptions(page)).toEqual([]);
+        expect(page.shadowRoot!.querySelector('.multiselect-hint')!.textContent)
+            .toContain('not available while the endpoint is the source');
+        // Nor can one be typed: the Flow Aggregator rejects a Service with the source.
+        expect(page.shadowRoot!.querySelector('.multiselect-search')).toBeNull();
+    });
+});
+
+// The observed namespace is a valid filter value (with From or To it selects the traffic leaving or
+// entering it), so moving the scope onto a namespace the filter names leaves the filter alone.
+describe('AntreaFlowVisibilityPage — a scope change and the applied namespaces', () => {
+    test('keeps the applied namespaces when the scope moves onto one of them', async () => {
         const fetchMock = vi.fn(async () => sseResponse([]));
         const page = await mount(fetchMock, {
             search: '/?namespace=default',
@@ -2077,28 +2435,7 @@ describe('AntreaFlowVisibilityPage — a scope change and the applied peer filte
         const calls = streamCalls(fetchMock);
         const params = new URL(calls[calls.length - 1][0] as string, 'http://example.test').searchParams;
         expect(params.get('observedNamespace')).toBe('ns-x');
-        expect(params.get('namespaces')).toBe('ns-y');
-    });
-
-    test('drops the filter altogether when the new scope was the only peer namespace', async () => {
-        const fetchMock = vi.fn(async () => sseResponse([]));
-        const page = await mount(fetchMock, {
-            search: '/?namespace=default',
-            flowAccess: () => flowAccessFixture({
-                namespaces: ['default', 'ns-x'],
-            }),
-        });
-        (page as unknown as { _applyFilter(filter: FlowStreamFilter): void })
-            ._applyFilter({ namespaces: ['ns-x'] });
-        await page.updateComplete;
-        await vi.advanceTimersByTimeAsync(0);
-
-        await chooseScope(page, 'ns-x');
-        await vi.advanceTimersByTimeAsync(0);
-
-        const calls = streamCalls(fetchMock);
-        const params = new URL(calls[calls.length - 1][0] as string, 'http://example.test').searchParams;
-        expect(params.has('namespaces')).toBe(false);
+        expect(params.get('namespaces')).toBe('ns-x,ns-y');
     });
 });
 
@@ -2140,6 +2477,49 @@ describe('AntreaFlowVisibilityPage — the Unidentified peers pseudo-filter', ()
         await applyUnidentifiedPeers(page);
 
         const rows = page.shadowRoot!.querySelectorAll('tbody tr');
+        expect(rows).toHaveLength(1);
+        expect(rows[0].textContent).toContain('ns-c');
+    });
+
+    // Like the other endpoint filters, it looks at the end the Endpoint select picks.
+    test('looks only at the end the Endpoint select picks', async () => {
+        const flows = [
+            makeFlow({
+                srcPod: 'b-xyz34', srcIP: '10.0.0.2', dstIP: '10.0.0.3',
+                dstNs: 'ns-c', dstPod: '', dstDisclosure: EndpointDisclosure.Flow,
+            }),
+            makeFlow({
+                srcNs: 'ns-d', srcPod: '', srcIP: '10.0.0.5', srcDisclosure: EndpointDisclosure.Flow,
+                dstPod: 'server', dstIP: '10.0.0.6',
+            }),
+        ];
+        const page = await mount(async () => sseResponse([flowEventChunk(flows)]), { search: '/?namespace=default' });
+        const pump = async () => {
+            for (let i = 0; i < 5; i++) {
+                await vi.advanceTimersByTimeAsync(1000);
+                await page.updateComplete;
+            }
+        };
+        await pump();
+        const chooseEndpoint = async (value: string) => {
+            const select = page.shadowRoot!.querySelector<HTMLSelectElement>('fieldset.endpoint-group select')!;
+            select.value = value;
+            select.dispatchEvent(new Event('change'));
+            await page.updateComplete;
+        };
+
+        await chooseEndpoint('from');
+        await applyUnidentifiedPeers(page);
+        await pump();
+        let rows = page.shadowRoot!.querySelectorAll('tbody tr');
+        expect(rows).toHaveLength(1);
+        expect(rows[0].textContent).toContain('ns-d');
+
+        await chooseEndpoint('to');
+        page.shadowRoot!.querySelector<HTMLElement>('.filter-actions antrea-button')!.click();
+        await page.updateComplete;
+        await pump();
+        rows = page.shadowRoot!.querySelectorAll('tbody tr');
         expect(rows).toHaveLength(1);
         expect(rows[0].textContent).toContain('ns-c');
     });
@@ -2225,7 +2605,7 @@ describe('AntreaFlowVisibilityPage — the Unidentified peers pseudo-filter', ()
         expect((page as unknown as { _unidentifiedPeersOnly: boolean })._unidentifiedPeersOnly).toBe(false);
         page.shadowRoot!.querySelector<HTMLButtonElement>('.multiselect-btn')!.click();
         await page.updateComplete;
-        expect(peerNamespaceOptions(page)).not.toContain('Unidentified peers');
+        expect(menuOptions(page)).not.toContain('Unidentified peers');
     });
 
     test('it also narrows the service map', async () => {
