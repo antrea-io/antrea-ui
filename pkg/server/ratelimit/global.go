@@ -44,6 +44,9 @@ func NewGlobalRateLimiterOrDie(rate string, burstSize int) *GlobalRateLimiter {
 	return l
 }
 
-func (l *GlobalRateLimiter) Allow(t time.Time, req *http.Request) bool {
-	return l.rl.AllowN(t, 1)
+// Allow implements Interface. The limiter is shared by all clients, so retryAfter is the time until
+// the next shared token is available: another client may use it before the caller retries, which
+// makes it a hint rather than a guarantee.
+func (l *GlobalRateLimiter) Allow(t time.Time, req *http.Request) (bool, time.Duration) {
+	return reserve(l.rl, t)
 }
