@@ -30,7 +30,8 @@ func TestGlobalRateLimiter(t *testing.T) {
 
 		testAllow := func() bool {
 			// we can use nil as the global limiter does not need an actual request
-			return rl.Allow(time.Now(), nil)
+			ok, _ := rl.Allow(time.Now(), nil)
+			return ok
 		}
 
 		assert.True(t, testAllow())
@@ -43,5 +44,23 @@ func TestGlobalRateLimiter(t *testing.T) {
 		// ... but should succeed after 25 minutes
 		time.Sleep(10 * time.Minute)
 		assert.True(t, testAllow())
+	})
+}
+
+func TestGlobalRateLimiterRetryAfter(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		rl, err := NewGlobalRateLimiter("3/h", 1)
+		require.NoError(t, err)
+
+		ok, delay := rl.Allow(time.Now(), nil)
+		assert.True(t, ok)
+		assert.Zero(t, delay)
+		ok, delay = rl.Allow(time.Now(), nil)
+		assert.False(t, ok)
+		assert.Equal(t, 20*time.Minute, delay)
+		time.Sleep(15 * time.Minute)
+		ok, delay = rl.Allow(time.Now(), nil)
+		assert.False(t, ok)
+		assert.Equal(t, 5*time.Minute, delay)
 	})
 }

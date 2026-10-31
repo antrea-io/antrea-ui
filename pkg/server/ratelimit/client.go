@@ -62,7 +62,7 @@ func NewClientRateLimiterOrDie(rate string, burstSize int, maxSize int, keyFn Cl
 	return l
 }
 
-func (l *ClientRateLimiter) Allow(t time.Time, req *http.Request) bool {
+func (l *ClientRateLimiter) Allow(t time.Time, req *http.Request) (bool, time.Duration) {
 	key := l.keyFn(req)
 	rl, ok := l.cache.Get(key)
 	if !ok {
@@ -72,7 +72,7 @@ func (l *ClientRateLimiter) Allow(t time.Time, req *http.Request) bool {
 			rl = previous
 		}
 	}
-	return rl.AllowN(t, 1)
+	return reserve(rl, t)
 }
 
 // ClientKeyIP tries to determine the origin client IP for the provided request. It looks at headers

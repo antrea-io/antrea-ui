@@ -16,6 +16,7 @@ package ratelimit
 
 import (
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -23,10 +24,16 @@ import (
 
 func Middleware(rateLimiter Interface) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if rateLimiter.Allow(time.Now(), c.Request) {
+		ok, retryAfter := rateLimiter.Allow(time.Now(), c.Request)
+		if ok {
 			return
 		}
-		// TODO: consider including the X-Rate-Limit-* headers (and/or Retry-After)
+		if retryAfter > 0 {
+			// Retry-After is expressed in whole seconds (RFC 9110). Round up, with a minimum of 1,
+			// so that clients do not retry straight into another 429.
+			seconds := max(1, int64((retryAfter+time.Second-1)/time.Second))
+			c.Header("Retry-After", strconv.FormatInt(seconds, 10))
+		}
 		c.AbortWithStatus(http.StatusTooManyRequests)
 	}
 }
