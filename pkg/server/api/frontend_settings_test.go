@@ -45,6 +45,7 @@ func TestFlowSourceSettings(t *testing.T) {
 					Name: "flow-aggregator", Capabilities: []string{serverconfig.FlowSourceCapabilityWatch},
 					Address: "private-fa.example.test:14740", Namespace: "private-ns", CAConfigMap: "private-fa-ca",
 					ServerName: "private-name",
+					Discovery:  serverconfig.FlowSourceDiscoveryConfig{Enabled: true, LabelSelector: "private=selector"},
 				},
 				{
 					Name: "flow-history", Capabilities: []string{serverconfig.FlowSourceCapabilityList, serverconfig.FlowSourceCapabilityWatch},

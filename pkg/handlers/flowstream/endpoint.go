@@ -36,13 +36,16 @@ const caFetchTimeout = 10 * time.Second
 // EndpointSubscriber serves one flow source. It reads the source's CA bundle at the start of
 // every stream and builds a gRPC subscriber for that stream, so a rotated CA applies to the next
 // stream and a missing or invalid CA only fails the requests that need it: it never prevents the
-// UI server from starting.
+// UI server from starting. With Discovery set, the endpoint and the CA's namespace come from the
+// discovered Service instead of Address and Namespace, and a stream ends when that Service
+// changes.
 type EndpointSubscriber struct {
 	Logger                                      logr.Logger
 	Client                                      kubernetes.Interface
 	Name                                        string
 	Address, Namespace, CAConfigMap, ServerName string
 	InsecureSkipVerify                          bool
+	Discovery                                   *ServiceDiscovery
 	AdminTokenSource                            *k8s.AdminTokenSource
 }
 
@@ -55,7 +58,7 @@ func (s *EndpointSubscriber) Subscribe(ctx context.Context, scope *FlowStreamSco
 		defer close(flows)
 		ctx, cancel := context.WithCancel(ctx)
 		defer cancel()
-		cfg, err := s.connectionConfig(ctx)
+		cfg, changed, err := s.connectionConfig(ctx)
 		if err != nil {
 			errs <- err
 			return
@@ -66,7 +69,7 @@ func (s *EndpointSubscriber) Subscribe(ctx context.Context, scope *FlowStreamSco
 			return
 		}
 		defer subscriber.Close()
-		err = relay(ctx, subscriber, scope, filter, func() error { close(ready); return nil }, func(event apisv1.FlowStreamEvent) error {
+		err = relay(ctx, subscriber, scope, filter, changed, func() error { close(ready); return nil }, func(event apisv1.FlowStreamEvent) error {
 			select {
 			case flows <- event:
 				return nil
@@ -81,17 +84,31 @@ func (s *EndpointSubscriber) Subscribe(ctx context.Context, scope *FlowStreamSco
 	return flows, errs, ready
 }
 
-func (s *EndpointSubscriber) connectionConfig(ctx context.Context) (GRPCConfig, error) {
+// connectionConfig resolves the connection of the next stream. The returned channel, when not nil,
+// closes when the discovered endpoint changes, which ends the stream so that it reconnects.
+func (s *EndpointSubscriber) connectionConfig(ctx context.Context) (GRPCConfig, <-chan struct{}, error) {
+	address, namespace := s.Address, s.Namespace
+	var revision string
+	var changed <-chan struct{}
+	if s.Discovery != nil {
+		endpoint, ch, err := s.Discovery.Current()
+		changed = ch
+		if err != nil {
+			return GRPCConfig{}, changed, err
+		}
+		address, namespace = endpoint.Address, endpoint.Namespace
+		revision = endpoint.Revision
+	}
 	var ca []byte
 	if s.CAConfigMap != "" {
 		fetchCtx, cancel := context.WithTimeout(ctx, caFetchTimeout)
 		defer cancel()
-		cm, err := s.Client.CoreV1().ConfigMaps(s.Namespace).Get(fetchCtx, s.CAConfigMap, metav1.GetOptions{})
+		cm, err := s.Client.CoreV1().ConfigMaps(namespace).Get(fetchCtx, s.CAConfigMap, metav1.GetOptions{})
 		if err != nil {
 			if apierrors.IsForbidden(err) || apierrors.IsUnauthorized(err) {
-				return GRPCConfig{}, internalStreamError(fmt.Errorf("backend is not allowed to read the CA %s/%s of flow source %q", s.Namespace, s.CAConfigMap, s.Name))
+				return GRPCConfig{}, changed, internalStreamError(fmt.Errorf("backend is not allowed to read the CA %s/%s of flow source %q", namespace, s.CAConfigMap, s.Name))
 			}
-			return GRPCConfig{}, dependencyUnavailable(fmt.Sprintf("cannot read the CA %s/%s of flow source %q: %v", s.Namespace, s.CAConfigMap, s.Name, err))
+			return GRPCConfig{}, changed, dependencyUnavailable(fmt.Sprintf("cannot read the CA %s/%s of flow source %q: %v", namespace, s.CAConfigMap, s.Name, err))
 		}
 		ca = []byte(cm.Data["ca.crt"])
 	}
@@ -99,14 +116,15 @@ func (s *EndpointSubscriber) connectionConfig(ctx context.Context) (GRPCConfig, 
 	if s.CAConfigMap != "" {
 		roots := x509.NewCertPool()
 		if !roots.AppendCertsFromPEM(ca) {
-			return GRPCConfig{}, internalStreamError(fmt.Errorf("the CA %s/%s of flow source %q is empty or invalid", s.Namespace, s.CAConfigMap, s.Name))
+			return GRPCConfig{}, changed, internalStreamError(fmt.Errorf("the CA %s/%s of flow source %q is empty or invalid", namespace, s.CAConfigMap, s.Name))
 		}
 		tlsConfig.RootCAs = roots
 	}
 	// The digest versions the connection key, so a changed endpoint or trust retires the
-	// connections built for the old one. The name stays ahead of the first "/": the session
+	// connections built for the old one; the revision covers a discovered Service which routes
+	// the same address to different backends. The name stays ahead of the first "/": the session
 	// treats that prefix as the upstream, so sources never retire each other's connections.
-	digest := sha256.Sum256(fmt.Appendf(ca, "|%s|%s|%t", s.Address, s.ServerName, s.InsecureSkipVerify))
-	return GRPCConfig{Name: s.Name, Address: s.Address, TLSConfig: tlsConfig,
-		ConnectionKey: fmt.Sprintf("%s%s/%x", flowSourceConnKeyPrefix, s.Name, digest), AdminTokenSource: s.AdminTokenSource}, nil
+	digest := sha256.Sum256(fmt.Appendf(ca, "|%s|%s|%t|%s", address, s.ServerName, s.InsecureSkipVerify, revision))
+	return GRPCConfig{Name: s.Name, Address: address, TLSConfig: tlsConfig,
+		ConnectionKey: fmt.Sprintf("%s%s/%x", flowSourceConnKeyPrefix, s.Name, digest), AdminTokenSource: s.AdminTokenSource}, changed, nil
 }

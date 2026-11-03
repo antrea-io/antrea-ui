@@ -25,6 +25,7 @@ import (
 
 	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/validation"
 
@@ -107,14 +108,18 @@ type FlowSourceConfig struct {
 	// Capabilities lists what the source serves: FlowSourceCapabilityWatch and/or
 	// FlowSourceCapabilityList. At least one is required.
 	Capabilities []string
-	Address      string
+	// Address is the gRPC address (host:port). It is ignored when Discovery is enabled.
+	Address string
+	// Discovery makes the backend find the source's endpoint instead of using Address.
+	Discovery FlowSourceDiscoveryConfig
 	// CAConfigMap is the name of the ConfigMap (in Namespace) containing the CA
 	// certificate (key: ca.crt) used to verify the FlowStreamService server cert.
 	// When empty, verification falls back to the system trust store, which will not verify
 	// a self-signed certificate: the connection fails rather than skipping verification.
 	// Use InsecureSkipVerify for that (dev/test only).
 	CAConfigMap string
-	// Namespace is the Kubernetes namespace of CAConfigMap. It is required when CAConfigMap is set.
+	// Namespace is the Kubernetes namespace of CAConfigMap. It is required when CAConfigMap is set,
+	// unless Discovery is enabled: the discovered Service's namespace is used instead.
 	Namespace string
 	// ServerName overrides the TLS server name used for certificate verification.
 	// Useful when dialing via kubectl port-forward, where the address is loopback
@@ -124,6 +129,24 @@ type FlowSourceConfig struct {
 	// InsecureSkipVerify disables TLS server certificate verification.
 	// This should only be used for development/testing and must never be enabled in production.
 	InsecureSkipVerify bool
+}
+
+// DefaultFlowServiceSelector is the label selector discovery uses unless the source sets one. It
+// is the label Antrea's Flow Aggregator chart puts on its Service when FlowStreamService is
+// enabled, which is the default in Aggregate mode (antrea-io/antrea#8467). A Flow Aggregator
+// without that change does not label its Service, so discovery finds nothing for it.
+const DefaultFlowServiceSelector = "observability.antrea.io/flow-stream-service=true"
+
+// FlowSourceDiscoveryConfig configures optional discovery of a flow source's endpoint.
+// When enabled, the backend watches Services in every namespace for LabelSelector and connects to
+// the one match's flowstream-grpc port. The selector picks a single endpoint, so at most one
+// source can enable it.
+type FlowSourceDiscoveryConfig struct {
+	Enabled bool
+	// LabelSelector selects the Service, as for kubectl -l. Whoever can create a matching Service
+	// in any namespace receives the credentials the backend forwards, so keep it as narrow as the
+	// default. When empty, DefaultFlowServiceSelector is used.
+	LabelSelector string
 }
 
 // HasCapability reports whether the source declares the given capability.
@@ -389,8 +412,27 @@ func (c *Config) Redacted() Config {
 	return r
 }
 
+func validateDiscoverySelector(i int, source *FlowSourceConfig) error {
+	selector := source.Discovery.LabelSelector
+	if selector == "" {
+		return nil
+	}
+	if !source.Discovery.Enabled {
+		return fmt.Errorf("flowSources[%d] (%s) sets discovery.labelSelector but discovery is not enabled", i, source.Name)
+	}
+	if strings.TrimSpace(selector) == "" {
+		return fmt.Errorf("flowSources[%d] (%s) discovery.labelSelector must not be blank", i, source.Name)
+	}
+	if _, err := labels.Parse(selector); err != nil {
+		return fmt.Errorf("flowSources[%d] (%s) has an invalid discovery.labelSelector %q: %w", i, source.Name, selector, err)
+	}
+	return nil
+}
+
 func validateFlowSources(sources []FlowSourceConfig) error {
 	names := sets.New[string]()
+	// discovering names the source which enabled discovery, once there is one.
+	var discovering string
 	for i, source := range sources {
 		if errs := validation.IsDNS1123Label(source.Name); len(errs) > 0 {
 			return fmt.Errorf("flowSources[%d].name %q is invalid: %s", i, source.Name, strings.Join(errs, "; "))
@@ -399,7 +441,16 @@ func validateFlowSources(sources []FlowSourceConfig) error {
 			return fmt.Errorf("flowSources[%d].name %q is not unique", i, source.Name)
 		}
 		names.Insert(source.Name)
-		if source.Address == "" {
+		if err := validateDiscoverySelector(i, &source); err != nil {
+			return err
+		}
+		if source.Discovery.Enabled {
+			if discovering != "" {
+				return fmt.Errorf("flowSources[%d] (%s) enables discovery, like %s: the Service label selects "+
+					"a single endpoint, so at most one source can", i, source.Name, discovering)
+			}
+			discovering = fmt.Sprintf("flowSources[%q]", source.Name)
+		} else if source.Address == "" {
 			return fmt.Errorf("flowSources[%d] (%s) address must not be empty", i, source.Name)
 		}
 		if len(source.Capabilities) == 0 {
@@ -411,8 +462,8 @@ func validateFlowSources(sources []FlowSourceConfig) error {
 					i, source.Name, capability, FlowSourceCapabilityWatch, FlowSourceCapabilityList)
 			}
 		}
-		if source.CAConfigMap != "" && len(validation.IsDNS1123Label(source.Namespace)) != 0 {
-			return fmt.Errorf("flowSources[%d] (%s) namespace must be a valid Kubernetes namespace name (DNS-1123 label) when caConfigMap is set", i, source.Name)
+		if source.CAConfigMap != "" && !source.Discovery.Enabled && len(validation.IsDNS1123Label(source.Namespace)) != 0 {
+			return fmt.Errorf("flowSources[%d] (%s) namespace must be a valid Kubernetes namespace name (DNS-1123 label) when caConfigMap is set and discovery is disabled", i, source.Name)
 		}
 	}
 	return nil

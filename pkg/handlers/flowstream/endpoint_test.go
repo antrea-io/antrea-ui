@@ -63,7 +63,7 @@ func newEndpoint(client *fake.Clientset, name string) *EndpointSubscriber {
 func TestEndpointConnectionConfigReadsTrust(t *testing.T) {
 	client := fake.NewClientset()
 	setCA(t, client, "src-ca", caPEM(t))
-	cfg, err := newEndpoint(client, "src").connectionConfig(t.Context())
+	cfg, _, err := newEndpoint(client, "src").connectionConfig(t.Context())
 	require.NoError(t, err)
 	require.NotNil(t, cfg.TLSConfig.RootCAs)
 	assert.False(t, cfg.TLSConfig.InsecureSkipVerify)
@@ -74,7 +74,7 @@ func TestEndpointConnectionConfigReadsTrust(t *testing.T) {
 	client = fake.NewClientset()
 	endpoint := newEndpoint(client, "src")
 	endpoint.CAConfigMap = ""
-	cfg, err = endpoint.connectionConfig(t.Context())
+	cfg, _, err = endpoint.connectionConfig(t.Context())
 	require.NoError(t, err)
 	assert.Nil(t, cfg.TLSConfig.RootCAs)
 	assert.Empty(t, client.Actions())
@@ -100,7 +100,7 @@ func TestEndpointConnectionConfigErrors(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			client := fake.NewClientset()
 			tc.prepare(client)
-			_, err := newEndpoint(client, "src").connectionConfig(t.Context())
+			_, _, err := newEndpoint(client, "src").connectionConfig(t.Context())
 			var se *StreamError
 			require.ErrorAs(t, err, &se)
 			assert.Equal(t, tc.wantCode, se.Code)
@@ -119,7 +119,7 @@ func TestEndpointConnectionKey(t *testing.T) {
 	setCA(t, client, "a-ca", pem)
 	setCA(t, client, "b-ca", pem)
 	key := func(e *EndpointSubscriber) string {
-		cfg, err := e.connectionConfig(t.Context())
+		cfg, _, err := e.connectionConfig(t.Context())
 		require.NoError(t, err)
 		return cfg.ConnectionKey
 	}
@@ -207,7 +207,7 @@ func TestEndpointAppliesRotatedCAToNextStream(t *testing.T) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	stream := func() error {
-		return relay(ctx, endpoint, &FlowStreamScope{ClusterWide: true}, finiteFilter(), func() error { return nil }, func(apisv1.FlowStreamEvent) error { return nil })
+		return relay(ctx, endpoint, &FlowStreamScope{ClusterWide: true}, finiteFilter(), nil, func() error { return nil }, func(apisv1.FlowStreamEvent) error { return nil })
 	}
 
 	require.NoError(t, stream())

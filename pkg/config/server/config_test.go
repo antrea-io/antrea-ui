@@ -15,6 +15,8 @@
 package server
 
 import (
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -25,6 +27,7 @@ import (
 	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"k8s.io/apimachinery/pkg/labels"
 
 	apisv1 "antrea.io/antrea-ui/apis/v1"
 )
@@ -406,6 +409,78 @@ func TestValidateFlowSources(t *testing.T) {
 	}
 }
 
+func TestValidateFlowSourceDiscovery(t *testing.T) {
+	discovered := func(name string) FlowSourceConfig {
+		return FlowSourceConfig{Name: name, Capabilities: []string{FlowSourceCapabilityWatch}, Discovery: FlowSourceDiscoveryConfig{Enabled: true}}
+	}
+	for _, tc := range []struct {
+		name    string
+		sources func() []FlowSourceConfig
+		wantErr string
+	}{
+		{name: "needs no address, namespace or CA", sources: func() []FlowSourceConfig {
+			return []FlowSourceConfig{discovered("flow-aggregator")}
+		}},
+		{name: "reads the CA in the Service namespace", sources: func() []FlowSourceConfig {
+			s := discovered("flow-aggregator")
+			s.CAConfigMap = "fa-ca"
+			return []FlowSourceConfig{s}
+		}},
+		{name: "ignores the static namespace", sources: func() []FlowSourceConfig {
+			s := discovered("flow-aggregator")
+			s.CAConfigMap = "fa-ca"
+			s.Namespace = "ignored/namespace"
+			return []FlowSourceConfig{s}
+		}},
+		{name: "any source can discover", sources: func() []FlowSourceConfig {
+			s := discovered("flow-history")
+			s.Capabilities = []string{FlowSourceCapabilityList}
+			return []FlowSourceConfig{{Name: "static", Capabilities: []string{FlowSourceCapabilityWatch}, Address: "fa:14740"}, s}
+		}},
+		{name: "still needs a name and a capability", wantErr: "at least one capability", sources: func() []FlowSourceConfig {
+			s := discovered("flow-aggregator")
+			s.Capabilities = nil
+			return []FlowSourceConfig{s}
+		}},
+		{name: "one source only", wantErr: "at most one source can", sources: func() []FlowSourceConfig {
+			return []FlowSourceConfig{discovered("first"), discovered("second")}
+		}},
+		{name: "a static source still needs an address", wantErr: "address must not be empty", sources: func() []FlowSourceConfig {
+			return []FlowSourceConfig{discovered("first"), {Name: "second", Capabilities: []string{FlowSourceCapabilityList}}}
+		}},
+		{name: "a label selector", sources: func() []FlowSourceConfig {
+			s := discovered("flow-aggregator")
+			s.Discovery.LabelSelector = "app=flow-aggregator,tier in (visibility, netops),!legacy"
+			return []FlowSourceConfig{s}
+		}},
+		{name: "an invalid label selector", wantErr: `has an invalid discovery.labelSelector "app in (a"`, sources: func() []FlowSourceConfig {
+			s := discovered("flow-aggregator")
+			s.Discovery.LabelSelector = "app in (a"
+			return []FlowSourceConfig{s}
+		}},
+		{name: "a blank label selector", wantErr: "discovery.labelSelector must not be blank", sources: func() []FlowSourceConfig {
+			s := discovered("flow-aggregator")
+			s.Discovery.LabelSelector = "   "
+			return []FlowSourceConfig{s}
+		}},
+		{name: "a label selector without discovery", wantErr: "discovery is not enabled", sources: func() []FlowSourceConfig {
+			return []FlowSourceConfig{{Name: "static", Capabilities: []string{FlowSourceCapabilityWatch}, Address: "fa:14740",
+				Discovery: FlowSourceDiscoveryConfig{LabelSelector: "app=flow-aggregator"}}}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			config := validConfig()
+			config.FlowSources = tc.sources()
+			err := validateConfig(config)
+			if tc.wantErr == "" {
+				require.NoError(t, err)
+			} else {
+				require.ErrorContains(t, err, tc.wantErr)
+			}
+		})
+	}
+}
+
 func TestFlowSourceHasCapability(t *testing.T) {
 	source := FlowSourceConfig{Capabilities: []string{FlowSourceCapabilityList}}
 	assert.True(t, source.HasCapability(FlowSourceCapabilityList))
@@ -436,6 +511,49 @@ func TestLoadConfigFlowSources(t *testing.T) {
 		{Name: "flow-aggregator", Capabilities: []string{"watch"}, Address: "fa:14740", CAConfigMap: "fa-ca", Namespace: "flow-aggregator"},
 		{Name: "flow-history", Capabilities: []string{"list"}, Address: "history:14740", ServerName: "history.example.test", InsecureSkipVerify: true},
 	}, config.FlowSources)
+}
+
+func TestLoadConfigFlowSourceDiscoveryIsOptIn(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		t.Run(fmt.Sprintf("explicit discovery %t", enabled), func(t *testing.T) {
+			source := map[string]any{"name": "flow-aggregator", "capabilities": []string{"watch"}, "address": "127.0.0.1:24740"}
+			if enabled {
+				source["discovery"] = map[string]any{"enabled": true}
+			}
+			data, err := json.Marshal(map[string]any{"flowSources": []any{source}})
+			require.NoError(t, err)
+			config, err := loadConfigFromJSON(t, string(data))
+			require.NoError(t, err)
+			require.Len(t, config.FlowSources, 1)
+			assert.Equal(t, enabled, config.FlowSources[0].Discovery.Enabled)
+			assert.Equal(t, "127.0.0.1:24740", config.FlowSources[0].Address)
+		})
+	}
+}
+
+func TestLoadConfigFlowSourceDiscoveryLabelSelector(t *testing.T) {
+	load := func(discovery map[string]any) (*Config, error) {
+		source := map[string]any{"name": "flow-aggregator", "capabilities": []string{"watch"}, "discovery": discovery}
+		data, err := json.Marshal(map[string]any{"flowSources": []any{source}})
+		require.NoError(t, err)
+		return loadConfigFromJSON(t, string(data))
+	}
+	config, err := load(map[string]any{"enabled": true})
+	require.NoError(t, err)
+	assert.Empty(t, config.FlowSources[0].Discovery.LabelSelector, "the default is applied by the discovery, not stored")
+	config, err = load(map[string]any{"enabled": true, "labelSelector": "app=fa"})
+	require.NoError(t, err)
+	assert.Equal(t, "app=fa", config.FlowSources[0].Discovery.LabelSelector)
+	_, err = load(map[string]any{"enabled": true, "labelSelector": "app in (a"})
+	require.ErrorContains(t, err, "invalid discovery.labelSelector")
+}
+
+func TestDefaultFlowServiceSelector(t *testing.T) {
+	selector, err := labels.Parse(DefaultFlowServiceSelector)
+	require.NoError(t, err)
+	assert.True(t, selector.Matches(labels.Set{"observability.antrea.io/flow-stream-service": "true"}))
+	assert.False(t, selector.Matches(labels.Set{"observability.antrea.io/flow-stream-service": "false"}))
+	assert.False(t, selector.Matches(labels.Set{}))
 }
 
 func TestLoadConfigRejectsFlowAggregatorKey(t *testing.T) {

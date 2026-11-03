@@ -100,7 +100,7 @@ func (s *RoutedSubscriber) Subscribe(ctx context.Context, scope *FlowStreamScope
 		}
 		announced := false
 		var count uint64
-		err = relay(ctx, source.Subscriber, scope, filter, func() error {
+		err = relay(ctx, source.Subscriber, scope, filter, nil, func() error {
 			if !announced {
 				close(ready)
 				announced = true
@@ -129,8 +129,9 @@ func (s *RoutedSubscriber) Subscribe(ctx context.Context, scope *FlowStreamScope
 }
 
 // relay drains both channels before declaring success. A final buffered error
-// must never be lost to a simultaneous close of the flow channel.
-func relay(ctx context.Context, upstream FlowStreamSubscriber, scope *FlowStreamScope, filter *FlowStreamFilter, ready func() error, send func(apisv1.FlowStreamEvent) error) error {
+// must never be lost to a simultaneous close of the flow channel. A closed changed channel,
+// which may be nil, ends the stream with a retryable error so that the caller reconnects.
+func relay(ctx context.Context, upstream FlowStreamSubscriber, scope *FlowStreamScope, filter *FlowStreamFilter, changed <-chan struct{}, ready func() error, send func(apisv1.FlowStreamEvent) error) error {
 	flows, errs, started := upstream.Subscribe(ctx, scope, filter)
 	announced := false
 	announce := func() error {
@@ -145,6 +146,8 @@ func relay(ctx context.Context, upstream FlowStreamSubscriber, scope *FlowStream
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case <-changed:
+			return dependencyUnavailable("flow source Service changed; reconnecting")
 		case <-started:
 			if err := announce(); err != nil {
 				return err

@@ -159,7 +159,7 @@ func TestSourceRouting(t *testing.T) {
 					})
 				}
 				router := &RoutedSubscriber{Sources: sources}
-				err := relay(t.Context(), router, &FlowStreamScope{ClusterWide: true}, tc.filter, func() error { return nil }, func(apisv1.FlowStreamEvent) error { return nil })
+				err := relay(t.Context(), router, &FlowStreamScope{ClusterWide: true}, tc.filter, nil, func() error { return nil }, func(apisv1.FlowStreamEvent) error { return nil })
 				synctest.Wait()
 				if tc.wantCode == "" {
 					require.NoError(t, err)
@@ -270,7 +270,7 @@ func TestFiniteResultLimitAcrossBatches(t *testing.T) {
 					filter.Follow = nil
 				}
 				received := 0
-				err := relay(t.Context(), router, &FlowStreamScope{ClusterWide: true}, filter,
+				err := relay(t.Context(), router, &FlowStreamScope{ClusterWide: true}, filter, nil,
 					func() error { return nil },
 					func(e apisv1.FlowStreamEvent) error { received += len(e.Flows); return nil })
 				if tc.wantError {
@@ -294,7 +294,7 @@ func TestFiniteQueryRequiresStreamEpoch(t *testing.T) {
 		subscriber := newTestSubscriber(t, server)
 		subscriber.name = "hist"
 		ctx, _ := ctxWithSessionAuth(t, newTestStore(t), &session.Spec{Mode: session.ModeToken, Credential: session.Credential{Kind: session.KindBearer, Token: []byte("token")}})
-		err := relay(ctx, subscriber, &FlowStreamScope{ClusterWide: true}, finiteFilter(), func() error { return nil }, func(apisv1.FlowStreamEvent) error { return nil })
+		err := relay(ctx, subscriber, &FlowStreamScope{ClusterWide: true}, finiteFilter(), nil, func() error { return nil }, func(apisv1.FlowStreamEvent) error { return nil })
 		var se *StreamError
 		require.ErrorAs(t, err, &se)
 		require.Equal(t, StreamErrorCodeFlowAggregatorTooOld, se.Code)
@@ -325,7 +325,7 @@ func TestFiniteCancellationDoesNotReportSuccess(t *testing.T) {
 		}}
 		subscriber := newTestSubscriber(t, server)
 		ctx, _ := ctxWithSessionAuth(t, newTestStore(t), &session.Spec{Mode: session.ModeToken, Credential: session.Credential{Kind: session.KindBearer, Token: []byte("token")}})
-		err := relay(ctx, subscriber, &FlowStreamScope{ClusterWide: true}, finiteFilter(), func() error { return nil }, func(apisv1.FlowStreamEvent) error { return nil })
+		err := relay(ctx, subscriber, &FlowStreamScope{ClusterWide: true}, finiteFilter(), nil, func() error { return nil }, func(apisv1.FlowStreamEvent) error { return nil })
 		require.ErrorContains(t, err, "canceled the query before completion")
 	})
 }
@@ -356,7 +356,7 @@ func TestCertificateSessionUsesOneConnectionPerSource(t *testing.T) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	for _, upstream := range subscribers {
-		err := relay(ctx, upstream, &FlowStreamScope{ClusterWide: true}, finiteFilter(), func() error { return nil }, func(apisv1.FlowStreamEvent) error { return nil })
+		err := relay(ctx, upstream, &FlowStreamScope{ClusterWide: true}, finiteFilter(), nil, func() error { return nil }, func(apisv1.FlowStreamEvent) error { return nil })
 		require.NoError(t, err)
 	}
 	require.EqualValues(t, 1, servers[0].calls.Load())
@@ -369,11 +369,12 @@ func TestNewRoutedSubscriber(t *testing.T) {
 	// A CA ConfigMap that does not exist must not prevent startup: no source touches the API
 	// before a stream asks for it.
 	client := fake.NewClientset()
-	router := NewRoutedSubscriber(testr.New(t), client, []serverconfig.FlowSourceConfig{
+	router, err := NewRoutedSubscriber(t.Context(), testr.New(t), client, []serverconfig.FlowSourceConfig{
 		{Name: "flow-aggregator", Capabilities: watch, Address: "fa.example.test:14740", CAConfigMap: "missing-ca", Namespace: "flow-aggregator"},
 		{Name: "flow-history", Capabilities: list, Address: "hist.example.test:14740", ServerName: "hist.example.test", InsecureSkipVerify: true},
 		{Name: "both", Capabilities: append(append([]string{}, watch...), list...), Address: "both.example.test:14740"},
 	}, nil)
+	require.NoError(t, err)
 	require.Len(t, router.Sources, 3)
 	assert.Empty(t, client.Actions())
 	assert.Equal(t, "flow-aggregator", router.Sources[0].Name)
@@ -390,4 +391,32 @@ func TestNewRoutedSubscriber(t *testing.T) {
 		Logger: endpoint.Logger, Client: client, Name: "flow-history", Address: "hist.example.test:14740",
 		ServerName: "hist.example.test", InsecureSkipVerify: true,
 	}, *endpoint)
+}
+
+// A source which enables discovery connects to the Service it finds, not to its address, and the
+// Service watch starts with the router.
+func TestNewRoutedSubscriberStartsDiscovery(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		client := fake.NewClientset(discoveryService("networking-a", "fa"))
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		router, err := NewRoutedSubscriber(ctx, testr.New(t), client, []serverconfig.FlowSourceConfig{
+			{Name: "static", Capabilities: []string{serverconfig.FlowSourceCapabilityList}, Address: "hist.example.test:14740"},
+			{
+				Name: "flow-aggregator", Capabilities: []string{serverconfig.FlowSourceCapabilityWatch},
+				Address: "ignored.example.test:14740", Discovery: serverconfig.FlowSourceDiscoveryConfig{Enabled: true},
+			},
+		}, nil)
+		require.NoError(t, err)
+		synctest.Wait()
+		static := router.Sources[0].Subscriber.(*EndpointSubscriber)
+		assert.Nil(t, static.Discovery)
+		discovered := router.Sources[1].Subscriber.(*EndpointSubscriber)
+		require.NotNil(t, discovered.Discovery)
+		cfg, _, err := discovered.connectionConfig(ctx)
+		require.NoError(t, err)
+		assert.Equal(t, "fa.networking-a.svc:14740", cfg.Address)
+		cancel()
+		synctest.Wait()
+	})
 }

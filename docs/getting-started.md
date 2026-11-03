@@ -117,6 +117,57 @@ message pointing to `flowSources`, instead of silently running with no flow
 source. Move such a configuration to a `flowSources` entry with the `watch`
 capability.
 
+### Flow source discovery
+
+A cluster may run multiple Flow Aggregators, only some of which expose
+FlowStreamService. To discover the Service instead of configuring its address,
+enable discovery on the Flow Aggregator:
+
+```yaml
+flowAggregator:
+  enabled: true
+  discovery:
+    enabled: true
+  caConfigMap: flow-aggregator-ca
+```
+
+A `flowSources` entry takes the same setting, `discovery: {enabled: true}`, and
+at most one source can enable it, since the label selects a single endpoint.
+
+Discovery is disabled by default. When enabled, the UI watches Services across
+all namespaces for `observability.antrea.io/flow-stream-service=true` and
+selects the `flowstream-grpc` TCP port. Antrea's FA chart adds the label when
+FlowStreamService is enabled, which is the default in Aggregate mode. A Flow
+Aggregator built before antrea-io/antrea#8467 does not label its Service, so
+discovery finds nothing for it: use a static address there. The UI ignores the
+static address and namespace and reads the named CA ConfigMap in the selected
+Service's namespace.
+
+`discovery.labelSelector` replaces the default label selector, for a Service
+labeled differently:
+
+```yaml
+flowAggregator:
+  discovery:
+    enabled: true
+    labelSelector: app=flow-aggregator,tier=visibility
+```
+
+It takes the syntax of `kubectl -l` and requires `discovery.enabled`. Keep it as
+narrow as the default: anyone who can create a matching Service in any
+namespace receives the credentials the UI forwards.
+
+No match returns a waiting-for-source error; multiple matches report the
+candidates. The rest of the UI remains available, and Service changes trigger
+reconnection. Use a static address if several Services match. Other flow
+sources keep their static configuration.
+
+The chart grants cluster-wide Service list/watch and get access to ConfigMaps
+with the configured CA name. Matching Services and their CA ConfigMaps must be
+controlled by trusted administrators because the UI forwards user credentials
+to the endpoint; see the
+[trust requirements](authentication.md#flow-service-discovery-trust).
+
 ## Accessing the web UI
 
 If you installed the Helm chart using the command above, without overriding any
