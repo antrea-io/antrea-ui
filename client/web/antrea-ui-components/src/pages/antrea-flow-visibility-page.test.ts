@@ -3126,6 +3126,15 @@ describe('flow query state event', () => {
         expect(seen.at(-1)?.state).toBe('error');
     });
 
+    test('does not report a failed live stream as a query error', async () => {
+        const page = await mount(async () => jsonResponse({ message: 'down', retryable: false }, 503));
+        const seen = collect(page);
+        await vi.advanceTimersByTimeAsync(1000);
+        await page.updateComplete;
+        expect(seen.map(d => d.state)).not.toContain('error');
+        expect((page as unknown as { _queryState: string })._queryState).toBe('idle');
+    });
+
     test('is back to idle once the page returns to live data', async () => {
         const page = await mount(async () => sseResponse([]), { flowQuery: { follow: false } });
         const seen = collect(page);
