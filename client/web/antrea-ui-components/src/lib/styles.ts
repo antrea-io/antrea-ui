@@ -127,6 +127,12 @@ export const pageStyles = css`
     .field-select {
         appearance: none;
         cursor: pointer;
+    }
+    /* The dropdown arrow of a native select, also worn by the controls that open a list without
+       being one (a combobox, a multi-select), so that every control that opens a list looks
+       the same. */
+    .field-select,
+    .field-chevron {
         padding-right: 2rem;
         background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 16 16'%3E%3Cpath fill='%23adbbc4' d='M7.247 11.14L2.451 5.658C1.885 5.013 2.345 4 3.204 4h9.592a1 1 0 0 1 .753 1.659l-4.796 5.48a1 1 0 0 1-1.506 0z'/%3E%3C/svg%3E");
         background-repeat: no-repeat;

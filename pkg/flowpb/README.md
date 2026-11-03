@@ -27,7 +27,7 @@ for f in flow.pb.go service.pb.go service_grpc.pb.go; do
 done
 ```
 
-The current copies are from antrea-io/antrea@95b85ee (antrea-io/antrea#8491).
+The current copies are from antrea-io/antrea@bfefd35 (antrea-io/antrea#8563).
 They carry antrea-io/antrea#8276, which added `GetFlowsRequest.cluster_wide`,
 `GetFlowsRequest.namespaces`, `FlowKubernetes.source_disclosure`,
 `FlowKubernetes.destination_disclosure` and the `EndpointDisclosure` enum,
@@ -37,4 +37,6 @@ antrea-io/antrea#8471, which changed when an endpoint is disclosed in full (the
 client holds the stream's own verb on `flows` in the endpoint's Namespace) and
 so only the `EndpointDisclosure` comments, and antrea-io/antrea#8491, which limits the
 Namespace withheld at the Flow tier to the destination of a denied connection the client
-initiated, again only in the `EndpointDisclosure` comments.
+initiated, again only in the `EndpointDisclosure` comments. antrea-io/antrea#8563 changed
+how a `FlowFilter` is matched, and so only the `FlowFilter` comments: its directional criteria
+describe a single endpoint, and `service_names` accepts `namespace/name`.

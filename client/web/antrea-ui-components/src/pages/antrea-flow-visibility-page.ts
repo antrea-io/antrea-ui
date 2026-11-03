@@ -47,7 +47,7 @@ import {
     streamFilterKey,
 } from '../lib/flow-stream.js';
 import {
-    flowAccess, mayNameNamespace, scopeNote, isValidNamespaceName,
+    flowAccess, mayNameNamespace, scopeNote, isValidNamespaceName, SELECTOR_PAGE_SIZE,
 } from '../lib/namespace-access.js';
 import type { NamespaceAccess, ScopeNote } from '../lib/namespace-access.js';
 import '../antrea-button';
@@ -136,28 +136,94 @@ const UNKNOWN_NAMESPACES_NOTE =
     'The selector has no complete list of namespaces to offer: it is empty, could not be loaded, ' +
     'or was cut short. Use the "Namespace not listed" box to name one directly.';
 
-// A pseudo-option in the peer-namespace menu, filtered client-side. It contains a space, so it
-// cannot collide with a namespace name. A server-side filter could not express it: upstream runs
-// its authorization before applying filters, so a filter only ever matches fields that survived
-// redaction, and the peers this selects are exactly the ones whose names did not. It is the only
-// way to ask how much of a namespace's traffic goes somewhere the user cannot see.
-const UNIDENTIFIED_PEERS_OPTION = 'Unidentified peers';
-
 // Said on the two controls that match on an identity the Flow tier clears. Not a limitation to
 // engineer around: filters run on the redacted record, which is also what stops them being an
 // existence oracle - guessing a hidden workload's name returns the same empty result as guessing
 // wrong.
 const IDENTIFIED_ONLY_HINT = 'Matches identified endpoints only.';
 
-// Said in the peer-namespace menu, which is built from the flows received so far rather than
-// from a cluster-wide list, so it fills in as they arrive.
-const PEER_NAMESPACE_HINT = 'Peer namespaces seen in current flows.';
+// Said in the Namespaces menu, which is built from the flows received so far rather than from a
+// cluster-wide list, so it fills in as they arrive.
+const NAMESPACES_HINT = 'Namespaces seen in current flows.';
+
+// Said on the Endpoint group. The Flow Aggregator matches these filters against a single endpoint
+// of a flow, so a Namespace and a Pod name, for example, select one Pod rather than a flow between
+// a Pod and some endpoint in that Namespace. Grouping them is what tells them apart from the scope,
+// which is also a Namespace but says whose traffic is shown.
+const ENDPOINT_HINT = 'These filters all match the same endpoint of a flow: its source, its destination, or either one.';
+
+// Said on whichever of the two controls is held back: a Service is only ever the destination of a
+// flow, so the Flow Aggregator rejects a Service filter with the endpoint filters on the source.
+// Holding one control back while the other is set keeps the page from offering a request that can
+// only fail.
+const SERVICES_UNDER_SOURCE_HINT = 'A Service is always the destination of a flow: not available while the endpoint is the source.';
+const SOURCE_WITH_SERVICES_HINT = 'A Service is always the destination of a flow: Source is not available while a Service is selected.';
 
 const FLOW_VISIBILITY_DISABLED_MESSAGE =
     'Flow visibility is disabled on this Antrea UI server. Install or upgrade the chart with ' +
     '--set flowAggregator.enabled=true and a reachable flowAggregator.address (see antrea-ui/hack/deploy-kind.sh).';
 
 const WELL_KNOWN_APP_LABELS = ['app.kubernetes.io/name', 'app.kubernetes.io/instance', 'app', 'k8s-app', 'name'];
+
+/**
+ * The options a filter menu shows for a search: every selected option first, so that it can be
+ * unticked whatever is typed, then the first SELECTOR_PAGE_SIZE others that match, in the order
+ * given (alphabetical, see the menus' getters). It searches like the scope picker does: by name
+ * prefix, ignoring case and surrounding spaces. A Service, shown as namespace/name, also matches
+ * by its name alone.
+ */
+export function searchFilterOptions(options: string[], selected: string[], query: string): { items: string[], more: boolean } {
+    const q = query.trim().toLowerCase();
+    const matches = (option: string) => {
+        const o = option.toLowerCase();
+        return o.startsWith(q) || (o.includes('/') && o.slice(o.indexOf('/') + 1).startsWith(q));
+    };
+    const others = options.filter(o => !selected.includes(o) && matches(o));
+    return {
+        items: [...options.filter(o => selected.includes(o)), ...others.slice(0, SELECTOR_PAGE_SIZE)],
+        more: others.length > SELECTOR_PAGE_SIZE,
+    };
+}
+
+/** What a filter menu makes of a name typed in its search box: the value it would select, or why
+ * there is none. */
+export interface TypedName { value?: string; error?: string }
+
+// What Kubernetes accepts as a Pod name (IsDNS1123Subdomain): at most 253 characters, with no
+// limit on the parts between dots, unlike the 63 characters of a namespace name.
+const DNS1123_SUBDOMAIN = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$/;
+
+function isValidPodName(name: string): boolean {
+    return name.length <= 253 && DNS1123_SUBDOMAIN.test(name);
+}
+
+export function typedNamespace(text: string): TypedName {
+    return isValidNamespaceName(text) ? { value: text } : { error: 'Not a valid namespace name' };
+}
+
+export function typedPod(text: string): TypedName {
+    return isValidPodName(text) ? { value: text } : { error: 'Not a valid Pod name' };
+}
+
+/**
+ * A typed Service is namespace/name, or a bare name when a single namespace is observed, which
+ * then supplies the namespace: the Service is shown and selected as namespace/name either way,
+ * so the namespace it was given is never a surprise. Under All Namespaces a bare name has no
+ * namespace to default to. The Flow Aggregator would also take a bare name, as a Service of that
+ * name in any namespace, but that rarely means anything to a user, so the page never sends one.
+ */
+export function typedService(text: string, observedNs: string): TypedName {
+    const slash = text.indexOf('/');
+    if (slash < 0) {
+        if (!observedNs) return { error: 'Type namespace/name to add a Service' };
+        text = `${observedNs}/${text}`;
+    }
+    const [namespace, name, ...rest] = text.split('/');
+    // A Service name is an RFC 1035 label, which isValidNamespaceName (RFC 1123) only loosens by
+    // allowing a leading digit: close enough for a filter, which names nothing it can harm.
+    return rest.length === 0 && isValidNamespaceName(namespace) && isValidNamespaceName(name)
+        ? { value: text } : { error: 'Not a valid Service: type namespace/name' };
+}
 
 function getWorkloadName(ns: string, pod: string, labels?: Record<string, string>): string {
     if (labels) {
@@ -656,26 +722,41 @@ const BASE_COLUMNS: (FlowTableColumn & { field?: SortField })[] = [
 export class AntreaFlowVisibilityPage extends SessionAwarePage {
     static styles = [pageStyles, pickerStyles, css`
         .filter-bar { display: flex; flex-direction: column; gap: 0.75rem; }
-        .filter-row { display: flex; align-items: flex-end; gap: 1rem; flex-wrap: wrap; }
-        .filter-actions { display: flex; gap: 0.5rem; align-items: flex-end; flex-shrink: 0; }
+        /* The groups of a line stretch to the same height, and each keeps its controls at the
+           bottom, padded as the Endpoint fieldset pads its own, so that every control of a line
+           sits on the same baseline whether or not its group is boxed. */
+        .filter-row { display: flex; align-items: stretch; gap: 1rem; flex-wrap: wrap; }
+        .filter-group, .filter-actions {
+            display: flex; align-items: flex-end; gap: 1rem;
+            padding-bottom: calc(0.75rem + 1px);
+        }
+        .filter-actions { gap: 0.5rem; flex-shrink: 0; }
+        .endpoint-group {
+            display: flex; align-items: flex-end; gap: 1rem; flex-wrap: wrap;
+            margin: 0; padding: 0.25rem 0.75rem 0.75rem; min-width: 0;
+            border: 1px solid var(--antrea-color-border, #314351); border-radius: 4px;
+        }
+        .endpoint-group legend { padding: 0 4px; margin-bottom: 0; }
         .status-row { display: flex; align-items: center; gap: 1.5rem; flex-wrap: wrap; font-size: 0.75rem; color: var(--antrea-color-text-muted, #adbbc4); }
         .status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
 
         .multiselect { position: relative; min-width: 160px; }
-        .multiselect-label { display: block; font-size: 11px; color: var(--antrea-color-text-muted, #adbbc4); margin-bottom: 4px; }
-        .multiselect-btn {
-            width: 100%; padding: 6px 28px 6px 10px;
-            background: var(--antrea-color-bg, #1b2a32);
-            border: 1px solid var(--antrea-color-border, #314351);
-            border-radius: 4px; color: var(--antrea-color-text, #e9ecef);
-            font-size: 13px; text-align: left; cursor: pointer;
-            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-            position: relative;
+        /* The label matches .field-label, so that a menu lines up with the text fields and selects
+           next to it. */
+        .multiselect-label {
+            display: block; margin-bottom: var(--antrea-space-xs, 0.25rem);
+            font-size: var(--antrea-font-size-sm, 0.75rem); font-weight: var(--antrea-font-weight-medium, 500);
+            color: var(--antrea-color-text-muted, #adbbc4);
         }
-        .multiselect-chevron { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); font-size: 10px; pointer-events: none; }
+        /* The button is a .field-select, arrow included; this only aligns its text to the left and
+           keeps a long selection on one line. */
+        .multiselect-btn {
+            line-height: normal; text-align: left;
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }
         .multiselect-dropdown {
             position: absolute; top: 100%; left: 0; right: 0;
-            max-height: 200px; overflow-y: auto;
+            max-height: 360px; overflow-y: auto;
             background: var(--antrea-color-bg, #1b2a32);
             border: 1px solid var(--antrea-color-border, #314351);
             border-radius: 0 0 4px 4px; z-index: 50;
@@ -687,6 +768,13 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         }
         .multiselect-option.selected { background: var(--antrea-color-bg-hover, #2e3f4d); }
         .multiselect-hint { padding: 5px 10px; font-size: 11px; color: var(--antrea-color-text-muted, #adbbc4); }
+        .multiselect-search { display: block; width: calc(100% - 16px); margin: 8px; }
+        .multiselect-add {
+            display: block; width: 100%; padding: 5px 10px; text-align: left; cursor: pointer;
+            background: none; border: none; font: inherit; font-size: 12px;
+            color: var(--antrea-color-primary, #0079b8);
+        }
+        .multiselect-add:hover { background: var(--antrea-color-bg-hover, #2e3f4d); }
 
         .flow-list-header { display: flex; align-items: center; gap: 1rem; }
         .flow-list-scroll { max-height: 70vh; overflow-x: auto; overflow-y: auto; }
@@ -809,13 +897,20 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
 
     // Filter UI state
     @state() private _pendingNs: string[] = [];
-    // The applied half of the "Unidentified peers" pseudo-option. Client-side, so unlike the
-    // real filters it changes nothing about the open stream.
-    @state() private _unidentifiedPeersOnly = false;
     @state() private _pendingPods: string[] = [];
     @state() private _pendingServices: string[] = [];
     @state() private _pendingFlowType: FlowTypeName | '' = '';
     @state() private _pendingDirection: FlowFilterDirection = 'both';
+    // What is typed in the open filter menu's search box. Only one menu is open at a time, and
+    // opening one starts a new search.
+    @state() private _menuQuery = '';
+    // The rows of the open filter menu, decided when it opens and when its search or the Endpoint
+    // changes, so that they do not change under the keyboard focus or the pointer: ticking an
+    // option only changes its checkbox, and an option unticked or gone from the flows stays where
+    // it was. Options arriving with new flows are shown once the menu is reopened or searched.
+    // Cleared in willUpdate, taken by the next render, with the options and the selection they
+    // were taken from.
+    private _menuRows: { items: string[], more: boolean, options: string[], selected: string[] } | null = null;
     @state() private _pendingIps = '';
     @state() private _pendingPodLabel = '';
     @state() private _nsOpen = false;
@@ -973,31 +1068,11 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
     private _setScope(value: string) {
         const clusterWide = value === SCOPE_ALL;
         const observedNs = clusterWide ? '' : value;
-        // Unidentified peers only exist where something is withheld, which cluster scope never
-        // does (see _availableNs). Dropped from the pending selection too, even when not applied:
-        // it could not be unticked there, and Apply would then empty the list and the map.
-        if (clusterWide) {
-            this._unidentifiedPeersOnly = false;
-            this._pendingNs = this._pendingNs.filter(n => n !== UNIDENTIFIED_PEERS_OPTION);
-        }
         if (clusterWide === this._clusterWide && observedNs === this._observedNs) return;
         this._clusterWide = clusterWide;
         this._observedNs = observedNs;
-        // The scope is not its own peer, so a peer-namespace filter naming it is dropped here
-        // rather than left selected against an option that no longer exists (see _availableNs).
-        if (observedNs) {
-            this._pendingNs = this._pendingNs.filter(n => n !== observedNs);
-            // The applied filter too, or the stream goes on asking for it while the control no
-            // longer shows it: in the new scope it would match every record, and misstate what
-            // is on screen until the next Apply.
-            const applied = this._peerFilter.namespaces;
-            if (applied?.includes(observedNs)) {
-                const remaining = applied.filter(n => n !== observedNs);
-                const rest = { ...this._peerFilter };
-                delete rest.namespaces;
-                this._peerFilter = remaining.length ? { ...rest, namespaces: remaining } : rest;
-            }
-        }
+        // The open filter menu lists what the old scope's flows showed, as after Apply.
+        this._nsOpen = false; this._podOpen = false; this._svcOpen = false;
     }
 
     /** Notes that the selected namespace is not in the list (see scopeNote). */
@@ -1074,6 +1149,9 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
     override willUpdate(changed: Map<string, unknown>) {
         super.willUpdate(changed);
         if (changed.has('locationSearch')) this._onLocationChange();
+        if (changed.has('_menuQuery') || changed.has('_pendingDirection') || changed.has('_nsOpen') || changed.has('_podOpen') || changed.has('_svcOpen')) {
+            this._menuRows = null;
+        }
     }
 
     override firstUpdated(changed: Map<string, unknown>) {
@@ -1088,6 +1166,9 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
 
     override updated(changed: Map<string, unknown>) {
         super.updated(changed);
+        if ((changed.has('_nsOpen') || changed.has('_podOpen') || changed.has('_svcOpen'))) {
+            this.renderRoot.querySelector<HTMLInputElement>('.multiselect-search')?.focus();
+        }
         // Setup ResizeObserver once the DOM is ready
         if (changed.has('viewMode') && this.viewMode === 'map') {
             // The <svg> is always freshly created when switching into map view (render()
@@ -1108,7 +1189,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
             this._ro = null;
         }
         // Rebuild map when entries or SVG width change
-        if ((changed.has('_entries') || changed.has('_svgWidth') || changed.has('_unidentifiedPeersOnly')) && this.viewMode === 'map') {
+        if ((changed.has('_entries') || changed.has('_svgWidth')) && this.viewMode === 'map') {
             this._buildServiceMap();
         }
         if (changed.has('_selectedEdgeKey')) {
@@ -1220,11 +1301,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
     private _onApplyFilters() {
         this._nsOpen = false; this._podOpen = false; this._svcOpen = false;
         const filter: FlowPeerFilter = {};
-        // Stripped out here rather than sent: it is not a namespace, and the backend would
-        // reject it as one (or, worse, match nothing and look like an empty result).
-        this._unidentifiedPeersOnly = this._pendingNs.includes(UNIDENTIFIED_PEERS_OPTION);
-        const peerNs = this._pendingNs.filter(n => n !== UNIDENTIFIED_PEERS_OPTION);
-        if (peerNs.length) filter.namespaces = peerNs;
+        if (this._pendingNs.length) filter.namespaces = this._pendingNs;
         if (this._pendingPods.length) filter.pods = this._pendingPods;
         if (this._pendingPodLabel.trim()) filter.podLabelSelector = this._pendingPodLabel.trim();
         if (this._pendingServices.length) {
@@ -1241,7 +1318,6 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
     private _onResetFilters() {
         this._nsOpen = false; this._podOpen = false; this._svcOpen = false;
         this._pendingNs = []; this._pendingPods = []; this._pendingServices = [];
-        this._unidentifiedPeersOnly = false;
         this._pendingFlowType = ''; this._pendingDirection = 'both';
         this._pendingIps = ''; this._pendingPodLabel = '';
         this._applyFilter({});
@@ -1264,8 +1340,10 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
     // ── Available filter options (derived from current entries) ───────────────
 
     /**
-     * The peer-namespace menu's options: the namespaces seen at the far end of the flows this
-     * stream has delivered so far, which is why the menu fills in as they arrive.
+     * The Namespaces menu's options: the namespaces seen at either end of the flows this stream
+     * has delivered so far, which is why the menu fills in as they arrive. The observed namespace
+     * is one of them: with the endpoint on the source or the destination, it selects the traffic
+     * leaving or entering it.
      *
      * Deliberately not intersected with the namespaces this user may read Kubernetes objects in,
      * the way it was while this control doubled as a scope. Those are a different grant from
@@ -1276,41 +1354,40 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
     private get _availableNs(): string[] {
         const ns = new Set<string>();
         for (const e of this._entries) {
-            if (e.flow.k8s.sourcePodNamespace) ns.add(e.flow.k8s.sourcePodNamespace);
-            if (e.flow.k8s.destinationPodNamespace) ns.add(e.flow.k8s.destinationPodNamespace);
+            const k8s = e.flow.k8s;
+            if (k8s.sourcePodNamespace) ns.add(k8s.sourcePodNamespace);
+            if (k8s.destinationPodNamespace) ns.add(k8s.destinationPodNamespace);
+            // The Flow Aggregator places a destination without a Pod namespace, such as the
+            // backend of default/kubernetes, in its Service's namespace.
+            else {
+                const service = destinationK8sServiceFilterKey(k8s.destinationServicePortName);
+                if (service) ns.add(service.split('/')[0]);
+            }
         }
-        // The scope is not its own peer.
-        if (this._observedNs) ns.delete(this._observedNs);
         // A selection stays in the menu even once its traffic goes quiet, so that it does not
         // vanish from under the user while still being applied.
-        for (const selected of this._pendingNs) if (selected !== UNIDENTIFIED_PEERS_OPTION) ns.add(selected);
-        // Not offered in cluster scope: nothing is redacted there, so it could never match.
-        return [...(this._clusterWide ? [] : [UNIDENTIFIED_PEERS_OPTION]), ...Array.from(ns).sort()];
+        for (const selected of this._pendingNs) ns.add(selected);
+        return Array.from(ns).sort();
     }
 
-    /** The entries the list and the map show. Everything but the "Unidentified peers"
-     * pseudo-filter is applied by the Flow Aggregator; that one cannot be, because it selects
-     * records by what was withheld from them. */
-    private get _visibleEntries(): FlowEntry[] {
-        if (!this._unidentifiedPeersOnly) return this._entries;
-        return this._entries.filter(e => {
-            const k8s = e.flow.k8s;
-            // An endpoint outside the cluster has no namespace, which the Flow Aggregator reads
-            // as the lowest tier, but nothing is withheld from it: endpointView and
-            // describeEndpoint exempt it by flow type, and so must this, or every flow to or
-            // from outside would pass while showing no lock.
-            const flowType = k8s.flowType as FlowType;
-            return (flowType !== FlowType.FromExternal && endpointRedacted(k8s.sourceDisclosure))
-                || (flowType !== FlowType.ToExternal && endpointRedacted(k8s.destinationDisclosure));
-        });
-    }
-
+    /**
+     * The Pods menu's options. The endpoint filters all describe one endpoint, so only the Pods
+     * that can be that endpoint are suggested: on the end the pending direction picks, and in one
+     * of the pending namespaces when any is selected. A selection is always offered, whether or
+     * not it fits: the flows received are filtered by what is applied, so they cannot show that a
+     * Pod does not fit. Under Destination, for example, a Pod is never seen as a source.
+     */
     private get _availablePods(): string[] {
         const pods = new Set<string>();
+        const add = (namespace: string, pod: string) => {
+            if (pod && (this._pendingNs.length === 0 || this._pendingNs.includes(namespace))) pods.add(pod);
+        };
         for (const e of this._entries) {
-            if (e.flow.k8s.sourcePodName) pods.add(e.flow.k8s.sourcePodName);
-            if (e.flow.k8s.destinationPodName) pods.add(e.flow.k8s.destinationPodName);
+            const k8s = e.flow.k8s;
+            if (this._pendingDirection !== 'to') add(k8s.sourcePodNamespace, k8s.sourcePodName);
+            if (this._pendingDirection !== 'from') add(k8s.destinationPodNamespace, k8s.destinationPodName);
         }
+        for (const selected of this._pendingPods) pods.add(selected);
         return Array.from(pods).sort();
     }
 
@@ -1320,6 +1397,8 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
             const k = destinationK8sServiceFilterKey(e.flow.k8s.destinationServicePortName);
             if (k) svcs.add(k);
         }
+        // A selection stays in the menu even once its traffic goes quiet, or if it was typed.
+        for (const selected of this._pendingServices) svcs.add(selected);
         return Array.from(svcs).sort();
     }
 
@@ -1341,7 +1420,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         const svg = this._svgEl;
         if (!svg) return;
 
-        const graph = buildGraph(this._visibleEntries);
+        const graph = buildGraph(this._entries);
         this._graphRef = graph;
 
         // If a topology rebuild drops the currently-selected edge, clear the selection so
@@ -1710,24 +1789,50 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         onToggleOpen: () => void,
         onToggle: (v: string) => void,
         hint?: string,
+        resolveTyped?: (text: string) => TypedName,
     ) {
         const displayText = selected.length === 0 ? 'All' : selected.length <= 2 ? selected.join(', ') : `${selected.slice(0, 2).join(', ')} +${selected.length - 2}`;
+        if (open && !this._menuRows) {
+            this._menuRows = { ...searchFilterOptions(options, selected, this._menuQuery), options, selected: [...selected] };
+        }
+        const shown = open && this._menuRows ? this._menuRows : { items: [], more: false, options: [], selected: [] };
+        // A name typed in the search box can be selected even if no flow shows it yet: the Flow
+        // Aggregator applies the filter, so it matches traffic that has not arrived. Offered unless
+        // it is already an option; a reason is given for an invalid one only when nothing matches,
+        // so that typing towards an existing option is not interrupted.
+        const text = this._menuQuery.trim();
+        const typed: TypedName = open && text && resolveTyped ? resolveTyped(text) : {};
+        const addable = typed.value !== undefined && !shown.options.includes(typed.value) ? typed.value : undefined;
+        const add = (value: string) => {
+            if (!selected.includes(value)) onToggle(value);
+            this._menuQuery = '';
+            // Adding by the button removes it, which would leave the keyboard focus nowhere.
+            void this.updateComplete.then(() => this.renderRoot.querySelector<HTMLInputElement>('.multiselect-search')?.focus());
+        };
         return html`
             <div class="multiselect">
                 <span class="multiselect-label">${label}</span>
-                <button type="button" class="multiselect-btn" title=${hint ?? nothing} @click=${onToggleOpen}>
+                <button type="button" class="field-select multiselect-btn" title=${hint ?? nothing} @click=${() => { this._menuQuery = ''; onToggleOpen(); }}>
                     ${displayText}
-                    <span class="multiselect-chevron">&#9662;</span>
                 </button>
-                ${open && (hint || options.length > 0) ? html`
+                ${open && (hint || shown.options.length > 0 || resolveTyped) ? html`
                     <div class="multiselect-dropdown">
                         ${hint ? html`<div class="multiselect-hint">${hint}</div>` : nothing}
-                        ${options.map(opt => html`
+                        ${shown.options.length > 0 || resolveTyped ? html`
+                            <input class="field-input multiselect-search" type="text" placeholder=${resolveTyped ? 'Search or type a name' : 'Search'} aria-label=${`Search ${label}`}
+                                .value=${this._menuQuery} @input=${(e: Event) => { this._menuQuery = (e.target as HTMLInputElement).value; }}
+                                @keydown=${(e: KeyboardEvent) => { if (e.key === 'Enter' && typed.value !== undefined) { e.preventDefault(); add(typed.value); } }} />
+                        ` : nothing}
+                        ${addable !== undefined ? html`
+                            <button type="button" class="multiselect-add" @click=${() => add(addable)}>+ Add "${addable}"</button>
+                        ` : typed.error && shown.items.every(i => shown.selected.includes(i)) ? html`<div class="multiselect-hint">${typed.error}</div>` : nothing}
+                        ${shown.items.map(opt => html`
                             <label class="multiselect-option ${selected.includes(opt) ? 'selected' : ''}">
                                 <input type="checkbox" .checked=${selected.includes(opt)} @change=${() => onToggle(opt)} style="accent-color: var(--antrea-color-primary, #0079b8)" />
                                 ${opt}
                             </label>
                         `)}
+                        ${shown.more ? html`<div class="multiselect-hint">${this._menuQuery.trim() ? 'More matches, keep typing' : 'More options, type to search'}</div>` : nothing}
                     </div>
                 ` : nothing}
             </div>
@@ -1736,17 +1841,6 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
 
     private _toggleSelection(current: string[], value: string): string[] {
         return current.includes(value) ? current.filter(v => v !== value) : [...current, value];
-    }
-
-    /** _toggleSelection for the peer-namespace menu, where "Unidentified peers" stands apart from
-     * the namespaces. The Flow Aggregator applies the namespaces and this page applies that one
-     * on what it returns, so together they would narrow each other where every other option in
-     * the menu widens the choice. Rather than offer a combination that reads as "or" and
-     * behaves as "and", choosing one of the two kinds clears the other. */
-    private _toggleNamespaceSelection(current: string[], value: string): string[] {
-        if (current.includes(value)) return current.filter(v => v !== value);
-        if (value === UNIDENTIFIED_PEERS_OPTION) return [value];
-        return [...current.filter(v => v !== UNIDENTIFIED_PEERS_OPTION), value];
     }
 
     private _closeScopeMenu() {
@@ -1762,7 +1856,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
     private _renderScopeSelect() {
         return html`
             <antrea-namespace-picker
-                label="Observed namespace" inputId="observed-ns"
+                label="Show flows of" inputId="observed-ns"
                 .access=${this._flowAccess}
                 .scope=${this._clusterWide ? SCOPE_ALL : this._observedNs}
                 .offerAll=${this._mayHoldClusterWide}
@@ -1797,36 +1891,39 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         return html`
             <div class="filter-bar">
                 <div class="filter-row">
-                    ${this._renderScopeSelect()}
-                    ${this._renderMultiSelect('Peer namespace', this._availableNs, this._pendingNs, this._nsOpen, () => { this._nsOpen = !this._nsOpen; this._podOpen = false; this._svcOpen = false; this._closeScopeMenu(); }, v => { this._pendingNs = this._toggleNamespaceSelection(this._pendingNs, v); }, PEER_NAMESPACE_HINT)}
-                    ${this._renderMultiSelect('Pod Names', this._availablePods, this._pendingPods, this._podOpen, () => { this._podOpen = !this._podOpen; this._nsOpen = false; this._svcOpen = false; this._closeScopeMenu(); }, v => { this._pendingPods = this._toggleSelection(this._pendingPods, v); }, IDENTIFIED_ONLY_HINT)}
-                    ${this._renderMultiSelect('Service Names', this._availableServices, this._pendingServices, this._svcOpen, () => { this._svcOpen = !this._svcOpen; this._nsOpen = false; this._podOpen = false; this._closeScopeMenu(); }, v => { this._pendingServices = this._toggleSelection(this._pendingServices, v); })}
-
-                    <div class="field-group" style="min-width:140px">
-                        <label class="field-label">Flow Type</label>
-                        <select class="field-select" .value=${this._pendingFlowType} @change=${(e: Event) => { this._pendingFlowType = (e.target as HTMLSelectElement).value as FlowTypeName | ''; }}>
-                            <option value="">All</option>
-                            <option value="intra-node">${flowTypeLabel[FlowType.IntraNode]}</option>
-                            <option value="inter-node">${flowTypeLabel[FlowType.InterNode]}</option>
-                            <option value="to-external">${flowTypeLabel[FlowType.ToExternal]}</option>
-                            <option value="from-external">${flowTypeLabel[FlowType.FromExternal]}</option>
-                        </select>
-                    </div>
-                    <div class="field-group" style="min-width:120px">
-                        <label class="field-label">Direction</label>
-                        <select class="field-select" .value=${this._pendingDirection} @change=${(e: Event) => { this._pendingDirection = (e.target as HTMLSelectElement).value as FlowFilterDirection; }}>
-                            <option value="both">Both</option>
-                            <option value="from">From</option>
-                            <option value="to">To</option>
-                        </select>
-                    </div>
-                    <div class="field-group" style="min-width:160px">
-                        <label class="field-label">IPs (comma-separated)</label>
-                        <input class="field-input" type="text" .value=${this._pendingIps} placeholder="10.0.0.1, 10.0.0.0/24" @input=${(e: Event) => { this._pendingIps = (e.target as HTMLInputElement).value; }} />
-                    </div>
-                    <div class="field-group" style="min-width:180px">
-                        <label class="field-label" title=${IDENTIFIED_ONLY_HINT}>Pod Label Selector</label>
-                        <input class="field-input" type="text" .value=${this._pendingPodLabel} placeholder="app=frontend,version!=v2" @input=${(e: Event) => { this._pendingPodLabel = (e.target as HTMLInputElement).value; }} />
+                    <div class="filter-group">${this._renderScopeSelect()}</div>
+                    <fieldset class="endpoint-group">
+                        <legend class="field-label" title=${ENDPOINT_HINT}>Endpoint</legend>
+                        <div class="field-group" style="min-width:170px">
+                            <select class="field-select" aria-label="Which endpoint" title=${this._pendingServices.length > 0 ? SOURCE_WITH_SERVICES_HINT : ENDPOINT_HINT} .value=${this._pendingDirection} @change=${(e: Event) => { this._pendingDirection = (e.target as HTMLSelectElement).value as FlowFilterDirection; }}>
+                                <option value="both">Source or destination</option>
+                                <option value="from" ?disabled=${this._pendingServices.length > 0} title=${this._pendingServices.length > 0 ? SOURCE_WITH_SERVICES_HINT : nothing}>Source</option>
+                                <option value="to">Destination</option>
+                            </select>
+                        </div>
+                        ${this._renderMultiSelect('Namespaces', this._availableNs, this._pendingNs, this._nsOpen, () => { this._nsOpen = !this._nsOpen; this._podOpen = false; this._svcOpen = false; this._closeScopeMenu(); }, v => { this._pendingNs = this._toggleSelection(this._pendingNs, v); }, NAMESPACES_HINT, typedNamespace)}
+                        ${this._renderMultiSelect('Pods', this._availablePods, this._pendingPods, this._podOpen, () => { this._podOpen = !this._podOpen; this._nsOpen = false; this._svcOpen = false; this._closeScopeMenu(); }, v => { this._pendingPods = this._toggleSelection(this._pendingPods, v); }, IDENTIFIED_ONLY_HINT, typedPod)}
+                        <div class="field-group" style="min-width:180px">
+                            <label class="field-label" title=${IDENTIFIED_ONLY_HINT}>Pod labels</label>
+                            <input class="field-input" type="text" .value=${this._pendingPodLabel} placeholder="app=frontend,version!=v2" @input=${(e: Event) => { this._pendingPodLabel = (e.target as HTMLInputElement).value; }} />
+                        </div>
+                        <div class="field-group" style="min-width:160px">
+                            <label class="field-label">IPs</label>
+                            <input class="field-input" type="text" .value=${this._pendingIps} placeholder="10.0.0.1, 10.0.0.0/24" @input=${(e: Event) => { this._pendingIps = (e.target as HTMLInputElement).value; }} />
+                        </div>
+                    </fieldset>
+                    <div class="filter-group">
+                        ${this._renderMultiSelect('Services', this._pendingDirection === 'from' ? [] : this._availableServices, this._pendingServices, this._svcOpen, () => { this._svcOpen = !this._svcOpen; this._nsOpen = false; this._podOpen = false; this._closeScopeMenu(); }, v => { this._pendingServices = this._toggleSelection(this._pendingServices, v); }, this._pendingDirection === 'from' ? SERVICES_UNDER_SOURCE_HINT : undefined, this._pendingDirection === 'from' ? undefined : text => typedService(text, this._observedNs))}
+                        <div class="field-group" style="min-width:140px">
+                            <label class="field-label">Flow Type</label>
+                            <select class="field-select" .value=${this._pendingFlowType} @change=${(e: Event) => { this._pendingFlowType = (e.target as HTMLSelectElement).value as FlowTypeName | ''; }}>
+                                <option value="">All</option>
+                                <option value="intra-node">${flowTypeLabel[FlowType.IntraNode]}</option>
+                                <option value="inter-node">${flowTypeLabel[FlowType.InterNode]}</option>
+                                <option value="to-external">${flowTypeLabel[FlowType.ToExternal]}</option>
+                                <option value="from-external">${flowTypeLabel[FlowType.FromExternal]}</option>
+                            </select>
+                        </div>
                     </div>
 
                     <div class="filter-actions">
@@ -1850,7 +1947,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
     }
 
     private _renderFlowList() {
-        let filtered = this._visibleEntries;
+        let filtered = this._entries;
         if (this._textFilter) filtered = filtered.filter(e => matchesText(e, this._textFilter));
         const sorted = [...filtered].sort((a, b) => {
             const aVal = sortValue(a, this._sortField);

@@ -18,8 +18,10 @@ import { getApiBase } from './api.js';
 export type FlowFilterDirection = 'both' | 'from' | 'to';
 export type FlowTypeName = 'intra-node' | 'inter-node' | 'to-external' | 'from-external';
 
-/** Peer filters. These narrow the stream; they do not authorize it, and e.g. a namespace outside
- * the stream's scope is legal here — it is how a flow is selected by its far end, not its own.
+/** Peer filters. These narrow the stream; they do not authorize it. Their endpoint criteria
+ * (namespaces, pods, podLabelSelector, ips) all match the one endpoint the direction picks, on
+ * either end of the flow, so a namespace outside the stream's scope is legal here: it selects the
+ * flows whose other end is in it.
  * No scope of its own: a caller building one of these has to add a FlowStreamScope to get a
  * FlowStreamFilter the backend will accept, which is the point - see _composeFilter in
  * antrea-flow-visibility-page.ts, the one place that does it. */
@@ -27,6 +29,7 @@ export interface FlowPeerFilter {
     namespaces?: string[];
     pods?: string[];
     podLabelSelector?: string;
+    /** Destination Services, each as namespace/name. */
     services?: string[];
     flowTypes?: FlowTypeName[];
     ips?: string[];
