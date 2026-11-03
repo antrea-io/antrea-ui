@@ -118,8 +118,10 @@ describe('support bundle listing and permissions', () => {
     });
 
     test('accepts omitted optional fields and an empty list', async () => {
-        const fetchMock = stubAPI(() => json({ items: [collecting] }));
-        await mount();
+        const fetchMock = stubAPI(() => json({ items: [{ ...collecting, createdBy: undefined }] }));
+        const root = await mount();
+        const cells = [...root.querySelectorAll('tbody td')].map(td => td.textContent?.trim());
+        expect(cells.filter(text => text === '—')).toHaveLength(2);
         fetchMock.mockResolvedValue(json({ items: [] }));
         click('#refresh');
         await flush();
@@ -323,6 +325,20 @@ describe('support bundle polling', () => {
         expect(root.textContent).toContain('Collected');
     });
 
+    test('drops the collection-started banner when a manual refresh shows no running collection', async () => {
+        let items = [collecting];
+        stubAPI((_url, init) => init.method === 'POST' ? json(collecting, 202) : json({ items }));
+        const root = await mount();
+        submit();
+        await flush();
+        expect(root.textContent).toContain('Collection started');
+        items = [bundle];
+        click('#refresh');
+        await flush();
+        expect(root.textContent).not.toContain('Collection started');
+        expect(root.textContent).toContain('Collected');
+    });
+
     test('returning to the tab keeps a rejected collection error', async () => {
         stubAPI((_url, init) => init.method === 'POST'
             ? json('access denied', 403) : json({ items: [collecting] }));
@@ -347,14 +363,21 @@ describe('support bundle polling', () => {
         expect(root.querySelector('antrea-alert[status="danger"]')).toBeNull();
     });
 
-    test('preserves expanded sources when the list updates', async () => {
-        stubAPI(() => json({ items: [{ ...collecting, sources: [
-            { name: 'p', kind: 'plugin', status: 'Collecting' },
-        ] }] }));
+    test('keeps expanded sources with their bundle when the list updates', async () => {
+        const sources = [{ name: 'p', kind: 'plugin' as const, status: 'Collecting' as const }];
+        const first = { ...collecting, id: 'first', sources };
+        const second = { ...collecting, id: 'second', sources };
+        let items = [first, second];
+        stubAPI(() => json({ items }));
         const root = await mount();
-        root.querySelector('details')!.open = true;
+        root.querySelector<HTMLDetailsElement>('[data-bundle-id="first"] details')!.open = true;
+        items = [second];
         await vi.advanceTimersByTimeAsync(2000);
-        expect(root.querySelector('details')!.open).toBe(true);
+        expect(root.querySelector('[data-bundle-id="first"]')).toBeNull();
+        expect(root.querySelector<HTMLDetailsElement>('[data-bundle-id="second"] details')!.open).toBe(false);
+        items = [first, second];
+        await vi.advanceTimersByTimeAsync(2000);
+        expect(root.querySelector<HTMLDetailsElement>('[data-bundle-id="first"] details')!.open).toBe(false);
     });
 
     test('aborts in-flight requests on unmount and ignores their late responses', async () => {

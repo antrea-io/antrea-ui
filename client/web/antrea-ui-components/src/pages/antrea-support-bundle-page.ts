@@ -208,9 +208,9 @@ export class AntreaSupportBundlePage extends SessionAwarePage {
         void this._run('refresh', signal => apiFetchJSON<{ items: SupportBundle[] }>('supportbundle', { signal }),
             result => {
                 this._bundles = result.items;
-                // The banner is only true while a collection runs; drop it once an automatic
-                // re-list shows that none does.
-                if (background && this._notice === COLLECTION_STARTED_NOTICE &&
+                // The banner is only true while a collection runs; drop it once a re-list,
+                // automatic or manual, shows that none does.
+                if (this._notice === COLLECTION_STARTED_NOTICE &&
                     !result.items.some(b => b.status === 'Collecting')) {
                     this._notice = '';
                 }
