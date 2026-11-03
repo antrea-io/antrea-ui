@@ -48,6 +48,7 @@ interface FlowOverrides {
     dstNs?: string;
     srcDisclosure?: EndpointDisclosure;
     dstDisclosure?: EndpointDisclosure;
+    svcDisclosure?: EndpointDisclosure;
     destService?: string;
     flowType?: FlowType;
 }
@@ -67,6 +68,7 @@ function makeFlow(overrides: FlowOverrides = {}): Flow {
             flowType: overrides.flowType ?? FlowType.InterNode,
             sourceDisclosure: overrides.srcDisclosure ?? EndpointDisclosure.Full,
             destinationDisclosure: overrides.dstDisclosure ?? EndpointDisclosure.Full,
+            destinationServiceDisclosure: overrides.svcDisclosure ?? EndpointDisclosure.Full,
             sourcePodNamespace: overrides.srcNs ?? 'default',
             sourcePodName: overrides.srcPod ?? 'client-abc12',
             sourcePodUid: '',
@@ -1728,7 +1730,7 @@ describe('AntreaFlowVisibilityPage — filters, sort, text filter, pause/resume,
     test('Dest Service sorts a withheld Service apart from an absent one', async () => {
         const flows = [
             makeFlow({ srcPod: 'm-absent', srcIP: '10.0.0.1' }),
-            makeFlow({ srcPod: 'm-withheld', srcIP: '10.0.0.2', dstDisclosure: EndpointDisclosure.Flow }),
+            makeFlow({ srcPod: 'm-withheld', srcIP: '10.0.0.2', svcDisclosure: EndpointDisclosure.Flow }),
             makeFlow({ srcPod: 'm-named', srcIP: '10.0.0.3', destService: 'ns-a/svc:http' }),
         ];
         expect(await sortedBy(flows, 'Dest Service', ['m-absent', 'm-withheld', 'm-named']))
@@ -2733,10 +2735,49 @@ describe('AntreaFlowVisibilityPage — disclosure in the flow list', () => {
     });
 
     test('a withheld Dest Service is marked with its own explanation', async () => {
-        const row = await rowFor(makeFlow({ dstDisclosure: EndpointDisclosure.Flow, dstNs: 'ns-c', dstPod: '' }));
+        const row = await rowFor(makeFlow({
+            dstDisclosure: EndpointDisclosure.Flow, svcDisclosure: EndpointDisclosure.Flow, dstNs: 'ns-c', dstPod: '',
+        }));
         const svc = cell(row, 3);
         expect(svc.querySelector('.redacted')).not.toBeNull();
-        expect(svc.querySelector('.redacted')!.getAttribute('title')).toContain("destination's namespace");
+        expect(svc.querySelector('.redacted')!.getAttribute('title')).toContain('flows/identity in its namespace');
+    });
+
+    // The Service is disclosed at the tier of its own Namespace, which need not be the destination
+    // endpoint's: each cell follows its own marker.
+    test('a disclosed Dest Service shows on a withheld destination', async () => {
+        const row = await rowFor(makeFlow({
+            dstDisclosure: EndpointDisclosure.Flow, dstNs: 'ns-c', dstPod: '', destService: 'ns-b/frontend:http',
+        }));
+        expect(cell(row, 2).querySelector('.redacted')).not.toBeNull();
+        expect(cell(row, 3).textContent).toContain('ns-b/frontend');
+        expect(cell(row, 3).querySelector('.redacted')).toBeNull();
+    });
+
+    // A withheld destination says nothing about whether there was a Service: with the Service
+    // marker at Full, the record had none, and the cell must not claim one was withheld.
+    test('a withheld destination with no Service shows an unmarked dash', async () => {
+        const row = await rowFor(makeFlow({ dstDisclosure: EndpointDisclosure.Flow, dstNs: 'ns-c', dstPod: '' }));
+        expect(cell(row, 2).querySelector('.redacted')).not.toBeNull();
+        expect(cell(row, 3).textContent!.trim()).toBe('-');
+        expect(cell(row, 3).querySelector('.redacted')).toBeNull();
+    });
+
+    // Nothing of an external destination is withheld, but its Service has a Namespace of its own,
+    // and the Service marker tells a withheld one apart from none.
+    test('a withheld Dest Service is marked on an external destination', async () => {
+        const row = await rowFor(makeFlow({
+            flowType: FlowType.ToExternal, dstDisclosure: EndpointDisclosure.Flow, dstNs: '', dstPod: '',
+            dstIP: '203.0.113.10', svcDisclosure: EndpointDisclosure.Flow,
+        }));
+        expect(cell(row, 2).querySelector('.redacted')).toBeNull();
+        expect(cell(row, 3).querySelector('.redacted')).not.toBeNull();
+    });
+
+    test('a withheld Dest Service is marked on an identified destination', async () => {
+        const row = await rowFor(makeFlow({ dstNs: 'ns-a', dstPod: 'db-abc12', svcDisclosure: EndpointDisclosure.Flow }));
+        expect(cell(row, 2).querySelector('.redacted')).toBeNull();
+        expect(cell(row, 3).querySelector('.redacted')).not.toBeNull();
     });
 
     // The most diagnostically useful thing redaction preserves: the rule action outlives the

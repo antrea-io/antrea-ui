@@ -36,24 +36,26 @@ const (
 	NetworkPolicyTypeK8sCNP      NetworkPolicyType = 4
 )
 
-// EndpointDisclosure records how much of one endpoint of a flow this user was authorized to see.
-// Set by the Flow Aggregator's FlowStreamService only. Zero is Full, not "unspecified": a record
-// nothing redacted reads as fully disclosed, which is every record on a cluster-wide stream.
+// EndpointDisclosure records how much of one endpoint of a flow, or of its destination Service,
+// this user was authorized to see. Set by the Flow Aggregator's FlowStreamService only. Zero is
+// Full, not "unspecified": a record nothing redacted reads as fully disclosed, which is every record
+// on a cluster-wide stream.
 type EndpointDisclosure int32
 
 const (
 	// EndpointDisclosureFull means everything the record carries for the endpoint, including
 	// its Node placement and the Egress applied to it.
 	EndpointDisclosureFull EndpointDisclosure = 0
-	// EndpointDisclosureIdentity means the endpoint's Namespace, Pod and Service identity and
-	// the identity of the network policies of its Namespace, but not its Node placement or its
+	// EndpointDisclosureIdentity means the endpoint's Namespace and Pod identity and the
+	// identity of the network policies of its Namespace, but not its Node placement or its
 	// Egress. The identity of a cluster-scoped policy is not part of this: it follows what the
-	// client holds cluster-wide.
+	// client holds cluster-wide. For a destination Service, its identity, which is all there is
+	// of it.
 	EndpointDisclosureIdentity EndpointDisclosure = 1
 	// EndpointDisclosureFlow means only what the flow itself shows - addresses, ports,
 	// protocol, statistics, and the type and action of the policies - plus the endpoint's
 	// Namespace, unless the endpoint is the destination of a denied connection the client
-	// initiated.
+	// initiated. For a destination Service, nothing of it, not even its Namespace.
 	EndpointDisclosureFlow EndpointDisclosure = 2
 )
 
@@ -115,17 +117,20 @@ type FlowKubernetes struct {
 
 	// SourceDisclosure and DestinationDisclosure report the tier each endpoint was disclosed
 	// at, so a withheld field is distinguishable from a field the Flow Aggregator never had.
+	// DestinationServiceDisclosure does the same for the destination Service, which is
+	// disclosed at the tier of its own Namespace, not necessarily the destination endpoint's.
 	//
-	// Deliberately no omitempty on either: Full is the zero value, so omitempty would drop
+	// Deliberately no omitempty on any of them: Full is the zero value, so omitempty would drop
 	// exactly the case a client most needs to read as Full. Keeping them always present makes
 	// the wire format say what it means. A client should still default a missing value to Full,
 	// for records from a backend that predates these fields.
 	//
-	// Note that the marker describes an endpoint, not a per-field guarantee: an endpoint can
-	// lack a field while still reporting Full, because the Flow Aggregator may simply never
-	// have had it.
-	SourceDisclosure      EndpointDisclosure `json:"sourceDisclosure"`
-	DestinationDisclosure EndpointDisclosure `json:"destinationDisclosure"`
+	// Note that a marker describes an endpoint or the destination Service, not a per-field
+	// guarantee: an endpoint can lack a field while still reporting Full, because the Flow
+	// Aggregator may simply never have had it.
+	SourceDisclosure             EndpointDisclosure `json:"sourceDisclosure"`
+	DestinationDisclosure        EndpointDisclosure `json:"destinationDisclosure"`
+	DestinationServiceDisclosure EndpointDisclosure `json:"destinationServiceDisclosure"`
 
 	SourcePodNamespace string            `json:"sourcePodNamespace"`
 	SourcePodName      string            `json:"sourcePodName"`
