@@ -339,6 +339,21 @@ describe('support bundle polling', () => {
         expect(root.textContent).toContain('Collected');
     });
 
+    test('a successful action clears an earlier action error', async () => {
+        stubAPI((_url, init) => init.method === 'POST' ? json('maximum number of bundles retained', 429)
+            : init.method === 'DELETE' ? new Response(null, { status: 200 }) : json({ items: [bundle] }));
+        vi.spyOn(window, 'confirm').mockReturnValue(true);
+        const root = await mount();
+        submit();
+        await flush();
+        expect(root.querySelector('antrea-alert[status="danger"]')?.textContent)
+            .toContain('maximum number of bundles retained');
+        click('.actions antrea-button');
+        await flush();
+        expect(root.textContent).toContain('Bundle deleted for all users.');
+        expect(root.querySelector('antrea-alert[status="danger"]')).toBeNull();
+    });
+
     test('returning to the tab keeps a rejected collection error', async () => {
         stubAPI((_url, init) => init.method === 'POST'
             ? json('access denied', 403) : json({ items: [collecting] }));
@@ -508,8 +523,9 @@ describe('support bundle download and deletion', () => {
     });
 
     test('requires confirmation and explains cancellation before deleting for all users', async () => {
+        let items = [collecting];
         const fetchMock = stubAPI((_url, init) => init.method === 'DELETE'
-            ? new Response(null, { status: 200 }) : json({ items: [collecting] }));
+            ? new Response(null, { status: 200 }) : json({ items }));
         const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
         const root = await mount();
         click('.actions antrea-button');
@@ -525,6 +541,11 @@ describe('support bundle download and deletion', () => {
         expect(root.textContent).toContain('50 seconds');
         await vi.advanceTimersByTimeAsync(20_000);
         expect(fetchMock).toHaveBeenCalledTimes(3);
+        items = [];
+        click('#refresh');
+        await flush();
+        expect(fetchMock).toHaveBeenCalledTimes(4);
+        expect(root.textContent).toContain('50 seconds');
     });
 
     test('a delete 404 removes a stale row', async () => {
