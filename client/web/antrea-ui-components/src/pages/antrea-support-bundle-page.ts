@@ -88,7 +88,7 @@ export class AntreaSupportBundlePage extends SessionAwarePage {
         super.disconnectedCallback();
     }
 
-    /** A superseded request never reaches _run's finally, so whoever supersedes it clears it here. */
+    /** A superseded request's `finally` skips its cleanup (its generation is stale), so whoever supersedes it clears the request state: here, or by overwriting it in `_run`. */
     private _abortRequest() {
         this._request?.abort();
         this._request = undefined;
