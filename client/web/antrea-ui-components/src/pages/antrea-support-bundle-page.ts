@@ -61,7 +61,6 @@ export class AntreaSupportBundlePage extends SessionAwarePage {
     @state() private _notice = '';
     @state() private _disabled = false;
     @state() private _sessionEnded = false;
-    @state() private _since = '';
     private _pollFailed = false;
     private _generation = 0;
     private _pollTimer?: ReturnType<typeof setTimeout>;
@@ -149,7 +148,7 @@ export class AntreaSupportBundlePage extends SessionAwarePage {
             apply(result);
         } catch (error) {
             if (generation !== this._generation) return;
-            // A rejected action (e.g. an invalid since) must not stop other bundles' progress.
+            // A rejected action (e.g. a 429) must not stop other bundles' progress.
             this._pollFailed = action === 'refresh';
             if (this.isSessionExpiredError(error)) {
                 this._sessionEnded = true;
@@ -187,11 +186,9 @@ export class AntreaSupportBundlePage extends SessionAwarePage {
     private _collect(event: Event) {
         event.preventDefault();
         if (this._busy || this._disabled || !this._allowed(GATE_SUPPORTBUNDLE_CREATE)) return;
-        const since = this._since.trim();
         this._notice = '';
         void this._run('collect', signal => apiFetchJSON<SupportBundle>('supportbundle', {
             method: 'POST', signal,
-            ...(since ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ since }) } : {}),
         }), bundle => {
             this._bundles = [...this._bundles.filter(b => b.id !== bundle.id), bundle];
             this._notice = 'Collection started. You can leave this page while it runs.';
@@ -286,17 +283,6 @@ export class AntreaSupportBundlePage extends SessionAwarePage {
                         ${this._allowed(GATE_SUPPORTBUNDLE_CREATE) ? html`
                             <antrea-card heading="Collect a bundle">
                                 <form class="form-stack" @submit=${this._collect}>
-                                    <div class="field-group">
-                                        <label class="field-label" for="since">Rotated logs since (optional)</label>
-                                        <input id="since" class="field-input" placeholder="e.g. 1h or 30m" maxlength="200"
-                                            aria-describedby="since-hint" .value=${this._since} ?disabled=${unavailable}
-                                            @input=${(e: Event) => { this._since = (e.target as HTMLInputElement).value; }}>
-                                        <span id="since-hint" class="field-hint">
-                                            A positive Go duration. Leave empty to include all logs. Only rotated Antrea UI
-                                            logs are filtered; the current log and other diagnostics are always included.
-                                            This value is also passed to every source.
-                                        </span>
-                                    </div>
                                     <div><antrea-button id="collect" type="submit" ?disabled=${unavailable}>
                                         ${this._busy === 'collect' ? 'Starting…' : 'Collect'}
                                     </antrea-button></div>

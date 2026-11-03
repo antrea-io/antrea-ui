@@ -73,10 +73,7 @@ function click(selector: string) {
     (button ?? target).click();
 }
 
-function submit(since = '') {
-    const input = el.shadowRoot!.querySelector<HTMLInputElement>('#since')!;
-    input.value = since;
-    input.dispatchEvent(new Event('input', { bubbles: true }));
+function submit() {
     click('#collect');
 }
 
@@ -177,23 +174,22 @@ describe('support bundle listing and permissions', () => {
 });
 
 describe('support bundle collection', () => {
-    test.each(['', ' 1h30m '])('posts optional since=%j and immediately lists the new bundle', async since => {
+    test('posts a bodiless request and immediately lists the new bundle', async () => {
         const fetchMock = stubAPI((_url, init) => init.method === 'POST' ? json(collecting, 202) : json({ items: [] }));
         const root = await mount();
-        submit(since);
+        submit();
         await flush();
         const posts = fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST');
         expect(posts).toHaveLength(1);
         expect(posts[0][0]).toBe(basePath);
         expect(posts[0][1]?.credentials).toBe('include');
-        expect(posts[0][1]?.body).toBe(since ? JSON.stringify({ since: since.trim() }) : undefined);
+        expect(posts[0][1]?.body).toBeUndefined();
         expect(root.textContent).toContain(bundle.id);
         expect(root.textContent).toContain('Collecting');
         expect(root.querySelector('a[download]')).toBeNull();
     });
 
     test.each([
-        [400, 'since must be a positive duration', 'since must be a positive duration'],
         [429, 'maximum number of bundles retained', 'maximum number of bundles retained'],
         [429, null, 'shared hourly support bundle collection limit'],
         [403, 'access denied', 'access denied'],
@@ -202,7 +198,7 @@ describe('support bundle collection', () => {
             ? body === null ? new Response(null, { status }) : json(body, status)
             : json({ items: [] }));
         const root = await mount();
-        submit('invalid');
+        submit();
         await flush();
         const error = root.querySelector('antrea-alert[status="danger"]')!.textContent!.trim();
         expect(error).toContain(message);
@@ -225,14 +221,14 @@ describe('support bundle collection', () => {
 
     test('a rejected collection preserves its error while existing bundles keep updating', async () => {
         const fetchMock = stubAPI((_url, init) => init.method === 'POST'
-            ? json('since must be a positive duration', 400) : json({ items: [collecting] }));
+            ? json('access denied', 403) : json({ items: [collecting] }));
         const root = await mount();
-        submit('invalid');
+        submit();
         await flush();
         await vi.advanceTimersByTimeAsync(2000);
         expect(fetchMock).toHaveBeenCalledTimes(4);
         expect(root.querySelector('antrea-alert[status="danger"]')?.textContent)
-            .toContain('since must be a positive duration');
+            .toContain('access denied');
     });
 });
 
