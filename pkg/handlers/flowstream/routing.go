@@ -16,9 +16,7 @@ package flowstream
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"io"
 
 	apisv1 "antrea.io/antrea-ui/apis/v1"
 )
@@ -128,17 +126,6 @@ func (s *RoutedSubscriber) Subscribe(ctx context.Context, scope *FlowStreamScope
 		}
 	}()
 	return flows, errs, ready
-}
-
-// Close closes the sources which hold connections.
-func (s *RoutedSubscriber) Close() error {
-	var errs []error
-	for _, source := range s.Sources {
-		if closer, ok := source.Subscriber.(io.Closer); ok {
-			errs = append(errs, closer.Close())
-		}
-	}
-	return errors.Join(errs...)
 }
 
 // relay drains both channels before declaring success. A final buffered error

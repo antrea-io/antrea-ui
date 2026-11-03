@@ -308,6 +308,7 @@ func (s *Session) transportFor(key string, build TransportBuilder) (http.RoundTr
 // connFor returns the gRPC connection cached under key for this session's current credential,
 // building it with build on first use. It is the gRPC counterpart of transportFor: see that
 // method for why the per-key cache and the double-checked lock exist.
+// A successfully built versioned key replaces and closes older connections for that upstream.
 func (s *Session) connFor(key string, build ConnBuilder) (*grpc.ClientConn, error) {
 	s.mutex.RLock()
 	cached, ok := s.conns[key]
@@ -326,11 +327,34 @@ func (s *Session) connFor(key string, build ConnBuilder) (*grpc.ClientConn, erro
 	if err != nil {
 		return nil, err
 	}
+	s.dropSupersededConnsLocked(key)
 	if s.conns == nil {
 		s.conns = make(map[string]cachedConn)
 	}
 	s.conns[key] = cachedConn{conn: conn, cleanup: cleanup}
 	return conn, nil
+}
+
+// dropSupersededConnsLocked mirrors transport eviction for versioned gRPC connections.
+// Closing a superseded connection also ends its old streams so they can reconnect
+// using the current endpoint and trust. The caller must hold s.mutex.
+func (s *Session) dropSupersededConnsLocked(key string) {
+	upstream, versioned := transportUpstream(key)
+	if !versioned {
+		return
+	}
+	for k, cached := range s.conns {
+		if k == key {
+			continue
+		}
+		if u, versioned := transportUpstream(k); !versioned || u != upstream {
+			continue
+		}
+		if cached.cleanup != nil {
+			cached.cleanup()
+		}
+		delete(s.conns, k)
+	}
 }
 
 // transportUpstream is the part of a transport cache key before the first "/". A key with no "/"

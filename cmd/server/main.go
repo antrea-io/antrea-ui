@@ -266,12 +266,7 @@ func run() error {
 
 	var flowStreamSubscriber flowstream.FlowStreamSubscriber
 	if len(config.FlowSources) > 0 {
-		router, err := flowstream.NewRoutedSubscriber(context.Background(), logger, k8sClientset, config.FlowSources, adminTokenSource)
-		if err != nil {
-			return err
-		}
-		defer router.Close()
-		flowStreamSubscriber = router
+		flowStreamSubscriber = flowstream.NewRoutedSubscriber(logger, k8sClientset, config.FlowSources, adminTokenSource)
 	}
 
 	// The backend instruments itself whether or not metrics are enabled: the setting only decides

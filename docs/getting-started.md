@@ -63,10 +63,13 @@ UI connects to `flow-aggregator.flow-aggregator.svc:14740`; configure
 deployment. See [flow sources](#flow-sources) for configuring other sources.
 
 For every source, `caConfigMap` names a ConfigMap containing the public CA in
-`ca.crt`. The backend reads it once at startup, in the configured `namespace`,
-and fails to start if it cannot; leaving `caConfigMap` empty uses the system
-trust store. TLS checks the certificate and server name; use `serverName` to
-override the name when connecting through a port-forward. See the
+`ca.crt`. The backend reads it in the configured `namespace` each time a stream
+starts and connects to the source with it, so a rotated CA applies to the next
+stream without restarting the UI. A missing or invalid CA ConfigMap fails the
+requests that need it with an error, and does not stop the UI from starting.
+Leaving `caConfigMap` empty uses the system trust store. TLS checks the
+certificate and server name; use `serverName` to override the name when
+connecting through a port-forward. See the
 [chart values](../build/charts/antrea-ui/README.md) for all options and
 [flow permissions](authentication.md#flow-data-is-per-user) for user access
 requirements.
@@ -94,6 +97,12 @@ requests. The UI chart does not deploy any source. With `caConfigMap` set,
 create that ConfigMap in the specified `namespace`; the chart grants the UI read
 access to it. Without a CA ConfigMap, no namespace is needed. A source must
 satisfy the [flow source contract](../pkg/flowpb/README.md#flow-source-contract).
+
+Compared with earlier releases, which read the Flow Aggregator's CA once at
+startup and shared one connection for all bearer-token streams, a bad
+`caConfigMap` no longer fails startup, and every stream now opens its own
+connection. Client-certificate sessions keep one connection per source, which
+is replaced when the source's address, server name or CA changes.
 
 The UI in this repository only reads `watch` sources: a source with only the
 `list` capability has no effect here. Other capabilities are for other UIs built

@@ -237,6 +237,12 @@ capability, is refused with a 400 before any connection is made, and the
 backend never serves it from another source: live data is never substituted for
 a finite query. With no source configured, the endpoint returns 501.
 
+The backend connects to a source when a stream starts, with the source's CA
+as it is then, so a rotated CA applies to the next stream. A client-certificate
+session keeps one connection per source, replaced when the source's address,
+server name or CA changes; the source's name is what keeps one source from
+replacing another's.
+
 The UI in this repository only sends live requests. The finite-query path is
 there for other UIs built on the same components. So that they can offer it only
 where it works, `GET /api/v1/settings` lists the configured sources under

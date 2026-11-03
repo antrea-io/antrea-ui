@@ -39,13 +39,12 @@ import (
 	"antrea.io/antrea-ui/pkg/k8s"
 )
 
-// flowSourceConnKeyPrefix, followed by the source's name, is the session transport/connection
-// cache key for a per-credential gRPC connection to a flow source (a KindCert credential; see
-// connFor). The key has no "/" so it is never treated as versioned - a flow source's TLS
-// settings do not change under a live session - and sources cannot evict each other's
-// connections. If CA reloading is ever added, the key must become
-// "flow-source-<name>/<digest>", with the name still ahead of the first "/": the session treats
-// that prefix as the upstream.
+// flowSourceConnKeyPrefix, followed by the source's name, is the session connection cache key
+// for a per-credential gRPC connection to a flow source (a KindCert credential; see connFor).
+// EndpointSubscriber appends "/<digest>" of the source's endpoint and trust, which makes the key
+// versioned: the session retires the connections of the same upstream built for an older digest.
+// The name must stay ahead of the first "/", because the session treats that prefix as the
+// upstream, and it keeps one source from evicting another's connections.
 const flowSourceConnKeyPrefix = "flow-source-"
 
 // StreamError classifies a flow-stream failure for callers that need to react to it (the frontend,
@@ -142,8 +141,11 @@ func isMessageSizeErr(err error) bool {
 type GRPCFlowStreamSubscriber struct {
 	// name is the flow source's configured name, used in messages and to key the per-session
 	// certificate connection.
-	name   string
-	logger logr.Logger
+	name string
+	// connectionKey is the session cache key of the certificate connection; when empty it is
+	// derived from name.
+	connectionKey string
+	logger        logr.Logger
 	// address and tlsConfig are kept so that a per-credential connection (KindCert) can be
 	// dialed with the same server-verification settings as the shared one.
 	address   string
@@ -160,8 +162,11 @@ type GRPCFlowStreamSubscriber struct {
 // GRPCConfig holds the connection parameters for a flow source's gRPC server.
 type GRPCConfig struct {
 	// Name is the flow source's configured name.
-	Name    string
-	Address string
+	Name string
+	// ConnectionKey separates endpoints and trust generations for certificate sessions. It must
+	// start with the key prefix and the name, then "/" and a version; see flowSourceConnKeyPrefix.
+	ConnectionKey string
+	Address       string
 	// TLSConfig is the TLS configuration used for the gRPC connection. Its Certificates field
 	// is left unset here: a KindCert session credential adds its own, on a separate
 	// per-session connection (see connFor).
@@ -191,6 +196,7 @@ func NewGRPCFlowStreamSubscriber(logger logr.Logger, cfg GRPCConfig) (*GRPCFlowS
 
 	return &GRPCFlowStreamSubscriber{
 		name:             cfg.Name,
+		connectionKey:    cfg.ConnectionKey,
 		logger:           logger,
 		address:          cfg.Address,
 		tlsConfig:        cfg.TLSConfig,
@@ -247,7 +253,11 @@ func (h *GRPCFlowStreamSubscriber) resolveCall(ctx context.Context) (flowpb.Flow
 	case session.KindBearer:
 		return h.client, metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+string(cred.Token)), nil
 	case session.KindCert:
-		conn, err := ra.ConnFor(flowSourceConnKeyPrefix+h.name, h.buildCertConn)
+		key := h.connectionKey
+		if key == "" {
+			key = flowSourceConnKeyPrefix + h.name
+		}
+		conn, err := ra.ConnFor(key, h.buildCertConn)
 		if err != nil {
 			return nil, nil, internalStreamError(fmt.Errorf("failed to build flow source client certificate connection: %w", err))
 		}

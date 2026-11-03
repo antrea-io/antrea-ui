@@ -31,8 +31,6 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
 
 	apisv1 "antrea.io/antrea-ui/apis/v1"
@@ -366,59 +364,30 @@ func TestCertificateSessionUsesOneConnectionPerSource(t *testing.T) {
 }
 
 func TestNewRoutedSubscriber(t *testing.T) {
-	ctx := t.Context()
-	pair, err := testcerts.NewCA().NewKeyPair("flow.test")
-	require.NoError(t, err)
-	caConfigMap := func(name string, data map[string]string) *corev1.ConfigMap {
-		return &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "trusted"}, Data: data}
-	}
 	watch := []string{serverconfig.FlowSourceCapabilityWatch}
 	list := []string{serverconfig.FlowSourceCapabilityList}
-
-	t.Run("builds the sources in order", func(t *testing.T) {
-		client := fake.NewClientset(caConfigMap("hist-ca", map[string]string{"ca.crt": string(pair.PublicKey())}))
-		router, err := NewRoutedSubscriber(ctx, testr.New(t), client, []serverconfig.FlowSourceConfig{
-			{Name: "flow-aggregator", Capabilities: watch, Address: "fa.example.test:14740", InsecureSkipVerify: true},
-			{Name: "flow-history", Capabilities: list, Address: "hist.example.test:14740", CAConfigMap: "hist-ca", Namespace: "trusted"},
-			{Name: "both", Capabilities: append(append([]string{}, watch...), list...), Address: "both.example.test:14740"},
-		}, nil)
-		require.NoError(t, err)
-		defer router.Close()
-		require.Len(t, router.Sources, 3)
-		assert.Equal(t, "flow-aggregator", router.Sources[0].Name)
-		assert.True(t, router.Sources[0].Watch)
-		assert.False(t, router.Sources[0].List)
-		assert.Equal(t, "flow-history", router.Sources[1].Name)
-		assert.False(t, router.Sources[1].Watch)
-		assert.True(t, router.Sources[1].List)
-		assert.True(t, router.Sources[2].Watch)
-		assert.True(t, router.Sources[2].List)
-		grpcSource, ok := router.Sources[1].Subscriber.(*GRPCFlowStreamSubscriber)
-		require.True(t, ok)
-		assert.Equal(t, "flow-history", grpcSource.name)
-	})
-
-	for _, tc := range []struct {
-		name    string
-		objects []*corev1.ConfigMap
-		wantErr string
-	}{
-		{name: "missing CA ConfigMap", wantErr: `failed to get CA configmap trusted/bad-ca of flow source "flow-history"`},
-		{name: "CA ConfigMap without ca.crt", objects: []*corev1.ConfigMap{caConfigMap("bad-ca", map[string]string{"other": "x"})}, wantErr: "missing or has empty 'ca.crt'"},
-		{name: "unparsable CA", objects: []*corev1.ConfigMap{caConfigMap("bad-ca", map[string]string{"ca.crt": "not a certificate"})}, wantErr: "failed to parse CA cert"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			client := fake.NewClientset()
-			for _, cm := range tc.objects {
-				_, err := client.CoreV1().ConfigMaps("trusted").Create(ctx, cm, metav1.CreateOptions{})
-				require.NoError(t, err)
-			}
-			router, err := NewRoutedSubscriber(ctx, testr.New(t), client, []serverconfig.FlowSourceConfig{
-				{Name: "flow-aggregator", Capabilities: watch, Address: "fa.example.test:14740"},
-				{Name: "flow-history", Capabilities: list, Address: "hist.example.test:14740", CAConfigMap: "bad-ca", Namespace: "trusted"},
-			}, nil)
-			require.ErrorContains(t, err, tc.wantErr)
-			assert.Nil(t, router)
-		})
-	}
+	// A CA ConfigMap that does not exist must not prevent startup: no source touches the API
+	// before a stream asks for it.
+	client := fake.NewClientset()
+	router := NewRoutedSubscriber(testr.New(t), client, []serverconfig.FlowSourceConfig{
+		{Name: "flow-aggregator", Capabilities: watch, Address: "fa.example.test:14740", CAConfigMap: "missing-ca", Namespace: "flow-aggregator"},
+		{Name: "flow-history", Capabilities: list, Address: "hist.example.test:14740", ServerName: "hist.example.test", InsecureSkipVerify: true},
+		{Name: "both", Capabilities: append(append([]string{}, watch...), list...), Address: "both.example.test:14740"},
+	}, nil)
+	require.Len(t, router.Sources, 3)
+	assert.Empty(t, client.Actions())
+	assert.Equal(t, "flow-aggregator", router.Sources[0].Name)
+	assert.True(t, router.Sources[0].Watch)
+	assert.False(t, router.Sources[0].List)
+	assert.Equal(t, "flow-history", router.Sources[1].Name)
+	assert.False(t, router.Sources[1].Watch)
+	assert.True(t, router.Sources[1].List)
+	assert.True(t, router.Sources[2].Watch)
+	assert.True(t, router.Sources[2].List)
+	endpoint, ok := router.Sources[1].Subscriber.(*EndpointSubscriber)
+	require.True(t, ok)
+	assert.Equal(t, EndpointSubscriber{
+		Logger: endpoint.Logger, Client: client, Name: "flow-history", Address: "hist.example.test:14740",
+		ServerName: "hist.example.test", InsecureSkipVerify: true,
+	}, *endpoint)
 }
