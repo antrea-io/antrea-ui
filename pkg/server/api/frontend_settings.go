@@ -16,6 +16,7 @@ package api
 
 import (
 	"net/http"
+	"slices"
 
 	"github.com/gin-gonic/gin"
 
@@ -23,6 +24,20 @@ import (
 	serverconfig "antrea.io/antrea-ui/pkg/config/server"
 	"antrea.io/antrea-ui/pkg/version"
 )
+
+// buildFrontendFlowSources exposes each flow source's name and capabilities only. The settings
+// are served without authentication, so nothing about where a source is or how it is reached
+// (address, namespace, CA, server name) may be added here.
+func buildFrontendFlowSources(sources []serverconfig.FlowSourceConfig) []apisv1.FrontendFlowSource {
+	result := make([]apisv1.FrontendFlowSource, 0, len(sources))
+	for _, source := range sources {
+		result = append(result, apisv1.FrontendFlowSource{
+			Name:         source.Name,
+			Capabilities: slices.Clone(source.Capabilities),
+		})
+	}
+	return result
+}
 
 func buildFrontendSettingsFromConfig(config *serverconfig.Config) *apisv1.FrontendSettings {
 	return &apisv1.FrontendSettings{
@@ -36,6 +51,7 @@ func buildFrontendSettingsFromConfig(config *serverconfig.Config) *apisv1.Fronte
 		},
 		Features: apisv1.FrontendFeatureSettings{
 			FlowVisibilityEnabled: len(config.FlowSources) > 0,
+			FlowSources:           buildFrontendFlowSources(config.FlowSources),
 			MetricsEnabled:        config.Metrics.Enabled,
 		},
 	}

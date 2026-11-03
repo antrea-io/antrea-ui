@@ -61,6 +61,15 @@ export function sessionIdentity({ mode, username }: { mode?: SessionMode, userna
     return { name: username, kind: 'User' };
 }
 
+/** A configured flow source, as /api/v1/settings describes it: its name, which is what a request
+ * passes as `source`, and what it serves. `watch` is live streams, `list` is finite queries. The
+ * settings are served without authentication, so this is all there is: nothing about where a
+ * source is or how it is reached. */
+export interface FlowSourceInfo {
+    name: string
+    capabilities: ('watch' | 'list')[]
+}
+
 export interface AppSettings {
     version: string
     auth: {
@@ -75,6 +84,8 @@ export interface AppSettings {
     }
     features?: {
         flowVisibilityEnabled?: boolean
+        /** The configured flow sources, in the order in which they are the default for a request. */
+        flowSources?: FlowSourceInfo[]
     }
 }
 

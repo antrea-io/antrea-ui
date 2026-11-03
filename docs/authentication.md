@@ -238,8 +238,26 @@ backend never serves it from another source: live data is never substituted for
 a finite query. With no source configured, the endpoint returns 501.
 
 The UI in this repository only sends live requests. The finite-query path is
-there for other UIs built on the same components, which know their deployment's
-sources.
+there for other UIs built on the same components. So that they can offer it only
+where it works, `GET /api/v1/settings` lists the configured sources under
+`features.flowSources`, in the order in which they are the default, each with its
+`name` and `capabilities`:
+
+```json
+"features": {
+  "flowVisibilityEnabled": true,
+  "flowSources": [
+    { "name": "flow-aggregator", "capabilities": ["watch"] },
+    { "name": "flow-history", "capabilities": ["list"] }
+  ]
+}
+```
+
+That endpoint is served without authentication, so the list says nothing about
+where a source is or how it is reached: no address, namespace, CA or server name.
+The list is empty when no source is configured, and `flowVisibilityEnabled` is
+true when it is not. Whether a caller may use a source is still the source's
+decision, per request.
 
 Every request also names a **scope**: either `clusterWide=true` or a single
 `observedNamespace`, never both. The source authorizes the stream against that

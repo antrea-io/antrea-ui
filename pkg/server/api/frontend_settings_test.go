@@ -27,24 +27,56 @@ import (
 
 func TestFlowSourceSettings(t *testing.T) {
 	ts := newTestServer(t)
-	for name, sources := range map[string][]serverconfig.FlowSourceConfig{
-		"none": nil,
-		"one": {{
-			Name: "private-source", Capabilities: []string{serverconfig.FlowSourceCapabilityList},
-			Address: "private-history.example.test:14740", CAConfigMap: "private-history-ca",
-		}},
+	for name, tc := range map[string]struct {
+		sources []serverconfig.FlowSourceConfig
+		want    []apisv1.FrontendFlowSource
+	}{
+		"none": {want: []apisv1.FrontendFlowSource{}},
+		"in order": {
+			sources: []serverconfig.FlowSourceConfig{
+				{
+					Name: "flow-aggregator", Capabilities: []string{serverconfig.FlowSourceCapabilityWatch},
+					Address: "private-fa.example.test:14740", Namespace: "private-ns", CAConfigMap: "private-fa-ca",
+					ServerName: "private-name",
+				},
+				{
+					Name: "flow-history", Capabilities: []string{serverconfig.FlowSourceCapabilityList, serverconfig.FlowSourceCapabilityWatch},
+					Address: "private-history.example.test:14740", CAConfigMap: "private-history-ca", InsecureSkipVerify: true,
+				},
+			},
+			want: []apisv1.FrontendFlowSource{
+				{Name: "flow-aggregator", Capabilities: []string{"watch"}},
+				{Name: "flow-history", Capabilities: []string{"list", "watch"}},
+			},
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			config := &serverconfig.Config{FlowSources: sources}
+			config := &serverconfig.Config{FlowSources: tc.sources}
 			ts.s.frontendSettings = buildFrontendSettingsFromConfig(config)
 			rr := httptest.NewRecorder()
 			ts.router.ServeHTTP(rr, httptest.NewRequest("GET", "/api/v1/settings", nil))
 			require.Equal(t, 200, rr.Code)
 			var settings apisv1.FrontendSettings
 			require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &settings))
-			require.Equal(t, len(sources) > 0, settings.Features.FlowVisibilityEnabled)
-			// The endpoint is unauthenticated: it must not describe the deployment's sources.
-			require.NotContains(t, rr.Body.String(), "private-")
+			require.Equal(t, len(tc.sources) > 0, settings.Features.FlowVisibilityEnabled)
+			require.Equal(t, tc.want, settings.Features.FlowSources)
+			// An empty list is an empty array, so a client can always iterate over it.
+			if len(tc.sources) == 0 {
+				require.Contains(t, rr.Body.String(), `"flowSources":[]`)
+			}
+			// The endpoint is unauthenticated: it must say nothing about where a source is or
+			// how it is reached.
+			require.NotContains(t, rr.Body.String(), "private")
+			require.NotContains(t, rr.Body.String(), "insecureSkipVerify")
 		})
 	}
+}
+
+func TestFlowSourceSettingsDoNotAliasConfig(t *testing.T) {
+	config := &serverconfig.Config{FlowSources: []serverconfig.FlowSourceConfig{
+		{Name: "a", Capabilities: []string{serverconfig.FlowSourceCapabilityWatch}},
+	}}
+	settings := buildFrontendSettingsFromConfig(config)
+	settings.Features.FlowSources[0].Capabilities[0] = "changed"
+	require.Equal(t, serverconfig.FlowSourceCapabilityWatch, config.FlowSources[0].Capabilities[0])
 }
