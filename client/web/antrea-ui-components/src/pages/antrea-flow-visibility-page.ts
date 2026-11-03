@@ -904,6 +904,13 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
     // What is typed in the open filter menu's search box. Only one menu is open at a time, and
     // opening one starts a new search.
     @state() private _menuQuery = '';
+    // The rows of the open filter menu, decided when it opens and when its search or the Endpoint
+    // changes, so that they do not change under the keyboard focus or the pointer: ticking an
+    // option only changes its checkbox, and an option unticked or gone from the flows stays where
+    // it was. Options arriving with new flows are shown once the menu is reopened or searched.
+    // Cleared in willUpdate, taken by the next render, with the options and the selection they
+    // were taken from.
+    private _menuRows: { items: string[], more: boolean, options: string[], selected: string[] } | null = null;
     @state() private _pendingIps = '';
     @state() private _pendingPodLabel = '';
     @state() private _nsOpen = false;
@@ -1064,6 +1071,8 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         if (clusterWide === this._clusterWide && observedNs === this._observedNs) return;
         this._clusterWide = clusterWide;
         this._observedNs = observedNs;
+        // The open filter menu lists what the old scope's flows showed, as after Apply.
+        this._nsOpen = false; this._podOpen = false; this._svcOpen = false;
     }
 
     /** Notes that the selected namespace is not in the list (see scopeNote). */
@@ -1140,6 +1149,9 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
     override willUpdate(changed: Map<string, unknown>) {
         super.willUpdate(changed);
         if (changed.has('locationSearch')) this._onLocationChange();
+        if (changed.has('_menuQuery') || changed.has('_pendingDirection') || changed.has('_nsOpen') || changed.has('_podOpen') || changed.has('_svcOpen')) {
+            this._menuRows = null;
+        }
     }
 
     override firstUpdated(changed: Map<string, unknown>) {
@@ -1780,14 +1792,17 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         resolveTyped?: (text: string) => TypedName,
     ) {
         const displayText = selected.length === 0 ? 'All' : selected.length <= 2 ? selected.join(', ') : `${selected.slice(0, 2).join(', ')} +${selected.length - 2}`;
-        const shown = open ? searchFilterOptions(options, selected, this._menuQuery) : { items: [], more: false };
+        if (open && !this._menuRows) {
+            this._menuRows = { ...searchFilterOptions(options, selected, this._menuQuery), options, selected: [...selected] };
+        }
+        const shown = open && this._menuRows ? this._menuRows : { items: [], more: false, options: [], selected: [] };
         // A name typed in the search box can be selected even if no flow shows it yet: the Flow
         // Aggregator applies the filter, so it matches traffic that has not arrived. Offered unless
         // it is already an option; a reason is given for an invalid one only when nothing matches,
         // so that typing towards an existing option is not interrupted.
         const text = this._menuQuery.trim();
         const typed: TypedName = open && text && resolveTyped ? resolveTyped(text) : {};
-        const addable = typed.value !== undefined && !options.includes(typed.value) ? typed.value : undefined;
+        const addable = typed.value !== undefined && !shown.options.includes(typed.value) ? typed.value : undefined;
         const add = (value: string) => {
             if (!selected.includes(value)) onToggle(value);
             this._menuQuery = '';
@@ -1800,24 +1815,24 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
                 <button type="button" class="field-select multiselect-btn" title=${hint ?? nothing} @click=${() => { this._menuQuery = ''; onToggleOpen(); }}>
                     ${displayText}
                 </button>
-                ${open && (hint || options.length > 0 || resolveTyped) ? html`
+                ${open && (hint || shown.options.length > 0 || resolveTyped) ? html`
                     <div class="multiselect-dropdown">
                         ${hint ? html`<div class="multiselect-hint">${hint}</div>` : nothing}
-                        ${options.length > 0 || resolveTyped ? html`
+                        ${shown.options.length > 0 || resolveTyped ? html`
                             <input class="field-input multiselect-search" type="text" placeholder=${resolveTyped ? 'Search or type a name' : 'Search'} aria-label=${`Search ${label}`}
                                 .value=${this._menuQuery} @input=${(e: Event) => { this._menuQuery = (e.target as HTMLInputElement).value; }}
                                 @keydown=${(e: KeyboardEvent) => { if (e.key === 'Enter' && typed.value !== undefined) { e.preventDefault(); add(typed.value); } }} />
                         ` : nothing}
                         ${addable !== undefined ? html`
                             <button type="button" class="multiselect-add" @click=${() => add(addable)}>+ Add "${addable}"</button>
-                        ` : typed.error && shown.items.every(i => selected.includes(i)) ? html`<div class="multiselect-hint">${typed.error}</div>` : nothing}
+                        ` : typed.error && shown.items.every(i => shown.selected.includes(i)) ? html`<div class="multiselect-hint">${typed.error}</div>` : nothing}
                         ${shown.items.map(opt => html`
                             <label class="multiselect-option ${selected.includes(opt) ? 'selected' : ''}">
                                 <input type="checkbox" .checked=${selected.includes(opt)} @change=${() => onToggle(opt)} style="accent-color: var(--antrea-color-primary, #0079b8)" />
                                 ${opt}
                             </label>
                         `)}
-                        ${shown.more ? html`<div class="multiselect-hint">${this._menuQuery.trim() ? 'More matches, keep typing' : 'Showing the first 10 - type to search'}</div>` : nothing}
+                        ${shown.more ? html`<div class="multiselect-hint">${this._menuQuery.trim() ? 'More matches, keep typing' : 'More options, type to search'}</div>` : nothing}
                     </div>
                 ` : nothing}
             </div>

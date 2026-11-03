@@ -2330,6 +2330,214 @@ describe('AntreaFlowVisibilityPage — filter menu search', () => {
     });
 });
 
+// Space on a focused checkbox ticks it, so the focus must stay on the option the user ticked: a
+// second Space then unticks it rather than ticking whichever option took its place.
+describe('AntreaFlowVisibilityPage — keyboard focus in the filter menus', () => {
+    async function mountWith(flows: Flow[]): Promise<AntreaFlowVisibilityPage> {
+        const page = await mount(async () => sseResponse([flowEventChunk(flows)]), { search: '/?namespace=ns-a' });
+        for (let i = 0; i < 5 && page.shadowRoot!.querySelectorAll('tbody tr').length < flows.length; i++) {
+            await vi.advanceTimersByTimeAsync(1000);
+            await page.updateComplete;
+        }
+        return page;
+    }
+
+    // A client in ns-a reaching bravo, charlie and delta, each in its own namespace and behind its
+    // own Service, so that every menu has several options.
+    function threePeers(): Flow[] {
+        return ['bravo', 'charlie', 'delta'].map((name, i) => makeFlow({
+            srcNs: 'ns-a', srcPod: 'alpha', srcIP: '10.0.0.1',
+            dstNs: `ns-${name[0]}`, dstPod: name, dstIP: `10.0.1.${i + 1}`, destService: `ns-${name[0]}/${name}:http`,
+        }));
+    }
+
+    function menuOf(page: AntreaFlowVisibilityPage, label: string): Element {
+        return Array.from(page.shadowRoot!.querySelectorAll('.multiselect'))
+            .find(el => el.querySelector('.multiselect-label')!.textContent!.trim() === label)!;
+    }
+
+    async function toggleMenu(page: AntreaFlowVisibilityPage, label: string): Promise<void> {
+        menuOf(page, label).querySelector<HTMLButtonElement>('.multiselect-btn')!.click();
+        await page.updateComplete;
+    }
+
+    function checkbox(page: AntreaFlowVisibilityPage, option: string): HTMLInputElement {
+        const row = Array.from(page.shadowRoot!.querySelectorAll('.multiselect-option'))
+            .find(el => el.textContent!.trim() === option)!;
+        return row.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
+    }
+
+    // The option the focused checkbox stands for.
+    function focusedOption(page: AntreaFlowVisibilityPage): string | undefined {
+        return page.shadowRoot!.activeElement?.closest('.multiselect-option')?.textContent!.trim();
+    }
+
+    test.each(['Namespaces', 'Pods', 'Services'])('%s: ticking an option keeps it in place and focused', async label => {
+        const page = await mountWith(threePeers());
+        await toggleMenu(page, label);
+        const before = menuOptions(page);
+        const last = before[before.length - 1];
+        const box = checkbox(page, last);
+        box.focus();
+        box.click();
+        await page.updateComplete;
+        expect(menuOptions(page)).toEqual(before);
+        expect(page.shadowRoot!.activeElement).toBe(box);
+        expect(focusedOption(page)).toBe(last);
+        expect(menuOf(page, label).querySelector('.multiselect-btn')!.textContent!.trim()).toBe(last);
+
+        box.click();
+        await page.updateComplete;
+        expect(menuOf(page, label).querySelector('.multiselect-btn')!.textContent!.trim()).toBe('All');
+    });
+
+    function twelveClients(): Flow[] {
+        return Array.from({ length: 12 }, (_, i) => makeFlow({
+            srcNs: 'ns-a', srcPod: `client-${String(i).padStart(2, '0')}`, srcIP: `10.0.0.${i + 1}`,
+            dstNs: 'ns-b', dstPod: 'server', dstIP: '10.0.1.1',
+        }));
+    }
+
+    // As the stream's onFlows does, then drops the flows of the given Pods, as eviction would.
+    async function deliver(page: AntreaFlowVisibilityPage, flows: Flow[], dropPods: string[] = []): Promise<void> {
+        const internals = page as unknown as { _store: { upsertBatch(flows: Flow[]): void; getAll(): { flow: Flow }[] }; _entries: unknown[] };
+        internals._store.upsertBatch(flows);
+        internals._entries = internals._store.getAll().filter(e =>
+            !dropPods.includes(e.flow.k8s.sourcePodName) && !dropPods.includes(e.flow.k8s.destinationPodName));
+        await page.updateComplete;
+    }
+
+    test('unticking a selected option keeps it in the menu, past the options shown', async () => {
+        const page = await mountWith(twelveClients());
+        await toggleMenu(page, 'Pods');
+        const search = menuOf(page, 'Pods').querySelector<HTMLInputElement>('.multiselect-search')!;
+        search.value = 'client-11';
+        search.dispatchEvent(new Event('input'));
+        await page.updateComplete;
+        toggleOption(page, 'client-11');
+        await toggleMenu(page, 'Pods');
+        await toggleMenu(page, 'Pods');
+        const before = menuOptions(page);
+        expect(before[0]).toBe('client-11');
+
+        const box = checkbox(page, 'client-11');
+        box.focus();
+        box.click();
+        await page.updateComplete;
+        expect(menuOptions(page)).toEqual(before);
+        expect(focusedOption(page)).toBe('client-11');
+    });
+
+    test('unticking a typed name keeps it in the menu', async () => {
+        const page = await mountWith(threePeers());
+        await toggleMenu(page, 'Pods');
+        const search = menuOf(page, 'Pods').querySelector<HTMLInputElement>('.multiselect-search')!;
+        search.value = 'redis-0';
+        search.dispatchEvent(new Event('input'));
+        await page.updateComplete;
+        search.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
+        await page.updateComplete;
+        const before = menuOptions(page);
+        expect(before[0]).toBe('redis-0');
+
+        const box = checkbox(page, 'redis-0');
+        box.focus();
+        box.click();
+        await page.updateComplete;
+        expect(menuOptions(page)).toEqual(before);
+        expect(focusedOption(page)).toBe('redis-0');
+    });
+
+    test('unticking an option whose flows are gone keeps it in the menu', async () => {
+        const page = await mountWith(threePeers());
+        await toggleMenu(page, 'Pods');
+        const before = menuOptions(page);
+        const box = checkbox(page, 'delta');
+        box.focus();
+        box.click();
+        await page.updateComplete;
+        await deliver(page, [], ['delta']);
+
+        box.click();
+        await page.updateComplete;
+        expect(menuOf(page, 'Pods').querySelector('.multiselect-btn')!.textContent!.trim()).toBe('All');
+        expect(menuOptions(page)).toEqual(before);
+        expect(focusedOption(page)).toBe('delta');
+    });
+
+    // Rows changing under the focus would move it to another option, or drop it with a row that
+    // leaves.
+    test('flows arriving or leaving do not change the open menu, and show once it is reopened', async () => {
+        const page = await mountWith(twelveClients());
+        await toggleMenu(page, 'Pods');
+        const before = menuOptions(page);
+        expect(before.at(-1)).toBe('client-09');
+        const box = checkbox(page, 'client-09');
+        box.focus();
+
+        await deliver(page, [makeFlow({ srcNs: 'ns-a', srcPod: 'aaron', srcIP: '10.0.0.99', dstNs: 'ns-b', dstPod: 'server', dstIP: '10.0.1.1' })]);
+        expect(menuOptions(page)).toEqual(before);
+        expect(focusedOption(page)).toBe('client-09');
+
+        await deliver(page, [], ['client-09']);
+        expect(menuOptions(page)).toEqual(before);
+        expect(page.shadowRoot!.activeElement).toBe(box);
+        expect(focusedOption(page)).toBe('client-09');
+
+        await toggleMenu(page, 'Pods');
+        await toggleMenu(page, 'Pods');
+        expect(menuOptions(page)[0]).toBe('aaron');
+        expect(menuOptions(page)).not.toContain('client-09');
+    });
+
+    // The offer follows the rows: a name that no row shows can be added, and one that a row shows
+    // is not offered twice.
+    test('the offer to add a typed name does not change as flows arrive or leave', async () => {
+        const page = await mountWith(threePeers());
+        await toggleMenu(page, 'Pods');
+        const search = menuOf(page, 'Pods').querySelector<HTMLInputElement>('.multiselect-search')!;
+        search.value = 'redis-0';
+        search.dispatchEvent(new Event('input'));
+        await page.updateComplete;
+        await deliver(page, [makeFlow({ srcNs: 'ns-a', srcPod: 'redis-0', srcIP: '10.0.0.98', dstNs: 'ns-b', dstPod: 'bravo', dstIP: '10.0.1.1' })]);
+        expect(menuOf(page, 'Pods').querySelector('.multiselect-add')!.textContent).toContain('Add "redis-0"');
+
+        search.value = 'delta';
+        search.dispatchEvent(new Event('input'));
+        await page.updateComplete;
+        await deliver(page, [], ['delta']);
+        expect(menuOptions(page)).toEqual(['delta']);
+        expect(menuOf(page, 'Pods').querySelector('.multiselect-add')).toBeNull();
+    });
+
+    test('a scope change closes the open menu, whose options were of the old scope', async () => {
+        const page = await mount(async () => sseResponse([flowEventChunk(threePeers())]), {
+            search: '/?namespace=ns-a',
+            flowAccess: () => flowAccessFixture({ namespaces: ['ns-a', 'ns-b'] }),
+        });
+        await vi.advanceTimersByTimeAsync(1000);
+        await page.updateComplete;
+        await toggleMenu(page, 'Pods');
+        expect(menuOf(page, 'Pods').querySelector('.multiselect-dropdown')).not.toBeNull();
+        await chooseScope(page, 'ns-b');
+        expect(menuOf(page, 'Pods').querySelector('.multiselect-dropdown')).toBeNull();
+    });
+
+    // A Service is only ever a flow's destination, so Source empties the Services menu even while
+    // it is open.
+    test('an open Services menu has no options once the Endpoint is the source', async () => {
+        const page = await mountWith(threePeers());
+        await toggleMenu(page, 'Services');
+        expect(menuOptions(page)).not.toEqual([]);
+        const select = page.shadowRoot!.querySelector<HTMLSelectElement>('fieldset.endpoint-group select')!;
+        select.value = 'from';
+        select.dispatchEvent(new Event('change'));
+        await page.updateComplete;
+        expect(menuOf(page, 'Services').querySelector('.multiselect-dropdown')).not.toBeNull();
+        expect(menuOptions(page)).toEqual([]);
+    });
+});
+
 // The Flow Aggregator rejects a Service filter with the endpoint filters on the source (a Service
 // is only ever a flow's destination), so the page never lets the two be applied together.
 describe('AntreaFlowVisibilityPage — Services filter', () => {
