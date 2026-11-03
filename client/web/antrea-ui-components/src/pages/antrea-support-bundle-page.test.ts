@@ -308,6 +308,21 @@ describe('support bundle polling', () => {
         expect(root.querySelector('[data-bundle-id]')).toBeNull();
     });
 
+    test('drops the collection-started banner once an automatic re-list shows no running collection', async () => {
+        let items = [collecting];
+        stubAPI((_url, init) => init.method === 'POST' ? json(collecting, 202) : json({ items }));
+        const root = await mount();
+        submit();
+        await flush();
+        expect(root.textContent).toContain('Collection started');
+        await vi.advanceTimersByTimeAsync(2000);
+        expect(root.textContent).toContain('Collection started');
+        items = [bundle];
+        await vi.advanceTimersByTimeAsync(2000);
+        expect(root.textContent).not.toContain('Collection started');
+        expect(root.textContent).toContain('Collected');
+    });
+
     test('returning to the tab keeps a rejected collection error', async () => {
         stubAPI((_url, init) => init.method === 'POST'
             ? json('access denied', 403) : json({ items: [collecting] }));

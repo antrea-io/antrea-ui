@@ -30,6 +30,7 @@ import '../antrea-alert.js';
 import '../antrea-button.js';
 import '../antrea-card.js';
 
+const COLLECTION_STARTED_NOTICE = 'Collection started. You can leave this page while it runs.';
 const POLL_INTERVAL_MS = 2_000;
 const REQUEST_TIMEOUT_MS = 30_000;
 
@@ -207,6 +208,12 @@ export class AntreaSupportBundlePage extends SessionAwarePage {
         void this._run('refresh', signal => apiFetchJSON<{ items: SupportBundle[] }>('supportbundle', { signal }),
             result => {
                 this._bundles = result.items;
+                // The banner is only true while a collection runs; drop it once an automatic
+                // re-list shows that none does.
+                if (background && this._notice === COLLECTION_STARTED_NOTICE &&
+                    !result.items.some(b => b.status === 'Collecting')) {
+                    this._notice = '';
+                }
                 this._loaded = true;
                 this._disabled = false;
             }, undefined, background);
@@ -220,7 +227,7 @@ export class AntreaSupportBundlePage extends SessionAwarePage {
             method: 'POST', signal,
         }), bundle => {
             this._bundles = [...this._bundles.filter(b => b.id !== bundle.id), bundle];
-            this._notice = 'Collection started. You can leave this page while it runs.';
+            this._notice = COLLECTION_STARTED_NOTICE;
         });
     }
 
