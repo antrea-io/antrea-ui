@@ -36,7 +36,7 @@ export { FLOW_QUERY_STATE_EVENT } from './lib/flow-stream.js';
 export type { FlowQuery, FlowQueryStateDetail } from './lib/flow-stream.js';
 export { AntreaLoginPage } from './pages/antrea-login-page.js';
 export { SessionAwarePage } from './lib/session-aware-page.js';
-export type { AppSettings, SessionInfo, SessionMode, SessionIdentity } from './lib/auth-api.js';
+export type { AppSettings, FlowSourceInfo, SessionInfo, SessionMode, SessionIdentity } from './lib/auth-api.js';
 export {
     apiLogin,
     apiLoginWithToken,

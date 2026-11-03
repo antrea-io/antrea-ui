@@ -97,8 +97,9 @@ satisfy the [flow source contract](../pkg/flowpb/README.md#flow-source-contract)
 
 The UI in this repository only reads `watch` sources: a source with only the
 `list` capability has no effect here. Other capabilities are for other UIs built
-on the same components. See [flow sources](authentication.md#flow-sources) for
-how requests choose a source.
+on the same components, which learn which sources exist from `features.flowSources`
+in `GET /api/v1/settings` (names and capabilities only). See
+[flow sources](authentication.md#flow-sources) for how requests choose a source.
 
 The Helm chart keeps accepting `flowAggregator`, so upgrading it needs no
 change. The backend itself no longer reads a `flowAggregator` key: a
