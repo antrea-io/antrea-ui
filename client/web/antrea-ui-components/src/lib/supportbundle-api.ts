@@ -50,6 +50,8 @@ export function supportBundleDownloadURL(id: string): string {
 export function supportBundleErrorMessage(error: unknown): string {
     if (error instanceof APIError) {
         if (error.code === 501) return 'Support bundles are not enabled for this deployment.';
+        // Every 429 the backend gives a reason for; only the hourly limiter on the collection
+        // route replies with no body.
         if (error.code === 429 && error.message === 'HTTP 429') {
             return 'The shared hourly support bundle collection limit has been reached. ' +
                 'Try again later; deleting a bundle does not reset this limit.';

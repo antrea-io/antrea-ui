@@ -21,6 +21,7 @@ import {
     GATE_SUPPORTBUNDLE_GET, GATE_SUPPORTBUNDLE_DELETE,
 } from '../lib/access-api.js';
 import type { AccessSummary, ResourceQuery } from '../lib/access-api.js';
+import { formatBytes } from '../lib/flow-types.js';
 import { SessionAwarePage } from '../lib/session-aware-page.js';
 import { pageStyles } from '../lib/styles.js';
 import { supportBundleDownloadURL, supportBundleErrorMessage, supportBundlePath } from '../lib/supportbundle-api.js';
@@ -62,12 +63,15 @@ export class AntreaSupportBundlePage extends SessionAwarePage {
     @state() private _disabled = false;
     @state() private _sessionEnded = false;
     private _pollFailed = false;
+    private _listError = false;
+    private _backgroundRequest = false;
     private _generation = 0;
     private _pollTimer?: ReturnType<typeof setTimeout>;
     private _request?: AbortController;
 
     protected override onSessionReady() {
         const generation = ++this._generation;
+        this._abortRequest();
         this._permissionsReady = false;
         this._sessionEnded = false;
         this._busy = '';
@@ -78,9 +82,16 @@ export class AntreaSupportBundlePage extends SessionAwarePage {
     override disconnectedCallback() {
         ++this._generation;
         this._clearPoll();
-        this._request?.abort();
+        this._abortRequest();
         document.removeEventListener('visibilitychange', this._onVisibilityChange);
         super.disconnectedCallback();
+    }
+
+    /** A superseded request never reaches _run's finally, so whoever supersedes it clears it here. */
+    private _abortRequest() {
+        this._request?.abort();
+        this._request = undefined;
+        this._backgroundRequest = false;
     }
 
     private async _loadPermissions(generation: number) {
@@ -122,10 +133,14 @@ export class AntreaSupportBundlePage extends SessionAwarePage {
 
     private _onVisibilityChange = () => {
         this._clearPoll();
-        if (!document.hidden) this._refresh();
+        if (!document.hidden) this._refresh(true);
     };
 
-    /** Serialize mutations with re-listing so a stale list cannot undo a successful action. */
+    /**
+     * Serialize mutations with re-listing so a stale list cannot undo a successful action. A
+     * background re-list is invisible (it never sets _busy) and yields to a user action, so a
+     * click is never dropped because a poll happens to be in flight.
+     */
     private async _run<T>(
         action: string,
         request: (signal: AbortSignal) => Promise<T>,
@@ -133,23 +148,37 @@ export class AntreaSupportBundlePage extends SessionAwarePage {
         missingID?: string,
         background = false,
     ) {
-        if (this._busy || this._sessionEnded || !this.isConnected) return;
+        if (this._sessionEnded || !this.isConnected) return;
+        if (this._request) {
+            if (!this._backgroundRequest || background) return;
+            this._request.abort();
+            ++this._generation;
+        }
         const generation = this._generation;
         const controller = new AbortController();
         this._request = controller;
+        this._backgroundRequest = background;
         this._clearPoll();
-        this._busy = action;
-        if (!background) this._error = '';
+        this._busy = background ? '' : action;
+        if (!background) {
+            this._error = '';
+            this._listError = false;
+        }
         this._pollFailed = false;
         const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
         try {
             const result = await request(controller.signal);
             if (generation !== this._generation) return;
             apply(result);
+            if (action === 'refresh' && this._listError) {
+                this._error = '';
+                this._listError = false;
+            }
         } catch (error) {
             if (generation !== this._generation) return;
             // A rejected action (e.g. a 429) must not stop other bundles' progress.
             this._pollFailed = action === 'refresh';
+            this._listError = action === 'refresh';
             if (this.isSessionExpiredError(error)) {
                 this._sessionEnded = true;
                 this.dispatchSessionExpired();
@@ -238,7 +267,7 @@ export class AntreaSupportBundlePage extends SessionAwarePage {
     }
 
     private _size(size?: number) {
-        return size === undefined ? '—' : html`<span class="size">${size.toLocaleString()} B</span>`;
+        return size === undefined ? '—' : html`<span class="size">${formatBytes(size)}</span>`;
     }
 
     private _date(value: string) {

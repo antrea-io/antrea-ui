@@ -107,7 +107,7 @@ describe('support bundle listing and permissions', () => {
         const root = await mount();
         expect(root.textContent).toContain(bundle.id);
         expect(root.textContent).toContain('alice');
-        expect(root.textContent).toContain('2,048 B');
+        expect(root.textContent).toContain('2.0 KB');
         expect(root.querySelector('time')?.getAttribute('datetime')).toBe(bundle.createdAt);
         expect(root.querySelector(`time[datetime="${bundle.expiresAt}"]`)).not.toBeNull();
         expect(root.textContent).toContain('Partial bundle');
@@ -281,6 +281,57 @@ describe('support bundle polling', () => {
         expect(fetchMock).toHaveBeenCalledTimes(2);
     });
 
+    test('a background poll leaves the controls alone and yields to a user action', async () => {
+        let resolvePoll!: (response: Response) => void;
+        let polling = false;
+        const fetchMock = stubAPI((_url, init) => {
+            if (init.method === 'DELETE') return new Response(null, { status: 200 });
+            if (!polling) return json({ items: [collecting] });
+            return new Promise(r => { resolvePoll = r; });
+        });
+        vi.spyOn(window, 'confirm').mockReturnValue(true);
+        const root = await mount();
+        polling = true;
+        await vi.advanceTimersByTimeAsync(2000);
+        const pollSignal = fetchMock.mock.calls.at(-1)?.[1]?.signal;
+        expect(pollSignal?.aborted).toBe(false);
+        expect(root.querySelector('#refresh')?.textContent).toContain('Refresh');
+        expect(root.querySelector('#refresh')?.textContent).not.toContain('Refreshing');
+        expect(root.querySelector('#collect')?.hasAttribute('disabled')).toBe(false);
+        expect(root.querySelector('.actions antrea-button')?.hasAttribute('disabled')).toBe(false);
+        click('.actions antrea-button');
+        await flush();
+        expect(pollSignal?.aborted).toBe(true);
+        expect(fetchMock.mock.calls.at(-1)?.[1]?.method).toBe('DELETE');
+        resolvePoll(json({ items: [collecting] }));
+        await flush();
+        expect(root.querySelector('[data-bundle-id]')).toBeNull();
+    });
+
+    test('returning to the tab keeps a rejected collection error', async () => {
+        stubAPI((_url, init) => init.method === 'POST'
+            ? json('access denied', 403) : json({ items: [collecting] }));
+        const root = await mount();
+        submit();
+        await flush();
+        visibility(true);
+        visibility(false);
+        await flush();
+        expect(root.querySelector('antrea-alert[status="danger"]')?.textContent).toContain('access denied');
+    });
+
+    test('a successful background list clears an earlier list error', async () => {
+        let fail = true;
+        stubAPI(() => fail ? json('boom', 500) : json({ items: [collecting] }));
+        const root = await mount();
+        expect(root.querySelector('antrea-alert[status="danger"]')).not.toBeNull();
+        fail = false;
+        visibility(true);
+        visibility(false);
+        await flush();
+        expect(root.querySelector('antrea-alert[status="danger"]')).toBeNull();
+    });
+
     test('preserves expanded sources when the list updates', async () => {
         stubAPI(() => json({ items: [{ ...collecting, sources: [
             { name: 'p', kind: 'plugin', status: 'Collecting' },
@@ -304,18 +355,40 @@ describe('support bundle polling', () => {
         expect(el.shadowRoot!.querySelector('table')).toBeNull();
     });
 
-    test('does not overlap slow re-lists with a mutation or another poll', async () => {
+    test('a mutation preempts a slow poll and is not overlapped by another', async () => {
         let resolve!: (response: Response) => void;
         let lists = 0;
         const fetchMock = stubAPI(() => ++lists === 1 ? json({ items: [collecting] })
             : new Promise(r => { resolve = r; }));
         await mount();
         await vi.advanceTimersByTimeAsync(2000);
+        const pollSignal = fetchMock.mock.calls[2][1]?.signal;
         submit();
         await vi.advanceTimersByTimeAsync(10_000);
-        expect(fetchMock).toHaveBeenCalledTimes(3);
-        resolve(json({ items: [] }));
+        expect(pollSignal?.aborted).toBe(true);
+        expect(fetchMock).toHaveBeenCalledTimes(4);
+        expect(fetchMock.mock.calls[3][1]?.method).toBe('POST');
+        resolve(json(collecting, 202));
         await flush();
+    });
+
+    test('actions work after reconnecting while a user action was in flight', async () => {
+        let stall = true;
+        const fetchMock = stubAPI((_url, init) => stall && init.method === 'POST'
+            ? new Promise(() => {}) : json({ items: [bundle] }));
+        await mount();
+        submit();
+        await flush();
+        el.remove();
+        stall = false;
+        document.body.appendChild(el);
+        await flush();
+        const lists = fetchMock.mock.calls.filter(([url, init]) =>
+            url === basePath && !init?.method).length;
+        expect(lists).toBe(2);
+        click('#refresh');
+        await flush();
+        expect(fetchMock.mock.calls.filter(([url, init]) => url === basePath && !init?.method)).toHaveLength(3);
     });
 
     test('times out a stalled request and makes manual retry available', async () => {
