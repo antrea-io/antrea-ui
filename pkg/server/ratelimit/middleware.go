@@ -29,9 +29,9 @@ func Middleware(rateLimiter Interface) gin.HandlerFunc {
 			return
 		}
 		if retryAfter > 0 {
-			// Retry-After is expressed in whole seconds (RFC 9110). Round up, with a minimum of 1,
-			// so that clients do not retry straight into another 429.
-			seconds := max(1, int64((retryAfter+time.Second-1)/time.Second))
+			// Retry-After is expressed in whole seconds (RFC 9110). Round up so that clients
+			// do not retry straight into another 429.
+			seconds := int64((retryAfter + time.Second - 1) / time.Second)
 			c.Header("Retry-After", strconv.FormatInt(seconds, 10))
 		}
 		c.AbortWithStatus(http.StatusTooManyRequests)

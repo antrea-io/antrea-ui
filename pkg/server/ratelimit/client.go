@@ -72,7 +72,7 @@ func (l *ClientRateLimiter) Allow(t time.Time, req *http.Request) (bool, time.Du
 			rl = previous
 		}
 	}
-	return reserve(rl, t)
+	return allowN(rl, t)
 }
 
 // ClientKeyIP tries to determine the origin client IP for the provided request. It looks at headers

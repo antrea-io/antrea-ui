@@ -48,5 +48,5 @@ func NewGlobalRateLimiterOrDie(rate string, burstSize int) *GlobalRateLimiter {
 // the next shared token is available: another client may use it before the caller retries, which
 // makes it a hint rather than a guarantee.
 func (l *GlobalRateLimiter) Allow(t time.Time, req *http.Request) (bool, time.Duration) {
-	return reserve(l.rl, t)
+	return allowN(l.rl, t)
 }

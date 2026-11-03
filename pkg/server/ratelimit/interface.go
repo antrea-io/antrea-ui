@@ -30,22 +30,17 @@ type Interface interface {
 	Allow(t time.Time, req *http.Request) (ok bool, retryAfter time.Duration)
 }
 
-// reserve consumes a token from the limiter if one is available at time t. Otherwise it returns
-// the time until the next token becomes available, without consuming anything.
-func reserve(rl *rate.Limiter, t time.Time) (bool, time.Duration) {
-	r := rl.ReserveN(t, 1)
-	if !r.OK() {
-		return false, 0
-	}
-	delay := r.DelayFrom(t)
-	if delay == 0 {
+// allowN consumes a token from the limiter if one is available at time t. Otherwise it returns
+// the time until the next token becomes available. A rejected request never changes the state of
+// the limiter, so that rejected requests cannot drain it.
+func allowN(rl *rate.Limiter, t time.Time) (bool, time.Duration) {
+	if rl.AllowN(t, 1) {
 		return true, 0
 	}
-	// We are not going to wait for the token: give it back.
-	r.CancelAt(t)
-	if delay == rate.InfDuration {
-		// The limiter never refills (rate of 0), so there is no meaningful delay.
+	limit := rl.Limit()
+	if limit <= 0 {
+		// The limiter never refills, so there is no meaningful delay.
 		return false, 0
 	}
-	return false, delay
+	return false, time.Duration((1 - rl.TokensAt(t)) / float64(limit) * float64(time.Second))
 }

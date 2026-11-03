@@ -15,6 +15,8 @@
 package ratelimit
 
 import (
+	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -62,5 +64,44 @@ func TestGlobalRateLimiterRetryAfter(t *testing.T) {
 		ok, delay = rl.Allow(time.Now(), nil)
 		assert.False(t, ok)
 		assert.Equal(t, 5*time.Minute, delay)
+	})
+}
+
+func TestGlobalRateLimiterConcurrentRejections(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		rl, err := NewGlobalRateLimiter("1/s", 1)
+		require.NoError(t, err)
+
+		ok, _ := rl.Allow(time.Now(), nil)
+		require.True(t, ok)
+
+		// Many overlapping rejected requests must not change the state of the limiter.
+		const numGoroutines = 64
+		const numRequests = 100
+		var maxDelay atomic.Int64
+		var wg sync.WaitGroup
+		for range numGoroutines {
+			wg.Go(func() {
+				for range numRequests {
+					ok, delay := rl.Allow(time.Now(), nil)
+					assert.False(t, ok)
+					assert.Positive(t, delay)
+					for {
+						cur := maxDelay.Load()
+						if int64(delay) <= cur || maxDelay.CompareAndSwap(cur, int64(delay)) {
+							break
+						}
+					}
+				}
+			})
+		}
+		wg.Wait()
+
+		// The hinted delay never exceeds the refill time of a single token...
+		assert.LessOrEqual(t, time.Duration(maxDelay.Load()), time.Second)
+		// ... and a request is allowed once that delay has passed.
+		time.Sleep(time.Second)
+		ok, _ = rl.Allow(time.Now(), nil)
+		assert.True(t, ok)
 	})
 }
