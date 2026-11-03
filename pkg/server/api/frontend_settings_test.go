@@ -30,9 +30,16 @@ func TestFlowSourceSettings(t *testing.T) {
 	for name, tc := range map[string]struct {
 		sources []serverconfig.FlowSourceConfig
 		want    []apisv1.FrontendFlowSource
+		visible bool
 	}{
 		"none": {want: []apisv1.FrontendFlowSource{}},
+		"list only": {
+			sources: []serverconfig.FlowSourceConfig{{Name: "flow-history", Capabilities: []string{serverconfig.FlowSourceCapabilityList}}},
+			want:    []apisv1.FrontendFlowSource{{Name: "flow-history", Capabilities: []string{"list"}}},
+			visible: true,
+		},
 		"in order": {
+			visible: true,
 			sources: []serverconfig.FlowSourceConfig{
 				{
 					Name: "flow-aggregator", Capabilities: []string{serverconfig.FlowSourceCapabilityWatch},
@@ -58,7 +65,7 @@ func TestFlowSourceSettings(t *testing.T) {
 			require.Equal(t, 200, rr.Code)
 			var settings apisv1.FrontendSettings
 			require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &settings))
-			require.Equal(t, len(tc.sources) > 0, settings.Features.FlowVisibilityEnabled)
+			require.Equal(t, tc.visible, settings.Features.FlowVisibilityEnabled)
 			require.Equal(t, tc.want, settings.Features.FlowSources)
 			// An empty list is an empty array, so a client can always iterate over it.
 			if len(tc.sources) == 0 {

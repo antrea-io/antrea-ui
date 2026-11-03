@@ -57,7 +57,7 @@ func TestFiniteRequestOptions(t *testing.T) {
 	require.Equal(t, MaxFiniteSnapshots, filterToGetFlowsRequest(nil, finiteFilter()).MaxCount)
 	for _, query := range []string{
 		"follow=bad", "since=yesterday", "maxCount=10001", "maxCount=0", "follow=", "since=", "maxCount=",
-		"follow=true&follow=false", "since=0000-01-01T00:00:00Z", "source=", "source=a&source=b",
+		"follow=true&follow=false", "maxCount=10", "follow=true&maxCount=10", "since=0000-01-01T00:00:00Z", "source=", "source=a&source=b",
 	} {
 		t.Run(query, func(t *testing.T) {
 			c, _ := gin.CreateTestContext(httptest.NewRecorder())

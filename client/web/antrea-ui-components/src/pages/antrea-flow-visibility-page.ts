@@ -1251,7 +1251,9 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
                 this._entries = this._store.getAll();
                 this._evictionWarning = this._store.hasEvicted();
             },
-            onError: err => { this._error = err.message; this._queryState = 'error'; },
+            // A live stream reports its failure through _error and reconnects; _queryState only
+            // describes a finite query, and nothing on reconnect would clear it.
+            onError: err => { this._error = err.message; if (!this._following) this._queryState = 'error'; },
             onCompleted: result => {
                 this._snapshotCount = result.snapshotCount;
                 this._resultLimit = result.maxCount;

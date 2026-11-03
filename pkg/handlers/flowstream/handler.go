@@ -259,6 +259,11 @@ func parseFlowStreamFilter(c *gin.Context) (*FlowStreamFilter, error) {
 		}
 		filter.MaxCount = uint32(limit)
 	}
+	// maxCount bounds a finite query. A source that honored it on a live stream would end the
+	// stream with a clean EOF after that many records, and the client would reconnect forever.
+	if filter.MaxCount != 0 && filter.following() {
+		return nil, fmt.Errorf("maxCount requires follow=false")
+	}
 
 	if ns := c.Query("namespaces"); ns != "" {
 		filter.Namespaces = splitTrimmed(ns)
