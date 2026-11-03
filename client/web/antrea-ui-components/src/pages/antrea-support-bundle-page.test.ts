@@ -212,13 +212,76 @@ describe('support bundle collection', () => {
         let resolve!: (response: Response) => void;
         const fetchMock = stubAPI((_url, init) => init.method === 'POST'
             ? new Promise(r => { resolve = r; }) : json({ items: [] }));
-        await mount();
+        const root = await mount();
         submit();
-        submit();
+        root.querySelector('form')!.dispatchEvent(new Event('submit', { cancelable: true }));
         await flush();
         expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
         resolve(json(collecting, 202));
         await flush();
+    });
+
+    test('does not submit while the deployment is disabled', async () => {
+        const fetchMock = stubAPI(() => json({ error: 'disabled' }, 501));
+        const root = await mount();
+        root.querySelector('form')!.dispatchEvent(new Event('submit', { cancelable: true }));
+        await flush();
+        expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
+    });
+
+    test('lists a collection that a poll already returned only once', async () => {
+        stubAPI((_url, init) => init.method === 'POST' ? json(collecting, 202) : json({ items: [collecting] }));
+        const root = await mount();
+        submit();
+        await flush();
+        expect(root.querySelectorAll('[data-bundle-id]')).toHaveLength(1);
+    });
+
+    test('a new collection drops the previous action notice', async () => {
+        stubAPI((_url, init) => init.method === 'POST' ? json('access denied', 403)
+            : init.method === 'DELETE' ? new Response(null, { status: 200 }) : json({ items: [bundle] }));
+        vi.spyOn(window, 'confirm').mockReturnValue(true);
+        const root = await mount();
+        click('.actions antrea-button');
+        await flush();
+        expect(root.textContent).toContain('Bundle deleted for all users.');
+        submit();
+        await flush();
+        expect(root.textContent).not.toContain('Bundle deleted');
+        expect(root.querySelector('antrea-alert[status="danger"]')?.textContent).toContain('access denied');
+    });
+
+    test('disables every control and shows progress while an action is pending', async () => {
+        let resolve!: (response: Response) => void;
+        stubAPI((_url, init) => init.method === 'POST'
+            ? new Promise(r => { resolve = r; }) : json({ items: [bundle] }));
+        const root = await mount();
+        const download = () => root.querySelector('a[download]')!.getAttribute('aria-disabled');
+        expect(download()).toBe('false');
+        submit();
+        await flush();
+        expect(root.querySelector('#collect')?.textContent).toContain('Starting…');
+        expect(root.querySelector('#collect')?.hasAttribute('disabled')).toBe(true);
+        expect(root.querySelector('#refresh')?.hasAttribute('disabled')).toBe(true);
+        expect(root.querySelector('.actions antrea-button')?.hasAttribute('disabled')).toBe(true);
+        expect(download()).toBe('true');
+        resolve(json(collecting, 202));
+        await flush();
+        expect(root.querySelector('#collect')?.textContent).toContain('Collect');
+        expect(root.querySelector('#collect')?.textContent).not.toContain('Starting…');
+    });
+
+    test('shows progress on Refresh while a manual refresh is pending', async () => {
+        let resolve!: (response: Response) => void;
+        const fetchMock = stubAPI();
+        const root = await mount();
+        fetchMock.mockImplementation(() => new Promise(r => { resolve = r; }));
+        click('#refresh');
+        await flush();
+        expect(root.querySelector('#refresh')?.textContent).toContain('Refreshing…');
+        resolve(json({ items: [bundle] }));
+        await flush();
+        expect(root.querySelector('#refresh')?.textContent).not.toContain('Refreshing…');
     });
 
     test('a rejected collection preserves its error while existing bundles keep updating', async () => {
@@ -425,6 +488,28 @@ describe('support bundle polling', () => {
         await flush();
     });
 
+    test('showing the tab during a pending delete does not start a list that could undo it', async () => {
+        let resolveDelete!: (response: Response) => void;
+        const fetchMock = stubAPI((_url, init) => init.method === 'DELETE'
+            ? new Promise(r => { resolveDelete = r; }) : json({ items: [bundle] }));
+        vi.spyOn(window, 'confirm').mockReturnValue(true);
+        const root = await mount();
+        const lists = () => fetchMock.mock.calls
+            .filter(([url, init]) => url === basePath && !init?.method).length;
+        expect(lists()).toBe(1);
+        click('.actions antrea-button');
+        await flush();
+        visibility(true);
+        visibility(false);
+        await flush();
+        expect(lists()).toBe(1);
+        resolveDelete(new Response(null, { status: 200 }));
+        await flush();
+        await vi.advanceTimersByTimeAsync(20_000);
+        expect(lists()).toBe(1);
+        expect(root.querySelector('[data-bundle-id]')).toBeNull();
+    });
+
     test('actions work after reconnecting while a user action was in flight', async () => {
         let stall = true;
         const fetchMock = stubAPI((_url, init) => stall && init.method === 'POST'
@@ -495,6 +580,7 @@ describe('support bundle download and deletion', () => {
         expect(fetchMock.mock.calls.at(-1)?.[0]).toBe(`${base}${basePath}/${bundle.id}/status`);
         expect(fetchMock.mock.calls.some(([url]) => url.endsWith('/download'))).toBe(false);
         expect(document.querySelector('iframe')).toBeNull();
+        expect(document.querySelector('a[download]')).toBeNull();
     });
 
     test.each([404, 403, 401])('preflight %i never starts a download', async status => {
@@ -519,6 +605,7 @@ describe('support bundle download and deletion', () => {
         await flush();
         expect(nativeClick).not.toHaveBeenCalled();
         expect(root.textContent).toContain('restarted');
+        expect(root.textContent).toContain('no longer ready to download');
         expect(root.querySelector('a[download]')).toBeNull();
     });
 
@@ -546,6 +633,36 @@ describe('support bundle download and deletion', () => {
         await flush();
         expect(fetchMock).toHaveBeenCalledTimes(4);
         expect(root.textContent).toContain('50 seconds');
+    });
+
+    test('a rejected delete drops the collection-started banner', async () => {
+        stubAPI((_url, init) => init.method === 'POST' ? json(collecting, 202)
+            : init.method === 'DELETE' ? json('access denied', 403) : json({ items: [bundle] }));
+        vi.spyOn(window, 'confirm').mockReturnValue(true);
+        const root = await mount();
+        submit();
+        await flush();
+        expect(root.textContent).toContain('Collection started');
+        click('.actions antrea-button');
+        await flush();
+        expect(root.textContent).not.toContain('Collection started');
+        expect(root.querySelector('antrea-alert[status="danger"]')?.textContent).toContain('access denied');
+    });
+
+    test('ignores a delete while another action is pending', async () => {
+        let resolve!: (response: Response) => void;
+        const fetchMock = stubAPI((_url, init) => init.method === 'POST'
+            ? new Promise(r => { resolve = r; }) : json({ items: [bundle] }));
+        const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+        const root = await mount();
+        submit();
+        await flush();
+        root.querySelector('.actions antrea-button')!.dispatchEvent(new MouseEvent('click'));
+        await flush();
+        expect(confirm).not.toHaveBeenCalled();
+        expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'DELETE')).toBe(false);
+        resolve(json(collecting, 202));
+        await flush();
     });
 
     test('a delete 404 removes a stale row', async () => {
