@@ -19,11 +19,13 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/validation"
 
@@ -88,16 +90,36 @@ type MetricsConfig struct {
 	MaxRequestsPerSecond int
 }
 
-type FlowAggregatorConfig struct {
-	Enabled bool
+// Capabilities of a flow source. They map to the verbs on flows.observability.antrea.io that the
+// source authorizes for a request.
+const (
+	// FlowSourceCapabilityWatch means the source serves live streams (follow=true).
+	FlowSourceCapabilityWatch = "watch"
+	// FlowSourceCapabilityList means the source serves finite queries (follow=false).
+	FlowSourceCapabilityList = "list"
+)
+
+// FlowSourceConfig is an endpoint implementing FlowStreamService, such as the Flow Aggregator.
+// FlowStreamService offers no discovery, so the capabilities the UI may use are configured.
+// A source in the list is enabled.
+type FlowSourceConfig struct {
+	// Name identifies the source in requests (source=<name>). It must be a unique DNS-1123 label.
+	Name string
+	// Capabilities lists what the source serves: FlowSourceCapabilityWatch and/or
+	// FlowSourceCapabilityList. At least one is required.
+	Capabilities []string
+	// Address is the gRPC address (host:port). It is ignored when Discovery is enabled.
 	Address string
+	// Discovery makes the backend find the source's endpoint instead of using Address.
+	Discovery FlowSourceDiscoveryConfig
 	// CAConfigMap is the name of the ConfigMap (in Namespace) containing the CA
 	// certificate (key: ca.crt) used to verify the FlowStreamService server cert.
 	// When empty, verification falls back to the system trust store, which will not verify
-	// the Flow Aggregator's self-signed certificate: the connection fails rather than skipping
-	// verification. Use InsecureSkipVerify for that (dev/test only).
+	// a self-signed certificate: the connection fails rather than skipping verification.
+	// Use InsecureSkipVerify for that (dev/test only).
 	CAConfigMap string
-	// Namespace is the Kubernetes namespace where the Flow Aggregator is installed.
+	// Namespace is the Kubernetes namespace of CAConfigMap. It is required when CAConfigMap is set,
+	// unless Discovery is enabled: the discovered Service's namespace is used instead.
 	Namespace string
 	// ServerName overrides the TLS server name used for certificate verification.
 	// Useful when dialing via kubectl port-forward, where the address is loopback
@@ -109,13 +131,38 @@ type FlowAggregatorConfig struct {
 	InsecureSkipVerify bool
 }
 
+// DefaultFlowServiceSelector is the label selector discovery uses unless the source sets one. It
+// is the label Antrea's Flow Aggregator chart puts on its Service when FlowStreamService is
+// enabled, which is the default in Aggregate mode (antrea-io/antrea#8467). A Flow Aggregator
+// without that change does not label its Service, so discovery finds nothing for it.
+const DefaultFlowServiceSelector = "observability.antrea.io/flow-stream-service=true"
+
+// FlowSourceDiscoveryConfig configures optional discovery of a flow source's endpoint.
+// When enabled, the backend watches Services in every namespace for LabelSelector and connects to
+// the one match's flowstream-grpc port. The selector picks a single endpoint, so at most one
+// source can enable it.
+type FlowSourceDiscoveryConfig struct {
+	Enabled bool
+	// LabelSelector selects the Service, as for kubectl -l. Whoever can create a matching Service
+	// in any namespace receives the credentials the backend forwards, so keep it as narrow as the
+	// default. When empty, DefaultFlowServiceSelector is used.
+	LabelSelector string
+}
+
+// HasCapability reports whether the source declares the given capability.
+func (c *FlowSourceConfig) HasCapability(capability string) bool {
+	return slices.Contains(c.Capabilities, capability)
+}
+
 type Config struct {
-	Addr           string
-	URL            string
-	Auth           AuthConfig
-	Session        SessionConfig
-	FlowAggregator FlowAggregatorConfig
-	Limits         struct {
+	Addr    string
+	URL     string
+	Auth    AuthConfig
+	Session SessionConfig
+	// FlowSources lists the FlowStreamService endpoints the UI can read flows from. The first
+	// source with the capability a request needs is its default.
+	FlowSources []FlowSourceConfig
+	Limits      struct {
 		MaxLoginsPerSecond       int
 		MaxTraceflowsPerHour     int
 		MaxSupportBundlesPerHour int
@@ -365,7 +412,68 @@ func (c *Config) Redacted() Config {
 	return r
 }
 
+func validateDiscoverySelector(i int, source *FlowSourceConfig) error {
+	selector := source.Discovery.LabelSelector
+	if selector == "" {
+		return nil
+	}
+	if !source.Discovery.Enabled {
+		return fmt.Errorf("flowSources[%d] (%s) sets discovery.labelSelector but discovery is not enabled", i, source.Name)
+	}
+	if strings.TrimSpace(selector) == "" {
+		return fmt.Errorf("flowSources[%d] (%s) discovery.labelSelector must not be blank", i, source.Name)
+	}
+	if _, err := labels.Parse(selector); err != nil {
+		return fmt.Errorf("flowSources[%d] (%s) has an invalid discovery.labelSelector %q: %w", i, source.Name, selector, err)
+	}
+	return nil
+}
+
+func validateFlowSources(sources []FlowSourceConfig) error {
+	names := sets.New[string]()
+	// discovering names the source which enabled discovery, once there is one.
+	var discovering string
+	for i, source := range sources {
+		if errs := validation.IsDNS1123Label(source.Name); len(errs) > 0 {
+			return fmt.Errorf("flowSources[%d].name %q is invalid: %s", i, source.Name, strings.Join(errs, "; "))
+		}
+		if names.Has(source.Name) {
+			return fmt.Errorf("flowSources[%d].name %q is not unique", i, source.Name)
+		}
+		names.Insert(source.Name)
+		if err := validateDiscoverySelector(i, &source); err != nil {
+			return err
+		}
+		if source.Discovery.Enabled {
+			if discovering != "" {
+				return fmt.Errorf("flowSources[%d] (%s) enables discovery, like %s: the Service label selects "+
+					"a single endpoint, so at most one source can", i, source.Name, discovering)
+			}
+			discovering = fmt.Sprintf("flowSources[%q]", source.Name)
+		} else if source.Address == "" {
+			return fmt.Errorf("flowSources[%d] (%s) address must not be empty", i, source.Name)
+		}
+		if len(source.Capabilities) == 0 {
+			return fmt.Errorf("flowSources[%d] (%s) must declare at least one capability", i, source.Name)
+		}
+		for _, capability := range source.Capabilities {
+			if capability != FlowSourceCapabilityWatch && capability != FlowSourceCapabilityList {
+				return fmt.Errorf("flowSources[%d] (%s) has an unknown capability %q: must be %q or %q",
+					i, source.Name, capability, FlowSourceCapabilityWatch, FlowSourceCapabilityList)
+			}
+		}
+		if source.CAConfigMap != "" && !source.Discovery.Enabled && len(validation.IsDNS1123Label(source.Namespace)) != 0 {
+			return fmt.Errorf("flowSources[%d] (%s) namespace must be a valid Kubernetes namespace name (DNS-1123 label) when caConfigMap is set and discovery is disabled", i, source.Name)
+		}
+	}
+	return nil
+}
+
 func validateConfig(config *Config) error {
+	if err := validateFlowSources(config.FlowSources); err != nil {
+		return err
+	}
+
 	if config.LogVerbosity < 0 || config.LogVerbosity >= 128 {
 		return fmt.Errorf("invalid verbosity level %d: it should be >= 0 and < 128", config.LogVerbosity)
 	}
@@ -608,12 +716,6 @@ func LoadConfig() (*Config, error) {
 	v.SetDefault("plugins.maxDirectoryPlugins", DefaultMaxDirectoryPlugins)
 	v.SetDefault("plugins.maxBundleBytes", DefaultMaxBundleBytes)
 	v.SetDefault("plugins.bundleSource.http.enabled", true)
-	v.SetDefault("flowAggregator.enabled", false)
-	v.SetDefault("flowAggregator.address", "flow-aggregator.flow-aggregator.svc:14740")
-	v.SetDefault("flowAggregator.caConfigMap", "flow-aggregator-ca")
-	v.SetDefault("flowAggregator.namespace", "flow-aggregator")
-	v.SetDefault("flowAggregator.serverName", "")
-	v.SetDefault("flowAggregator.insecureSkipVerify", false)
 	v.SetDefault("metrics.enabled", true)
 	v.SetDefault("metrics.minScrapeInterval", DefaultMetricsMinScrapeInterval)
 	v.SetDefault("metrics.maxTaps", DefaultMetricsMaxTaps)
@@ -633,6 +735,12 @@ func LoadConfig() (*Config, error) {
 			return nil, fmt.Errorf("error when reading config: %w", err)
 		}
 		// Otherwise, we ignore the error.
+	}
+
+	// Unmarshal ignores unknown keys: without this check, a config still using flowAggregator
+	// would silently end up with no flow sources.
+	if v.IsSet("flowAggregator") {
+		return nil, fmt.Errorf("flowAggregator is no longer supported by the backend: configure flowSources instead")
 	}
 
 	var config Config

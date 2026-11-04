@@ -1,4 +1,6 @@
-{{- if .Values.flowAggregator.enabled -}}
+{{- /* With discovery, flow-source-discovery.yaml grants the CA read in whichever namespace the
+Service is. */ -}}
+{{- if and .Values.flowAggregator.enabled (not .Values.flowAggregator.discovery.enabled) -}}
 kind: RoleBinding
 apiVersion: rbac.authorization.k8s.io/v1
 metadata:

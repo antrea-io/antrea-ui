@@ -1,0 +1,41 @@
+{{- /* Each flowSources entry with a caConfigMap gets read access to that ConfigMap in its own
+namespace: the backend reads the CA of a source through the Kubernetes API, and the CA can live in
+another namespace. The names carry the entry's index so that two entries in one namespace do not
+collide. The Flow Aggregator's own CA is covered by flow-aggregator-rolebinding.yaml, and the CA of
+a source which enables discovery by flow-source-discovery.yaml. */ -}}
+{{- range $i, $source := .Values.flowSources }}
+{{- if and $source.caConfigMap (not (dig "discovery" "enabled" false $source)) }}
+{{- if not $source.namespace }}
+{{- fail (printf "flowSources[%d].namespace is required when caConfigMap is set and discovery is disabled" $i) }}
+{{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $.Release.Name }}-flow-source-{{ $i }}-ca-reader
+  namespace: {{ $source.namespace | quote }}
+  labels:
+    app: antrea-ui
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: [{{ $source.caConfigMap | quote }}]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $.Release.Name }}-flow-source-{{ $i }}-ca-reader
+  namespace: {{ $source.namespace | quote }}
+  labels:
+    app: antrea-ui
+subjects:
+  - kind: ServiceAccount
+    name: antrea-ui
+    namespace: {{ $.Release.Namespace }}
+roleRef:
+  kind: Role
+  name: {{ $.Release.Name }}-flow-source-{{ $i }}-ca-reader
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}
+{{- end }}

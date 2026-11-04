@@ -33,9 +33,11 @@ export type {
 export type { ScopeChangeDetail, ScopeChosenDetail } from './lib/namespace-scope.js';
 export { SCOPE_CHANGE_EVENT, SCOPE_CHOSEN_EVENT } from './lib/namespace-scope.js';
 export type { FlowEntry } from './lib/flow-store.js';
+export { FLOW_QUERY_STATE_EVENT } from './lib/flow-stream.js';
+export type { FlowQuery, FlowQueryStateDetail } from './lib/flow-stream.js';
 export { AntreaLoginPage } from './pages/antrea-login-page.js';
 export { SessionAwarePage } from './lib/session-aware-page.js';
-export type { AppSettings, SessionInfo, SessionMode, SessionIdentity } from './lib/auth-api.js';
+export type { AppSettings, FlowSourceInfo, SessionInfo, SessionMode, SessionIdentity } from './lib/auth-api.js';
 export {
     apiLogin,
     apiLoginWithToken,
@@ -80,6 +82,7 @@ export {
     GATE_CONTROLLER_INFO_GET,
     GATE_FEATUREGATES,
     GATE_FLOWS_WATCH,
+    GATE_FLOWS_LIST,
     GATE_NAMESPACES_LIST,
     GATE_PODS_LIST,
     GATE_SERVICES_LIST,

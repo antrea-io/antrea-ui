@@ -1,0 +1,49 @@
+{{- /* Opt-in discovery of a flow source's Service (flowAggregator.discovery.enabled, or discovery
+on a flowSources entry) reads Services in every namespace and the CA ConfigMap in the namespace of
+the Service it finds, which is not known in advance. The ConfigMap grant is limited to the CA names
+the discovering sources configure. Static sources keep their namespaced CA access. */ -}}
+{{- $discovering := list }}
+{{- range (include "antrea-ui.flowSources" . | fromYamlArray) }}
+{{- if dig "discovery" "enabled" false . }}
+{{- $discovering = append $discovering . }}
+{{- end }}
+{{- end }}
+{{- if $discovering }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ .Release.Name }}-flow-source-discovery
+  labels:
+    app: antrea-ui
+rules:
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["list", "watch"]
+{{- $caNames := list }}
+{{- range $discovering }}
+{{- if .caConfigMap }}
+{{- $caNames = append $caNames .caConfigMap }}
+{{- end }}
+{{- end }}
+{{- if $caNames }}
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: {{ $caNames | uniq | toJson }}
+    verbs: ["get"]
+{{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ .Release.Name }}-flow-source-discovery
+  labels:
+    app: antrea-ui
+subjects:
+  - kind: ServiceAccount
+    name: antrea-ui
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: ClusterRole
+  name: {{ .Release.Name }}-flow-source-discovery
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}

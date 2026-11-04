@@ -18,8 +18,9 @@ rules:
       - antrea-ca
   # Namespace discovery for GET /api/v1/access-summary: Kubernetes has no self-service API for
   # "which namespaces can I see", so antrea-ui watches RoleBindings and reports the ones naming the
-  # user as a subject. This is a cluster-wide read of RBAC topology. Along with the discovery of
-  # Antrea Agents below, it is the only privileged read antrea-ui performs on the user's behalf.
+  # user as a subject. This is a cluster-wide read of RBAC topology. Antrea Agent discovery below
+  # supports metrics views; optional flow source discovery permissions are defined separately
+  # in flow-source-discovery.yaml.
   - apiGroups:
       - rbac.authorization.k8s.io
     resources:
@@ -162,20 +163,21 @@ rules:
       - get
   # Flow visibility. Granted here rather than gated behind a values key: with the admin-only
   # flow-stream gate gone, this role is the model for binding a user's own Kubernetes identity to
-  # (see the comment above), and authorization is entirely the Flow Aggregator's decision from
-  # here - it checks this RBAC against the scope each stream names and redacts accordingly, so
-  # granting it costs nothing when no Flow Aggregator is deployed and denies nothing on its own
-  # when one is.
+  # (see the comment above), and authorization is entirely the flow source's decision from
+  # here - the Flow Aggregator, or any source in flowSources, checks this RBAC against the scope
+  # each stream names and redacts accordingly, so granting it costs nothing when no flow source
+  # is deployed and denies nothing on its own when one is.
   - apiGroups:
       - observability.antrea.io
     resources:
       - flows
-    # watch, not just list: the SSE stream always sets Follow, and upstream grants list alone as
-    # history-only access. It also decides how much of a peer outside the requested scope is
-    # disclosed: the Flow Aggregator shows a peer in full when the client holds the stream's own
-    # verb on flows in the peer's Namespace, so a stream scoped to one Namespace shows such a
-    # peer as a cluster-wide one would. Holding only list would leave those peers redacted on every stream
-    # this UI opens.
+    # watch, not just list: this UI opens live streams (follow=true), which a source authorizes
+    # with watch, and list alone is the grant for finite queries only. It also decides how much of
+    # a peer outside the requested scope is disclosed: a source shows a peer in full when the
+    # client holds the stream's own verb on flows in the peer's Namespace, so a stream scoped to
+    # one Namespace shows such a peer as a cluster-wide one would. Holding only list would leave
+    # those peers redacted on every stream this UI opens. list is granted too, for UIs built on
+    # the same components that offer finite queries.
     verbs:
       - list
       - watch

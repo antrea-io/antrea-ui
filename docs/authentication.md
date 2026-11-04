@@ -204,8 +204,10 @@ installed next month adds".
 The flow visibility stream (`GET /api/v1/flows/stream`) is authenticated and
 authorized per caller: for most login modes, the backend presents the
 signed-in user's own credential (their bearer token, or their client
-certificate on the connection) to the Flow Aggregator's FlowStreamService,
-which rejects a call that presents neither. The one exception is the
+certificate on the connection) to a flow source's FlowStreamService, which
+rejects a call that presents neither. The Flow Aggregator (FA) is the flow
+source this UI uses; see [Flow sources](#flow-sources) for the others the
+backend can be configured with. The one exception is the
 admin-password login mode: it normally reaches the kube-apiserver by
 impersonating the `antrea-ui-admin` ServiceAccount, but FA accepts no
 impersonation header, so the backend instead mints a short-lived, real token
@@ -213,10 +215,61 @@ for that same ServiceAccount (via the TokenRequest API) and presents that —
 the one case where the credential FA sees is not literally the signed-in
 user's own.
 
+### Flow sources
+
+A flow source is any endpoint implementing `FlowStreamService`, configured in
+`flowSources` (the chart adds the Flow Aggregator as the first one when
+`flowAggregator.enabled` is set). Each declares the capabilities it serves,
+which map to the verbs on `flows.observability.antrea.io`:
+
+- `watch` serves live streams (`follow=true`, the default) and requires the
+  `watch` verb in the requested scope.
+- `list` serves finite queries (`follow=false`, with optional `since` and
+  `maxCount`) and requires the `list` verb in the requested scope.
+
+A request may name a source with `source=<name>`. The name is only ever
+matched against the configured names: the backend never treats it as an
+address, because every source receives the user's credential. Without
+`source`, the first configured source with the capability the request needs
+serves it, so a request without `follow` is a live stream from the first
+`watch` source. A request naming an unknown source, or one without the needed
+capability, is refused with a 400 before any connection is made, and the
+backend never serves it from another source: live data is never substituted for
+a finite query. With no source configured, the endpoint returns 501.
+
+The backend connects to a source when a stream starts, with the source's CA
+as it is then, so a rotated CA applies to the next stream. A client-certificate
+session keeps one connection per source, replaced when the source's address,
+server name or CA changes; the source's name is what keeps one source from
+replacing another's.
+
+The UI in this repository only sends live requests. The finite-query path is
+there for other UIs built on the same components. So that they can offer it only
+where it works, `GET /api/v1/settings` lists the configured sources under
+`features.flowSources`, in the order in which they are the default, each with its
+`name` and `capabilities`:
+
+```json
+"features": {
+  "flowVisibilityEnabled": true,
+  "flowSources": [
+    { "name": "flow-aggregator", "capabilities": ["watch"] },
+    { "name": "flow-history", "capabilities": ["list"] }
+  ]
+}
+```
+
+That endpoint is served without authentication, so the list says nothing about
+where a source is or how it is reached: no address, namespace, CA or server name.
+The list is empty when no source is configured, and `flowVisibilityEnabled` is
+true when it is not. Whether a caller may use a source is still the source's
+decision, per request.
+
 Every request also names a **scope**: either `clusterWide=true` or a single
-`observedNamespace`, never both. FA authorizes the stream against that scope
-with the caller's Kubernetes RBAC on the virtual `flows.observability.antrea.io`
-resource — `watch` for the SSE stream, since it always follows — and resolves
+`observedNamespace`, never both. The source authorizes the stream against that
+scope with the caller's Kubernetes RBAC on the virtual
+`flows.observability.antrea.io` resource — `watch` for the live stream this
+UI opens — and resolves
 every endpoint of every record to a disclosure tier (full, identity, or flow)
 relative to what the caller may see there. An
 endpoint is disclosed in full when its Namespace is in the requested scope, or
@@ -284,6 +337,15 @@ stream ends before sending one, antrea-ui refuses the stream
 (`StreamErrorCodeFlowAggregatorTooOld`) instead of forwarding unredacted
 data. Antrea UI v1.0.0 requires Antrea and the Flow Aggregator at v2.8 or
 later; flow visibility is unavailable against an older deployment.
+
+The same check applies to every flow source and to finite queries: each must
+send a non-empty `stream_epoch` in the first response, as `service.proto`
+describes. The epoch is evidence of scope support only for the Flow Aggregator,
+where it shipped together with the scope fields. For any other source it proves
+nothing, since a service can send an epoch and still ignore the scope, so the
+[flow source contract](../pkg/flowpb/README.md#flow-source-contract) is what a
+source must honor. The error code keeps its name, `flow_aggregator_too_old`,
+because it is part of the SSE error event.
 
 The Flow Visibility navigation entry and page are gated like the Overview
 page: from the cluster-scoped access summary alone, with no per-namespace review
@@ -365,14 +427,37 @@ not cluster-wide, and the page cannot tell that from a destination with no
 Service.
 
 To turn the integration off entirely, deploy with `flowAggregator.enabled=false`
-(the chart default). The endpoint then returns 501 for every user, including
-admins.
+(the chart default) and no `flowSources`. The endpoint then returns 501 for
+every user, including admins.
 
 Note that FA's authorization is Antrea UI's only line of defense here.
 Enabling `FlowStreamService` in the Flow Aggregator means anyone with network
 access to it, and holding a credential FA accepts, can read flow data
 directly (subject to FA's own RBAC check), regardless of what Antrea UI's
 frontend shows or hides.
+
+#### Flow service discovery trust
+
+Cluster-wide discovery of a flow source's Service assumes that matching
+Services and their CA ConfigMaps are controlled by trusted administrators. The
+UI forwards user credentials to the discovered endpoint and trusts the CA read
+from that Service's namespace. A label is not proof of identity: TLS cannot
+establish independent trust if an untrusted actor can supply both the endpoint
+and its CA. The UI does not enforce ownership of these resources.
+
+By default the selector is `observability.antrea.io/flow-stream-service=true`,
+the label the Flow Aggregator chart sets on its own Service. It is configurable
+with `discovery.labelSelector`, and whoever can create a Service matching the
+selector in any namespace can capture the credentials forwarded to it. A broader
+selector widens that set of people, so keep it as narrow as the default, and
+make sure that creating Services with that label is restricted to trusted
+administrators.
+
+Discovery grants the UI ServiceAccount cluster-wide Service list/watch and
+ConfigMap get restricted to the configured CA name. Kubernetes RBAC does not
+restrict Service list/watch by label; the selector filters discovery results.
+Static connections use namespaced CA permissions instead. See
+[configuration](getting-started.md#flow-source-discovery).
 
 ### Metrics are authorized by Antrea UI itself
 
@@ -536,6 +621,10 @@ than reusing a failure.
   what it knows for users it has first checked the `metrics.ui.antrea.io` grant
   of (see [Metrics are authorized by Antrea UI
   itself](#metrics-are-authorized-by-antrea-ui-itself)).
+  Optional [flow source discovery](getting-started.md#flow-source-discovery)
+  also uses the UI ServiceAccount to watch Services cluster-wide and read the
+  configured CA ConfigMap name in the selected Service namespace. Flow queries
+  themselves continue to use the caller's credential.
 
   The scan sees RoleBindings only, so it cannot see a **ClusterRoleBinding**: a
   user granted namespaced access cluster-wide is the subject of no RoleBinding

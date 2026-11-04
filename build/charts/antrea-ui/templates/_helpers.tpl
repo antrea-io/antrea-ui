@@ -195,3 +195,54 @@ never sees https.caConfigMap, so mistakes in it are reported here. */ -}}
 {{- end -}}
 {{- toYaml $sources -}}
 {{- end -}}
+
+{{- /* flowSources as the backend reads them: the Flow Aggregator, when enabled, comes first as a
+`watch` source named flow-aggregator, followed by .Values.flowSources. The backend validates each
+entry; mistakes the backend never sees, such as a clash with the Flow Aggregator's name, are
+reported here so that helm install fails rather than a Pod crashing. */ -}}
+{{- define "antrea-ui.flowSources" -}}
+{{- $sources := list -}}
+{{- $discovering := 0 -}}
+{{- if .Values.flowAggregator.enabled -}}
+{{- $faDiscovery := .Values.flowAggregator.discovery.enabled -}}
+{{- $faDiscoveryConfig := dict "enabled" $faDiscovery -}}
+{{- with .Values.flowAggregator.discovery.labelSelector -}}
+{{- if not $faDiscovery -}}
+{{- fail "flowAggregator.discovery.labelSelector requires flowAggregator.discovery.enabled" -}}
+{{- end -}}
+{{- $_ := set $faDiscoveryConfig "labelSelector" . -}}
+{{- end -}}
+{{- $sources = append $sources (dict
+  "name" "flow-aggregator"
+  "capabilities" (list "watch")
+  "address" .Values.flowAggregator.address
+  "discovery" $faDiscoveryConfig
+  "caConfigMap" .Values.flowAggregator.caConfigMap
+  "namespace" (.Values.flowAggregator.namespace | default "flow-aggregator")
+  "serverName" .Values.flowAggregator.serverName
+  "insecureSkipVerify" .Values.flowAggregator.insecureSkipVerify) -}}
+{{- if $faDiscovery -}}
+{{- $discovering = add $discovering 1 -}}
+{{- end -}}
+{{- end -}}
+{{- range $i, $source := .Values.flowSources -}}
+{{- $discovery := dig "discovery" "enabled" false $source -}}
+{{- if and $.Values.flowAggregator.enabled (eq (default "" $source.name) "flow-aggregator") -}}
+{{- fail (printf "flowSources[%d].name must not be flow-aggregator while flowAggregator.enabled is true" $i) -}}
+{{- end -}}
+{{- if and (dig "discovery" "labelSelector" "" $source) (not $discovery) -}}
+{{- fail (printf "flowSources[%d].discovery.labelSelector requires discovery.enabled" $i) -}}
+{{- end -}}
+{{- if and $source.caConfigMap (not $source.namespace) (not $discovery) -}}
+{{- fail (printf "flowSources[%d].namespace is required when caConfigMap is set and discovery is disabled" $i) -}}
+{{- end -}}
+{{- if $discovery -}}
+{{- $discovering = add $discovering 1 -}}
+{{- end -}}
+{{- $sources = append $sources $source -}}
+{{- end -}}
+{{- if gt (int $discovering) 1 -}}
+{{- fail "at most one flow source can enable discovery: the Service label selects a single endpoint" -}}
+{{- end -}}
+{{- toYaml $sources -}}
+{{- end -}}
