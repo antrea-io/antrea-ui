@@ -22,6 +22,7 @@ import (
 	"io"
 	"net/netip"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -38,11 +39,19 @@ import (
 	"antrea.io/antrea-ui/pkg/k8s"
 )
 
-// flowStreamConnKey is the session transport/connection cache key for a per-credential
-// FlowAggregator gRPC connection (a KindCert credential; see connFor). It has no "/" so it is
-// never treated as versioned - unlike the Antrea Service's TLS settings, the Flow Aggregator's
-// do not change under a live session.
-const flowStreamConnKey = "flow-aggregator-grpc"
+var flowStreamSourceID atomic.Uint64
+
+// newFlowStreamConnKeyPrefix allocates a session cache namespace for one source. It contains no
+// slash: connFor treats everything before the first slash as the upstream being superseded.
+func newFlowStreamConnKeyPrefix() string {
+	return fmt.Sprintf("flow-aggregator-grpc-%d", flowStreamSourceID.Add(1))
+}
+
+// flowStreamConnKey scopes a CA generation to its source, so rotating one source closes only that
+// source's older per-session connections.
+func flowStreamConnKey(prefix string, generation int) string {
+	return fmt.Sprintf("%s/%d", prefix, generation)
+}
 
 // StreamError classifies a flow-stream failure for callers that need to react to it (the frontend,
 // via the "code"/"retryable" fields on apisv1.FlowStreamErrorEvent) without parsing Error() text.
@@ -146,6 +155,9 @@ type GRPCFlowStreamSubscriber struct {
 	// adminTokenSource mints the bearer token used for admin-password (KindImpersonate)
 	// sessions. Nil disables flow streaming for that login mode.
 	adminTokenSource *k8s.AdminTokenSource
+	// connKeyPrefix and generation identify the source and its CA bundle in the session cache.
+	connKeyPrefix string
+	generation    int
 }
 
 // GRPCConfig holds the connection parameters for the FlowAggregator gRPC server.
@@ -158,11 +170,25 @@ type GRPCConfig struct {
 	// AdminTokenSource mints the bearer token used for admin-password sessions. May be nil, in
 	// which case that login mode cannot use flow streaming.
 	AdminTokenSource *k8s.AdminTokenSource
+	// ConnKeyPrefix identifies one source in the per-session connection cache. Rebuilds of that
+	// source must reuse it; other sources must use distinct prefixes. It must not contain "/".
+	// When empty, a new prefix is allocated for this subscriber.
+	ConnKeyPrefix string
+	// Generation identifies the CA bundle TLSConfig was built from. A subscriber replacing
+	// another one for a new bundle must use a different generation, so that a session's
+	// connection dialed for the old bundle is not reused.
+	Generation int
 }
 
 func NewGRPCFlowStreamSubscriber(logger logr.Logger, cfg GRPCConfig) (*GRPCFlowStreamSubscriber, error) {
 	if cfg.TLSConfig == nil {
 		return nil, fmt.Errorf("TLSConfig must not be nil")
+	}
+	if strings.Contains(cfg.ConnKeyPrefix, "/") {
+		return nil, fmt.Errorf("ConnKeyPrefix must not contain a slash")
+	}
+	if cfg.ConnKeyPrefix == "" {
+		cfg.ConnKeyPrefix = newFlowStreamConnKeyPrefix()
 	}
 	conn, err := grpc.NewClient(
 		cfg.Address,
@@ -185,9 +211,15 @@ func NewGRPCFlowStreamSubscriber(logger logr.Logger, cfg GRPCConfig) (*GRPCFlowS
 		client:           client,
 		conn:             conn,
 		adminTokenSource: cfg.AdminTokenSource,
+		connKeyPrefix:    cfg.ConnKeyPrefix,
+		generation:       cfg.Generation,
 	}, nil
 }
 
+// Close closes the connection shared by bearer-authenticated and admin-token calls, which ends the
+// streams running on it. It does not close the per-session connections of KindCert credentials,
+// which belong to their sessions: a session replaces one when it next asks for a connection under
+// a newer generation (see flowStreamConnKey), and closes it when it ends.
 func (h *GRPCFlowStreamSubscriber) Close() error {
 	if h.conn != nil {
 		return h.conn.Close()
@@ -235,7 +267,7 @@ func (h *GRPCFlowStreamSubscriber) resolveCall(ctx context.Context) (flowpb.Flow
 	case session.KindBearer:
 		return h.client, metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+string(cred.Token)), nil
 	case session.KindCert:
-		conn, err := ra.ConnFor(flowStreamConnKey, h.buildCertConn)
+		conn, err := ra.ConnFor(flowStreamConnKey(h.connKeyPrefix, h.generation), h.buildCertConn)
 		if err != nil {
 			return nil, nil, internalStreamError(fmt.Errorf("failed to build FlowAggregator client certificate connection: %w", err))
 		}
