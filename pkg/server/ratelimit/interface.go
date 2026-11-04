@@ -24,16 +24,17 @@ import (
 // Interface defines the interface for an HTTP request rate-limiter.
 type Interface interface {
 	// Allow returns true if and only if the current request should be allowed to go through.
-	// When the request is rejected, retryAfter is a hint for how long the client should wait
-	// before retrying, computed in the same call as the decision. It is 0 when the request is
-	// allowed, or when there is no meaningful delay (e.g. the limiter never refills).
+	// retryAfter is never negative. It is 0 if and only if the request is allowed, or if
+	// waiting cannot help (e.g. the limiter never refills). Otherwise it is a positive hint
+	// for how long the client should wait before retrying, computed in the same call as the
+	// decision.
 	Allow(t time.Time, req *http.Request) (ok bool, retryAfter time.Duration)
 }
 
-// allowN consumes a token from the limiter if one is available at time t. Otherwise it returns
+// allow consumes a token from the limiter if one is available at time t. Otherwise it returns
 // the time until the next token becomes available. A rejected request never changes the state of
 // the limiter, so that rejected requests cannot drain it.
-func allowN(rl *rate.Limiter, t time.Time) (bool, time.Duration) {
+func allow(rl *rate.Limiter, t time.Time) (bool, time.Duration) {
 	if rl.AllowN(t, 1) {
 		return true, 0
 	}
@@ -42,5 +43,9 @@ func allowN(rl *rate.Limiter, t time.Time) (bool, time.Duration) {
 		// The limiter never refills, so there is no meaningful delay.
 		return false, 0
 	}
-	return false, time.Duration((1 - rl.TokensAt(t)) / float64(limit) * float64(time.Second))
+	delay := time.Duration((1 - rl.TokensAt(t)) / float64(limit) * float64(time.Second))
+	// TokensAt is read after AllowN: a request allowed in between, at a later time, can leave
+	// enough tokens to make the delay 0 or negative. The request was still rejected, so return
+	// the smallest positive delay, which the middleware rounds up to 1s.
+	return false, max(delay, time.Nanosecond)
 }
