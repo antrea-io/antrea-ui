@@ -635,6 +635,20 @@ describe('support bundle download and deletion', () => {
         expect(root.textContent).toContain('50 seconds');
     });
 
+    test('keeps the stopping notice when the next collect is rejected while resources are held', async () => {
+        stubAPI((_url, init) => init.method === 'DELETE' ? new Response(null, { status: 200 })
+            : init.method === 'POST' ? json('at most 2 bundles may be collected at once', 429) : json({ items: [collecting] }));
+        vi.spyOn(window, 'confirm').mockReturnValue(true);
+        const root = await mount();
+        click('.actions antrea-button');
+        await flush();
+        expect(root.textContent).toContain('Collection is stopping');
+        submit();
+        await flush();
+        expect(root.querySelector('antrea-alert[status="danger"]')?.textContent).toContain('at most 2 bundles');
+        expect(root.textContent).toContain('Collection is stopping');
+    });
+
     test('a rejected delete drops the collection-started banner', async () => {
         stubAPI((_url, init) => init.method === 'POST' ? json(collecting, 202)
             : init.method === 'DELETE' ? json('access denied', 403) : json({ items: [bundle] }));

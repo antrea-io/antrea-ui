@@ -31,6 +31,9 @@ import '../antrea-button.js';
 import '../antrea-card.js';
 
 const COLLECTION_STARTED_NOTICE = 'Collection started. You can leave this page while it runs.';
+// Kept when a new collection starts: the slot and disk space of a deleted Collecting bundle stay
+// held while it stops, and this notice is what explains a 429 from that Collect.
+const COLLECTION_STOPPING_NOTICE = 'Bundle deleted. Collection is stopping; its concurrency slot and disk space may take up to about 50 seconds to be released.';
 const POLL_INTERVAL_MS = 2_000;
 const REQUEST_TIMEOUT_MS = 30_000;
 
@@ -222,7 +225,7 @@ export class AntreaSupportBundlePage extends SessionAwarePage {
     private _collect(event: Event) {
         event.preventDefault();
         if (this._busy || this._disabled || !this._allowed(GATE_SUPPORTBUNDLE_CREATE)) return;
-        this._notice = '';
+        if (this._notice !== COLLECTION_STOPPING_NOTICE) this._notice = '';
         void this._run('collect', signal => apiFetchJSON<SupportBundle>('supportbundle', {
             method: 'POST', signal,
         }), bundle => {
@@ -241,7 +244,7 @@ export class AntreaSupportBundlePage extends SessionAwarePage {
         void this._run('delete', signal => apiFetch(supportBundlePath(bundle.id), { method: 'DELETE', signal }), () => {
             this._bundles = this._bundles.filter(b => b.id !== bundle.id);
             this._notice = collecting
-                ? 'Bundle deleted. Collection is stopping; its concurrency slot and disk space may take up to about 50 seconds to be released.'
+                ? COLLECTION_STOPPING_NOTICE
                 : 'Bundle deleted for all users.';
         }, bundle.id);
     }
