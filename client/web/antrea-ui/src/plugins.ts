@@ -75,7 +75,7 @@ window.__antreaPluginHost = {
 // parentPath may nest under (see resolveParentPaths) — nesting stays one level deep, so Flow
 // Visibility's own second-level pages (flows/list, flows/map, below) are deliberately excluded
 // here even though they're also built-in.
-const BUILTIN_TOP_LEVEL_PATHS = new Set(['overview', 'summary', 'traceflow', 'flows', 'settings']);
+const BUILTIN_TOP_LEVEL_PATHS = new Set(['overview', 'summary', 'traceflow', 'flows', 'supportbundle', 'settings']);
 
 // Every path owned by Antrea UI itself, top-level or not. A plugin's route/sidebar entry path
 // must not collide with any of these — react-router's behavior with two children registered

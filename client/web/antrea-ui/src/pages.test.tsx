@@ -21,7 +21,7 @@ import { navigateTo, resetAccessSummary, SCOPE_CHANGE_EVENT, SCOPE_CHOSEN_EVENT 
 import type { AccessSummary } from '@antrea/ui-components';
 import { setAuthenticated, setupStore } from './store';
 import { MemoryRouter, Route, Routes, useLocation, useNavigate } from 'react-router';
-import { FlowsRedirect, FlowVisibilityPage, OverviewPage, SummaryPage } from './pages';
+import { FlowsRedirect, FlowVisibilityPage, OverviewPage, SummaryPage, SupportBundlePage } from './pages';
 import { getLastScope } from './lastScope';
 import type { LandingPageTab } from './plugins';
 import { AccessProvider } from './access';
@@ -129,6 +129,32 @@ describe('FlowVisibilityPage — route guard', () => {
         }));
         await waitFor(() => expect(document.querySelector('antrea-flow-visibility-page')).not.toBeNull());
         expect(document.querySelector('antrea-alert')).toBeNull();
+    });
+});
+
+describe('SupportBundlePage — route guard', () => {
+    test.each([
+        { verbs: ['list'], allowed: true },
+        { verbs: ['get', 'create', 'delete'], allowed: false },
+    ])('requires list before mounting the page: $verbs', async ({ verbs, allowed }) => {
+        const summary: AccessSummary = {
+            username: 'alice', groups: [], clusterAdmin: false, namespaces: [],
+            rules: {
+                resourceRules: [{ apiGroups: ['ui.antrea.io'], resources: ['supportbundles'], verbs }],
+                nonResourceRules: [], incomplete: false,
+            },
+        };
+        const fetchMock = vi.fn(async (url: string) => new Response(JSON.stringify(
+            url.endsWith('/access-summary') ? summary : { items: [] }), { status: 200 }));
+        vi.stubGlobal('fetch', fetchMock);
+        const store = setupStore({ session: 'authenticated' });
+        render(<Provider store={store}><AccessProvider><SupportBundlePage /></AccessProvider></Provider>);
+        // No mount or bundle request before the access summary settles.
+        expect(document.querySelector('antrea-support-bundle-page')).toBeNull();
+        await waitFor(() => expect(!!document.querySelector('antrea-support-bundle-page, antrea-alert')).toBe(true));
+        expect(!!document.querySelector('antrea-support-bundle-page')).toBe(allowed);
+        expect(!!document.querySelector('antrea-alert')).toBe(!allowed);
+        expect(fetchMock.mock.calls.some(([url]) => url.endsWith('/supportbundle'))).toBe(allowed);
     });
 });
 

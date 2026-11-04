@@ -64,14 +64,16 @@ export interface PluginSidebarEntry {
     icon?: string;
     // Nests this entry under another top-level sidebar entry, rendered as a collapsible group
     // (see @antrea/ui-components' antrea-nav-group) instead of a flat item. Either a built-in
-    // page's path ("flows", "summary", "traceflow", "settings") or another plugin's own
-    // top-level entry path (with or without a leading slash — both are accepted). Nesting is one
-    // level deep: pointing this at an entry that itself has a parentPath is invalid and the host
-    // drops (and logs) the nesting, falling back to a top-level entry.
+    // page's path ("overview", "flows", "summary", "traceflow", "supportbundle", "settings") or
+    // another plugin's own top-level entry path (with or without a leading slash — both are
+    // accepted). Nesting is one level deep: pointing this at an entry that itself has a
+    // parentPath is invalid and the host drops (and logs) the nesting, falling back to a
+    // top-level entry.
     //
-    // "summary" and "traceflow" are also gated by per-user RBAC and don't render at all for a
-    // user who fails that gate — nesting under either falls back to top-level the same way for
-    // such a user, but silently and per-user, since the parentPath itself is always valid.
+    // "overview", "flows", "summary", "traceflow" and "supportbundle" are also gated by per-user
+    // RBAC and don't render at all for a user who fails that gate — nesting under any of them
+    // falls back to top-level the same way for such a user, but silently and per-user, since
+    // the parentPath itself is always valid.
     parentPath?: string;
 }
 

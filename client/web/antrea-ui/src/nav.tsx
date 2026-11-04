@@ -18,7 +18,7 @@ import React, { useSyncExternalStore } from 'react';
 import { useLocation } from 'react-router';
 import { Link } from 'react-router';
 import '@antrea/ui-components';
-import { can, canViewSummary, canViewFlows, canViewOverview, GATE_TRACEFLOW_CREATE } from '@antrea/ui-components';
+import { can, canViewSummary, canViewFlows, canViewOverview, GATE_TRACEFLOW_CREATE, GATE_SUPPORTBUNDLE_LIST } from '@antrea/ui-components';
 import type { PluginSidebarEntry } from './plugins';
 import { useAccess, useScopeUser } from './access';
 import { getLastScope, scopeSearch, subscribeLastScope } from './lastScope';
@@ -52,6 +52,14 @@ function EyeIcon() {
     return (
         <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" style={{ flexShrink: 0 }}>
             <path d="M16 8s-3-5.5-8-5.5S0 8 0 8s3 5.5 8 5.5S16 8 16 8zM8 12a4 4 0 1 1 0-8 4 4 0 0 1 0 8zm0-2a2 2 0 1 0 0-4 2 2 0 0 0 0 4z"/>
+        </svg>
+    );
+}
+
+function SupportBundleIcon() {
+    return (
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" style={{ flexShrink: 0 }}>
+            <path d="M1 1h14v4h-1v10H2V5H1V1zm1 1v2h12V2H2zm1 3v9h10V5H3zm3 2h4v1H6V7z" />
         </svg>
     );
 }
@@ -127,6 +135,7 @@ export default function NavTab({ pluginSidebarEntries }: { pluginSidebarEntries:
     const showSummary = loaded && canViewSummary(summary);
     const showTraceflow = loaded && can(summary, GATE_TRACEFLOW_CREATE);
     const showFlows = loaded && canViewFlows(summary);
+    const showSupportBundle = loaded && can(summary, GATE_SUPPORTBUNDLE_LIST);
 
     // Plugin entries with a parentPath (already resolved/normalized by plugins.ts's
     // resolveParentPaths — always a leading-slash-stripped path, whether that path belongs to a
@@ -259,6 +268,14 @@ export default function NavTab({ pluginSidebarEntries }: { pluginSidebarEntries:
                     ),
                 },
             ])}
+            {withNestedChildren('supportbundle', showSupportBundle, (
+                <antrea-nav-item {...(pathEquals(pathname, '/supportbundle') ? { active: true } : {})}>
+                    <Link to="/supportbundle">
+                        <SupportBundleIcon />
+                        <span className="nav-label">Support Bundle</span>
+                    </Link>
+                </antrea-nav-item>
+            ))}
             {withNestedChildren('settings', true, (
                 <antrea-nav-item {...(pathEquals(pathname, '/settings') ? { active: true } : {})}>
                     <Link to="/settings">
