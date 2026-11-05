@@ -227,7 +227,10 @@ the addresses and the Namespace, but no Pod, except that the Namespace of the
 destination of a denied connection is withheld too. An endpoint with no
 Namespace at all, such as a Service backend outside the Pod network (the
 destination is the endpoint after DNAT), is at the flow tier on every stream
-that is not cluster-wide, even when its Service has a Namespace.
+that is not cluster-wide, even when its Service has a Namespace. The
+destination Service has a tier of its own, resolved the same way in the
+Service's Namespace, so it can be shown while its endpoint is not, or the
+other way round; it is withheld whenever the destination's Namespace is.
 So a caller with `flows` cluster-wide sees every peer that has a Namespace in
 full whether it asks for the whole cluster or for a single Namespace, and the
 `flows` rule alone is enough — `flows/identity` is only for being recognizable in records the
@@ -358,11 +361,10 @@ scope and reports FA's refusal, Overview asks for the access summary of the
 selected Namespace and leaves out the tiles it denies. See
 `docs/design/namespace-scope-ux.md`.
 
-The Dest Service column shows `-` for a destination outside the Pod network on a
-Namespace stream, and its Service on All Namespaces. Such a destination has no
-Namespace, so the Flow Aggregator withholds its Service on every stream that is
-not cluster-wide, and the page cannot tell that from a destination with no
-Service.
+The Dest Service column follows the Service's own marker, not the destination's:
+it shows the Service when it is disclosed, a lock when the Flow Aggregator
+withheld it, and `-` otherwise. So a destination outside the Pod network, which
+has no Namespace, can still show its Service on a Namespace stream.
 
 To turn the integration off entirely, deploy with `flowAggregator.enabled=false`
 (the chart default). The endpoint then returns 501 for every user, including

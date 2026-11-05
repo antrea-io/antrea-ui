@@ -504,17 +504,19 @@ func TestFilterToGetFlowsRequestScope(t *testing.T) {
 // deliberately, which is the case worth pinning: it must stay on the wire rather than being
 // dropped as empty.
 func TestProtoFlowToAPIDisclosure(t *testing.T) {
-	t.Run("both tiers are carried through", func(t *testing.T) {
+	t.Run("every tier is carried through", func(t *testing.T) {
 		pb := &flowpb.Flow{
 			Id: "flow-disclosure",
 			K8S: &flowpb.Kubernetes{
-				SourceDisclosure:      flowpb.EndpointDisclosure_ENDPOINT_DISCLOSURE_IDENTITY,
-				DestinationDisclosure: flowpb.EndpointDisclosure_ENDPOINT_DISCLOSURE_FLOW,
+				SourceDisclosure:             flowpb.EndpointDisclosure_ENDPOINT_DISCLOSURE_IDENTITY,
+				DestinationDisclosure:        flowpb.EndpointDisclosure_ENDPOINT_DISCLOSURE_FLOW,
+				DestinationServiceDisclosure: flowpb.EndpointDisclosure_ENDPOINT_DISCLOSURE_IDENTITY,
 			},
 		}
 		got := protoFlowToAPI(pb)
 		assert.Equal(t, apisv1.EndpointDisclosureIdentity, got.K8s.SourceDisclosure)
 		assert.Equal(t, apisv1.EndpointDisclosureFlow, got.K8s.DestinationDisclosure)
+		assert.Equal(t, apisv1.EndpointDisclosureIdentity, got.K8s.DestinationServiceDisclosure)
 	})
 
 	t.Run("an unset marker is Full, not unspecified", func(t *testing.T) {
@@ -523,10 +525,11 @@ func TestProtoFlowToAPIDisclosure(t *testing.T) {
 		got := protoFlowToAPI(&flowpb.Flow{Id: "flow-untouched", K8S: &flowpb.Kubernetes{}})
 		assert.Equal(t, apisv1.EndpointDisclosureFull, got.K8s.SourceDisclosure)
 		assert.Equal(t, apisv1.EndpointDisclosureFull, got.K8s.DestinationDisclosure)
+		assert.Equal(t, apisv1.EndpointDisclosureFull, got.K8s.DestinationServiceDisclosure)
 	})
 
 	t.Run("the zero value round-trips as Full through JSON", func(t *testing.T) {
-		// No omitempty on either field, deliberately: omitempty would drop exactly the case
+		// No omitempty on any of the fields, deliberately: omitempty would drop exactly the case
 		// the frontend most needs to read as Full. This asserts the encoded form, not just
 		// the Go value, because the tag is what decides it.
 		got := protoFlowToAPI(&flowpb.Flow{Id: "flow-untouched", K8S: &flowpb.Kubernetes{}})
@@ -534,11 +537,13 @@ func TestProtoFlowToAPIDisclosure(t *testing.T) {
 		require.NoError(t, err)
 		assert.Contains(t, string(data), `"sourceDisclosure":0`)
 		assert.Contains(t, string(data), `"destinationDisclosure":0`)
+		assert.Contains(t, string(data), `"destinationServiceDisclosure":0`)
 
 		var back apisv1.Flow
 		require.NoError(t, json.Unmarshal(data, &back))
 		assert.Equal(t, apisv1.EndpointDisclosureFull, back.K8s.SourceDisclosure)
 		assert.Equal(t, apisv1.EndpointDisclosureFull, back.K8s.DestinationDisclosure)
+		assert.Equal(t, apisv1.EndpointDisclosureFull, back.K8s.DestinationServiceDisclosure)
 	})
 }
 

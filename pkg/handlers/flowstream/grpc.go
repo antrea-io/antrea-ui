@@ -601,6 +601,7 @@ func protoFlowToAPI(pb *flowpb.Flow) apisv1.Flow {
 			FlowType:                       apisv1.FlowType(k.GetFlowType()),
 			SourceDisclosure:               apisv1.EndpointDisclosure(k.GetSourceDisclosure()),
 			DestinationDisclosure:          apisv1.EndpointDisclosure(k.GetDestinationDisclosure()),
+			DestinationServiceDisclosure:   apisv1.EndpointDisclosure(k.GetDestinationServiceDisclosure()),
 			SourcePodNamespace:             k.GetSourcePodNamespace(),
 			SourcePodName:                  k.GetSourcePodName(),
 			SourcePodUid:                   k.GetSourcePodUid(),
