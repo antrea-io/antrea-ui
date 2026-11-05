@@ -241,9 +241,13 @@ function workloadShortName(id: string): string { return id.split('/').pop() ?? i
  * `nodeCollideRadius`, the node-rendering branch and the three hull-membership filters. Missing
  * one is a layout bug, not a visual nit.
  *
- * - `workload`          — a workload in this cluster, identified.
- * - `external`          — an aggregate of peers outside the cluster. Nothing about it was
- *                         withheld: there was never a Kubernetes identity to withhold.
+ * - `workload`          — a workload in this cluster, identified, or a destination's Service.
+ *                         A Service node says nothing of the endpoint behind it, which can
+ *                         be withheld or outside the Pod network.
+ * - `external`          — an aggregate of peers outside the cluster. Nothing about the peers
+ *                         themselves was withheld: there was never a Kubernetes identity to
+ *                         withhold. A Service in front of one can be withheld, which only the
+ *                         Flow List marks, as for any destination.
  * - `undisclosedNamespace` — a namespace whose name survived redaction but whose contents did
  *                         not. Rendered as an empty namespace hull, because in this map's
  *                         grammar a dashed outline is a namespace and a rounded rect is a
@@ -307,6 +311,17 @@ function describeEndpoint(flow: Flow, side: 'source' | 'destination'): EndpointD
     const k8s = flow.k8s;
     const isSource = side === 'source';
     const flowType = k8s.flowType as FlowType;
+    // A Service names the node whatever the destination behind it: outside the Pod network (the
+    // API server behind default/kubernetes, a hostNetwork Pod, an external address) as well as
+    // withheld, since the Service is disclosed by its own namespace. The node goes in the
+    // Service's namespace, which its endpoints need not share, or may not have. That is the
+    // namespace a Services filter entry is prefixed with; the Namespaces filter matches the
+    // endpoint's instead, which is its Pod's when it has one.
+    const svcKey = !isSource && k8s.destinationServicePortName
+        ? destinationK8sServiceFilterKey(k8s.destinationServicePortName) : '';
+    if (svcKey) {
+        return { kind: 'workload', id: svcKey, namespace: svcKey.split('/')[0], shortName: workloadShortName(svcKey) };
+    }
     if (isSource ? flowType === FlowType.FromExternal : flowType === FlowType.ToExternal) {
         return { kind: 'external' };
     }
@@ -326,9 +341,7 @@ function describeEndpoint(flow: Flow, side: 'source' | 'destination'): EndpointD
     }
     const podName = isSource ? k8s.sourcePodName : k8s.destinationPodName;
     const labels = isSource ? k8s.sourcePodLabels : k8s.destinationPodLabels;
-    const svcKey = !isSource && k8s.destinationServicePortName
-        ? destinationK8sServiceFilterKey(k8s.destinationServicePortName) : '';
-    const workloadId = svcKey || getWorkloadName(namespace, podName, labels);
+    const workloadId = getWorkloadName(namespace, podName, labels);
     const shortName = workloadShortName(workloadId);
     if (shortName) return { kind: 'workload', id: workloadId, namespace, shortName };
     // No workload name to show: getWorkloadName returns "ns/" for an endpoint with no Pod name
@@ -1567,7 +1580,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
             })
             // Only the collapsed namespace has anything actionable to say. The anonymous peer
             // has no namespace to name a grant in, so it gets no tooltip at all - see
-            // describeEndpoint - and a workload node is fully disclosed and needs none.
+            // describeEndpoint - and a workload node is itself disclosed and needs none.
             .on('mouseenter', (event, d) => {
                 if (d.kind !== 'undisclosedNamespace') return;
                 this._showNodeTooltip(event, d.shortName, collapsedNamespaceTooltip(d.shortName));
