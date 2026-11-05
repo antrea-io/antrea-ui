@@ -1415,27 +1415,6 @@ describe('AntreaFlowVisibilityPage — changing the scope', () => {
         expect(page.shadowRoot!.textContent).not.toContain('not authorized to observe flows in this scope');
     });
 
-    // No scope change can turn the integration on.
-    test('the integration-disabled banner stays', async () => {
-        const fetchMock = vi.fn(async (url: string) => url.includes('observedNamespace=ns-a')
-            ? new Response(JSON.stringify({ code: 'integration_disabled', message: 'off' }), { status: 501 })
-            : sseResponse([]));
-        const page = await mount(fetchMock, {
-            search: '/?namespace=ns-a',
-            flowAccess: () => flowAccessFixture({ namespaces: ['ns-a', 'ns-b'] }),
-        });
-        await vi.advanceTimersByTimeAsync(0);
-        await page.updateComplete;
-        const before = page.shadowRoot!.querySelector('antrea-alert[status="danger"]')?.textContent;
-
-        await chooseScope(page, 'ns-b');
-        await vi.advanceTimersByTimeAsync(0);
-        await page.updateComplete;
-
-        expect(before).toBeTruthy();
-        expect(page.shadowRoot!.querySelector('antrea-alert[status="danger"]')?.textContent).toBe(before);
-    });
-
     // Stopping a client flushes its pending batch, which must not land in a store that was just
     // cleared for the new scope.
     test('records still pending for the old scope do not appear under the new one', async () => {
@@ -1812,20 +1791,34 @@ describe('AntreaFlowVisibilityPage — multiselect dropdown', () => {
     });
 });
 
-describe('AntreaFlowVisibilityPage — flow visibility disabled server-side', () => {
-    // The backend answers with 501 (a static per-deployment config choice, not a transient
-    // failure) when Flow Aggregator integration is off. This is terminal, like a 401: no retry.
-    test('a stream 501 shows the disabled message and does not retry the stream', async () => {
-        const fetchMock = vi.fn(async () => sseResponse([], 501));
+describe('AntreaFlowVisibilityPage — request not served by this deployment', () => {
+    const notServed = () => jsonResponse({ message: 'this deployment does not serve live streams', code: 'flow_source_not_served', retryable: false }, 501);
+
+    // The backend answers 501 when no configured source serves the requested mode. Like a 400,
+    // it stops that request and shows the backend's message, without retrying.
+    test('a stream 501 shows the backend message and does not retry the stream', async () => {
+        const fetchMock = vi.fn(async () => notServed());
         const page = await mount(fetchMock);
         await vi.advanceTimersByTimeAsync(0);
 
         expect(page.shadowRoot!.querySelector('antrea-alert[status="danger"]')?.textContent)
-            .toContain('Flow visibility is disabled');
+            .toContain('does not serve live streams');
 
         expect(streamCalls(fetchMock)).toHaveLength(1);
         await vi.advanceTimersByTimeAsync(60_000);
         expect(streamCalls(fetchMock)).toHaveLength(1);
+    });
+
+    test('a 501 on a live request does not stop later finite queries', async () => {
+        const fetchMock = vi.fn(async (url: string) => streamParams([url]).get('follow') === 'false'
+            ? finiteResponse([flowEventChunk([makeFlow()]), FINITE_COMPLETE])
+            : notServed());
+        const page = await mount(fetchMock);
+        await vi.advanceTimersByTimeAsync(0);
+        await setQuery(page, { follow: false });
+
+        expect(streamCalls(fetchMock)).toHaveLength(2);
+        expect((page as unknown as { _queryState: string })._queryState).toBe('complete');
     });
 });
 
@@ -1863,7 +1856,8 @@ describe('AntreaFlowVisibilityPage — stream status', () => {
         const fetchMock = vi.fn(async (url: string) => {
             if (!url.includes('/api/v1/flows/stream')) return jsonResponse({});
             if (++calls === 1) throw new Error('network down');
-            return sseResponse([], status);
+            // A closed body, as an error response has: the client reads it for the error payload.
+            return status === 501 ? new Response('', { status }) : sseResponse([], status);
         });
         const page = await mount(fetchMock);
         await vi.advanceTimersByTimeAsync(0);
@@ -1877,7 +1871,7 @@ describe('AntreaFlowVisibilityPage — stream status', () => {
     });
 });
 
-// The 403 twin of the 501 case above: since nothing on the frontend gates access to this page
+// Since nothing on the frontend gates access to this page
 // anymore (authorization is entirely FA's), a real per-scope denial has to render a terminal panel
 // naming the restriction on its own, rather than leaving the page retrying or showing nothing.
 describe('AntreaFlowVisibilityPage — forbidden', () => {
@@ -3174,6 +3168,28 @@ describe('flow query state event', () => {
         await page.updateComplete;
         expect(seen.map(d => d.state)).not.toContain('error');
         expect((page as unknown as { _queryState: string })._queryState).toBe('idle');
+    });
+
+    test('does not report a refused live stream as a query error', async () => {
+        const page = await mount(async () => jsonResponse({ message: 'forbidden', retryable: false }, 403));
+        const seen = collect(page);
+        await vi.advanceTimersByTimeAsync(1000);
+        await page.updateComplete;
+        expect(seen.map(d => d.state)).not.toContain('error');
+        expect((page as unknown as { _queryState: string })._queryState).toBe('idle');
+    });
+
+    test('a new requestId re-runs a query whose other parameters are unchanged', async () => {
+        const fetchMock = vi.fn(async () => finiteResponse([flowEventChunk([makeFlow()]), FINITE_COMPLETE]));
+        const page = await mount(fetchMock, { flowQuery: { follow: false, requestId: 1 } });
+        expect(streamCalls(fetchMock)).toHaveLength(1);
+
+        await setQuery(page, { follow: false, requestId: 1 });
+        expect(streamCalls(fetchMock)).toHaveLength(1);
+
+        await setQuery(page, { follow: false, requestId: 2 });
+        expect(streamCalls(fetchMock)).toHaveLength(2);
+        expect(streamParams(streamCalls(fetchMock)[1]).has('requestId')).toBe(false);
     });
 
     test('is back to idle once the page returns to live data', async () => {

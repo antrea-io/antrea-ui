@@ -143,9 +143,12 @@ func statusForStreamErr(err error) int {
 	if streamErr, ok := errors.AsType[*StreamError](err); ok {
 		switch streamErr.Code {
 		case StreamErrorCodeSourceUnsupported:
-			// Keep this distinct from 501, which disables all flow visibility in clients.
+			// The request names a source that is unknown or lacks the capability.
 			return http.StatusBadRequest
-		case dependencyUnavailableCode:
+		case StreamErrorCodeSourceNotServed:
+			// A static per-deployment choice: no source serves the requested mode.
+			return http.StatusNotImplemented
+		case StreamErrorCodeSourceUnavailable:
 			return http.StatusServiceUnavailable
 		case StreamErrorCodeResourceExhausted:
 			// Capacity, not a broken upstream: the one pre-200 failure worth retrying, and

@@ -182,10 +182,12 @@ func (s *Server) AddFlowStreamRoutes(r *gin.RouterGroup) {
 // flowStreamDisabled handles GET /api/v1/flows/stream when no flow source is configured.
 //
 // 501, not 503: this is a static per-deployment configuration choice, not a transient condition
-// that a retry could resolve. The frontend treats 501 on this endpoint as terminal.
+// that a retry could resolve. The body has the shape of every other stream error
+// (apisv1.FlowStreamErrorEvent), so a client shows its message the same way.
 func (s *Server) flowStreamDisabled(c *gin.Context) {
-	c.JSON(http.StatusNotImplemented, gin.H{
-		"error": "No flow source is configured for this Antrea UI instance (set flowAggregator.enabled or flowSources in the Helm chart).",
+	c.JSON(http.StatusNotImplemented, apisv1.FlowStreamErrorEvent{
+		Message: "No flow source is configured for this Antrea UI instance (set flowAggregator.enabled or flowSources in the Helm chart).",
+		Code:    flowstream.StreamErrorCodeSourceNotServed,
 	})
 }
 

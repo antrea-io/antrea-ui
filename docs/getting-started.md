@@ -60,7 +60,7 @@ configured, flow visibility is disabled.
 The shorthand `flowAggregator.enabled` configures FA as a source. By default, the
 UI connects to `flow-aggregator.flow-aggregator.svc:14740`; configure
 `flowAggregator.address` and `flowAggregator.namespace` for a different
-deployment. See [flow sources](#flow-sources) for configuring other sources.
+deployment. See [flow sources](#flow-sources) for the complete configuration.
 
 For every source, `caConfigMap` names a ConfigMap containing the public CA in
 `ca.crt`. The backend reads it once at startup, in the configured `namespace`,
@@ -73,14 +73,21 @@ requirements.
 
 ### Flow sources
 
-`flowSources` configures flow sources besides `flowAggregator`, each with a
+`flowSources` is the complete configuration of flow sources. Each entry has a
 unique `name`, an `address` and the `capabilities` it serves, `watch` (live
-streams) and/or `list` (finite queries):
+streams) and/or `list` (finite queries). Entries have no defaults, so the Flow
+Aggregator configured as an entry spells out its `address`, `namespace` and
+`caConfigMap`:
 
 ```yaml
 flowAggregator:
-  enabled: true
+  enabled: false
 flowSources:
+  - name: flow-aggregator
+    capabilities: [watch]
+    address: flow-aggregator.flow-aggregator.svc:14740
+    namespace: flow-aggregator
+    caConfigMap: flow-aggregator-ca
   - name: flow-history
     capabilities: [list]
     address: history.example.test:14740
@@ -88,18 +95,24 @@ flowSources:
     caConfigMap: history-ca
 ```
 
-The chart renders the Flow Aggregator first, as a `watch` source named
-`flow-aggregator`, followed by `flowSources`, so it stays the default for live
-requests. The UI chart does not deploy any source. With `caConfigMap` set,
-create that ConfigMap in the specified `namespace`; the chart grants the UI read
-access to it. Without a CA ConfigMap, no namespace is needed. A source must
-satisfy the [flow source contract](../pkg/flowpb/README.md#flow-source-contract).
+`flowAggregator` is shorthand for the first entry. When it is enabled, the chart
+renders it first, as a `watch` source named `flow-aggregator`, followed by
+`flowSources`, so it stays the default for live requests. The UI chart does not
+deploy any source. With `caConfigMap` set, create that ConfigMap in the
+specified `namespace`; the chart grants the UI read access to it. Without a CA
+ConfigMap, the system trust store is used and no namespace is needed. Set
+`insecureSkipVerify: true` on an entry only for development and testing: any
+server answering at its `address` is then trusted with every viewer's
+credential. A source must satisfy the
+[flow source contract](../pkg/flowpb/README.md#flow-source-contract).
 
-The UI in this repository only reads `watch` sources: a source with only the
-`list` capability has no effect here. Other capabilities are for other UIs built
-on the same components, which learn which sources exist from `features.flowSources`
-in `GET /api/v1/settings` (names and capabilities only). See
-[flow sources](authentication.md#flow-sources) for how requests choose a source.
+The UI in this repository only offers flows when a source has the `watch`
+capability. Without one, the Flows page shows that flow visibility is not
+available, `list` sources are ignored, and only the first `watch` source is
+used. Other capabilities are for other UIs built on the same components, which
+learn which sources exist from `features.flowSources` in `GET /api/v1/settings`
+(names and capabilities only). See [flow sources](authentication.md#flow-sources)
+for how requests choose a source.
 
 The Helm chart keeps accepting `flowAggregator`, so upgrading it needs no
 change. The backend itself no longer reads a `flowAggregator` key: a

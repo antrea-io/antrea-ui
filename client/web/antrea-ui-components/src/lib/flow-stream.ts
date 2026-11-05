@@ -51,6 +51,11 @@ export interface FlowQueryOptions {
     follow?: boolean;
     since?: string;
     maxCount?: number;
+    /** Re-runs a query whose other parameters are unchanged. The page ignores a query equal to
+     * the one it has open, so a host that wants to refresh a query with a fixed or no `since`,
+     * or retry one that failed, hands over the same query with a different requestId. It is part
+     * of the query's identity but is never sent to the backend. */
+    requestId?: string | number;
 }
 export type FlowStreamFilter = FlowPeerFilter & FlowStreamScope & FlowQueryOptions;
 /** What a host asks the flow page to show. `follow: true` is a live stream; `follow: false` is a
@@ -59,8 +64,9 @@ export interface FlowQuery extends FlowQueryOptions { follow: boolean; }
 export interface FlowQueryCompletion { snapshotCount: number; maxCount: number; }
 
 /** Fired by the flow page whenever the state of its query changes, so that a host can disable its
- * own controls while a query runs and report a truncated result. `maxCount` is the limit the
- * source applied, known once the query completes; until then it is 0. */
+ * own controls while a query runs and report a truncated result. `maxCount` is the limit
+ * requested from the source (the backend's resolved default when the query sets none), not one
+ * the source applied; known once the query completes, until then it is 0. */
 export const FLOW_QUERY_STATE_EVENT = 'antrea-flow-query-state';
 export interface FlowQueryStateDetail {
     state: 'idle' | 'loading' | 'complete' | 'error';
@@ -83,6 +89,7 @@ export function streamFilterKey(f: FlowStreamFilter): string {
         follow: f.follow ?? true,
         since: f.since ?? '',
         maxCount: f.maxCount ?? 0,
+        requestId: f.requestId ?? '',
         namespaces,
         pods,
         podLabelSelector: f.podLabelSelector ?? '',
@@ -115,11 +122,8 @@ export interface FlowStreamCallbacks {
      * this: it reaches onError with an "unauthenticated" code and never a 401, because it says
      * nothing about the antrea-ui session and must not log the user out of the rest of the UI. */
     onAuthError?: () => void;
-    /** Called on HTTP 501, i.e. no flow source is configured for this deployment. This
-     * is a static configuration choice, not a transient failure: there is nothing to retry. */
-    onDisabled?: () => void;
-    /** Called on HTTP 403, i.e. this user is not permitted to view flow data. Like 501, this is a
-     * permanent answer for the session, not a transient failure: there is nothing to retry. */
+    /** Called on HTTP 403, i.e. this user is not permitted to view flow data. This is a
+     * permanent answer for the request, not a transient failure: there is nothing to retry. */
     onForbidden?: () => void;
 }
 
@@ -156,8 +160,8 @@ function buildStreamURL(filter: FlowStreamFilter): string {
  * Authentication is the session cookie, which the browser attaches to the SSE fetch itself. The
  * backend keeps the session alive for as long as the stream is attached, and closes the stream if
  * the session ends. On HTTP 401 the session is gone for good: onAuthError() fires and the stream
- * stops for good too. On HTTP 501, no flow source is configured for this deployment:
- * onDisabled() fires and the stream stops for good, the same way.
+ * stops for good too. On HTTP 501, this deployment does not serve the request: like a 400, the
+ * stream stops for good and onError() reports the backend's message.
  *
  * A retryable failure (see scheduleReconnect) is retried indefinitely with a backoff that caps at
  * 30s, never given up on outright. A reconnect due while the tab is hidden is deferred until it
@@ -300,13 +304,6 @@ export class FlowStreamClient {
                 return;
             }
 
-            if (response.status === 501) {
-                this.haltPermanently();
-                this.callbacks.onDisabled?.();
-                this.callbacks.onDisconnected?.();
-                return;
-            }
-
             // Handled here rather than falling through to !response.ok, which would drive the
             // exponential-backoff reconnect loop against a permanent answer.
             if (response.status === 403) {
@@ -326,12 +323,13 @@ export class FlowStreamClient {
                 // would be retried forever purely because it was reported early enough to be an
                 // HTTP status rather than late enough to be an event. A body we cannot parse falls
                 // through to the retry path, which is the safer default for an unrecognized
-                // failure, except a 400, which (like 403) means this client built a request the
-                // backend will never accept, so no retry can help.
+                // failure, except a 400 (like 403), which means this client built a request the
+                // backend will never accept, and a 501, which means this deployment does not
+                // serve the request: no retry can help either.
                 const payload = await FlowStreamClient.readErrorPayload(response);
                 if (!current()) return;
                 const message = payload?.message ?? `Flow stream: ${response.status} ${response.statusText}`;
-                if (payload?.retryable === false || response.status === 400) {
+                if (payload?.retryable === false || response.status === 400 || response.status === 501) {
                     this.haltPermanently();
                     this.callbacks.onError(new Error(message));
                     this.callbacks.onDisconnected?.();
@@ -380,7 +378,7 @@ export class FlowStreamClient {
             return;
         }
         if (this.streamErrorIsPermanent) {
-            // Same terminal treatment as onAuthError/onDisabled/onForbidden above: retrying
+            // Same terminal treatment as onAuthError/onForbidden above: retrying
             // would just reproduce the same rejection every reconnectDelay, forever.
             this.haltPermanently();
             return;

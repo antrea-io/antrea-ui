@@ -17,7 +17,9 @@ package flowstream
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"errors"
+	"net/http"
 	"net/http/httptest"
 	"testing"
 	"testing/synctest"
@@ -138,10 +140,10 @@ func TestSourceRouting(t *testing.T) {
 		{name: "named source without the capability", sources: []FlowSource{watchOnly("fa"), listOnly("hist")}, filter: named("fa", finite()), wantCode: StreamErrorCodeSourceUnsupported},
 		{name: "named source, other capability", sources: []FlowSource{watchOnly("fa"), listOnly("hist")}, filter: named("hist", live()), wantCode: StreamErrorCodeSourceUnsupported},
 		{name: "unknown source", sources: []FlowSource{both("a")}, filter: named("missing", live()), wantCode: StreamErrorCodeSourceUnsupported},
-		{name: "no source can list", sources: []FlowSource{watchOnly("fa")}, filter: finite(), wantCode: StreamErrorCodeSourceUnsupported},
-		{name: "no source can watch", sources: []FlowSource{listOnly("hist")}, filter: live(), wantCode: StreamErrorCodeSourceUnsupported},
+		{name: "no source can list", sources: []FlowSource{watchOnly("fa")}, filter: finite(), wantCode: StreamErrorCodeSourceNotServed},
+		{name: "no source can watch", sources: []FlowSource{listOnly("hist")}, filter: live(), wantCode: StreamErrorCodeSourceNotServed},
 		{name: "unavailable never falls back", sources: []FlowSource{listOnly("hist"), listOnly("spare")}, filter: finite(), want: "hist",
-			sourceErr: dependencyUnavailable("offline"), wantCode: dependencyUnavailableCode},
+			sourceErr: dependencyUnavailable("offline"), wantCode: StreamErrorCodeSourceUnavailable},
 		{name: "authorization never falls back", sources: []FlowSource{both("a"), both("b")}, filter: live(), want: "a",
 			sourceErr: &StreamError{Code: StreamErrorCodeForbidden}, wantCode: StreamErrorCodeForbidden},
 	} {
@@ -169,7 +171,7 @@ func TestSourceRouting(t *testing.T) {
 					var se *StreamError
 					require.ErrorAs(t, err, &se)
 					require.Equal(t, tc.wantCode, se.Code)
-					if tc.wantCode == StreamErrorCodeSourceUnsupported {
+					if tc.wantCode == StreamErrorCodeSourceUnsupported || tc.wantCode == StreamErrorCodeSourceNotServed {
 						require.False(t, se.Retryable)
 					}
 				}
@@ -215,7 +217,7 @@ func TestSSERejectsUnsupportedAndUnavailableSources(t *testing.T) {
 	}{
 		{name: "unknown source", query: "source=missing&follow=false", wantStatus: 400, wantCode: StreamErrorCodeSourceUnsupported},
 		{name: "source lacks the capability", query: "source=fa&follow=false", wantStatus: 400, wantCode: StreamErrorCodeSourceUnsupported},
-		{name: "source unavailable", query: "source=hist&follow=false", wantStatus: 503, wantCode: dependencyUnavailableCode},
+		{name: "source unavailable", query: "source=hist&follow=false", wantStatus: 503, wantCode: StreamErrorCodeSourceUnavailable},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
@@ -245,6 +247,18 @@ func TestSSERejectsUnsupportedAndUnavailableSources(t *testing.T) {
 			})
 		})
 	}
+}
+
+func TestSSEAnswers501WhenNoSourceServesTheMode(t *testing.T) {
+	router := &RoutedSubscriber{Sources: []FlowSource{{Name: "fa", Watch: true, Subscriber: scriptedEvents(nil, nil)}}}
+	rr := newCloseNotifyRecorder()
+	newTestRouter(NewSSEHandler(testr.New(t), router)).ServeHTTP(rr, httptest.NewRequest("GET", "/api/v1/flows/stream?clusterWide=true&follow=false", nil))
+	require.Equal(t, http.StatusNotImplemented, rr.Code)
+	var got apisv1.FlowStreamErrorEvent
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &got))
+	require.Equal(t, StreamErrorCodeSourceNotServed, got.Code)
+	require.False(t, got.Retryable)
+	require.Contains(t, got.Message, "finite queries (follow=false)")
 }
 
 func TestFiniteResultLimitAcrossBatches(t *testing.T) {
@@ -309,7 +323,7 @@ func TestClassifyStreamErrUnavailable(t *testing.T) {
 	for _, code := range []codes.Code{codes.FailedPrecondition, codes.Unavailable} {
 		t.Run(code.String(), func(t *testing.T) {
 			got := subscriber.classifyStreamErr(status.Error(code, "offline"))
-			require.Equal(t, dependencyUnavailableCode, got.Code)
+			require.Equal(t, StreamErrorCodeSourceUnavailable, got.Code)
 			require.True(t, got.Retryable)
 			require.Contains(t, got.Error(), `"hist"`)
 		})

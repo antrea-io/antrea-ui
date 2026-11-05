@@ -82,8 +82,8 @@ const (
 	// authorization, so it would ignore the stream's scope and stream every flow it has,
 	// unredacted. The value predates flow sources and is kept because it is part of the SSE
 	// error event. Not retryable, and terminal for this deployment until the source is
-	// upgraded. The frontend has no dedicated panel for this code yet, unlike onDisabled's 501
-	// or onForbidden's 403 - it falls through to the generic permanent-error banner via onError,
+	// upgraded. The frontend has no dedicated panel for this code yet, unlike
+	// onForbidden's 403 - it falls through to the generic permanent-error banner via onError,
 	// whose message (see flowSourceTooOldErr) at least names the source to upgrade. See
 	// Subscribe's check on the stream's first response.
 	StreamErrorCodeFlowAggregatorTooOld = "flow_aggregator_too_old"

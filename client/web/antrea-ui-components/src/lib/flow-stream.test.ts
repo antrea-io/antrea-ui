@@ -103,7 +103,6 @@ describe('FlowStreamClient', () => {
         disconnected: number;
         reconnectDelays: number[];
         authErrors: number;
-        disabled: number;
     } {
         const cb = {
             flows: [] as unknown[],
@@ -113,7 +112,6 @@ describe('FlowStreamClient', () => {
             disconnected: 0,
             reconnectDelays: [] as number[],
             authErrors: 0,
-            disabled: 0,
             forbidden: 0,
             onFlows: (flows: unknown[]) => { cb.flows.push(...flows); },
             onError: (err: Error) => { cb.errors.push(err); },
@@ -122,7 +120,6 @@ describe('FlowStreamClient', () => {
             onDisconnected: () => { cb.disconnected++; },
             onReconnectScheduled: (delayMs: number) => { cb.reconnectDelays.push(delayMs); },
             onAuthError: () => { cb.authErrors++; },
-            onDisabled: () => { cb.disabled++; },
             onForbidden: () => { cb.forbidden++; },
         };
         return cb;
@@ -338,22 +335,34 @@ describe('FlowStreamClient', () => {
         expect(fetchMock).toHaveBeenCalledTimes(1);
     });
 
-    // A 501 means Flow Aggregator integration is off for this deployment — a static config
-    // choice, not a transient failure — so it is terminal, the same way a 401 is.
-    test('dispatches onDisabled on HTTP 501 and does not reconnect', async () => {
-        stubFetch(async () => sseResponse([], 501));
+    // A 501 means this deployment does not serve the request, so like a 400 it is permanent and
+    // reported through onError with the backend's message.
+    test('reports HTTP 501 through onError and does not reconnect', async () => {
+        stubFetch(async () => new Response(
+            JSON.stringify({ message: 'not served', code: 'flow_source_not_served', retryable: false }), { status: 501 }));
         const cb = makeCallbacks();
         const client = new FlowStreamClient({}, cb, 10);
         client.start();
         await vi.advanceTimersByTimeAsync(0);
 
-        expect(cb.disabled).toBe(1);
+        expect(cb.errors.map(e => e.message)).toEqual(['not served']);
         await vi.advanceTimersByTimeAsync(60_000);
         expect(fetchMock).toHaveBeenCalledTimes(1);
     });
 
-    // A 403 means this user may not view flow data. Like a 501 it is a permanent answer for the
-    // session, so it must not fall through to !response.ok and drive the backoff loop against it.
+    test('does not retry an HTTP 501 whose body cannot be parsed', async () => {
+        stubFetch(async () => new Response('', { status: 501 }));
+        const cb = makeCallbacks();
+        const client = new FlowStreamClient({}, cb, 10);
+        client.start();
+        await vi.advanceTimersByTimeAsync(60_000);
+
+        expect(cb.errors).toHaveLength(1);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    // A 403 means this user may not view flow data. It is a permanent answer for the
+    // request, so it must not fall through to !response.ok and drive the backoff loop against it.
     test('dispatches onForbidden on HTTP 403 and does not reconnect', async () => {
         stubFetch(async () => sseResponse([], 403));
         const cb = makeCallbacks();
@@ -417,7 +426,8 @@ describe('FlowStreamClient', () => {
         ['501', 501],
         ['403', 403],
     ])('does not dispatch onReconnectScheduled on a terminal HTTP %s', async (_name, status) => {
-        stubFetch(async () => sseResponse([], status));
+        // A closed body, as an error response has: the client reads it for the error payload.
+        stubFetch(async () => status === 501 ? new Response('', { status }) : sseResponse([], status));
         const cb = makeCallbacks();
         const client = new FlowStreamClient({}, cb, 10);
         client.start();

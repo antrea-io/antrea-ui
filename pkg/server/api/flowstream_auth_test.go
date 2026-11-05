@@ -322,6 +322,11 @@ func TestFlowStreamAuthorizationIsTheFlowAggregators(t *testing.T) {
 		rr := httptest.NewRecorder()
 		ts.router.ServeHTTP(rr, req)
 		assert.Equal(t, http.StatusNotImplemented, rr.Code)
+		var body apisv1.FlowStreamErrorEvent
+		require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &body))
+		assert.NotEmpty(t, body.Message)
+		assert.Equal(t, flowstream.StreamErrorCodeSourceNotServed, body.Code)
+		assert.False(t, body.Retryable)
 	})
 }
 

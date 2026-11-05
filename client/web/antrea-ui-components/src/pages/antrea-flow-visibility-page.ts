@@ -162,11 +162,6 @@ const ENDPOINT_HINT = 'These filters all match the same endpoint of a flow: its 
 const SERVICES_UNDER_SOURCE_HINT = 'A Service is always the destination of a flow: not available while the endpoint is the source.';
 const SOURCE_WITH_SERVICES_HINT = 'A Service is always the destination of a flow: Source is not available while a Service is selected.';
 
-const FLOW_VISIBILITY_DISABLED_MESSAGE =
-    'Flow visibility is disabled on this Antrea UI server. Install or upgrade the chart with ' +
-    '--set flowAggregator.enabled=true and a reachable flowAggregator.address, or configure ' +
-    'flowSources (see antrea-ui/hack/deploy-kind.sh).';
-
 const WELL_KNOWN_APP_LABELS = ['app.kubernetes.io/name', 'app.kubernetes.io/instance', 'app', 'k8s-app', 'name'];
 
 /**
@@ -845,11 +840,13 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
     @state() private _paused = false;
     /** What to show: unset is live data from the default source, with no source named in the
      * request. Set by the host, which owns the controls that choose it (see the `controls` slot),
-     * and refreshed by handing over a new query, with a new `since` for a finite one. Only a query
+     * and refreshed by handing over a new query: a new `since` for a finite one, or a new `requestId` to
+     * re-run the same query. Only a query
      * that differs from the one open changes the stream. */
     @property({ attribute: false }) flowQuery?: FlowQuery;
     // A finite query's progress, reported to the host in a FLOW_QUERY_STATE_EVENT. _resultLimit is
-    // the limit the source applied, known only once the query completes.
+    // the limit requested from the source (the backend's filter.resultLimit()), not one the source
+    // applied, known only once the query completes.
     @state() private _queryState: FlowQueryStateDetail['state'] = 'idle';
     @state() private _snapshotCount = 0;
     @state() private _resultLimit = 0;
@@ -890,12 +887,8 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
     // a retry, so the disconnect will resolve itself, unlike one where the client has stopped.
     @state() private _reconnecting = false;
     @state() private _error: string | TemplateResult | null = null;
-    // Set on 501: no flow source is configured for this deployment, a fixed fact about the
-    // server that no filter or scope change on this page can affect. Terminal for the session,
-    // and must keep _startStream from re-opening the stream on any later filter change.
-    private _integrationDisabled = false;
-    // Set to _filterKey on 403: the flow source refused this user the scope that request asked for. Unlike
-    // _integrationDisabled this is not terminal - authorization is per-scope, so it only needs to
+    // Set to _filterKey on 403: the flow source refused this user the scope that request asked for.
+    // Not terminal - authorization is per-scope, so it only needs to
     // block _startStream from retrying the exact same request that was just refused, not every
     // request forever. _refreshStream clears it whenever the request changes (a peer-filter edit
     // or a different scope), so coming back to a refused scope asks again: the refusal is
@@ -1127,7 +1120,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         const q = this.flowQuery;
         return scope ? {
             ...this._peerFilter, ...scope,
-            ...(q ? { source: q.source, follow: q.follow, since: q.since, maxCount: q.maxCount } : {}),
+            ...(q ? { source: q.source, follow: q.follow, since: q.since, maxCount: q.maxCount, requestId: q.requestId } : {}),
         } : null;
     }
 
@@ -1241,7 +1234,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         // user probably does not hold. The page shows an empty state instead - see
         // _renderScopeEmptyState.
         if (!this._filter) return;
-        if (this._paused || this._integrationDisabled || this._filterKey === this._forbiddenFilterKey) return;
+        if (this._paused || this._filterKey === this._forbiddenFilterKey) return;
         this._client?.stop();
         this._queryState = this._following ? 'idle' : 'loading';
         this._client = new FlowStreamClient(this._filter, {
@@ -1270,15 +1263,6 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
                 // client has already stopped itself, and the host will log the user out.
                 this.dispatchSessionExpired();
             },
-            onDisabled: () => {
-                // A 501 means no flow source is configured for this deployment. The
-                // client has already stopped itself; there is nothing to retry.
-                this._integrationDisabled = true;
-                this._client = null;
-                this._connected = false;
-                this._queryState = 'error';
-                this._error = FLOW_VISIBILITY_DISABLED_MESSAGE;
-            },
             onForbidden: () => {
                 // A 403 means the flow source refused this user the scope _filter asked for. The client has
                 // already stopped itself; record which request was refused so _startStream does
@@ -1288,7 +1272,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
                 this._forbiddenFilterKey = this._filterKey;
                 this._client = null;
                 this._connected = false;
-                this._queryState = 'error';
+                if (!this._following) this._queryState = 'error';
                 this._error = FLOW_VISIBILITY_FORBIDDEN_MESSAGE(this._following);
             },
         });
@@ -1336,8 +1320,8 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         this._connected = false;
         this._selectedEdgeKey = null;
         // The banner went with the stream, which is what it described: a refusal of the old
-        // scope says nothing about the new one. Not the 501 one, which no scope change can fix.
-        if (!this._integrationDisabled) this._error = null;
+        // scope says nothing about the new one.
+        this._error = null;
         if (!this._paused) this._startStream();
     }
 

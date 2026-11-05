@@ -64,8 +64,9 @@ must:
   logic. `max_count` follows the order in which the source examines records, as
   `service.proto` says, so a source cannot be assumed to return the newest
   records; any such promise belongs to the UI using that source.
-- Return errors for failed or interrupted queries. `Unavailable` and
-  `FailedPrecondition` indicate an unavailable dependency; the backend never
+- Return errors for failed or interrupted queries. `service.proto` gives no
+  meaning to `Unavailable` or `FailedPrecondition`; this backend classifies
+  them as retryable and reports them as `flow_source_unavailable`. It never
   falls back to another source.
 
 The backend sends an SSE completion event only after the successful completion

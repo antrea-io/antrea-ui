@@ -117,11 +117,15 @@ export class FlowStore {
     }
 
     // finite marks a snapshot from a finite query: it is the latest total, not one more sample of a
-    // live rate.
+    // live rate. service.proto defines no order within a finite query's records, and the key drops
+    // the source port so several connections share it, so the record with the latest endTs is kept
+    // rather than the last one received.
     upsert(flow: Flow, finite = false): void {
         const key = connectionKey(flow);
         const existing = this.entries.get(key);
         const now = Date.now();
+
+        if (finite && existing && Date.parse(existing.flow.endTs) > Date.parse(flow.endTs)) return;
 
         if (existing) {
             this.entries.delete(key);

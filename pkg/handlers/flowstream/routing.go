@@ -23,7 +23,14 @@ import (
 	apisv1 "antrea.io/antrea-ui/apis/v1"
 )
 
-const dependencyUnavailableCode = "flow_source_unavailable"
+// StreamErrorCodeSourceUnavailable identifies a flow source that cannot be reached or is not
+// ready to serve. Retryable.
+const StreamErrorCodeSourceUnavailable = "flow_source_unavailable"
+
+// StreamErrorCodeSourceNotServed identifies a request that names no source when none of the
+// configured sources, or no source at all, serves the requested mode. How the deployment is
+// configured, not something a retry or another request of the same kind can change.
+const StreamErrorCodeSourceNotServed = "flow_source_not_served"
 
 // StreamErrorCodeSourceUnsupported identifies a request naming a flow source that is not
 // configured or does not have the capability the request needs. It is raised before dialing and
@@ -31,7 +38,7 @@ const dependencyUnavailableCode = "flow_source_unavailable"
 const StreamErrorCodeSourceUnsupported = "flow_source_unsupported"
 
 func dependencyUnavailable(message string) *StreamError {
-	return &StreamError{msg: message, Code: dependencyUnavailableCode, Retryable: true}
+	return &StreamError{msg: message, Code: StreamErrorCodeSourceUnavailable, Retryable: true}
 }
 
 // FlowSource is a named flow source: an endpoint implementing FlowStreamService.
@@ -85,7 +92,10 @@ func (s *RoutedSubscriber) resolve(filter *FlowStreamFilter) (*FlowSource, error
 			return &s.Sources[i], nil
 		}
 	}
-	return nil, unsupported("no configured flow source supports %s", needed)
+	return nil, &StreamError{
+		msg:  fmt.Sprintf("this deployment does not serve %s: no configured flow source supports it", needed),
+		Code: StreamErrorCodeSourceNotServed,
+	}
 }
 
 func (s *RoutedSubscriber) Subscribe(ctx context.Context, scope *FlowStreamScope, filter *FlowStreamFilter) (<-chan apisv1.FlowStreamEvent, <-chan error, <-chan struct{}) {

@@ -235,7 +235,9 @@ serves it, so a request without `follow` is a live stream from the first
 `watch` source. A request naming an unknown source, or one without the needed
 capability, is refused with a 400 before any connection is made, and the
 backend never serves it from another source: live data is never substituted for
-a finite query. With no source configured, the endpoint returns 501.
+a finite query. A request naming no source, when no configured source serves
+the requested mode (or none is configured), is answered with 501 and a message
+saying which mode is not served.
 
 The UI in this repository only sends live requests. The finite-query path is
 there for other UIs built on the same components. So that they can offer it only
