@@ -126,7 +126,9 @@ func (v *bearerValidator) validate(ctx context.Context, req *http.Request, token
 	// Only cache misses reach the API server, so that is what is throttled. A rejected token is
 	// deliberately not cached: caching failures would let one unlucky validation lock a caller
 	// out for the whole TTL, and the rate limiter already bounds the cost of retries.
-	if !v.missLimiter.Allow(now, req) {
+	// The Retry-After hint is ignored: only cache misses are limited, and legitimate clients do
+	// not come close to the limit.
+	if ok, _ := v.missLimiter.Allow(now, req); !ok {
 		return "", &servererrors.ServerError{
 			Code:    http.StatusTooManyRequests,
 			Message: "Too many token validations, please try again later",

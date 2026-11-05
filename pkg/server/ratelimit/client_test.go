@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestClientKeyIP(t *testing.T) {
@@ -98,11 +99,58 @@ func TestClientKeyIP(t *testing.T) {
 // testAllow sends a request from clientIP to rl, at the current time. In a synctest bubble,
 // time.Now follows the fake clock, which advances when every goroutine is durably blocked.
 func testAllow(rl *ClientRateLimiter, clientIP string) bool {
+	ok, _ := testAllowWithDelay(rl, clientIP)
+	return ok
+}
+
+func testAllowWithDelay(rl *ClientRateLimiter, clientIP string) (bool, time.Duration) {
 	req := &http.Request{
 		RemoteAddr: clientIP,
 		Header:     make(http.Header),
 	}
 	return rl.Allow(time.Now(), req)
+}
+
+func TestClientRateLimiterRetryAfter(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		rl, err := NewClientRateLimiter("3/h", 1, 10, ClientKeyIP)
+		require.NoError(t, err)
+		const client1, client2 = "10.0.0.1:1234", "10.0.0.2:1234"
+
+		ok, delay := testAllowWithDelay(rl, client1)
+		assert.True(t, ok)
+		assert.Zero(t, delay)
+		// 1 token every 20 minutes
+		ok, delay = testAllowWithDelay(rl, client1)
+		assert.False(t, ok)
+		assert.Equal(t, 20*time.Minute, delay)
+		// the delay is tracked per client
+		ok, _ = testAllowWithDelay(rl, client2)
+		assert.True(t, ok)
+
+		time.Sleep(15 * time.Minute)
+		ok, delay = testAllowWithDelay(rl, client1)
+		assert.False(t, ok)
+		assert.Equal(t, 5*time.Minute, delay)
+
+		// a rejected request does not consume a token, so waiting for the hint is enough
+		time.Sleep(delay)
+		ok, _ = testAllowWithDelay(rl, client1)
+		assert.True(t, ok)
+	})
+}
+
+func TestClientRateLimiterZeroRate(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		rl, err := NewClientRateLimiter("0/s", 1, 10, ClientKeyIP)
+		require.NoError(t, err)
+		ok, _ := testAllowWithDelay(rl, "10.0.0.1:1234")
+		assert.True(t, ok)
+		// the limiter never refills: rejected, with no meaningful delay
+		ok, delay := testAllowWithDelay(rl, "10.0.0.1:1234")
+		assert.False(t, ok)
+		assert.Zero(t, delay)
+	})
 }
 
 func TestClientRateLimiter(t *testing.T) {
