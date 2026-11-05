@@ -361,11 +361,10 @@ scope and reports FA's refusal, Overview asks for the access summary of the
 selected Namespace and leaves out the tiles it denies. See
 `docs/design/namespace-scope-ux.md`.
 
-The Dest Service column shows `-` for a destination outside the Pod network on a
-Namespace stream, and its Service on All Namespaces. Such a destination has no
-Namespace, so the Flow Aggregator withholds its Service on every stream that is
-not cluster-wide, and the page cannot tell that from a destination with no
-Service.
+The Dest Service column follows the Service's own marker, not the destination's:
+it shows the Service when it is disclosed, a lock when the Flow Aggregator
+withheld it, and `-` otherwise. So a destination outside the Pod network, which
+has no Namespace, can still show its Service on a Namespace stream.
 
 To turn the integration off entirely, deploy with `flowAggregator.enabled=false`
 (the chart default). The endpoint then returns 501 for every user, including
