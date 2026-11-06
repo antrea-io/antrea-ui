@@ -352,12 +352,16 @@ func parseFlowStreamScope(c *gin.Context) (*FlowStreamScope, error) {
 func (h *SSEHandler) StreamFlows(c *gin.Context) {
 	filter, err := parseFlowStreamFilter(c)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, apisv1.FlowStreamErrorEvent{
+			Message: err.Error(), Code: StreamErrorCodeInvalidRequest, Retryable: false,
+		})
 		return
 	}
 	scope, err := parseFlowStreamScope(c)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, apisv1.FlowStreamErrorEvent{
+			Message: err.Error(), Code: StreamErrorCodeInvalidRequest, Retryable: false,
+		})
 		return
 	}
 

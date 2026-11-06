@@ -3080,6 +3080,63 @@ describe('flowQuery', () => {
         expect((await scopeMenu(page)).map(o => o.value)).not.toContain('__cluster_wide__');
     });
 
+    test.each(['watch', 'list'] as const)(
+        'reselects the default scope when only %s is allowed cluster-wide', async verb => {
+            const signals: (AbortSignal | null | undefined)[] = [];
+            const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+                signals.push(init?.signal);
+                return streamParams([url]).get('follow') === 'false'
+                    ? finiteResponse([FINITE_COMPLETE])
+                    : sseResponse([]);
+            });
+            const page = await mount(fetchMock, {
+                search: '/',
+                flowAccess: () => flowAccessFixture({ namespaces: ['ns-a'], clusterWide: 'allowed', verb }),
+            });
+            const states: FlowQueryStateDetail[] = [];
+            page.addEventListener(FLOW_QUERY_STATE_EVENT, e => states.push((e as CustomEvent<FlowQueryStateDetail>).detail));
+
+            await setQuery(page, { follow: false });
+            await setQuery(page, undefined);
+
+            const calls = streamCalls(fetchMock);
+            // No intermediate request may reuse the previous mode's default scope.
+            expect(calls).toHaveLength(3);
+            expect(calls.map(call => {
+                const params = streamParams(call);
+                return [params.get('follow'), params.get('clusterWide'), params.get('observedNamespace')];
+            })).toEqual(verb === 'watch' ? [
+                [null, 'true', null], ['false', null, 'ns-a'], [null, 'true', null],
+            ] : [
+                [null, null, 'ns-a'], ['false', 'true', null], [null, null, 'ns-a'],
+            ]);
+            expect(signals[0]?.aborted).toBe(true);
+            expect(states.map(state => state.state)).not.toContain('error');
+            expect(window.location.search).toBe('');
+        },
+    );
+
+    test.each(['ns-a', '_all'])('keeps the explicit URL scope %s across mode changes', async namespace => {
+        const fetchMock = vi.fn(async (url: string) => streamParams([url]).get('follow') === 'false'
+            ? finiteResponse([FINITE_COMPLETE])
+            : sseResponse([]));
+        const page = await mount(fetchMock, {
+            search: `/?namespace=${namespace}`,
+            flowAccess: () => flowAccessFixture({ namespaces: ['ns-b'], clusterWide: 'allowed', verb: 'watch' }),
+        });
+        await setQuery(page, { follow: false });
+        await setQuery(page, undefined);
+
+        const calls = streamCalls(fetchMock);
+        expect(calls).toHaveLength(3);
+        for (const call of calls) {
+            const params = streamParams(call);
+            expect(params.get('clusterWide')).toBe(namespace === '_all' ? 'true' : null);
+            expect(params.get('observedNamespace')).toBe(namespace === '_all' ? null : namespace);
+        }
+        expect(window.location.search).toBe(`?namespace=${namespace}`);
+    });
+
     test('a refused finite query says which verb it needs, and does not retry', async () => {
         const fetchMock = vi.fn(async () => jsonResponse({ message: 'forbidden', retryable: false }, 403));
         const page = await mount(fetchMock, { flowQuery: { follow: false } });

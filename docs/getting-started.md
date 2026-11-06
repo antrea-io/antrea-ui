@@ -108,8 +108,8 @@ credential. A source must satisfy the
 
 The UI in this repository only offers flows when a source has the `watch`
 capability. Without one, the Flows page shows that flow visibility is not
-available, `list` sources are ignored, and only the first `watch` source is
-used. Other capabilities are for other UIs built on the same components, which
+available. This UI ignores `list` sources and uses only the first `watch`
+source. Other capabilities are for other UIs built on the same components, which
 learn which sources exist from `features.flowSources` in `GET /api/v1/settings`
 (names and capabilities only). See [flow sources](authentication.md#flow-sources)
 for how requests choose a source.

@@ -274,7 +274,7 @@ export function FlowVisibilityPage({ view }: { view: 'list' | 'map' }) {
         return (
             <antrea-alert status="warning">
                 Flow visibility is not available: no flow source that supports live streams is
-                configured for this Antrea UI. Configure <code>flowAggregator</code> or a
+                configured for this Antrea UI. Configure <code>flowAggregator</code> or a{' '}
                 <code>flowSources</code> entry with the <code>watch</code> capability in the Helm
                 chart.
             </antrea-alert>

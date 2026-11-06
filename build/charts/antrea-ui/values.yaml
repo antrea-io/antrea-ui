@@ -462,17 +462,9 @@ hostAliases: []
 # `address` is trusted, and the backend hands it every flow viewer's bearer token and, for
 # admin-password sessions, a freshly minted antrea-ui-admin token, all replayable against the
 # real Kubernetes API server by whoever controls that address.
-# The Flow Aggregator, configured as a `flowSources` entry with `flowAggregator.enabled=false`:
-#
-#   flowSources:
-#     - name: flow-aggregator
-#       capabilities: [watch]
-#       address: flow-aggregator.flow-aggregator.svc:14740
-#       namespace: flow-aggregator
-#       caConfigMap: flow-aggregator-ca
-#
-# The UI in this chart only offers flows when a source has the `watch` capability: without one,
-# the Flows page shows that flow visibility is not available, `list` sources are ignored, and
-# only the first `watch` source is used. Other capabilities are for other UIs built on the same
-# components.
+# See [Flow sources](../../../docs/getting-started.md#flow-sources) for a Flow Aggregator
+# configuration example.
+# The UI in this chart only offers flows when a source has the `watch` capability. Without one,
+# the Flows page shows that flow visibility is not available. This UI ignores `list` sources and
+# uses only the first `watch` source. Other capabilities are for other UIs built on the same components.
 flowSources: []

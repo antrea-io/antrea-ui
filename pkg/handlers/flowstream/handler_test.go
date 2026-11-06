@@ -444,15 +444,37 @@ func TestStreamFlowsInitialResponseTimeout(t *testing.T) {
 	})
 }
 
-func TestStreamFlowsBadFilter(t *testing.T) {
-	logger := testr.New(t)
-	stub := &stubFlowStreamSubscriber{}
+func TestStreamFlowsInvalidRequest(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		query   string
+		message string
+	}{
+		{name: "invalid flow type", query: "flowTypes=abc&clusterWide=true", message: "flowType"},
+		{name: "maxCount out of range", query: "follow=false&maxCount=10001&clusterWide=true", message: "maxCount must be between"},
+		{name: "maxCount on a live stream", query: "follow=true&maxCount=1&clusterWide=true", message: "maxCount requires follow=false"},
+		{name: "invalid since", query: "follow=false&since=yesterday&clusterWide=true", message: "since must be an RFC3339 timestamp"},
+		{name: "repeated source", query: "source=a&source=b&clusterWide=true", message: "source must have exactly one non-empty value"},
+		{name: "missing scope", query: "", message: "a flow stream must name its scope"},
+		{name: "conflicting scope", query: "observedNamespace=ns-a&clusterWide=true", message: "observedNamespace and clusterWide are mutually exclusive"},
+		{name: "invalid cluster scope", query: "clusterWide=invalid", message: "invalid clusterWide value"},
+		{name: "multiple namespaces", query: "observedNamespace=ns-a,ns-b", message: "a stream observes a single namespace"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Validation must return before calling the subscriber.
+			handler := NewSSEHandler(testr.New(t), nil)
+			rr := httptest.NewRecorder()
+			newTestRouter(handler).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v1/flows/stream?"+tc.query, nil))
 
-	sseHandler := NewSSEHandler(logger, stub)
-	rr := httptest.NewRecorder()
-	newTestRouter(sseHandler).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v1/flows/stream?flowTypes=abc", nil))
-
-	assert.Equal(t, http.StatusBadRequest, rr.Code)
+			require.Equal(t, http.StatusBadRequest, rr.Code)
+			var evt apisv1.FlowStreamErrorEvent
+			require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &evt))
+			assert.Contains(t, evt.Message, tc.message)
+			assert.Equal(t, StreamErrorCodeInvalidRequest, evt.Code)
+			assert.False(t, evt.Retryable)
+			assert.Contains(t, rr.Body.String(), `"retryable":false`)
+		})
+	}
 }
 
 // A stream's scope is what the Flow Aggregator authorizes it against, so every way of failing to

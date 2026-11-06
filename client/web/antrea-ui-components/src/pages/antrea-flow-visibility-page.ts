@@ -1336,6 +1336,9 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         if (modeChanged) {
             this._flowAccess = null;
             this._flowAccessLoaded = false;
+            // A default scope belongs to the previous mode's permissions. Wait for the new
+            // verdict before choosing another one; an explicit URL scope remains the host's choice.
+            if (parseScopeParam(this._appliedSearch).kind === 'none') this._setScope('');
         }
         this._refreshStream();
         if (modeChanged) void this._loadFlowAccess();
