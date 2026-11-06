@@ -215,52 +215,6 @@ for that same ServiceAccount (via the TokenRequest API) and presents that —
 the one case where the credential FA sees is not literally the signed-in
 user's own.
 
-### Flow sources
-
-A flow source is any endpoint implementing `FlowStreamService`, configured in
-`flowSources` (the chart adds the Flow Aggregator as the first one when
-`flowAggregator.enabled` is set). Each declares the capabilities it serves,
-which map to the verbs on `flows.observability.antrea.io`:
-
-- `watch` serves live streams (`follow=true`, the default) and requires the
-  `watch` verb in the requested scope.
-- `list` serves finite queries (`follow=false`, with optional `since` and
-  `maxCount`) and requires the `list` verb in the requested scope.
-
-A request may name a source with `source=<name>`. The name is only ever
-matched against the configured names: the backend never treats it as an
-address, because every source receives the user's credential. Without
-`source`, the first configured source with the capability the request needs
-serves it, so a request without `follow` is a live stream from the first
-`watch` source. A request naming an unknown source, or one without the needed
-capability, is refused with a 400 before any connection is made, and the
-backend never serves it from another source: live data is never substituted for
-a finite query. A request naming no source, when no configured source serves
-the requested mode (or none is configured), is answered with 501 and a message
-saying which mode is not served.
-
-The UI in this repository only sends live requests. The finite-query path is
-there for other UIs built on the same components. So that they can offer it only
-where it works, `GET /api/v1/settings` lists the configured sources under
-`features.flowSources`, in the order in which they are the default, each with its
-`name` and `capabilities`:
-
-```json
-"features": {
-  "flowVisibilityEnabled": true,
-  "flowSources": [
-    { "name": "flow-aggregator", "capabilities": ["watch"] },
-    { "name": "flow-history", "capabilities": ["list"] }
-  ]
-}
-```
-
-That endpoint is served without authentication, so the list says nothing about
-where a source is or how it is reached: no address, namespace, CA or server name.
-The list is empty when no source is configured, and `flowVisibilityEnabled` is
-true when it is not. Whether a caller may use a source is still the source's
-decision, per request.
-
 Every request also names a **scope**: either `clusterWide=true` or a single
 `observedNamespace`, never both. The source authorizes the stream against that
 scope with the caller's Kubernetes RBAC on the virtual
@@ -433,6 +387,32 @@ Enabling `FlowStreamService` in the Flow Aggregator means anyone with network
 access to it, and holding a credential FA accepts, can read flow data
 directly (subject to FA's own RBAC check), regardless of what Antrea UI's
 frontend shows or hides.
+
+### Flow sources
+
+`flowSources` configures endpoints implementing `FlowStreamService`; see
+[configuration and examples](getting-started.md#flow-sources). Each source
+must authenticate the forwarded credential and check the required verb on
+`flows.observability.antrea.io` in the requested scope:
+
+- `watch`: live streams (`follow=true`, the default), requiring `watch`.
+- `list`: finite queries (`follow=false`), requiring `list`.
+
+Requests may select a configured source with `source=<name>`, never an
+address; otherwise the first source supporting the requested mode is used.
+With no sources configured, requests return 501. Otherwise, naming an unknown
+source or one without the required capability returns 400; an unnamed request
+with no matching source returns 501. The backend never falls back to another
+source.
+
+`GET /api/v1/settings` exposes source names and capabilities under
+`features.flowSources`, in configuration order. This unauthenticated endpoint
+reveals no connection details. The list describes configured capabilities;
+each source still authorizes every request using the caller's credentials.
+
+This repository's UI uses only the first `watch` source and shows that flow
+visibility is unavailable when none is configured. Finite queries are
+available to hosts using the shared components.
 
 ### Metrics are authorized by Antrea UI itself
 

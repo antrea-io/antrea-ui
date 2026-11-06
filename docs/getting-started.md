@@ -53,31 +53,15 @@ supported settings.
 
 ## Flow visibility
 
-Flow visibility reads flows from one or more flow sources: endpoints implementing
-FlowStreamService, such as the Flow Aggregator (FA). With no flow source
-configured, flow visibility is disabled.
-
-The shorthand `flowAggregator.enabled` configures FA as a source. By default, the
-UI connects to `flow-aggregator.flow-aggregator.svc:14740`; configure
-`flowAggregator.address` and `flowAggregator.namespace` for a different
-deployment. See [flow sources](#flow-sources) for the complete configuration.
-
-For every source, `caConfigMap` names a ConfigMap containing the public CA in
-`ca.crt`. The backend reads it once at startup, in the configured `namespace`,
-and fails to start if it cannot; leaving `caConfigMap` empty uses the system
-trust store. TLS checks the certificate and server name; use `serverName` to
-override the name when connecting through a port-forward. See the
-[chart values](../build/charts/antrea-ui/README.md) for all options and
-[flow permissions](authentication.md#flow-data-is-per-user) for user access
-requirements.
+Flow visibility reads from sources implementing `FlowStreamService`, such as
+the Flow Aggregator (FA). Deploy sources separately; the UI chart configures
+only the client connections.
 
 ### Flow sources
 
-`flowSources` is the complete configuration of flow sources. Each entry has a
-unique `name`, an `address` and the `capabilities` it serves, `watch` (live
-streams) and/or `list` (finite queries). Entries have no defaults, so the Flow
-Aggregator configured as an entry spells out its `address`, `namespace` and
-`caConfigMap`:
+`flowSources` is the complete configuration. Each entry needs a unique `name`,
+an `address` and `capabilities`: `watch` (live streams), `list` (finite queries),
+or both. Entries have no defaults; for example:
 
 ```yaml
 flowAggregator:
@@ -88,38 +72,30 @@ flowSources:
     address: flow-aggregator.flow-aggregator.svc:14740
     namespace: flow-aggregator
     caConfigMap: flow-aggregator-ca
-  - name: flow-history
-    capabilities: [list]
-    address: history.example.test:14740
-    namespace: flow-history
-    caConfigMap: history-ca
 ```
 
-`flowAggregator` is shorthand for the first entry. When it is enabled, the chart
-renders it first, as a `watch` source named `flow-aggregator`, followed by
-`flowSources`, so it stays the default for live requests. The UI chart does not
-deploy any source. With `caConfigMap` set, create that ConfigMap in the
-specified `namespace`; the chart grants the UI read access to it. Without a CA
-ConfigMap, the system trust store is used and no namespace is needed. Set
-`insecureSkipVerify: true` on an entry only for development and testing: any
-server answering at its `address` is then trusted with every viewer's
-credential. A source must satisfy the
+`flowAggregator.enabled=true` remains a supported Helm shorthand. It inserts
+FA as the first `watch` source, before `flowSources`.
+
+With `caConfigMap` set, create that ConfigMap in the source's `namespace`
+with the CA under `ca.crt`. The chart grants read access; the backend loads
+the CA at startup and fails if it cannot. With no CA ConfigMap, it uses the
+system trust store. Keep TLS verification enabled in production:
+`insecureSkipVerify: true` trusts any server at the configured address with every
+viewer's credentials.
+
+This UI uses only the first `watch` source and ignores `list` sources.
+Without a `watch` source, the Flows page reports that visibility is unavailable.
+Finite queries are for other UIs built on the shared components.
+
+See the [chart values](../build/charts/antrea-ui/README.md) for all options and
+[flow sources](authentication.md#flow-sources) for permissions and request
+routing. Sources must satisfy the
 [flow source contract](../pkg/flowpb/README.md#flow-source-contract).
 
-The UI in this repository only offers flows when a source has the `watch`
-capability. Without one, the Flows page shows that flow visibility is not
-available. This UI ignores `list` sources and uses only the first `watch`
-source. Other capabilities are for other UIs built on the same components, which
-learn which sources exist from `features.flowSources` in `GET /api/v1/settings`
-(names and capabilities only). See [flow sources](authentication.md#flow-sources)
-for how requests choose a source.
-
-The Helm chart keeps accepting `flowAggregator`, so upgrading it needs no
-change. The backend itself no longer reads a `flowAggregator` key: a
-hand-written backend configuration that still sets it fails at startup with a
-message pointing to `flowSources`, instead of silently running with no flow
-source. Move such a configuration to a `flowSources` entry with the `watch`
-capability.
+Hand-written backend configurations must replace `flowAggregator` with
+`flowSources`; the old key is rejected at startup. Existing Helm values remain
+supported.
 
 ## Accessing the web UI
 
