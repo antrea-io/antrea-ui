@@ -451,7 +451,7 @@ func TestStreamFlowsInvalidRequest(t *testing.T) {
 		message string
 	}{
 		{name: "invalid flow type", query: "flowTypes=abc&clusterWide=true", message: "flowType"},
-		{name: "maxCount out of range", query: "follow=false&maxCount=10001&clusterWide=true", message: "maxCount must be between"},
+		{name: "maxCount out of range", query: "follow=false&maxCount=1000001&clusterWide=true", message: "maxCount must be between"},
 		{name: "maxCount on a live stream", query: "follow=true&maxCount=1&clusterWide=true", message: "maxCount requires follow=false"},
 		{name: "invalid since", query: "follow=false&since=yesterday&clusterWide=true", message: "since must be an RFC3339 timestamp"},
 		{name: "repeated source", query: "source=a&source=b&clusterWide=true", message: "source must have exactly one non-empty value"},

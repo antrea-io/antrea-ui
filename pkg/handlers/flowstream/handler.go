@@ -41,9 +41,10 @@ const (
 	FlowFilterDirectionTo   FlowFilterDirection = 2
 )
 
-// MaxFiniteSnapshots bounds a finite query (follow=false), matching the browser's bounded flow
-// store.
-const MaxFiniteSnapshots uint32 = 10000
+// MaxFiniteSnapshots bounds the size of a finite query (follow=false), in records. It is a bound
+// on the query, not a match for the browser's flow store, which counts connections: a connection
+// that lasts is reported in many records, and the store keeps one entry per connection.
+const MaxFiniteSnapshots uint32 = 1_000_000
 
 // FlowStreamFilter represents the parsed query parameters for the flow stream endpoint.
 // All specified filters are AND-ed. Within each filter, values are OR-ed.
@@ -79,6 +80,16 @@ func (f *FlowStreamFilter) resultLimit() uint32 {
 		return MaxFiniteSnapshots
 	}
 	return 0
+}
+
+// requestLimit is the max_count sent to the source. A finite query asks for one record more than
+// the limit, so that receiving it proves the result was truncated; a source honoring max_count
+// ends the stream right after it. A live stream sends none.
+func (f *FlowStreamFilter) requestLimit() uint32 {
+	if f.following() {
+		return 0
+	}
+	return f.resultLimit() + 1
 }
 
 // FlowStreamScope is the authorization scope of a stream, distinct from the filters that narrow
@@ -465,6 +476,7 @@ func (h *SSEHandler) StreamFlows(c *gin.Context) {
 	}
 
 	var received uint64
+	truncated := false
 	c.Stream(func(w io.Writer) bool {
 		select {
 		case <-ctx.Done():
@@ -500,9 +512,14 @@ func (h *SSEHandler) StreamFlows(c *gin.Context) {
 				default:
 				}
 				if !filter.following() && ctx.Err() == nil {
-					c.SSEvent("complete", map[string]any{"snapshotCount": received, "maxCount": filter.resultLimit()})
+					c.SSEvent("complete", map[string]any{
+						"snapshotCount": received, "maxCount": filter.resultLimit(), "truncated": truncated,
+					})
 				}
 				return false
+			}
+			if event.Truncated {
+				truncated = true
 			}
 			if event.DroppedCount > 0 {
 				droppedEvt := apisv1.FlowStreamDroppedEvent{DroppedCount: event.DroppedCount}

@@ -162,6 +162,8 @@ const ENDPOINT_HINT = 'These filters all match the same endpoint of a flow: its 
 const SERVICES_UNDER_SOURCE_HINT = 'A Service is always the destination of a flow: not available while the endpoint is the source.';
 const SOURCE_WITH_SERVICES_HINT = 'A Service is always the destination of a flow: Source is not available while a Service is selected.';
 
+const NARROW_QUERY_HINT = 'Narrow the query with filters or a shorter time window.';
+
 const WELL_KNOWN_APP_LABELS = ['app.kubernetes.io/name', 'app.kubernetes.io/instance', 'app', 'k8s-app', 'name'];
 
 /**
@@ -850,6 +852,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
     @state() private _queryState: FlowQueryStateDetail['state'] = 'idle';
     @state() private _snapshotCount = 0;
     @state() private _resultLimit = 0;
+    @state() private _truncated = false;
     private _flowAccessToken = 0;
 
     private get _following(): boolean { return this.flowQuery?.follow ?? true; }
@@ -1186,9 +1189,13 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         if ((changed.has('_nsOpen') || changed.has('_podOpen') || changed.has('_svcOpen'))) {
             this.renderRoot.querySelector<HTMLInputElement>('.multiselect-search')?.focus();
         }
-        if (changed.has('_queryState') || changed.has('_snapshotCount') || changed.has('_resultLimit')) {
+        if (changed.has('_queryState') || changed.has('_snapshotCount') || changed.has('_resultLimit') ||
+            changed.has('_truncated') || (!this._following && changed.has('_evictionWarning'))) {
             this.dispatchEvent(new CustomEvent<FlowQueryStateDetail>(FLOW_QUERY_STATE_EVENT, {
-                detail: { state: this._queryState, snapshotCount: this._snapshotCount, maxCount: this._resultLimit },
+                detail: {
+                    state: this._queryState, snapshotCount: this._snapshotCount, maxCount: this._resultLimit,
+                    truncated: this._truncated, evicted: !this._following && this._evictionWarning,
+                },
                 bubbles: true, composed: true,
             }));
         }
@@ -1250,6 +1257,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
             onCompleted: result => {
                 this._snapshotCount = result.snapshotCount;
                 this._resultLimit = result.maxCount;
+                this._truncated = result.truncated;
                 this._queryState = 'complete';
             },
             onDropped: count => { this._droppedCount = count; },
@@ -1316,6 +1324,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         this._droppedCount = 0;
         this._snapshotCount = 0;
         this._resultLimit = 0;
+        this._truncated = false;
         this._queryState = 'idle';
         this._connected = false;
         this._selectedEdgeKey = null;
@@ -1990,7 +1999,9 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
                     <span>${this._entries.length} connections</span>
                     ${!this._following ? html`<span>${this._snapshotCount} snapshots received</span>` : nothing}
                     ${this._droppedCount > 0 ? html`<span class="warn">${this._droppedCount} flows dropped (buffer overflow)</span>` : nothing}
-                    ${this._evictionWarning ? html`<span class="warn">Store limit reached, oldest entries evicted</span>` : nothing}
+                    ${this._evictionWarning && this._following ? html`<span class="warn">Store limit reached, oldest entries evicted</span>` : nothing}
+                    ${!this._following && this._truncated ? html`<span class="warn">Result truncated at ${this._resultLimit} records, so some connections are missing. ${NARROW_QUERY_HINT}</span>` : nothing}
+                    ${!this._following && this._evictionWarning ? html`<span class="warn">Store limit reached, so some connections are missing or show older totals. ${NARROW_QUERY_HINT}</span>` : nothing}
                 </div>
             </div>
         `;

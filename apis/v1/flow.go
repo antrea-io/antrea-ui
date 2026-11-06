@@ -192,6 +192,9 @@ type Flow struct {
 type FlowStreamEvent struct {
 	Flows        []Flow `json:"flows,omitempty"`
 	DroppedCount uint64 `json:"droppedCount,omitempty"`
+	// Truncated is set internally, never serialized, on the event in which a finite query's
+	// source delivered the record beyond the result limit, which was dropped from Flows.
+	Truncated bool `json:"-"`
 }
 
 // FlowStreamDroppedEvent is the JSON payload for an SSE "dropped" event.

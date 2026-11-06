@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+import { FlowStore } from '../lib/flow-store';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import './antrea-flow-visibility-page';
 import { SCOPE_CHANGE_EVENT, SCOPE_CHOSEN_EVENT } from '../lib/namespace-scope';
@@ -3203,11 +3204,50 @@ describe('flow query state event', () => {
             finish = () => resolve(finiteResponse([flowEventChunk([makeFlow(), makeFlow({ srcIP: '10.0.0.9' })]), FINITE_COMPLETE]));
         }));
         await setQuery(page, { follow: false, since: '2026-03-25T00:00:00.000Z' });
-        expect(seen.at(-1)).toEqual({ state: 'loading', snapshotCount: 0, maxCount: 0 });
+        expect(seen.at(-1)).toEqual({ state: 'loading', snapshotCount: 0, maxCount: 0, truncated: false, evicted: false });
         finish();
         await vi.advanceTimersByTimeAsync(0);
         await page.updateComplete;
-        expect(seen.at(-1)).toEqual({ state: 'complete', snapshotCount: 2, maxCount: 10000 });
+        expect(seen.at(-1)).toEqual({ state: 'complete', snapshotCount: 2, maxCount: 10000, truncated: false, evicted: false });
+    });
+
+    test('reports and warns about a truncated result', async () => {
+        const page = await mount(async () => sseResponse([]));
+        const seen = collect(page);
+        vi.mocked(fetch).mockImplementation(async () => finiteResponse([
+            flowEventChunk([makeFlow()]),
+            'event: complete\ndata: {"snapshotCount":1,"maxCount":1,"truncated":true}\n\n',
+        ]));
+        await setQuery(page, { follow: false, maxCount: 1 });
+        expect(seen.at(-1)).toMatchObject({ state: 'complete', maxCount: 1, truncated: true, evicted: false });
+        expect(page.shadowRoot!.textContent).toContain('Result truncated at 1 records');
+        expect(page.shadowRoot!.textContent).toContain('Narrow the query with filters or a shorter time window');
+    });
+
+    test('reports and warns when the store evicted connections during a finite query', async () => {
+        const page = await mount(async () => sseResponse([]));
+        const seen = collect(page);
+        (page as unknown as { _store: FlowStore })._store = new FlowStore(1);
+        vi.mocked(fetch).mockImplementation(async () => finiteResponse([
+            flowEventChunk([makeFlow(), makeFlow({ srcIP: '10.0.0.9' })]), FINITE_COMPLETE,
+        ]));
+        await setQuery(page, { follow: false });
+        expect(seen.at(-1)).toMatchObject({ state: 'complete', truncated: false, evicted: true });
+        expect(page.shadowRoot!.textContent).toContain('some connections are missing or show older totals');
+        expect(page.shadowRoot!.textContent).not.toContain('oldest entries evicted');
+    });
+
+    test('a live stream keeps its own eviction warning and reports no eviction', async () => {
+        const page = await mount(async () => sseResponse([]));
+        const seen = collect(page);
+        (page as unknown as { _store: FlowStore })._store = new FlowStore(1);
+        vi.mocked(fetch).mockImplementation(async () =>
+            sseResponse([flowEventChunk([makeFlow(), makeFlow({ srcIP: '10.0.0.9' })])]));
+        await setQuery(page, { follow: true, requestId: 1 });
+        await vi.advanceTimersByTimeAsync(1000);
+        await page.updateComplete;
+        expect(page.shadowRoot!.textContent).toContain('Store limit reached, oldest entries evicted');
+        expect(seen.some(d => d.evicted)).toBe(false);
     });
 
     test('reports a failed query as an error', async () => {
@@ -3254,6 +3294,6 @@ describe('flow query state event', () => {
         const seen = collect(page);
         vi.mocked(fetch).mockImplementation(async () => sseResponse([]));
         await setQuery(page, undefined);
-        expect(seen.at(-1)).toEqual({ state: 'idle', snapshotCount: 0, maxCount: 0 });
+        expect(seen.at(-1)).toEqual({ state: 'idle', snapshotCount: 0, maxCount: 0, truncated: false, evicted: false });
     });
 });

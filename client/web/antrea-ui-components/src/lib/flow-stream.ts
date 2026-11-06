@@ -61,17 +61,24 @@ export type FlowStreamFilter = FlowPeerFilter & FlowStreamScope & FlowQueryOptio
 /** What a host asks the flow page to show. `follow: true` is a live stream; `follow: false` is a
  * finite query that ends with a completion event. */
 export interface FlowQuery extends FlowQueryOptions { follow: boolean; }
-export interface FlowQueryCompletion { snapshotCount: number; maxCount: number; }
+/** The backend's completion event. `truncated` is true when the source had more records than
+ * `maxCount`: the result is incomplete, and which records made it in is arbitrary. */
+export interface FlowQueryCompletion { snapshotCount: number; maxCount: number; truncated: boolean; }
 
 /** Fired by the flow page whenever the state of its query changes, so that a host can disable its
- * own controls while a query runs and report a truncated result. `maxCount` is the limit
- * requested from the source (the backend's resolved default when the query sets none), not one
- * the source applied; known once the query completes, until then it is 0. */
+ * own controls while a query runs and report an incomplete result. `maxCount` is the limit of the
+ * query (the backend's default when the query sets none; the source is asked for one record more
+ * to detect truncation), known once the query completes, until then it is 0. `truncated` is true
+ * when the source had more records than `maxCount`. `evicted` is true when the page's store
+ * evicted connections during the query, so some are missing or may show older totals. Either
+ * way the result is incomplete, and narrowing it with filters or a shorter time window helps. */
 export const FLOW_QUERY_STATE_EVENT = 'antrea-flow-query-state';
 export interface FlowQueryStateDetail {
     state: 'idle' | 'loading' | 'complete' | 'error';
     snapshotCount: number;
     maxCount: number;
+    truncated: boolean;
+    evicted: boolean;
 }
 
 export function streamFilterKey(f: FlowStreamFilter): string {
@@ -439,7 +446,9 @@ export class FlowStreamClient {
             } else if (event.type === 'complete' && this.filter.follow === false) {
                 const result = JSON.parse(event.data) as FlowQueryCompletion;
                 if (Number.isInteger(result.snapshotCount) && result.snapshotCount >= 0 &&
-                    Number.isInteger(result.maxCount) && result.maxCount > 0) this.completion = result;
+                    Number.isInteger(result.maxCount) && result.maxCount > 0) {
+                    this.completion = { snapshotCount: result.snapshotCount, maxCount: result.maxCount, truncated: result.truncated === true };
+                }
             } else if (event.type === 'error') {
                 this.queryFailed = true;
                 const payload = JSON.parse(event.data) as FlowStreamErrorPayload;

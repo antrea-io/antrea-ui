@@ -205,9 +205,9 @@ The flow visibility stream (`GET /api/v1/flows/stream`) is authenticated and
 authorized per caller: for most login modes, the backend presents the
 signed-in user's own credential (their bearer token, or their client
 certificate on the connection) to a flow source's FlowStreamService, which
-rejects a call that presents neither. The Flow Aggregator (FA) is the flow
-source this UI uses; see [Flow sources](#flow-sources) for the others the
-backend can be configured with. The one exception is the
+rejects a call that presents neither. The UI in this repository reads from the
+first source with the `watch` capability, normally the Flow Aggregator (FA); see
+[Flow sources](#flow-sources). The one exception is the
 admin-password login mode: it normally reaches the kube-apiserver by
 impersonating the `antrea-ui-admin` ServiceAccount, but FA accepts no
 impersonation header, so the backend instead mints a short-lived, real token
@@ -404,6 +404,14 @@ With no sources configured, requests return 501. Otherwise, naming an unknown
 source or one without the required capability returns 400; an unnamed request
 with no matching source returns 501. The backend never falls back to another
 source.
+
+A finite query returns at most `maxCount` records, 1,000,000 by default, which is
+also the maximum. The backend asks the source for one record more: if it arrives, the
+`complete` event reports `truncated: true`, and which records made it in is
+arbitrary, since a source need not return them newest first. A source that ends
+the stream early at a cap of its own, instead of rejecting a larger `max_count`,
+makes a truncated result look complete; see the
+[flow source contract](../pkg/flowpb/README.md#flow-source-contract).
 
 `GET /api/v1/settings` exposes source names and capabilities under
 `features.flowSources`, in configuration order. This unauthenticated endpoint

@@ -120,11 +120,19 @@ func (s *RoutedSubscriber) Subscribe(ctx context.Context, scope *FlowStreamScope
 			return nil
 		}, func(event apisv1.FlowStreamEvent) error {
 			if !filter.following() {
+				// The source was asked for one record more than the limit. That record proves
+				// the result is truncated, and is dropped, possibly from the same batch as the
+				// last records within the limit. Anything beyond it breaks max_count.
+				limit := uint64(filter.resultLimit())
 				batchCount := uint64(len(event.Flows))
-				if batchCount > uint64(filter.resultLimit())-count {
+				if batchCount > limit+1-count {
 					return internalStreamError(fmt.Errorf("flow source %q exceeded the requested result limit", source.Name))
 				}
 				count += batchCount
+				if count > limit {
+					event.Flows = event.Flows[:batchCount-1]
+					event.Truncated = true
+				}
 			}
 			select {
 			case flows <- event:

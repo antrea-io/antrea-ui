@@ -53,12 +53,13 @@ func TestFiniteRequestOptions(t *testing.T) {
 	assert.Equal(t, "flow-history", f.Source)
 	r := filterToGetFlowsRequest(&FlowStreamScope{ObservedNamespace: "team-a"}, f)
 	require.False(t, r.Follow)
-	require.EqualValues(t, 123, r.MaxCount)
+	// One record more than the limit, to tell a truncated result from one that fits.
+	require.EqualValues(t, 124, r.MaxCount)
 	require.Equal(t, "2026-10-23T12:30:00Z", r.Since.AsTime().Format(time.RFC3339))
 	require.Equal(t, []string{"team-a"}, r.Namespaces)
-	require.Equal(t, MaxFiniteSnapshots, filterToGetFlowsRequest(nil, finiteFilter()).MaxCount)
+	require.Equal(t, MaxFiniteSnapshots+1, filterToGetFlowsRequest(nil, finiteFilter()).MaxCount)
 	for _, query := range []string{
-		"follow=bad", "since=yesterday", "maxCount=10001", "maxCount=0", "follow=", "since=", "maxCount=",
+		"follow=bad", "since=yesterday", "maxCount=1000001", "maxCount=0", "follow=", "since=", "maxCount=",
 		"follow=true&follow=false", "maxCount=10", "follow=true&maxCount=10", "since=0000-01-01T00:00:00Z", "source=", "source=a&source=b",
 	} {
 		t.Run(query, func(t *testing.T) {
@@ -249,6 +250,31 @@ func TestSSERejectsUnsupportedAndUnavailableSources(t *testing.T) {
 	}
 }
 
+func TestSSECompletionReportsTruncation(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		flows         int
+		wantTruncated string
+		wantCount     string
+	}{
+		{name: "within the limit", flows: 2, wantTruncated: `"truncated":false`, wantCount: `"snapshotCount":2`},
+		{name: "extra record received", flows: 3, wantTruncated: `"truncated":true`, wantCount: `"snapshotCount":2`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				source := scriptedEvents([]apisv1.FlowStreamEvent{{Flows: make([]apisv1.Flow, tc.flows)}}, nil)
+				router := &RoutedSubscriber{Sources: []FlowSource{{Name: "src", List: true, Subscriber: source}}}
+				rr := newCloseNotifyRecorder()
+				newTestRouter(NewSSEHandler(testr.New(t), router)).ServeHTTP(rr, httptest.NewRequest("GET", "/api/v1/flows/stream?clusterWide=true&follow=false&maxCount=2", nil))
+				require.Contains(t, rr.Body.String(), "event:complete")
+				require.Contains(t, rr.Body.String(), tc.wantCount)
+				require.Contains(t, rr.Body.String(), `"maxCount":2`)
+				require.Contains(t, rr.Body.String(), tc.wantTruncated)
+			})
+		})
+	}
+}
+
 func TestSSEAnswers501WhenNoSourceServesTheMode(t *testing.T) {
 	router := &RoutedSubscriber{Sources: []FlowSource{{Name: "fa", Watch: true, Subscriber: scriptedEvents(nil, nil)}}}
 	rr := newCloseNotifyRecorder()
@@ -263,22 +289,31 @@ func TestSSEAnswers501WhenNoSourceServesTheMode(t *testing.T) {
 
 func TestFiniteResultLimitAcrossBatches(t *testing.T) {
 	for _, tc := range []struct {
-		name        string
-		live        bool
-		secondBatch int
-		wantCount   int
-		wantError   bool
+		name          string
+		live          bool
+		secondBatch   int
+		thirdBatch    int
+		wantCount     int
+		wantTruncated bool
+		wantError     bool
 	}{
 		{name: "exact limit", secondBatch: 1, wantCount: 3},
-		{name: "over limit batch rejected", secondBatch: 2, wantCount: 2, wantError: true},
+		{name: "the extra record in the last batch truncates", secondBatch: 2, wantCount: 3, wantTruncated: true},
+		{name: "the extra record alone truncates", secondBatch: 1, thirdBatch: 1, wantCount: 3, wantTruncated: true},
+		{name: "more than one extra record is rejected", secondBatch: 3, wantCount: 2, wantError: true},
+		{name: "a record after the extra one is rejected", secondBatch: 2, thirdBatch: 1, wantCount: 3, wantTruncated: true, wantError: true},
 		{name: "live stream is not capped", live: true, secondBatch: 2, wantCount: 4},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				source := scriptedEvents([]apisv1.FlowStreamEvent{
+				batches := []apisv1.FlowStreamEvent{
 					{Flows: make([]apisv1.Flow, 2)},
 					{Flows: make([]apisv1.Flow, tc.secondBatch)},
-				}, nil)
+				}
+				if tc.thirdBatch > 0 {
+					batches = append(batches, apisv1.FlowStreamEvent{Flows: make([]apisv1.Flow, tc.thirdBatch)})
+				}
+				source := scriptedEvents(batches, nil)
 				router := &RoutedSubscriber{Sources: []FlowSource{{Name: "src", Watch: true, List: true, Subscriber: source}}}
 				filter := finiteFilter()
 				filter.MaxCount = 3
@@ -286,15 +321,21 @@ func TestFiniteResultLimitAcrossBatches(t *testing.T) {
 					filter.Follow = nil
 				}
 				received := 0
+				truncated := false
 				err := relay(t.Context(), router, &FlowStreamScope{ClusterWide: true}, filter,
 					func() error { return nil },
-					func(e apisv1.FlowStreamEvent) error { received += len(e.Flows); return nil })
+					func(e apisv1.FlowStreamEvent) error {
+						received += len(e.Flows)
+						truncated = truncated || e.Truncated
+						return nil
+					})
 				if tc.wantError {
 					require.ErrorContains(t, err, "exceeded the requested result limit")
 				} else {
 					require.NoError(t, err)
 				}
 				require.Equal(t, tc.wantCount, received)
+				require.Equal(t, tc.wantTruncated, truncated)
 			})
 		})
 	}

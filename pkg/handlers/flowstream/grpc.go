@@ -562,7 +562,7 @@ func filterToGetFlowsRequest(scope *FlowStreamScope, filter *FlowStreamFilter) *
 		// is a live stream, authorized by watch. A live stream on a source whose buffer is
 		// empty must not close on the first empty read, which is why live is the default.
 		Follow:   filter.following(),
-		MaxCount: filter.resultLimit(),
+		MaxCount: filter.requestLimit(),
 	}
 	if !filter.Since.IsZero() {
 		req.Since = timestamppb.New(filter.Since)

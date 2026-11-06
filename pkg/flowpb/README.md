@@ -60,10 +60,19 @@ must:
 - Send a non-empty `stream_epoch`, stable for the server process, in the first
   response of every stream, even when no record matches.
 - Honor `max_count` and cancellation, and finish a finite query with a
-  successful EOF. The UI caps requests at 10,000 snapshots and has no resume
-  logic. `max_count` follows the order in which the source examines records, as
+  successful EOF right after the last record. The backend caps a query at
+  1,000,000 records and has no resume logic. It asks the source for one record
+  more than the limit: receiving that record proves the result was truncated.
+  `max_count` follows the order in which the source examines records, as
   `service.proto` says, so a source cannot be assumed to return the newest
-  records; any such promise belongs to the UI using that source.
+  records, and which records make it into a truncated result is arbitrary; any
+  such promise belongs to the UI using that source.
+- A source may cap `max_count`, but must reject a larger value (for example
+  with `InvalidArgument`) rather than end the stream early. `service.proto`
+  ends a finite stream only when every record is accounted for or `max_count`
+  is reached, and an early end would make a truncated result look complete.
+  The backend asks for up to 1,000,001 records, so a source with a lower cap
+  must reject such a request, not cut it short.
 - Return errors for failed or interrupted queries. `service.proto` gives no
   meaning to `Unavailable` or `FailedPrecondition`; this backend classifies
   them as retryable and reports them as `flow_source_unavailable`. It never
@@ -71,6 +80,8 @@ must:
 
 The backend sends an SSE completion event only after the successful completion
 of a finite query; EOF at the browser without that event means the query was
-interrupted. The current protocol has no aggregation granularity or exact
-truncation indicator. See [Flow sources](../../docs/getting-started.md#flow-sources)
+interrupted. That event carries `truncated`: true when the source delivered the
+record beyond the limit, which the backend drops. A source that sends more than
+one record beyond the limit is failed. The current protocol has no aggregation
+granularity. See [Flow sources](../../docs/getting-started.md#flow-sources)
 for configuration.

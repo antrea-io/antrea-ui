@@ -725,6 +725,17 @@ describe('FlowStreamClient', () => {
         expect(url).toContain('namespaces=default');
         client.stop();
     });
+    test('a completion event reports truncation', async () => {
+        stubFetch(async () => closingSseResponse([
+            'event: complete\ndata: {"snapshotCount":2,"maxCount":2,"truncated":true}\n\n',
+        ]));
+        const cb = makeCallbacks();
+        cb.onCompleted = vi.fn();
+        const client = new FlowStreamClient({ clusterWide: true, follow: false, maxCount: 2 }, cb, 10_000);
+        client.start();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(cb.onCompleted).toHaveBeenCalledWith({ snapshotCount: 2, maxCount: 2, truncated: true });
+    });
     test('finite completion flushes the final batch and never reconnects', async () => {
         stubFetch(async () => closingSseResponse([
             'event: flow\ndata: {"flows":[{"id":"last"}]}\n\n',
@@ -735,7 +746,7 @@ describe('FlowStreamClient', () => {
         const client = new FlowStreamClient({ clusterWide: true, source: 'flow-history', follow: false, since: '2026-10-23T00:00:00Z', maxCount: 10000 }, cb, 10_000);
         client.start();
         await vi.advanceTimersByTimeAsync(0);
-        expect(cb.onCompleted).toHaveBeenCalledWith({ snapshotCount: 1, maxCount: 10000 });
+        expect(cb.onCompleted).toHaveBeenCalledWith({ snapshotCount: 1, maxCount: 10000, truncated: false });
         const params = new URL(fetchMock.mock.calls[0][0], 'http://test').searchParams;
         expect(params.get('source')).toBe('flow-history');
         expect(params.get('follow')).toBe('false');
