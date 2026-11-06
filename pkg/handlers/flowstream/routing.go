@@ -129,7 +129,8 @@ func (s *RoutedSubscriber) Subscribe(ctx context.Context, scope *FlowStreamScope
 					return internalStreamError(fmt.Errorf("flow source %q exceeded the requested result limit", source.Name))
 				}
 				count += batchCount
-				if count > limit {
+				// An event that only reports dropped_count has no record to trim.
+				if batchCount > 0 && count > limit {
 					event.Flows = event.Flows[:batchCount-1]
 					event.Truncated = true
 				}

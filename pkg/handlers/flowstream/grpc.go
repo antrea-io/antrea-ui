@@ -75,8 +75,11 @@ const (
 	// finds a grant has been revoked.
 	StreamErrorCodeForbidden = "forbidden"
 	// StreamErrorCodeInvalidRequest means the flow source rejected the request itself: an
-	// unset or over-long scope, or an empty Namespace name. A client bug, not a permission
-	// problem. Not retryable: the same request will be rejected again.
+	// unset or over-long scope, an empty Namespace name, or a max_count above the source's own
+	// cap, which the flow source contract has a source reject rather than cut short. Usually a
+	// client bug, but a cap below what this backend asks for makes every finite query without a
+	// maxCount fail this way. Not a permission problem. Not retryable: the same request will be
+	// rejected again.
 	StreamErrorCodeInvalidRequest = "invalid_request"
 	// StreamErrorCodeFlowAggregatorTooOld means the flow source predates per-user flow
 	// authorization, so it would ignore the stream's scope and stream every flow it has,
@@ -452,8 +455,10 @@ func (h *GRPCFlowStreamSubscriber) forwardResp(ctx context.Context, resp *flowpb
 //     mid-stream by FA's periodic revalidation when a grant is revoked. Note the asymmetry
 //     upstream documents: a stream open fails closed, while revalidation fails open, so a revoked
 //     grant ends a running stream on the next revalidation interval rather than immediately.
-//   - InvalidArgument: FA rejected the request itself. A client bug; parseFlowStreamScope's local
-//     400s should make it unreachable, but it is classified anyway so it surfaces as a bug rather
+//   - InvalidArgument: the source rejected the request itself. Usually a client bug, which
+//     parseFlowStreamScope's local 400s should make unreachable, but they do not check max_count
+//     against a source's cap: a source rejects a max_count above its own cap with this code, as
+//     the flow source contract requires. It is classified so it surfaces as an error rather
 //     than a retry storm.
 //   - ResourceExhausted: FA is at capacity (its stream limiter or its token-auth semaphore).
 //     Retryable - except for the one ResourceExhausted grpc-go raises locally, see

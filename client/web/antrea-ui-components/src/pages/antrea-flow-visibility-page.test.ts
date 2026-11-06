@@ -3204,11 +3204,11 @@ describe('flow query state event', () => {
             finish = () => resolve(finiteResponse([flowEventChunk([makeFlow(), makeFlow({ srcIP: '10.0.0.9' })]), FINITE_COMPLETE]));
         }));
         await setQuery(page, { follow: false, since: '2026-03-25T00:00:00.000Z' });
-        expect(seen.at(-1)).toEqual({ state: 'loading', snapshotCount: 0, maxCount: 0, truncated: false, evicted: false });
+        expect(seen.at(-1)).toEqual({ state: 'loading', snapshotCount: 0, maxCount: 0, truncated: false, evicted: false, droppedCount: 0 });
         finish();
         await vi.advanceTimersByTimeAsync(0);
         await page.updateComplete;
-        expect(seen.at(-1)).toEqual({ state: 'complete', snapshotCount: 2, maxCount: 10000, truncated: false, evicted: false });
+        expect(seen.at(-1)).toEqual({ state: 'complete', snapshotCount: 2, maxCount: 10000, truncated: false, evicted: false, droppedCount: 0 });
     });
 
     test('reports and warns about a truncated result', async () => {
@@ -3221,7 +3221,20 @@ describe('flow query state event', () => {
         await setQuery(page, { follow: false, maxCount: 1 });
         expect(seen.at(-1)).toMatchObject({ state: 'complete', maxCount: 1, truncated: true, evicted: false });
         expect(page.shadowRoot!.textContent).toContain('Result truncated at 1 records');
+        expect(page.shadowRoot!.textContent).toContain('some connections may be missing or show older totals');
         expect(page.shadowRoot!.textContent).toContain('Narrow the query with filters or a shorter time window');
+    });
+
+    test('reports the records a source dropped during a finite query', async () => {
+        const page = await mount(async () => sseResponse([]));
+        const seen = collect(page);
+        vi.mocked(fetch).mockImplementation(async () => finiteResponse([
+            flowEventChunk([makeFlow()]),
+            'event: dropped\ndata: {"droppedCount":5}\n\n',
+            FINITE_COMPLETE,
+        ]));
+        await setQuery(page, { follow: false });
+        expect(seen.at(-1)).toMatchObject({ state: 'complete', truncated: false, evicted: false, droppedCount: 5 });
     });
 
     test('reports and warns when the store evicted connections during a finite query', async () => {
@@ -3294,6 +3307,6 @@ describe('flow query state event', () => {
         const seen = collect(page);
         vi.mocked(fetch).mockImplementation(async () => sseResponse([]));
         await setQuery(page, undefined);
-        expect(seen.at(-1)).toEqual({ state: 'idle', snapshotCount: 0, maxCount: 0, truncated: false, evicted: false });
+        expect(seen.at(-1)).toEqual({ state: 'idle', snapshotCount: 0, maxCount: 0, truncated: false, evicted: false, droppedCount: 0 });
     });
 });

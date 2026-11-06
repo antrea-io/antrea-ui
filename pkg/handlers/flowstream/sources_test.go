@@ -289,10 +289,12 @@ func TestSSEAnswers501WhenNoSourceServesTheMode(t *testing.T) {
 
 func TestFiniteResultLimitAcrossBatches(t *testing.T) {
 	for _, tc := range []struct {
-		name          string
-		live          bool
-		secondBatch   int
-		thirdBatch    int
+		name        string
+		live        bool
+		secondBatch int
+		thirdBatch  int
+		// droppedOnly adds an event that only reports dropped_count after the others.
+		droppedOnly   bool
 		wantCount     int
 		wantTruncated bool
 		wantError     bool
@@ -300,6 +302,8 @@ func TestFiniteResultLimitAcrossBatches(t *testing.T) {
 		{name: "exact limit", secondBatch: 1, wantCount: 3},
 		{name: "the extra record in the last batch truncates", secondBatch: 2, wantCount: 3, wantTruncated: true},
 		{name: "the extra record alone truncates", secondBatch: 1, thirdBatch: 1, wantCount: 3, wantTruncated: true},
+		{name: "a dropped-count-only event after the extra record", secondBatch: 2, droppedOnly: true, wantCount: 3, wantTruncated: true},
+		{name: "a dropped-count-only event after records within the limit", secondBatch: 1, droppedOnly: true, wantCount: 3},
 		{name: "more than one extra record is rejected", secondBatch: 3, wantCount: 2, wantError: true},
 		{name: "a record after the extra one is rejected", secondBatch: 2, thirdBatch: 1, wantCount: 3, wantTruncated: true, wantError: true},
 		{name: "live stream is not capped", live: true, secondBatch: 2, wantCount: 4},
@@ -312,6 +316,9 @@ func TestFiniteResultLimitAcrossBatches(t *testing.T) {
 				}
 				if tc.thirdBatch > 0 {
 					batches = append(batches, apisv1.FlowStreamEvent{Flows: make([]apisv1.Flow, tc.thirdBatch)})
+				}
+				if tc.droppedOnly {
+					batches = append(batches, apisv1.FlowStreamEvent{DroppedCount: 5})
 				}
 				source := scriptedEvents(batches, nil)
 				router := &RoutedSubscriber{Sources: []FlowSource{{Name: "src", Watch: true, List: true, Subscriber: source}}}

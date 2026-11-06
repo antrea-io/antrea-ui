@@ -1190,11 +1190,13 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
             this.renderRoot.querySelector<HTMLInputElement>('.multiselect-search')?.focus();
         }
         if (changed.has('_queryState') || changed.has('_snapshotCount') || changed.has('_resultLimit') ||
-            changed.has('_truncated') || (!this._following && changed.has('_evictionWarning'))) {
+            changed.has('_truncated') ||
+            (!this._following && (changed.has('_evictionWarning') || changed.has('_droppedCount')))) {
             this.dispatchEvent(new CustomEvent<FlowQueryStateDetail>(FLOW_QUERY_STATE_EVENT, {
                 detail: {
                     state: this._queryState, snapshotCount: this._snapshotCount, maxCount: this._resultLimit,
                     truncated: this._truncated, evicted: !this._following && this._evictionWarning,
+                    droppedCount: this._following ? 0 : this._droppedCount,
                 },
                 bubbles: true, composed: true,
             }));
@@ -2000,7 +2002,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
                     ${!this._following ? html`<span>${this._snapshotCount} snapshots received</span>` : nothing}
                     ${this._droppedCount > 0 ? html`<span class="warn">${this._droppedCount} flows dropped (buffer overflow)</span>` : nothing}
                     ${this._evictionWarning && this._following ? html`<span class="warn">Store limit reached, oldest entries evicted</span>` : nothing}
-                    ${!this._following && this._truncated ? html`<span class="warn">Result truncated at ${this._resultLimit} records, so some connections are missing. ${NARROW_QUERY_HINT}</span>` : nothing}
+                    ${!this._following && this._truncated ? html`<span class="warn">Result truncated at ${this._resultLimit} records, so some connections may be missing or show older totals. ${NARROW_QUERY_HINT}</span>` : nothing}
                     ${!this._following && this._evictionWarning ? html`<span class="warn">Store limit reached, so some connections are missing or show older totals. ${NARROW_QUERY_HINT}</span>` : nothing}
                 </div>
             </div>
