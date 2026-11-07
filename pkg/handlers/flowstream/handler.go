@@ -93,12 +93,12 @@ func (f *FlowStreamFilter) requestLimit() uint32 {
 }
 
 // FlowStreamScope is the authorization scope of a stream, distinct from the filters that narrow
-// it: the Flow Aggregator checks RBAC against this and resolves each endpoint's disclosure tier
+// it: the flow source checks RBAC against this and resolves each endpoint's disclosure tier
 // relative to it. Exactly one of ObservedNamespace and ClusterWide must be set.
 //
-// Scalar, though the protobuf field is repeated: the Flow Aggregator names one Namespace per
-// stream at most (maxRequestedNamespaces), and a cap it set to match this UI's single-select is
-// not worth carrying a slice through every layer for. filterToGetFlowsRequest builds the
+// Scalar, though the protobuf field is repeated: a flow source such as the Flow Aggregator names
+// one Namespace per stream at most (maxRequestedNamespaces), and a cap it set to match this UI's
+// single-select is not worth carrying a slice through every layer for. filterToGetFlowsRequest builds the
 // one-element slice.
 type FlowStreamScope struct {
 	ObservedNamespace string
@@ -142,8 +142,8 @@ func streamErrorEvent(streamErr error) apisv1.FlowStreamErrorEvent {
 //
 // Deliberately never 401, even for StreamErrorCodeUnauthenticated: a 401 from any antrea-ui
 // endpoint means "your antrea-ui session is over, log in again", and the frontend acts on it by
-// doing exactly that. A credential the Flow Aggregator rejects says nothing about the antrea-ui
-// session - FA is a different server, trusting a different CA and potentially a different audience
+// doing exactly that. A credential a flow source rejects says nothing about the antrea-ui
+// session - the source is a different server, trusting a different CA and potentially a different audience
 // than the kube-apiserver (see classifyStreamErr for the full reasoning, and
 // TestSubscribeDoesNotInvalidateSessionOnUnauthenticated for the backend half of it). Returning a
 // 401 here would log the user out of every page in the UI because flow visibility alone could not
@@ -166,7 +166,7 @@ func statusForStreamErr(err error) int {
 			// 503 is the status that says so.
 			return http.StatusServiceUnavailable
 		case StreamErrorCodeForbidden:
-			// The Flow Aggregator authenticated the credential but refused the stream: a
+			// The flow source authenticated the credential but refused the stream: a
 			// real 403, the same as any other antrea-ui endpoint's RBAC denial, and the one
 			// status FlowStreamClient checks for to render the "missing flows grant" panel
 			// instead of a generic error.
@@ -181,8 +181,8 @@ func statusForStreamErr(err error) int {
 var errUnauthenticatedStream = errors.New("flow stream request carries no resolved identity")
 
 // errInitialResponseTimeout means Subscribe neither confirmed the stream was live nor reported a
-// failure within initialResponseTimeout: the Flow Aggregator accepted the call and then never
-// responded. Retryable, since nothing about the request itself is at fault: a hung Flow Aggregator
+// failure within initialResponseTimeout: the flow source accepted the call and then never
+// responded. Retryable, since nothing about the request itself is at fault: a hung flow source
 // is not expected to hang the same way on a fresh attempt. The other cause, a Flow Aggregator too
 // old to send anything before a matching flow, cannot be told apart from a hang here. Retrying it
 // is harmless: nothing is forwarded, and an attempt during which a matching flow arrives fails
@@ -191,7 +191,7 @@ var errInitialResponseTimeout = retryableInternalStreamError(errors.New("timed o
 
 // SSEHandler handles the SSE endpoint for flow streaming.
 //
-// This endpoint is authenticated here and authorized entirely by the Flow Aggregator. The
+// This endpoint is authenticated here and authorized entirely by the flow source. The
 // subscriber presents the caller's own credential (a bearer token or client cert; see grpc.go's
 // resolveCall), and FlowStreamService checks Kubernetes RBAC against a virtual "flows" resource
 // in the scope the request names, then resolves each endpoint of each record to the disclosure
@@ -199,7 +199,7 @@ var errInitialResponseTimeout = retryableInternalStreamError(errors.New("timed o
 //
 // antrea-ui performs no redaction of its own and must not: doing so would need antrea-ui's own
 // ServiceAccount to hold unredacted cluster-wide flow access, making it a privileged component
-// and duplicating the Flow Aggregator's tier logic. All this handler does with the scope is parse
+// and duplicating the flow source's tier logic. All this handler does with the scope is parse
 // it and validate it locally - see parseFlowStreamScope - so a request that cannot be authorized
 // is refused without a connection.
 type SSEHandler struct {
@@ -318,7 +318,7 @@ func parseFlowStreamFilter(c *gin.Context) (*FlowStreamFilter, error) {
 
 // parseFlowStreamScope reads the stream's authorization scope from the query string.
 //
-// Every rejection here is one the Flow Aggregator would also make, with INVALID_ARGUMENT, but
+// Every rejection here is one a flow source would also make, with INVALID_ARGUMENT, but
 // answering locally gives a message that names the query parameter at fault and costs no
 // connection to a server that was only going to refuse. A comma-separated list (or a repeated
 // parameter) is rejected rather than truncated to its first element, so a client can never come
@@ -385,7 +385,7 @@ func (h *SSEHandler) StreamFlows(c *gin.Context) {
 	// Recv (see startStream), not partway through an established stream. Waiting for either errCh
 	// or readyCh (see Subscribe) lets a real failure reach the client as an HTTP status instead of
 	// prose inside a 200 body, and lets a real success commit to the 200 as soon as it is known
-	// rather than guessed - the timeout below is a fallback for a Flow Aggregator that accepts the
+	// rather than guessed - the timeout below is a fallback for a flow source that accepts the
 	// call and then never responds, not the common path.
 	select {
 	case streamErr, ok := <-errCh:

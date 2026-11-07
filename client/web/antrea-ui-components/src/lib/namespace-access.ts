@@ -20,7 +20,7 @@ import { apiFetchJSON, APIError } from './api.js';
  * What a Namespace picker offers: whether the user holds the cluster scope, and the namespaces to
  * choose from. Derived from the cluster-scoped access summary, which knows nothing about any
  * page: the resources and verbs the verdict is about are the page's own, given to
- * namespaceAccess() as a callback (flowAccess() asks about watch on flows).
+ * namespaceAccess() as a callback (flowAccess() asks about watch on flows, or list for a finite query).
  *
  * A rendering hint and never an authorization decision: the API decides what the user gets.
  */

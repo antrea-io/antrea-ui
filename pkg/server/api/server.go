@@ -170,12 +170,12 @@ func (s *Server) AddFlowStreamRoutes(r *gin.RouterGroup) {
 		flows.GET("/stream", s.flowStreamDisabled)
 		return
 	}
-	// No antrea-ui-side authorization gate: the Flow Aggregator's FlowStreamService authorizes
+	// No antrea-ui-side authorization gate: the flow source's FlowStreamService authorizes
 	// each stream with Kubernetes RBAC against the scope the request names, and redacts each
 	// endpoint to the tier the caller is entitled to. An admin-only gate here (the removed
 	// requireFlowVisibility) would make every per-Namespace grant unreachable - a Namespace
-	// administrator holding flow access in their own Namespace would be refused before the Flow
-	// Aggregator ever saw the request.
+	// administrator holding flow access in their own Namespace would be refused before the flow
+	// source ever saw the request.
 	flows.GET("/stream", s.flowStreamSSEHandler.StreamFlows)
 }
 

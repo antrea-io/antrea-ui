@@ -1944,8 +1944,14 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
     }
 
     private _renderFilters() {
-        const statusColor = this._connected || this._queryState === 'complete' ? 'var(--antrea-color-success, #60b515)'
-            : this._following && this._reconnecting ? 'var(--antrea-color-warning, #f5a623)' : 'var(--antrea-color-danger, #f54f47)';
+        const success = 'var(--antrea-color-success, #60b515)';
+        const warning = 'var(--antrea-color-warning, #f5a623)';
+        const danger = 'var(--antrea-color-danger, #f54f47)';
+        // A finite query's dot follows the query state, like its text: _connected only says the
+        // response has started, while the query is still loading.
+        const statusColor = this._following
+            ? (this._connected ? success : this._reconnecting ? warning : danger)
+            : ({ idle: warning, loading: warning, complete: success, error: danger }[this._queryState]);
         const statusText = this._following
             ? (this._connected ? 'Connected' : this._paused ? 'Paused' : this._reconnecting ? 'Reconnecting' : 'Disconnected')
             : ({ idle: 'Select a scope', loading: 'Loading', complete: 'Query complete', error: 'Query failed' }[this._queryState]);

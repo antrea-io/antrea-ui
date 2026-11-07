@@ -3026,6 +3026,16 @@ describe('flowQuery', () => {
         expect(text).not.toContain('Clear');
     });
 
+    test('a finite query colors its status dot by the query state, not by the connection', async () => {
+        const dot = (page: AntreaFlowVisibilityPage) => page.shadowRoot!.querySelector('.status-dot')!.getAttribute('style');
+        const running = await mount(vi.fn(async () => sseResponse([])), { flowQuery: { follow: false } });
+        expect(running.shadowRoot!.textContent).toContain('Loading');
+        expect(dot(running)).toContain('antrea-color-warning');
+        const done = await mount(vi.fn(async () => finiteResponse([FINITE_COMPLETE])), { flowQuery: { follow: false } });
+        expect(done.shadowRoot!.textContent).toContain('Query complete');
+        expect(dot(done)).toContain('antrea-color-success');
+    });
+
     test('a new query replaces the open one, and an equal one leaves it alone', async () => {
         const signals: (AbortSignal | null | undefined)[] = [];
         const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
