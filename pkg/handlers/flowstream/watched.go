@@ -201,8 +201,8 @@ func (w *WatchedSubscriber) Run(stopCh <-chan struct{}) {
 					return
 				}
 				w.logger.Info("Flow visibility is still waiting for the Flow Aggregator CA certificate: "+
-					"check that the ConfigMap exists, has a non-empty ca.crt key, and that antrea-ui "+
-					"may get, list and watch it",
+					"check that the ConfigMap exists, has a ca.crt key holding a valid, non-empty "+
+					"PEM bundle, and that antrea-ui may get, list and watch it",
 					"namespace", w.cfg.Namespace, "configMap", w.cfg.CAConfigMap)
 			}
 		}

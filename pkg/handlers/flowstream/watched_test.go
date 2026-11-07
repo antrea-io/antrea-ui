@@ -314,8 +314,6 @@ func TestWatchedSubscriberSubscribeDelegatesToTheCurrentSubscriber(t *testing.T)
 	assert.Equal(t, int32(1), calls.Load())
 }
 
-// Two sources can have the same address and CA generation but still own independent connections.
-// Rotating either source must leave the other source's cached connection usable.
 // A CA rotation closes the connection that bearer-authenticated streams run on. A stream that is
 // already established must end like an ordinary disconnect, with no error, so that the client
 // reconnects instead of showing an error.
@@ -355,16 +353,27 @@ func TestWatchedSubscriberRotationEndsLiveStreamWithoutError(t *testing.T) {
 	provider.set(newTestCA(t))
 	w.Enqueue()
 
-	for range flowsCh {
+	// One deadline covers both reads: if the rotation did not close the old connection, flowsCh
+	// stays open and the test must fail rather than hang.
+	timeout := time.After(2 * time.Second)
+	for ended := false; !ended; {
+		select {
+		case _, ok := <-flowsCh:
+			ended = !ok
+		case <-timeout:
+			require.FailNow(t, "timed out waiting for the stream to end")
+		}
 	}
 	select {
 	case err, ok := <-errCh:
 		assert.False(t, ok, "a CA rotation must not surface as a stream error: %v", err)
-	case <-time.After(2 * time.Second):
+	case <-timeout:
 		require.FailNow(t, "timed out waiting for the stream to end")
 	}
 }
 
+// Two sources can have the same address and CA generation but still own independent connections.
+// Rotating either source must leave the other source's cached connection usable.
 func TestWatchedSubscriberIsolatesSessionConnectionsAcrossSources(t *testing.T) {
 	firstSource, firstProvider := newTestWatched(t)
 	secondSource, secondProvider := newTestWatched(t)

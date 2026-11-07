@@ -175,8 +175,9 @@ type GRPCConfig struct {
 	// When empty, a new prefix is allocated for this subscriber.
 	ConnKeyPrefix string
 	// Generation identifies the CA bundle TLSConfig was built from. A subscriber replacing
-	// another one for a new bundle must use a different generation, so that a session's
-	// connection dialed for the old bundle is not reused.
+	// another one for a new bundle must use a larger generation: a session closes the connections
+	// it dialed for smaller generations (see connFor), and reuses the one for an equal one, so a
+	// connection dialed for the old bundle would otherwise stay open or be reused.
 	Generation int
 }
 
