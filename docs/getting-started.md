@@ -78,9 +78,15 @@ flowSources:
 FA as the first `watch` source, before `flowSources`.
 
 With `caConfigMap` set, create that ConfigMap in the source's `namespace`
-with the CA under `ca.crt`. The chart grants read access; the backend loads
-the CA at startup and fails if it cannot. With no CA ConfigMap, it uses the
-system trust store. Keep TLS verification enabled in production:
+with the CA under `ca.crt`. The chart grants `get`, `list` and `watch` on that
+ConfigMap. Each source watches its CA independently: a missing or invalid initial
+bundle leaves only that source unavailable, while the backend keeps running.
+After a valid bundle is loaded, a deleted ConfigMap or an invalid replacement
+keeps the last good bundle. A CA change replaces that source's shared connection:
+live clients reconnect, while an interrupted finite query fails and must be re-run.
+Client-certificate sessions pick up the new CA on their next request.
+With no CA ConfigMap, the backend uses the system trust store. With
+`insecureSkipVerify`, it does not watch the ConfigMap. Keep TLS verification enabled in production:
 `insecureSkipVerify: true` trusts any server at the configured address with every
 viewer's credentials.
 

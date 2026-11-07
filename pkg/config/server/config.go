@@ -109,7 +109,10 @@ type FlowSourceConfig struct {
 	Capabilities []string
 	Address      string
 	// CAConfigMap is the name of the ConfigMap (in Namespace) containing the CA
-	// certificate (key: ca.crt) used to verify the FlowStreamService server cert.
+	// certificate (key: ca.crt) used to verify the FlowStreamService server cert. The backend
+	// watches it: it starts without it, flow requests fail until it exists, and the connection
+	// to that source is rebuilt whenever the CA changes. The chart grants access to
+	// this ConfigMap only, so a different name needs the chart upgraded as well.
 	// When empty, verification falls back to the system trust store, which will not verify
 	// a self-signed certificate: the connection fails rather than skipping verification.
 	// Use InsecureSkipVerify for that (dev/test only).

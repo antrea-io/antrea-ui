@@ -32,6 +32,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/status"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -428,9 +429,6 @@ func TestCertificateSessionUsesOneConnectionPerSource(t *testing.T) {
 }
 
 func TestNewRoutedSubscriber(t *testing.T) {
-	ctx := t.Context()
-	pair, err := testcerts.NewCA().NewKeyPair("flow.test")
-	require.NoError(t, err)
 	caConfigMap := func(name string, data map[string]string) *corev1.ConfigMap {
 		return &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "trusted"}, Data: data}
 	}
@@ -438,14 +436,14 @@ func TestNewRoutedSubscriber(t *testing.T) {
 	list := []string{serverconfig.FlowSourceCapabilityList}
 
 	t.Run("builds the sources in order", func(t *testing.T) {
-		client := fake.NewClientset(caConfigMap("hist-ca", map[string]string{"ca.crt": string(pair.PublicKey())}))
-		router, err := NewRoutedSubscriber(ctx, testr.New(t), client, []serverconfig.FlowSourceConfig{
+		client := fake.NewClientset(caConfigMap("hist-ca", map[string]string{"ca.crt": string(newTestCA(t))}))
+		router, err := NewRoutedSubscriber(testr.New(t), client, []serverconfig.FlowSourceConfig{
 			{Name: "flow-aggregator", Capabilities: watch, Address: "fa.example.test:14740", InsecureSkipVerify: true},
-			{Name: "flow-history", Capabilities: list, Address: "hist.example.test:14740", CAConfigMap: "hist-ca", Namespace: "trusted"},
+			{Name: "flow-history", Capabilities: list, Address: "hist.example.test:14740", CAConfigMap: "hist-ca", Namespace: "trusted", ServerName: "flow.test"},
 			{Name: "both", Capabilities: append(append([]string{}, watch...), list...), Address: "both.example.test:14740"},
 		}, nil)
 		require.NoError(t, err)
-		defer router.Close()
+		runRoutedSubscriber(t, router)
 		require.Len(t, router.Sources, 3)
 		assert.Equal(t, "flow-aggregator", router.Sources[0].Name)
 		assert.True(t, router.Sources[0].Watch)
@@ -455,32 +453,99 @@ func TestNewRoutedSubscriber(t *testing.T) {
 		assert.True(t, router.Sources[1].List)
 		assert.True(t, router.Sources[2].Watch)
 		assert.True(t, router.Sources[2].List)
-		grpcSource, ok := router.Sources[1].Subscriber.(*GRPCFlowStreamSubscriber)
-		require.True(t, ok)
-		assert.Equal(t, "flow-history", grpcSource.name)
+		for _, source := range router.Sources {
+			watched, ok := source.Subscriber.(*WatchedSubscriber)
+			require.True(t, ok)
+			require.Eventually(t, watched.available, 5*time.Second, 10*time.Millisecond)
+			grpcSource, _ := watched.currentForTest()
+			assert.Equal(t, source.Name, grpcSource.name)
+			if source.Name == "flow-history" {
+				assert.Equal(t, "flow.test", grpcSource.tlsConfig.ServerName)
+				assert.NotNil(t, grpcSource.tlsConfig.RootCAs)
+			}
+		}
 	})
 
 	for _, tc := range []struct {
-		name    string
-		objects []*corev1.ConfigMap
-		wantErr string
+		name string
+		data map[string]string
 	}{
-		{name: "missing CA ConfigMap", wantErr: `failed to get CA configmap trusted/bad-ca of flow source "flow-history"`},
-		{name: "CA ConfigMap without ca.crt", objects: []*corev1.ConfigMap{caConfigMap("bad-ca", map[string]string{"other": "x"})}, wantErr: "missing or has empty 'ca.crt'"},
-		{name: "unparsable CA", objects: []*corev1.ConfigMap{caConfigMap("bad-ca", map[string]string{"ca.crt": "not a certificate"})}, wantErr: "failed to parse CA cert"},
+		{name: "missing CA ConfigMap"},
+		{name: "CA ConfigMap without ca.crt", data: map[string]string{"other": "x"}},
+		{name: "unparsable CA", data: map[string]string{"ca.crt": "not a certificate"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			client := fake.NewClientset()
-			for _, cm := range tc.objects {
-				_, err := client.CoreV1().ConfigMaps("trusted").Create(ctx, cm, metav1.CreateOptions{})
+			goodCA := caConfigMap("good-ca", map[string]string{"ca.crt": string(newTestCA(t))})
+			goodCA.Namespace = "live"
+			client := fake.NewClientset(goodCA)
+			cms := client.CoreV1().ConfigMaps("trusted")
+			if tc.data != nil {
+				_, err := cms.Create(t.Context(), caConfigMap("bad-ca", tc.data), metav1.CreateOptions{})
 				require.NoError(t, err)
 			}
-			router, err := NewRoutedSubscriber(ctx, testr.New(t), client, []serverconfig.FlowSourceConfig{
-				{Name: "flow-aggregator", Capabilities: watch, Address: "fa.example.test:14740"},
+			router, err := NewRoutedSubscriber(testr.New(t), client, []serverconfig.FlowSourceConfig{
+				{Name: "flow-aggregator", Capabilities: watch, Address: "fa.example.test:14740", CAConfigMap: "good-ca", Namespace: "live"},
 				{Name: "flow-history", Capabilities: list, Address: "hist.example.test:14740", CAConfigMap: "bad-ca", Namespace: "trusted"},
 			}, nil)
-			require.ErrorContains(t, err, tc.wantErr)
-			assert.Nil(t, router)
+			require.NoError(t, err, "a missing or invalid CA must not prevent backend startup")
+			runRoutedSubscriber(t, router)
+			good := router.Sources[0].Subscriber.(*WatchedSubscriber)
+			bad := router.Sources[1].Subscriber.(*WatchedSubscriber)
+			require.Eventually(t, good.available, 5*time.Second, 10*time.Millisecond)
+			unaffected, _ := good.currentForTest()
+			assert.False(t, bad.available())
+			filter := finiteFilter()
+			filter.Source = "flow-history"
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			err = relay(ctx, router, &FlowStreamScope{}, filter, func() error { return nil }, func(apisv1.FlowStreamEvent) error { return nil })
+			var streamErr *StreamError
+			require.ErrorAs(t, err, &streamErr)
+			assert.True(t, streamErr.Retryable)
+
+			// A valid CA arriving later recovers only that source. Subsequent rotations also
+			// leave the other source's subscriber and generation alone.
+			cm := caConfigMap("bad-ca", map[string]string{"ca.crt": string(newTestCA(t))})
+			if tc.data == nil {
+				_, err = cms.Create(t.Context(), cm, metav1.CreateOptions{})
+			} else {
+				_, err = cms.Update(t.Context(), cm, metav1.UpdateOptions{})
+			}
+			require.NoError(t, err)
+			require.Eventually(t, bad.available, 5*time.Second, 10*time.Millisecond)
+			first, _ := bad.currentForTest()
+			assert.Equal(t, "flow-history", first.name)
+			cm.Data["ca.crt"] = string(newTestCA(t))
+			_, err = cms.Update(t.Context(), cm, metav1.UpdateOptions{})
+			require.NoError(t, err)
+			require.Eventually(t, func() bool {
+				_, generation := bad.currentForTest()
+				return generation == 2 && first.conn.GetState() == connectivity.Shutdown
+			}, 5*time.Second, 10*time.Millisecond)
+			current, generation := good.currentForTest()
+			assert.Same(t, unaffected, current)
+			assert.Equal(t, 1, generation)
+			assert.NotEqual(t, connectivity.Shutdown, current.conn.GetState())
+
+			require.NoError(t, router.Close())
+			assert.False(t, good.available())
+			assert.False(t, bad.available())
+			assert.Equal(t, connectivity.Shutdown, unaffected.conn.GetState())
 		})
 	}
+}
+
+func runRoutedSubscriber(t *testing.T, router *RoutedSubscriber) {
+	t.Helper()
+	stopCh := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		router.Run(stopCh)
+	}()
+	t.Cleanup(func() {
+		close(stopCh)
+		<-done
+		require.NoError(t, router.Close())
+	})
 }
