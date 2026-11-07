@@ -95,7 +95,7 @@ const (
 )
 
 // internalStreamError wraps err as a non-retryable StreamError with StreamErrorCodeInternal, for
-// failures resolved locally, rather than reported by the Flow Aggregator, that retrying will not
+// failures resolved locally, rather than reported by the flow source, that retrying will not
 // fix: a wiring bug, a credential shape this backend does not support, a fixed configuration
 // mismatch.
 func internalStreamError(err error) *StreamError {
@@ -125,7 +125,7 @@ func flowSourceTooOldErr(name, address string) *StreamError {
 
 // isMessageSizeErr reports whether a ResourceExhausted error is grpc-go's own "message too large
 // for the configured limit" (4 MiB by default on receive), raised in the client rather than sent by
-// the Flow Aggregator. Nothing in the gRPC status distinguishes the two, so this matches on the
+// the flow source. Nothing in the gRPC status distinguishes the two, so this matches on the
 // message grpc-go builds - deliberately on the substring common to all of its variants (receive,
 // receive-after-decompression, send), since which one fires does not change the answer.
 //
@@ -383,7 +383,7 @@ func (h *GRPCFlowStreamSubscriber) Subscribe(ctx context.Context, scope *FlowStr
 // server-streaming RPC, FA reports both Unauthenticated and ResourceExhausted before sending any
 // message, and that kind of error does not surface on the call that opens the stream - only on
 // the first Recv. A nil firstResp with a nil error means the server closed the stream immediately
-// with no error and no message, which a Flow Aggregator with per-user flow authorization never
+// with no error and no message, which a flow source with per-user flow authorization never
 // does; the caller rejects it the same as any other first response with no stream epoch. A nil
 // stream with a nil error means ctx ended, or the underlying connection was closed
 // (codes.Canceled) while this call or the wait for the first response was still in flight
@@ -440,25 +440,27 @@ func (h *GRPCFlowStreamSubscriber) forwardResp(ctx context.Context, resp *flowpb
 // classifyStreamErr turns a gRPC error from GetFlows/Recv into a StreamError callers of Subscribe
 // (ultimately the frontend, via FlowStreamErrorEvent's code/retryable fields) can act on without
 // parsing the message:
-//   - Unauthenticated: the credential FA saw was rejected. Not retryable. This is deliberately
-//     *not* treated as a reason to invalidate the antrea-ui session the way an upstream 401 from
-//     the kube-apiserver is (see RequestAuth.Invalidate): FA is a different server, trusting a
-//     different CA and (for a bearer token) potentially a different audience than the
-//     kube-apiserver, so a credential FA rejects may still be perfectly valid for every other
-//     antrea-ui call. Ending the whole UI session over it would log the user out of pages that
-//     have nothing to do with flow visibility, on every single re-login, if that mismatch is
-//     simply how the deployment is configured.
-//   - PermissionDenied: FA authenticated the credential but the caller does not hold the flows
-//     RBAC grant in the scope it asked for. Not retryable. Raised both at stream open and
-//     mid-stream by FA's periodic revalidation when a grant is revoked. Note the asymmetry
-//     upstream documents: a stream open fails closed, while revalidation fails open, so a revoked
-//     grant ends a running stream on the next revalidation interval rather than immediately.
+//   - Unauthenticated: the credential the flow source saw was rejected. Not retryable. This is
+//     deliberately *not* treated as a reason to invalidate the antrea-ui session the way an
+//     upstream 401 from the kube-apiserver is (see RequestAuth.Invalidate): the source is a
+//     different server, trusting a different CA and (for a bearer token) potentially a different
+//     audience than the kube-apiserver, so a credential a source rejects may still be perfectly
+//     valid for every other antrea-ui call. Ending the whole UI session over it would log the
+//     user out of pages that have nothing to do with flow visibility, on every single re-login,
+//     if that mismatch is simply how the deployment is configured.
+//   - PermissionDenied: the source authenticated the credential but the caller does not hold the
+//     flows RBAC grant in the scope it asked for. Not retryable. Raised both at stream open and
+//     mid-stream by the source's periodic revalidation when a grant is revoked. Note the
+//     asymmetry upstream documents for the Flow Aggregator: a stream open fails closed, while
+//     revalidation fails open, so a revoked grant ends a running stream on the next
+//     revalidation interval rather than immediately.
 //   - InvalidArgument: the source rejected the request itself. Usually a client bug, which
 //     parseFlowStreamScope's local 400s should make unreachable, but they do not check max_count
 //     against a source's cap: a source rejects a max_count above its own cap with this code, as
 //     the flow source contract requires. It is classified so it surfaces as an error rather
 //     than a retry storm.
-//   - ResourceExhausted: FA is at capacity (its stream limiter or its token-auth semaphore).
+//   - ResourceExhausted: the source is at capacity (for the Flow Aggregator, its stream limiter or
+//     its token-auth semaphore).
 //     Retryable - except for the one ResourceExhausted grpc-go raises locally, see
 //     isMessageSizeErr.
 //   - FailedPrecondition, Unavailable: the source cannot serve right now (restarting, rolling, or
@@ -515,9 +517,9 @@ func (h *GRPCFlowStreamSubscriber) classifyStreamErr(err error) *StreamError {
 
 // logDenial records a refused flow stream, with the username it was refused for.
 //
-// Authorization is now entirely the Flow Aggregator's decision, so antrea-ui no longer denies
+// Authorization is now entirely the flow source's decision, so antrea-ui no longer denies
 // these itself - but nothing else here would record that a flow stream was refused, and the
-// removed requireFlowVisibility gate logged exactly that. The Flow Aggregator's own audit trail
+// removed requireFlowVisibility gate logged exactly that. The flow source's own audit trail
 // names the subject it reviewed, not the antrea-ui session it arrived from, so this line is what
 // ties the two together.
 func (h *GRPCFlowStreamSubscriber) logDenial(ctx context.Context, err error) {

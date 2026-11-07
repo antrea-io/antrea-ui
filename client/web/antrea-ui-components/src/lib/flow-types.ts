@@ -92,7 +92,7 @@ export interface IP {
 export type Labels = Record<string, string>;
 
 // How much of one endpoint of a flow, or of its destination Service, this user was authorized to
-// see. Set by the Flow Aggregator's FlowStreamService only. Zero is Full, not "unspecified": a
+// see. Set by the flow source's FlowStreamService only. Zero is Full, not "unspecified": a
 // record nothing redacted reads as fully disclosed, which is every record on a cluster-wide
 // stream. The backend never omits this field, but a record from a backend that predates it should
 // still be read as Full.
@@ -116,7 +116,7 @@ export interface Kubernetes {
     flowType: FlowType;
 
     // See EndpointDisclosure. Describes the endpoint, not a per-field guarantee: an endpoint can
-    // lack a field below while still reporting Full, because the Flow Aggregator may simply
+    // lack a field below while still reporting Full, because the flow source may simply
     // never have had it.
     sourceDisclosure: EndpointDisclosure;
     destinationDisclosure: EndpointDisclosure;
@@ -247,7 +247,7 @@ export function formatPolicyInfo(
 ): string {
     const actionStr = networkPolicyRuleActionLabel[action];
     if (name) return actionStr ? `${name} (${actionStr})` : name;
-    // An empty name is evidence of redaction at the Flow tier. Above it the Flow Aggregator may
+    // An empty name is evidence of redaction at the Flow tier. Above it the flow source may
     // simply never have had the name - its own proto warns that an endpoint can lack a field
     // while still reporting full disclosure - and calling that "hidden" would blame redaction
     // for a gap it did not cause. A cluster-scoped policy always has a name, so there an empty
@@ -265,7 +265,7 @@ export function formatEndpoint(namespace: string, podName: string, ip: string): 
     return ip || "unknown";
 }
 
-/** Whether the Flow Aggregator withheld this endpoint's Kubernetes identity. Only the Flow tier
+/** Whether the flow source withheld this endpoint's Kubernetes identity. Only the Flow tier
  * withholds anything of an endpoint that this UI renders: the entire Full-over-Identity difference
  * is Node placement and the Antrea Egress, neither of which appears anywhere in the list, the map
  * or the edge details. So there are two visual states, not three - revisit only if a Node or

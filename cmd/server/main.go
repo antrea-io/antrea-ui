@@ -252,11 +252,11 @@ func run() error {
 	}
 
 	// Admin-password sessions (session.KindImpersonate) carry no bearer token or client cert of
-	// their own, which is all the Flow Aggregator's FlowStreamService accepts. A real, short-lived
+	// their own, which is all a flow source's FlowStreamService accepts. A real, short-lived
 	// token is minted for the antrea-ui-admin ServiceAccount and used for those calls only.
 	// k8sClientset authenticates as antrea-ui's own ServiceAccount, which is what
 	// build/charts/antrea-ui/templates/role.yaml grants the "serviceaccounts/token" create verb
-	// to. The Flow Aggregator integration only needs it when auth.basic.enable is also set, since
+	// to. The flow source integration only needs it when auth.basic.enable is also set, since
 	// that is the only login mode that produces a KindImpersonate session and so the only one that
 	// ever needs this token minted.
 	var adminTokenSource *k8s.AdminTokenSource

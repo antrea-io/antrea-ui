@@ -153,7 +153,7 @@ else:
 - `get` on the `/featuregates` non-resource URL
 - `list` and `get` on `namespaces`
 - `list` and `watch` on `flows.observability.antrea.io`, the virtual resource
-  the Flow Aggregator authorizes flow streams against (see [Flow data is
+  a flow source authorizes flow streams against (see [Flow data is
   per-user](#flow-data-is-per-user))
 - `get` on `metrics.ui.antrea.io`, the virtual resource Antrea UI authorizes
   live metrics taps against (see [Metrics are authorized by Antrea UI
@@ -374,7 +374,7 @@ selected Namespace and leaves out the tiles it denies. See
 `docs/design/namespace-scope-ux.md`.
 
 The Dest Service column follows the Service's own marker, not the destination's:
-it shows the Service when it is disclosed, a lock when the Flow Aggregator
+it shows the Service when it is disclosed, a lock when the flow source
 withheld it, and `-` otherwise. So a destination outside the Pod network, which
 has no Namespace, can still show its Service on a Namespace stream.
 

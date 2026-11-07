@@ -46,7 +46,7 @@ const adminTokenMintTimeout = 10 * time.Second
 // It is named after its first use, with the antrea-ui-admin ServiceAccount: services other than the
 // API server accept a bearer token or a client certificate and nothing else - no impersonation
 // header. The admin-password login mode (session.KindImpersonate), which normally reaches the API
-// server by impersonating antrea-ui-admin, has no credential it can hand to the Flow Aggregator's
+// server by impersonating antrea-ui-admin, has no credential it can hand to a flow source's
 // FlowStreamService: minting a real token for that same ServiceAccount, with the default audience,
 // gives it one, scoped to those calls (every K8s call made in admin-password mode keeps using
 // impersonation). Support bundle sources reached by URL are always called as antrea-ui-admin,

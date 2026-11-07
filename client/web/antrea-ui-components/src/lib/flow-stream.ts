@@ -128,7 +128,7 @@ export interface FlowStreamCallbacks {
      * before the attempt is due, not a promise of when it will connect. */
     onReconnectScheduled?: (delayMs: number) => void;
     /** Called on HTTP 401, i.e. the antrea-ui session is over. There is nothing to retry: the host
-     * should log the user out. Note that the Flow Aggregator rejecting the credential is *not*
+     * should log the user out. Note that a flow source rejecting the credential is *not*
      * this: it reaches onError with an "unauthenticated" code and never a 401, because it says
      * nothing about the antrea-ui session and must not log the user out of the rest of the UI. */
     onAuthError?: () => void;
@@ -463,10 +463,10 @@ export class FlowStreamClient {
 
     // Retries a retryable failure indefinitely, the same way Gmail's own connection handling
     // does: there is no failure count here to give up after, only a delay that grows on each
-    // attempt and caps at 30s, so a Flow Aggregator restart or a network blip that outlasts a
+    // attempt and caps at 30s, so a flow source restart or a network blip that outlasts a
     // few attempts is still there to reconnect to whenever it recovers. A failure worth giving
-    // up on outright (a rejected credential, FA disabled) never reaches this method - it goes
-    // through haltPermanently instead.
+    // up on outright (a rejected credential, no source serving the mode) never reaches this
+    // method - it goes through haltPermanently instead.
     private scheduleReconnect(): void {
         const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 30000);
         this.reconnectAttempts++;

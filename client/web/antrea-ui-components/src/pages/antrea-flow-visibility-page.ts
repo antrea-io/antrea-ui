@@ -134,7 +134,7 @@ const NO_OBSERVABLE_NAMESPACES_MESSAGE = (follow = true) => html`${
 // gap; do not "fix" either, and do not widen this note to cover them.
 //
 // The escape hatch is real: a scope from the URL is used whether or not it is listed, because the
-// Flow Aggregator authorizes the stream either way.
+// flow source authorizes the stream either way.
 const UNKNOWN_NAMESPACES_NOTE =
     'The selector has no complete list of namespaces to offer: it is empty, could not be loaded, ' +
     'or was cut short. Use the "Namespace not listed" box to name one directly.';
@@ -1031,7 +1031,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
      * A scope in the URL is used as given, with no fallback: not checked against the list, and not
      * replaced by a default even when it is All Namespaces and the user is known not to hold it.
      * The URL is an explicit choice, a shared link or the user's last pick, and replacing it would
-     * hide what the link asked for; the Flow Aggregator's 403 is the answer, and picking another
+     * hide what the link asked for; the flow source's 403 is the answer, and picking another
      * scope replaces it. An invalid one is reported and nothing is selected.
      */
     private _applyScopeFromURL(search: string = this._search) {
@@ -1311,7 +1311,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         if (newKey === this._filterKey) return;
         this._filterKey = newKey;
         this._filter = filter;
-        // A different request is a new question for the Flow Aggregator, including one that
+        // A different request is a new question for the flow source, including one that
         // returns to a scope it refused earlier. Left in place, the refusal would make that
         // request silently do nothing - no stream, and no error, since the banner went with
         // the stream that replaced it.
@@ -1408,7 +1408,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
      * Deliberately not intersected with the namespaces this user may read Kubernetes objects in,
      * the way it was while this control doubled as a scope. Those are a different grant from
      * flows/identity, and the records are already disclosed per user: a namespace appears on a
-     * record only where the Flow Aggregator chose to disclose it to this user, so re-checking
+     * record only where the flow source chose to disclose it to this user, so re-checking
      * could only wrongly hide a legitimate option.
      */
     private get _availableNs(): string[] {

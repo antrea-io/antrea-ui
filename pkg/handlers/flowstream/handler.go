@@ -98,8 +98,8 @@ func (f *FlowStreamFilter) requestLimit() uint32 {
 //
 // Scalar, though the protobuf field is repeated: a flow source such as the Flow Aggregator names
 // one Namespace per stream at most (maxRequestedNamespaces), and a cap it set to match this UI's
-// single-select is not worth carrying a slice through every layer for. filterToGetFlowsRequest builds the
-// one-element slice.
+// single-select is not worth carrying a slice through every layer for. filterToGetFlowsRequest
+// builds the one-element slice.
 type FlowStreamScope struct {
 	ObservedNamespace string
 	ClusterWide       bool
@@ -143,8 +143,8 @@ func streamErrorEvent(streamErr error) apisv1.FlowStreamErrorEvent {
 // Deliberately never 401, even for StreamErrorCodeUnauthenticated: a 401 from any antrea-ui
 // endpoint means "your antrea-ui session is over, log in again", and the frontend acts on it by
 // doing exactly that. A credential a flow source rejects says nothing about the antrea-ui
-// session - the source is a different server, trusting a different CA and potentially a different audience
-// than the kube-apiserver (see classifyStreamErr for the full reasoning, and
+// session - the source is a different server, trusting a different CA and potentially a different
+// audience than the kube-apiserver (see classifyStreamErr for the full reasoning, and
 // TestSubscribeDoesNotInvalidateSessionOnUnauthenticated for the backend half of it). Returning a
 // 401 here would log the user out of every page in the UI because flow visibility alone could not
 // authenticate, on every single re-login, whenever that mismatch is simply how the deployment is

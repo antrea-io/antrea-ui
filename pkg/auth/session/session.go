@@ -225,7 +225,7 @@ type Session struct {
 	transports map[string]cachedTransport
 	// conns caches gRPC connections the same way transports does, for credentials whose
 	// upstream is dialed with grpc.NewClient rather than reached over http.RoundTripper (the
-	// Flow Aggregator's FlowStreamService, for a KindCert credential).
+	// flow source's FlowStreamService, for a KindCert credential).
 	conns map[string]cachedConn
 
 	// refreshMutex serializes credential refreshes for this session. The summary page fires
