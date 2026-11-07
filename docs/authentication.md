@@ -153,7 +153,7 @@ else:
 - `get` on the `/featuregates` non-resource URL
 - `list` and `get` on `namespaces`
 - `list` and `watch` on `flows.observability.antrea.io`, the virtual resource
-  the Flow Aggregator authorizes flow streams against (see [Flow data is
+  a flow source authorizes flow streams against (see [Flow data is
   per-user](#flow-data-is-per-user))
 - `get` on `metrics.ui.antrea.io`, the virtual resource Antrea UI authorizes
   live metrics taps against (see [Metrics are authorized by Antrea UI
@@ -204,8 +204,10 @@ installed next month adds".
 The flow visibility stream (`GET /api/v1/flows/stream`) is authenticated and
 authorized per caller: for most login modes, the backend presents the
 signed-in user's own credential (their bearer token, or their client
-certificate on the connection) to the Flow Aggregator's FlowStreamService,
-which rejects a call that presents neither. The one exception is the
+certificate on the connection) to a flow source's FlowStreamService, which
+rejects a call that presents neither. The UI in this repository reads from the
+first source with the `watch` capability, normally the Flow Aggregator (FA); see
+[Flow sources](#flow-sources). The one exception is the
 admin-password login mode: it normally reaches the kube-apiserver by
 impersonating the `antrea-ui-admin` ServiceAccount, but FA accepts no
 impersonation header, so the backend instead mints a short-lived, real token
@@ -214,9 +216,10 @@ the one case where the credential FA sees is not literally the signed-in
 user's own.
 
 Every request also names a **scope**: either `clusterWide=true` or a single
-`observedNamespace`, never both. FA authorizes the stream against that scope
-with the caller's Kubernetes RBAC on the virtual `flows.observability.antrea.io`
-resource — `watch` for the SSE stream, since it always follows — and resolves
+`observedNamespace`, never both. The source authorizes the stream against that
+scope with the caller's Kubernetes RBAC on the virtual
+`flows.observability.antrea.io` resource — `watch` for the live stream this
+UI opens — and resolves
 every endpoint of every record to a disclosure tier (full, identity, or flow)
 relative to what the caller may see there. An
 endpoint is disclosed in full when its Namespace is in the requested scope, or
@@ -227,7 +230,10 @@ the addresses and the Namespace, but no Pod, except that the Namespace of the
 destination of a denied connection is withheld too. An endpoint with no
 Namespace at all, such as a Service backend outside the Pod network (the
 destination is the endpoint after DNAT), is at the flow tier on every stream
-that is not cluster-wide, even when its Service has a Namespace.
+that is not cluster-wide, even when its Service has a Namespace. The
+destination Service has a tier of its own, resolved the same way in the
+Service's Namespace, so it can be shown while its endpoint is not, or the
+other way round; it is withheld whenever the destination's Namespace is.
 So a caller with `flows` cluster-wide sees every peer that has a Namespace in
 full whether it asks for the whole cluster or for a single Namespace, and the
 `flows` rule alone is enough — `flows/identity` is only for being recognizable in records the
@@ -284,6 +290,15 @@ stream ends before sending one, antrea-ui refuses the stream
 (`StreamErrorCodeFlowAggregatorTooOld`) instead of forwarding unredacted
 data. Antrea UI v1.0.0 requires Antrea and the Flow Aggregator at v2.8 or
 later; flow visibility is unavailable against an older deployment.
+
+The same check applies to every flow source and to finite queries: each must
+send a non-empty `stream_epoch` in the first response, as `service.proto`
+describes. The epoch is evidence of scope support only for the Flow Aggregator,
+where it shipped together with the scope fields. For any other source it proves
+nothing, since a service can send an epoch and still ignore the scope, so the
+[flow source contract](../pkg/flowpb/README.md#flow-source-contract) is what a
+source must honor. The error code keeps its name, `flow_aggregator_too_old`,
+because it is part of the SSE error event.
 
 The Flow Visibility navigation entry and page are gated like the Overview
 page: from the cluster-scoped access summary alone, with no per-namespace review
@@ -358,21 +373,54 @@ scope and reports FA's refusal, Overview asks for the access summary of the
 selected Namespace and leaves out the tiles it denies. See
 `docs/design/namespace-scope-ux.md`.
 
-The Dest Service column shows `-` for a destination outside the Pod network on a
-Namespace stream, and its Service on All Namespaces. Such a destination has no
-Namespace, so the Flow Aggregator withholds its Service on every stream that is
-not cluster-wide, and the page cannot tell that from a destination with no
-Service.
+The Dest Service column follows the Service's own marker, not the destination's:
+it shows the Service when it is disclosed, a lock when the flow source
+withheld it, and `-` otherwise. So a destination outside the Pod network, which
+has no Namespace, can still show its Service on a Namespace stream.
 
 To turn the integration off entirely, deploy with `flowAggregator.enabled=false`
-(the chart default). The endpoint then returns 501 for every user, including
-admins.
+(the chart default) and no `flowSources`. The endpoint then returns 501 for
+every user, including admins.
 
 Note that FA's authorization is Antrea UI's only line of defense here.
 Enabling `FlowStreamService` in the Flow Aggregator means anyone with network
 access to it, and holding a credential FA accepts, can read flow data
 directly (subject to FA's own RBAC check), regardless of what Antrea UI's
 frontend shows or hides.
+
+### Flow sources
+
+`flowSources` configures endpoints implementing `FlowStreamService`; see
+[configuration and examples](getting-started.md#flow-sources). Each source
+must authenticate the forwarded credential and check the required verb on
+`flows.observability.antrea.io` in the requested scope:
+
+- `watch`: live streams (`follow=true`, the default), requiring `watch`.
+- `list`: finite queries (`follow=false`), requiring `list`.
+
+Requests may select a configured source with `source=<name>`, never an
+address; otherwise the first source supporting the requested mode is used.
+With no sources configured, requests return 501. Otherwise, naming an unknown
+source or one without the required capability returns 400; an unnamed request
+with no matching source returns 501. The backend never falls back to another
+source.
+
+A finite query returns at most `maxCount` records, 1,000,000 by default, which is
+also the maximum. The backend asks the source for one record more: if it arrives, the
+`complete` event reports `truncated: true`, and which records made it in is
+arbitrary, since a source need not return them newest first. A source that ends
+the stream early at a cap of its own, instead of rejecting a larger `max_count`,
+makes a truncated result look complete; see the
+[flow source contract](../pkg/flowpb/README.md#flow-source-contract).
+
+`GET /api/v1/settings` exposes source names and capabilities under
+`features.flowSources`, in configuration order. This unauthenticated endpoint
+reveals no connection details. The list describes configured capabilities;
+each source still authorizes every request using the caller's credentials.
+
+This repository's UI uses only the first `watch` source and shows that flow
+visibility is unavailable when none is configured. Finite queries are
+available to hosts using the shared components.
 
 ### Metrics are authorized by Antrea UI itself
 

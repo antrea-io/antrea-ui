@@ -154,9 +154,10 @@ func newCertTestSubscriber(t *testing.T, fake *fakeFlowStreamServer, ca *testcer
 	t.Cleanup(func() { lis.Close() })
 
 	return &GRPCFlowStreamSubscriber{
-		logger:    testr.New(t),
-		address:   lis.Addr().String(),
-		tlsConfig: &tls.Config{RootCAs: ca.CertPool(), ServerName: serverName},
+		logger:        testr.New(t),
+		address:       lis.Addr().String(),
+		tlsConfig:     &tls.Config{RootCAs: ca.CertPool(), ServerName: serverName},
+		connKeyPrefix: newFlowStreamConnKeyPrefix(),
 	}
 }
 
@@ -492,7 +493,7 @@ func TestSubscribeReportsMissingStreamEpochAsFlowAggregatorTooOld(t *testing.T) 
 func TestSubscribeReportsUnknownCodeAsRetryable(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		fake := &fakeFlowStreamServer{handle: func(_ int, _ string) error {
-			return status.Error(codes.Unavailable, "connection reset")
+			return status.Error(codes.Aborted, "connection reset")
 		}}
 		h := newTestSubscriber(t, fake)
 

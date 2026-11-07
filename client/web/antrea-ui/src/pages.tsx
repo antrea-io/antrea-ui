@@ -14,12 +14,12 @@
  * limitations under the License.
  */
 
-import React, { useRef, useCallback, useMemo } from 'react';
+import React, { useRef, useCallback, useEffect, useMemo, useState } from 'react';
 import { useSelector } from 'react-redux';
 import '@antrea/ui-components';
 import {
     can, canViewSummary, canViewOverview, holdsOverviewResources, canViewFlows, holdsFlowsClusterWide,
-    sessionIdentity, GATE_TRACEFLOW_CREATE, SCOPE_CHANGE_EVENT, SCOPE_CHOSEN_EVENT,
+    sessionIdentity, apiFetchAppSettings, GATE_TRACEFLOW_CREATE, GATE_SUPPORTBUNDLE_LIST, SCOPE_CHANGE_EVENT, SCOPE_CHOSEN_EVENT,
 } from '@antrea/ui-components';
 import type { ScopeChangeDetail, ScopeChosenDetail } from '@antrea/ui-components';
 import { Navigate, useLocation, useSearchParams } from 'react-router';
@@ -57,6 +57,7 @@ export function HomeRedirect() {
     if (holdsFlowsClusterWide(summary)) {
         return <Navigate to={`/flows/list${lastScope}`} replace />;
     }
+    if (can(summary, GATE_SUPPORTBUNDLE_LIST)) return <Navigate to="/supportbundle" replace />;
     if (canViewOverview(summary)) return <Navigate to={`/overview${lastScope}`} replace />;
     // A user permitted none of these lands on Settings, which needs no permission at all - the
     // floor everyone can reach.
@@ -193,6 +194,16 @@ export function TraceflowPage() {
     );
 }
 
+export function SupportBundlePage() {
+    const { ref } = useLitPage();
+    const { summary, loaded } = useAccess();
+    return (
+        <RequirePermission allowed={can(summary, GATE_SUPPORTBUNDLE_LIST)} loaded={loaded}>
+            <antrea-support-bundle-page ref={ref} />
+        </RequirePermission>
+    );
+}
+
 // What a Namespace-aware page needs from its host. The page keeps its scope in the query string
 // (`?namespace=`), and rewrites it with history.replaceState, which the router is not told about.
 // It says so with SCOPE_CHANGE_EVENT instead, and the router adopts the location here, so the
@@ -226,14 +237,49 @@ function useNamespaceScope() {
     return { ref, search };
 }
 
+// Whether a configured flow source can serve live streams, from the settings the server exposes.
+// Null until known. A settings answer that does not list the sources (an older server) or a failed
+// fetch fails open, like the access summary: the page then shows what the stream request answers.
+function useWatchSourceAvailable(): boolean | null {
+    const [available, setAvailable] = useState<boolean | null>(null);
+    useEffect(() => {
+        let cancelled = false;
+        apiFetchAppSettings()
+            .then((settings) => {
+                const sources = settings.features?.flowSources;
+                if (!cancelled) setAvailable(!Array.isArray(sources) || sources.some((s) => s.capabilities?.includes('watch')));
+            })
+            .catch(() => { if (!cancelled) setAvailable(true); });
+        return () => { cancelled = true; };
+    }, []);
+    return available;
+}
+
 // view is the route's own sub-page (see index.tsx's "flows/list" / "flows/map" routes) — the sole
 // source of truth for which one is showing, flowing one-way into the Lit element's viewMode
 // property. There is no in-page control that could disagree with it: switching is entirely a
 // sidebar (nav.tsx) concern. Switching between the views does not remount the page, which follows
 // its query string (see useNamespaceScope).
+//
+// This UI only shows live flows, so without a configured source that can watch it does not offer
+// flows at all: the page is not rendered, rather than rendered to send a request the backend
+// answers with an error. Sources that can only list are ignored, and the backend uses the first
+// source that can watch.
 export function FlowVisibilityPage({ view }: { view: 'list' | 'map' }) {
     const { ref, search } = useNamespaceScope();
     const { summary, loaded } = useAccess();
+    const watchAvailable = useWatchSourceAvailable();
+    if (watchAvailable === null) return null;
+    if (!watchAvailable) {
+        return (
+            <antrea-alert status="warning">
+                Flow visibility is not available: no flow source that supports live streams is
+                configured for this Antrea UI. Configure <code>flowAggregator</code> or a{' '}
+                <code>flowSources</code> entry with the <code>watch</code> capability in the Helm
+                chart.
+            </antrea-alert>
+        );
+    }
     return (
         <RequirePermission allowed={canViewFlows(summary)} loaded={loaded}>
             <antrea-flow-visibility-page

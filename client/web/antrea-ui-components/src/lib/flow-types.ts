@@ -91,21 +91,24 @@ export interface IP {
 // Pod labels are serialized as a flat map[string]string by the backend.
 export type Labels = Record<string, string>;
 
-// How much of one endpoint of a flow this user was authorized to see. Set by the Flow
-// Aggregator's FlowStreamService only. Zero is Full, not "unspecified": a record nothing redacted
-// reads as fully disclosed, which is every record on a cluster-wide stream. The backend never
-// omits this field, but a record from a backend that predates it should still be read as Full.
+// How much of one endpoint of a flow, or of its destination Service, this user was authorized to
+// see. Set by the flow source's FlowStreamService only. Zero is Full, not "unspecified": a
+// record nothing redacted reads as fully disclosed, which is every record on a cluster-wide
+// stream. The backend never omits this field, but a record from a backend that predates it should
+// still be read as Full.
 export enum EndpointDisclosure {
     // Everything the record carries for the endpoint, including its Node placement and the
     // Egress applied to it.
     Full = 0,
-    // The endpoint's Namespace, Pod and Service identity and the identity of the network policies
-    // of its Namespace, but not its Node placement or its Egress. The identity of a cluster-scoped
-    // policy is not part of this: it follows what the client holds cluster-wide.
+    // The endpoint's Namespace and Pod identity and the identity of the network policies of its
+    // Namespace, but not its Node placement or its Egress. The identity of a cluster-scoped policy
+    // is not part of this: it follows what the client holds cluster-wide. For a destination
+    // Service, its identity, which is all there is of it.
     Identity = 1,
     // Only what the flow itself shows - addresses, ports, protocol, statistics, and the type and
     // action of the policies - plus the endpoint's Namespace, unless the endpoint is the
-    // destination of a denied connection the client initiated.
+    // destination of a denied connection the client initiated. For a destination Service, nothing
+    // of it, not even its Namespace.
     Flow = 2,
 }
 
@@ -113,10 +116,13 @@ export interface Kubernetes {
     flowType: FlowType;
 
     // See EndpointDisclosure. Describes the endpoint, not a per-field guarantee: an endpoint can
-    // lack a field below while still reporting Full, because the Flow Aggregator may simply
+    // lack a field below while still reporting Full, because the flow source may simply
     // never have had it.
     sourceDisclosure: EndpointDisclosure;
     destinationDisclosure: EndpointDisclosure;
+    // The destination Service is disclosed at the tier of its own Namespace, not necessarily the
+    // destination endpoint's. Flow only when the record had a Service and it was withheld.
+    destinationServiceDisclosure: EndpointDisclosure;
 
     sourcePodNamespace: string;
     sourcePodName: string;
@@ -241,7 +247,7 @@ export function formatPolicyInfo(
 ): string {
     const actionStr = networkPolicyRuleActionLabel[action];
     if (name) return actionStr ? `${name} (${actionStr})` : name;
-    // An empty name is evidence of redaction at the Flow tier. Above it the Flow Aggregator may
+    // An empty name is evidence of redaction at the Flow tier. Above it the flow source may
     // simply never have had the name - its own proto warns that an endpoint can lack a field
     // while still reporting full disclosure - and calling that "hidden" would blame redaction
     // for a gap it did not cause. A cluster-scoped policy always has a name, so there an empty
@@ -259,7 +265,7 @@ export function formatEndpoint(namespace: string, podName: string, ip: string): 
     return ip || "unknown";
 }
 
-/** Whether the Flow Aggregator withheld this endpoint's Kubernetes identity. Only the Flow tier
+/** Whether the flow source withheld this endpoint's Kubernetes identity. Only the Flow tier
  * withholds anything of an endpoint that this UI renders: the entire Full-over-Identity difference
  * is Node placement and the Antrea Egress, neither of which appears anywhere in the list, the map
  * or the edge details. So there are two visual states, not three - revisit only if a Node or
@@ -330,34 +336,32 @@ export function endpointView(
     return { text: ip || "unknown", redacted: true };
 }
 
-/** How to render the Dest Service cell. The destination Service fields follow the destination
- * endpoint's tier, so they are gone at the Flow tier - and an unexplained empty cell is exactly
- * the "looks like missing data" failure the mark exists to prevent. Its tooltip is its own rather
- * than the peer's: with a lock already in the Destination cell, a second unexplained one reads as
- * a duplicate rather than as a separately withheld field. `destinationNamespace` is the
- * destination's Namespace as the record carries it. In practice it is empty here only when it was
- * cleared because the connection was denied, so the tooltip then says no more than that the
- * Namespace is not shown either. Left out, it is taken to be there.
+/** How to render the Dest Service cell. `serviceDisclosure` is the record's own marker for the
+ * destination Service, which is disclosed at the tier of the Service's own Namespace, not
+ * necessarily the destination endpoint's. It is Flow only when the record had a Service and it was
+ * withheld, so the cell is marked then, for an external destination too: an unexplained empty
+ * cell is exactly the "looks like missing data" failure the mark exists to prevent. Its tooltip
+ * is its own rather than the peer's: when the Destination cell has a lock too, a second
+ * unexplained one would read as a duplicate rather than as a separately withheld field.
  *
- * A destination outside the Pod network is TO_EXTERNAL and takes the `external` branch, but may
- * still have had its Service withheld on a Namespace stream. The cell reads `-`, as the UI cannot
- * tell that from a destination with no Service. */
+ * The Service is also withheld, whatever its own Namespace grants, when a denied connection
+ * withholds the destination's Namespace, which a grant in the destination's Namespace prevents.
+ * On a denied connection, the record does not say which of the two withheld the Service, so the
+ * tooltip names both grants. See the destination Service in "What a client sees of a flow":
+ * https://github.com/antrea-io/antrea/blob/eb44118afb22115fa168cbe81e209fda47928a3a/docs/network-flow-visibility.md#what-a-client-sees-of-a-flow
+ */
 export function destinationServiceView(
-    disclosure: EndpointDisclosure | undefined,
+    serviceDisclosure: EndpointDisclosure | undefined,
     destinationServicePortName: string,
-    external = false,
-    destinationNamespace?: string,
 ): EndpointView {
     const name = destinationK8sServiceFilterKey(destinationServicePortName) || destinationServicePortName;
     if (name) return { text: name, redacted: false };
-    // An external destination is not marked as redacted: see above.
-    if (!external && endpointRedacted(disclosure)) {
+    if (endpointRedacted(serviceDisclosure)) {
         return {
             text: "",
             redacted: true,
-            tooltip: destinationNamespace === ''
-                ? "Service, if any, not shown. The destination's namespace is not shown on this stream either."
-                : "Service, if any, not shown. It belongs to the destination's namespace.",
+            tooltip: "Service not shown. Seeing it requires watch on flows or get on flows/identity in its namespace"
+                + " and, for a denied connection, in the destination's namespace.",
         };
     }
     return { text: "-", redacted: false };

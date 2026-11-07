@@ -348,27 +348,15 @@ describe('destinationServiceView', () => {
             .toEqual({ text: 'ns-b/frontend', redacted: false });
     });
 
-    // Its own string rather than the peer's: with a lock already in the Destination cell, a
-    // second unexplained one reads as a duplicate rather than as a separate withheld field. At the
-    // Flow tier the record does not say whether there was a Service, so the tooltip does not either.
+    // Its own string rather than the peer's: when the Destination cell has a lock too, a second
+    // unexplained one would read as a duplicate rather than as a separate withheld field. On a
+    // denied connection, the record does not say whether the Service's Namespace or the denial
+    // withheld it, so the tooltip names the grants for both.
     test('a withheld service is marked and explained', () => {
         const view = destinationServiceView(EndpointDisclosure.Flow, '');
         expect(view.redacted).toBe(true);
-        expect(view.tooltip).toContain("destination's namespace");
-        expect(view.tooltip).toContain('if any');
-    });
-
-    // A destination without a namespace (none, or cleared on a denied connection) cannot be said to
-    // belong to one, so "it belongs to the destination's namespace" would be wrong.
-    test('a withheld service of a destination with no namespace is explained without one', () => {
-        const view = destinationServiceView(EndpointDisclosure.Flow, '', false, '');
-        expect(view.redacted).toBe(true);
-        expect(view.tooltip).toContain('not shown on this stream');
-        expect(view.tooltip).toContain('if any');
-        expect(view.tooltip).not.toContain('belongs to');
-        const withNamespace = destinationServiceView(EndpointDisclosure.Flow, '', false, 'ns-b');
-        expect(withNamespace.tooltip).toContain('belongs to the destination');
-        expect(withNamespace.tooltip).toContain('if any');
+        expect(view.tooltip).toContain('flows/identity in its namespace');
+        expect(view.tooltip).toContain("for a denied connection, in the destination's namespace");
     });
 
     test('an identified destination with no service is simply empty', () => {
@@ -390,17 +378,6 @@ describe('external endpoints are not marked as redacted', () => {
 
     it('still marks an in-cluster endpoint at the Flow tier', () => {
         const v = endpointView(EndpointDisclosure.Flow, '', '', '10.1.9.21', false);
-        expect(v.redacted).toBe(true);
-    });
-
-    it('leaves an external destination service genuinely empty', () => {
-        const v = destinationServiceView(EndpointDisclosure.Flow, '', true);
-        expect(v.redacted).toBe(false);
-        expect(v.text).toBe('-');
-    });
-
-    it('still marks a withheld in-cluster destination service', () => {
-        const v = destinationServiceView(EndpointDisclosure.Flow, '', false);
         expect(v.redacted).toBe(true);
     });
 });

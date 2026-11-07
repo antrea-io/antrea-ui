@@ -36,7 +36,7 @@ export interface FlowPeerFilter {
     direction?: FlowFilterDirection;
 }
 
-/** What a flow stream is authorized against: the Flow Aggregator checks RBAC against this and
+/** What a flow stream is authorized against: the flow source checks RBAC against this and
  * resolves each endpoint's disclosure tier relative to it. Modeled as a discriminated union,
  * rather than two optional fields, so a filter missing a scope - or naming both - is a compile
  * error instead of a request the backend always answers 400 to. */
@@ -44,7 +44,45 @@ export type FlowStreamScope =
     | { observedNamespace: string; clusterWide?: never }
     | { observedNamespace?: never; clusterWide: true };
 
-export type FlowStreamFilter = FlowPeerFilter & FlowStreamScope;
+export interface FlowQueryOptions {
+    /** Names a configured flow source. Left unset, the backend picks the first source able to
+     * serve the request, and no source parameter is sent. */
+    source?: string;
+    follow?: boolean;
+    since?: string;
+    maxCount?: number;
+    /** Re-runs a query whose other parameters are unchanged. The page ignores a query equal to
+     * the one it has open, so a host that wants to refresh a query with a fixed or no `since`,
+     * or retry one that failed, hands over the same query with a different requestId. It is part
+     * of the query's identity but is never sent to the backend. */
+    requestId?: string | number;
+}
+export type FlowStreamFilter = FlowPeerFilter & FlowStreamScope & FlowQueryOptions;
+/** What a host asks the flow page to show. `follow: true` is a live stream; `follow: false` is a
+ * finite query that ends with a completion event. */
+export interface FlowQuery extends FlowQueryOptions { follow: boolean; }
+/** The backend's completion event. `truncated` is true when the source had more records than
+ * `maxCount`: the result is incomplete, and which records made it in is arbitrary. */
+export interface FlowQueryCompletion { snapshotCount: number; maxCount: number; truncated: boolean; }
+
+/** Fired by the flow page whenever the state of its query changes, so that a host can disable its
+ * own controls while a query runs and report an incomplete result. `maxCount` is the limit of the
+ * query (the backend's default of 1,000,000 when the query sets none; the source is asked for one
+ * record more to detect truncation), known once the query completes, until then it is 0. A
+ * finite query is incomplete for any of three reasons: `truncated` is true when the source had
+ * more records than `maxCount`; `evicted` is true when the page's store evicted connections
+ * during the query, so some are missing or may show older totals; `droppedCount` is the number
+ * of records the source reports it lost, which does not end the query. Narrowing the query with
+ * filters or a shorter time window helps in each case. A live stream reports none of the three. */
+export const FLOW_QUERY_STATE_EVENT = 'antrea-flow-query-state';
+export interface FlowQueryStateDetail {
+    state: 'idle' | 'loading' | 'complete' | 'error';
+    snapshotCount: number;
+    maxCount: number;
+    truncated: boolean;
+    evicted: boolean;
+    droppedCount: number;
+}
 
 export function streamFilterKey(f: FlowStreamFilter): string {
     const namespaces = [...(f.namespaces ?? [])].sort();
@@ -57,6 +95,11 @@ export function streamFilterKey(f: FlowStreamFilter): string {
     // did not alter the key would leave the old stream running while the UI claimed to be showing
     // a different namespace — the one way this feature can silently show wrong data.
     return JSON.stringify({
+        source: f.source ?? '',
+        follow: f.follow ?? true,
+        since: f.since ?? '',
+        maxCount: f.maxCount ?? 0,
+        requestId: f.requestId ?? '',
         namespaces,
         pods,
         podLabelSelector: f.podLabelSelector ?? '',
@@ -70,6 +113,7 @@ export function streamFilterKey(f: FlowStreamFilter): string {
 }
 
 export interface FlowStreamCallbacks {
+    onCompleted?: (result: FlowQueryCompletion) => void;
     onFlows: (flows: Flow[]) => void;
     onError: (error: Error) => void;
     onDropped?: (droppedCount: number) => void;
@@ -84,15 +128,12 @@ export interface FlowStreamCallbacks {
      * before the attempt is due, not a promise of when it will connect. */
     onReconnectScheduled?: (delayMs: number) => void;
     /** Called on HTTP 401, i.e. the antrea-ui session is over. There is nothing to retry: the host
-     * should log the user out. Note that the Flow Aggregator rejecting the credential is *not*
+     * should log the user out. Note that a flow source rejecting the credential is *not*
      * this: it reaches onError with an "unauthenticated" code and never a 401, because it says
      * nothing about the antrea-ui session and must not log the user out of the rest of the UI. */
     onAuthError?: () => void;
-    /** Called on HTTP 501, i.e. Flow Aggregator integration is disabled for this deployment. This
-     * is a static configuration choice, not a transient failure: there is nothing to retry. */
-    onDisabled?: () => void;
-    /** Called on HTTP 403, i.e. this user is not permitted to view flow data. Like 501, this is a
-     * permanent answer for the session, not a transient failure: there is nothing to retry. */
+    /** Called on HTTP 403, i.e. this user is not permitted to view flow data. This is a
+     * permanent answer for the request, not a transient failure: there is nothing to retry. */
     onForbidden?: () => void;
 }
 
@@ -107,6 +148,10 @@ interface FlowStreamErrorPayload { message: string; code?: string; retryable?: b
 
 function buildStreamURL(filter: FlowStreamFilter): string {
     const params = new URLSearchParams();
+    if (filter.source) params.set('source', filter.source);
+    if (filter.follow !== undefined) params.set('follow', String(filter.follow));
+    if (filter.since) params.set('since', filter.since);
+    if (filter.maxCount !== undefined) params.set('maxCount', String(filter.maxCount));
     if (filter.namespaces?.length) params.set('namespaces', filter.namespaces.join(','));
     if (filter.pods?.length) params.set('pods', filter.pods.join(','));
     if (filter.podLabelSelector) params.set('podLabelSelector', filter.podLabelSelector);
@@ -125,8 +170,8 @@ function buildStreamURL(filter: FlowStreamFilter): string {
  * Authentication is the session cookie, which the browser attaches to the SSE fetch itself. The
  * backend keeps the session alive for as long as the stream is attached, and closes the stream if
  * the session ends. On HTTP 401 the session is gone for good: onAuthError() fires and the stream
- * stops for good too. On HTTP 501, Flow Aggregator integration is disabled for this deployment:
- * onDisabled() fires and the stream stops for good, the same way.
+ * stops for good too. On HTTP 501, this deployment does not serve the request: like a 400, the
+ * stream stops for good and onError() reports the backend's message.
  *
  * A retryable failure (see scheduleReconnect) is retried indefinitely with a backoff that caps at
  * 30s, never given up on outright. A reconnect due while the tab is hidden is deferred until it
@@ -144,6 +189,8 @@ export class FlowStreamClient {
     // 200-then-error-event shape otherwise looks identical to a healthy connection that happened
     // to drop, which is what reconnectAttempts is normally reset for.
     private streamErrorIsPermanent = false;
+    private queryFailed = false;
+    private completion: FlowQueryCompletion | null = null;
     private filter: FlowStreamFilter;
     private callbacks: FlowStreamCallbacks;
     private batchIntervalMs: number;
@@ -244,26 +291,25 @@ export class FlowStreamClient {
         // this one, orphaning it (stop() can only abort the abortController this call is about
         // to overwrite).
         this.reconnectPendingVisibility = false;
-        this.abortController = new AbortController();
+        const controller = new AbortController();
+        this.abortController = controller;
+        const current = () => this.running && this.abortController === controller;
         this.streamErrorIsPermanent = false;
+        this.queryFailed = false;
+        this.completion = null;
         const url = buildStreamURL(this.filter);
         try {
             const response = await fetch(url, {
                 credentials: 'include',
                 headers: { 'Accept': 'text/event-stream' },
-                signal: this.abortController.signal,
+                signal: controller.signal,
             });
+
+            if (!current()) return;
 
             if (response.status === 401) {
                 this.haltPermanently();
                 this.callbacks.onAuthError?.();
-                this.callbacks.onDisconnected?.();
-                return;
-            }
-
-            if (response.status === 501) {
-                this.haltPermanently();
-                this.callbacks.onDisabled?.();
                 this.callbacks.onDisconnected?.();
                 return;
             }
@@ -287,11 +333,13 @@ export class FlowStreamClient {
                 // would be retried forever purely because it was reported early enough to be an
                 // HTTP status rather than late enough to be an event. A body we cannot parse falls
                 // through to the retry path, which is the safer default for an unrecognized
-                // failure, except a 400, which (like 403) means this client built a request the
-                // backend will never accept, so no retry can help.
+                // failure, except a 400 (like 403), which means this client built a request the
+                // backend will never accept, and a 501, which means this deployment does not
+                // serve the request: no retry can help either.
                 const payload = await FlowStreamClient.readErrorPayload(response);
+                if (!current()) return;
                 const message = payload?.message ?? `Flow stream: ${response.status} ${response.statusText}`;
-                if (payload?.retryable === false || response.status === 400) {
+                if (payload?.retryable === false || response.status === 400 || response.status === 501) {
                     this.haltPermanently();
                     this.callbacks.onError(new Error(message));
                     this.callbacks.onDisconnected?.();
@@ -308,20 +356,39 @@ export class FlowStreamClient {
             let buffer = '';
             while (this.running) {
                 const { done, value } = await reader.read();
+                if (!current()) return;
                 if (done) break;
                 buffer += decoder.decode(value, { stream: true });
                 const { parsed, remaining } = this.parseSSEBuffer(buffer);
                 buffer = remaining;
                 for (const event of parsed) this.handleSSEEvent(event);
+                if (this.filter.follow === false && this.completion) {
+                    await reader.cancel();
+                    break;
+                }
+            }
+            if (!current()) return;
+            if (this.filter.follow === false) {
+                // A proxy closing the response is not proof the finite query succeeded.
+                if (!this.completion && !this.queryFailed) throw new Error('Flow query interrupted before completion.');
+                const completion = this.completion;
+                this.haltPermanently(); // Flush the last batch before the completion callback.
+                if (completion && !this.queryFailed) this.callbacks.onCompleted?.(completion);
+                this.callbacks.onDisconnected?.();
+                return;
             }
         } catch (err) {
-            if (!this.running) return;
+            if (!current()) return;
             if (err instanceof DOMException && err.name === 'AbortError') return;
             this.callbacks.onError(err instanceof Error ? err : new Error(String(err)));
         }
         this.callbacks.onDisconnected?.();
+        if (this.filter.follow === false) {
+            this.haltPermanently();
+            return;
+        }
         if (this.streamErrorIsPermanent) {
-            // Same terminal treatment as onAuthError/onDisabled/onForbidden above: retrying
+            // Same terminal treatment as onAuthError/onForbidden above: retrying
             // would just reproduce the same rejection every reconnectDelay, forever.
             this.haltPermanently();
             return;
@@ -379,7 +446,14 @@ export class FlowStreamClient {
                 const payload = JSON.parse(event.data) as SSEDroppedEvent;
                 this.reconnectAttempts = 0;
                 this.callbacks.onDropped?.(payload.droppedCount);
+            } else if (event.type === 'complete' && this.filter.follow === false) {
+                const result = JSON.parse(event.data) as FlowQueryCompletion;
+                if (Number.isInteger(result.snapshotCount) && result.snapshotCount >= 0 &&
+                    Number.isInteger(result.maxCount) && result.maxCount > 0) {
+                    this.completion = { snapshotCount: result.snapshotCount, maxCount: result.maxCount, truncated: result.truncated === true };
+                }
             } else if (event.type === 'error') {
+                this.queryFailed = true;
                 const payload = JSON.parse(event.data) as FlowStreamErrorPayload;
                 if (payload.retryable === false) this.streamErrorIsPermanent = true;
                 this.callbacks.onError(new Error(payload.message));
@@ -389,10 +463,10 @@ export class FlowStreamClient {
 
     // Retries a retryable failure indefinitely, the same way Gmail's own connection handling
     // does: there is no failure count here to give up after, only a delay that grows on each
-    // attempt and caps at 30s, so a Flow Aggregator restart or a network blip that outlasts a
+    // attempt and caps at 30s, so a flow source restart or a network blip that outlasts a
     // few attempts is still there to reconnect to whenever it recovers. A failure worth giving
-    // up on outright (a rejected credential, FA disabled) never reaches this method - it goes
-    // through haltPermanently instead.
+    // up on outright (a rejected credential, no source serving the mode) never reaches this
+    // method - it goes through haltPermanently instead.
     private scheduleReconnect(): void {
         const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 30000);
         this.reconnectAttempts++;

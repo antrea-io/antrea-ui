@@ -860,19 +860,20 @@ as above. `registerSidebarEntry`'s optional `icon` is SVG path `d` data,
 
 An entry can also nest under another top-level entry by setting `parentPath`
 to that entry's `path` — a built-in page's (`overview`, `flows`, `summary`,
-`traceflow`, `settings`) or another plugin's own top-level entry's, with or without a
-leading slash. The host renders it as a collapsible group (an
-`antrea-nav-group`, from `@antrea/ui-components` — the same primitive the
+`traceflow`, `supportbundle`, `settings`) or another plugin's own top-level
+entry's, with or without a leading slash. The host renders it as a collapsible
+group (an `antrea-nav-group`, from `@antrea/ui-components` — the same primitive the
 host would use to nest, say, Flow List and Service Map under Flow Visibility)
 instead of a flat item. Nesting is one level deep: pointing `parentPath` at
 an entry that is itself nested is invalid, and the host drops the nesting
 (falling back to a top-level entry) and logs why.
 
-`overview`, `summary`, `traceflow` and `flows` are themselves gated by
-per-user RBAC (see [authentication.md](authentication.md)) and simply don't
-render for a user who fails that gate; `flows` is shown to a user who holds
+`overview`, `summary`, `traceflow`, `flows` and `supportbundle` are themselves
+gated by per-user RBAC (see [authentication.md](authentication.md)) and simply
+don't render for a user who fails that gate; `flows` is shown to a user who holds
 `watch` on `flows.observability.antrea.io` cluster-wide, may list namespaces, or
-is named in any RoleBinding. Nesting under any of them
+is named in any RoleBinding. `supportbundle` requires `list` on
+`supportbundles.ui.antrea.io`. Nesting under any of them
 still falls back to a top-level entry for such a user, same as the
 invalid-nesting case above — but silently, per user, and without dropping
 anything: the entry itself is always valid, it just isn't always nested.

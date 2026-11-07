@@ -37,21 +37,64 @@ func TestMiddleware(t *testing.T) {
 		require.NoError(t, err)
 		middleware := Middleware(rl)
 
+		var retryAfter string
 		sendRequest := func() int {
 			rr := httptest.NewRecorder()
 			c, _ := gin.CreateTestContext(rr)
 			middleware(c)
+			retryAfter = rr.Header().Get("Retry-After")
 			return rr.Code
 		}
 
 		assert.Equal(t, http.StatusOK, sendRequest())
+		assert.Empty(t, retryAfter)
 		// we have exceeded burst size of 1
 		assert.Equal(t, http.StatusTooManyRequests, sendRequest())
+		assert.Equal(t, "1800", retryAfter)
 		// we should get about 1 token every 30 minutes, so should still fail after 25 minutes...
 		time.Sleep(25 * time.Minute)
 		assert.Equal(t, http.StatusTooManyRequests, sendRequest())
+		assert.Equal(t, "300", retryAfter)
 		// ... but should succeed after 35 minutes
 		time.Sleep(10 * time.Minute)
 		assert.Equal(t, http.StatusOK, sendRequest())
+	})
+}
+
+func TestMiddlewareRetryAfterRounding(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		// 1 token every 400ms: the delay is rounded up to 1 second, never 0
+		rl, err := NewGlobalRateLimiter("150/m", 1)
+		require.NoError(t, err)
+		middleware := Middleware(rl)
+		send := func() *httptest.ResponseRecorder {
+			rr := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rr)
+			middleware(c)
+			return rr
+		}
+		assert.Equal(t, http.StatusOK, send().Code)
+		rr := send()
+		assert.Equal(t, http.StatusTooManyRequests, rr.Code)
+		assert.Equal(t, "1", rr.Header().Get("Retry-After"))
+	})
+}
+
+func TestMiddlewareZeroRateOmitsRetryAfter(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		rl, err := NewGlobalRateLimiter("0/s", 1)
+		require.NoError(t, err)
+		middleware := Middleware(rl)
+		send := func() *httptest.ResponseRecorder {
+			rr := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rr)
+			middleware(c)
+			return rr
+		}
+		assert.Equal(t, http.StatusOK, send().Code)
+		rr := send()
+		assert.Equal(t, http.StatusTooManyRequests, rr.Code)
+		_, present := rr.Header()["Retry-After"]
+		assert.False(t, present)
 	})
 }

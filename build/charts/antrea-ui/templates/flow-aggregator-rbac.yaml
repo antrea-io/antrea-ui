@@ -16,7 +16,7 @@ rules:
   resources:
   - configmaps
   resourceNames:
-  - {{ .Values.flowAggregator.caConfigMap }}
+  - {{ .Values.flowAggregator.caConfigMap | quote }}
   verbs:
   - get
   - list

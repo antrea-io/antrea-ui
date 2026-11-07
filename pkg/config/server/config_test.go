@@ -15,6 +15,8 @@
 package server
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -327,4 +329,116 @@ supportBundle:
 			{Name: "baz", HTTPS: &SupportBundleHTTPSSource{URL: "https://baz.ns.svc/api/v1", CAFile: "/app/supportbundle-ca/2/ca.crt"}},
 		},
 	}, c.SupportBundle)
+}
+
+func TestValidateFlowSources(t *testing.T) {
+	valid := func() FlowSourceConfig {
+		return FlowSourceConfig{Name: "flow-aggregator", Capabilities: []string{FlowSourceCapabilityWatch}, Address: "fa.networking.svc:14740"}
+	}
+	tests := []struct {
+		name    string
+		sources func() []FlowSourceConfig
+		wantErr string
+	}{
+		{name: "none", sources: func() []FlowSourceConfig { return nil }},
+		{name: "valid", sources: func() []FlowSourceConfig { return []FlowSourceConfig{valid()} }},
+		{name: "both capabilities", sources: func() []FlowSourceConfig {
+			s := valid()
+			s.Capabilities = []string{FlowSourceCapabilityWatch, FlowSourceCapabilityList}
+			return []FlowSourceConfig{s}
+		}},
+		{name: "invalid name", wantErr: "name \"Bad_Name\" is invalid", sources: func() []FlowSourceConfig {
+			s := valid()
+			s.Name = "Bad_Name"
+			return []FlowSourceConfig{s}
+		}},
+		{name: "empty name", wantErr: "is invalid", sources: func() []FlowSourceConfig {
+			s := valid()
+			s.Name = ""
+			return []FlowSourceConfig{s}
+		}},
+		{name: "duplicate name", wantErr: "is not unique", sources: func() []FlowSourceConfig {
+			return []FlowSourceConfig{valid(), valid()}
+		}},
+		{name: "empty address", wantErr: "address must not be empty", sources: func() []FlowSourceConfig {
+			s := valid()
+			s.Address = ""
+			return []FlowSourceConfig{s}
+		}},
+		{name: "no capability", wantErr: "at least one capability", sources: func() []FlowSourceConfig {
+			s := valid()
+			s.Capabilities = nil
+			return []FlowSourceConfig{s}
+		}},
+		{name: "unknown capability", wantErr: "unknown capability \"get\"", sources: func() []FlowSourceConfig {
+			s := valid()
+			s.Capabilities = []string{"get"}
+			return []FlowSourceConfig{s}
+		}},
+		{name: "CA ConfigMap without namespace", wantErr: "namespace must be a valid Kubernetes namespace name", sources: func() []FlowSourceConfig {
+			s := valid()
+			s.CAConfigMap = "fa-ca"
+			return []FlowSourceConfig{s}
+		}},
+		{name: "CA ConfigMap with namespace", sources: func() []FlowSourceConfig {
+			s := valid()
+			s.CAConfigMap = "fa-ca"
+			s.Namespace = "networking"
+			return []FlowSourceConfig{s}
+		}},
+		{name: "system trust store needs no namespace", sources: func() []FlowSourceConfig {
+			s := valid()
+			s.Address = "history.example.test:14740"
+			return []FlowSourceConfig{s}
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			config := validConfig()
+			config.FlowSources = tc.sources()
+			err := validateConfig(config)
+			if tc.wantErr == "" {
+				require.NoError(t, err)
+			} else {
+				require.ErrorContains(t, err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestFlowSourceHasCapability(t *testing.T) {
+	source := FlowSourceConfig{Capabilities: []string{FlowSourceCapabilityList}}
+	assert.True(t, source.HasCapability(FlowSourceCapabilityList))
+	assert.False(t, source.HasCapability(FlowSourceCapabilityWatch))
+}
+
+func loadConfigFromJSON(t *testing.T, content string) (*Config, error) {
+	t.Helper()
+	originalArgs := os.Args
+	t.Cleanup(func() { os.Args = originalArgs })
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	require.NoError(t, os.WriteFile(configPath, []byte(content), 0600))
+	os.Args = []string{"server", "--config", configPath}
+	return LoadConfig()
+}
+
+func TestLoadConfigFlowSources(t *testing.T) {
+	config, err := loadConfigFromJSON(t, `{}`)
+	require.NoError(t, err)
+	assert.Empty(t, config.FlowSources)
+
+	config, err = loadConfigFromJSON(t, `{"flowSources": [
+		{"name": "flow-aggregator", "capabilities": ["watch"], "address": "fa:14740", "caConfigMap": "fa-ca", "namespace": "flow-aggregator"},
+		{"name": "flow-history", "capabilities": ["list"], "address": "history:14740", "serverName": "history.example.test", "insecureSkipVerify": true}
+	]}`)
+	require.NoError(t, err)
+	assert.Equal(t, []FlowSourceConfig{
+		{Name: "flow-aggregator", Capabilities: []string{"watch"}, Address: "fa:14740", CAConfigMap: "fa-ca", Namespace: "flow-aggregator"},
+		{Name: "flow-history", Capabilities: []string{"list"}, Address: "history:14740", ServerName: "history.example.test", InsecureSkipVerify: true},
+	}, config.FlowSources)
+}
+
+func TestLoadConfigRejectsFlowAggregatorKey(t *testing.T) {
+	_, err := loadConfigFromJSON(t, `{"flowAggregator": {"enabled": true, "address": "fa:14740"}}`)
+	require.ErrorContains(t, err, "configure flowSources instead")
 }

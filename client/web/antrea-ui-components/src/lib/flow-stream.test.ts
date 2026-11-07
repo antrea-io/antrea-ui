@@ -103,7 +103,6 @@ describe('FlowStreamClient', () => {
         disconnected: number;
         reconnectDelays: number[];
         authErrors: number;
-        disabled: number;
     } {
         const cb = {
             flows: [] as unknown[],
@@ -113,7 +112,6 @@ describe('FlowStreamClient', () => {
             disconnected: 0,
             reconnectDelays: [] as number[],
             authErrors: 0,
-            disabled: 0,
             forbidden: 0,
             onFlows: (flows: unknown[]) => { cb.flows.push(...flows); },
             onError: (err: Error) => { cb.errors.push(err); },
@@ -122,7 +120,6 @@ describe('FlowStreamClient', () => {
             onDisconnected: () => { cb.disconnected++; },
             onReconnectScheduled: (delayMs: number) => { cb.reconnectDelays.push(delayMs); },
             onAuthError: () => { cb.authErrors++; },
-            onDisabled: () => { cb.disabled++; },
             onForbidden: () => { cb.forbidden++; },
         };
         return cb;
@@ -338,22 +335,34 @@ describe('FlowStreamClient', () => {
         expect(fetchMock).toHaveBeenCalledTimes(1);
     });
 
-    // A 501 means Flow Aggregator integration is off for this deployment — a static config
-    // choice, not a transient failure — so it is terminal, the same way a 401 is.
-    test('dispatches onDisabled on HTTP 501 and does not reconnect', async () => {
-        stubFetch(async () => sseResponse([], 501));
+    // A 501 means this deployment does not serve the request, so like a 400 it is permanent and
+    // reported through onError with the backend's message.
+    test('reports HTTP 501 through onError and does not reconnect', async () => {
+        stubFetch(async () => new Response(
+            JSON.stringify({ message: 'not served', code: 'flow_source_not_served', retryable: false }), { status: 501 }));
         const cb = makeCallbacks();
         const client = new FlowStreamClient({}, cb, 10);
         client.start();
         await vi.advanceTimersByTimeAsync(0);
 
-        expect(cb.disabled).toBe(1);
+        expect(cb.errors.map(e => e.message)).toEqual(['not served']);
         await vi.advanceTimersByTimeAsync(60_000);
         expect(fetchMock).toHaveBeenCalledTimes(1);
     });
 
-    // A 403 means this user may not view flow data. Like a 501 it is a permanent answer for the
-    // session, so it must not fall through to !response.ok and drive the backoff loop against it.
+    test('does not retry an HTTP 501 whose body cannot be parsed', async () => {
+        stubFetch(async () => new Response('', { status: 501 }));
+        const cb = makeCallbacks();
+        const client = new FlowStreamClient({}, cb, 10);
+        client.start();
+        await vi.advanceTimersByTimeAsync(60_000);
+
+        expect(cb.errors).toHaveLength(1);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    // A 403 means this user may not view flow data. It is a permanent answer for the
+    // request, so it must not fall through to !response.ok and drive the backoff loop against it.
     test('dispatches onForbidden on HTTP 403 and does not reconnect', async () => {
         stubFetch(async () => sseResponse([], 403));
         const cb = makeCallbacks();
@@ -417,7 +426,8 @@ describe('FlowStreamClient', () => {
         ['501', 501],
         ['403', 403],
     ])('does not dispatch onReconnectScheduled on a terminal HTTP %s', async (_name, status) => {
-        stubFetch(async () => sseResponse([], status));
+        // A closed body, as an error response has: the client reads it for the error payload.
+        stubFetch(async () => status === 501 ? new Response('', { status }) : sseResponse([], status));
         const cb = makeCallbacks();
         const client = new FlowStreamClient({}, cb, 10);
         client.start();
@@ -715,4 +725,90 @@ describe('FlowStreamClient', () => {
         expect(url).toContain('namespaces=default');
         client.stop();
     });
+    test('a completion event reports truncation', async () => {
+        stubFetch(async () => closingSseResponse([
+            'event: complete\ndata: {"snapshotCount":2,"maxCount":2,"truncated":true}\n\n',
+        ]));
+        const cb = makeCallbacks();
+        cb.onCompleted = vi.fn();
+        const client = new FlowStreamClient({ clusterWide: true, follow: false, maxCount: 2 }, cb, 10_000);
+        client.start();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(cb.onCompleted).toHaveBeenCalledWith({ snapshotCount: 2, maxCount: 2, truncated: true });
+    });
+    test('finite completion flushes the final batch and never reconnects', async () => {
+        stubFetch(async () => closingSseResponse([
+            'event: flow\ndata: {"flows":[{"id":"last"}]}\n\n',
+            'event: complete\ndata: {"snapshotCount":1,"maxCount":10000}\n\n',
+        ]));
+        const cb = makeCallbacks();
+        cb.onCompleted = vi.fn(() => expect(cb.flows).toEqual([{ id: 'last' }]));
+        const client = new FlowStreamClient({ clusterWide: true, source: 'flow-history', follow: false, since: '2026-10-23T00:00:00Z', maxCount: 10000 }, cb, 10_000);
+        client.start();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(cb.onCompleted).toHaveBeenCalledWith({ snapshotCount: 1, maxCount: 10000, truncated: false });
+        const params = new URL(fetchMock.mock.calls[0][0], 'http://test').searchParams;
+        expect(params.get('source')).toBe('flow-history');
+        expect(params.get('follow')).toBe('false');
+        expect(params.get('since')).toBe('2026-10-23T00:00:00Z');
+        expect(params.get('maxCount')).toBe('10000');
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        expect(vi.getTimerCount()).toBe(0);
+        client.stop();
+    });
+
+    test('sends no source parameter unless the filter names one', async () => {
+        stubFetch(async () => sseResponse([]));
+        const client = new FlowStreamClient({ clusterWide: true }, makeCallbacks(), 10);
+        client.start();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(new URL(fetchMock.mock.calls[0][0], 'http://test').searchParams.has('source')).toBe(false);
+        client.stop();
+    });
+
+    test('a different source is a different stream', () => {
+        expect(streamFilterKey({ clusterWide: true, source: 'a' })).not.toBe(streamFilterKey({ clusterWide: true, source: 'b' }));
+        expect(streamFilterKey({ clusterWide: true })).toBe(streamFilterKey({ clusterWide: true, source: '' }));
+    });
+
+    test.each(['empty success', 'EOF', 'server error'])('finite query: %s', async scenario => {
+        const chunks = scenario === 'empty success'
+            ? ['event: complete\ndata: {"snapshotCount":0,"maxCount":10000}\n\n']
+            : scenario === 'server error' ? ['event: error\ndata: {"message":"query failed","retryable":true}\n\n'] : [];
+        stubFetch(async () => closingSseResponse(chunks));
+        const cb = makeCallbacks();
+        cb.onCompleted = vi.fn();
+        const client = new FlowStreamClient({ clusterWide: true, follow: false }, cb);
+        client.start();
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        expect(cb.onCompleted).toHaveBeenCalledTimes(scenario === 'empty success' ? 1 : 0);
+        expect(cb.errors).toHaveLength(scenario === 'empty success' ? 0 : 1);
+        expect(vi.getTimerCount()).toBe(0);
+        client.stop();
+    });
+
+    test('a canceled query cannot deliver stale records into its replacement', async () => {
+        let oldStream!: ReadableStreamDefaultController<Uint8Array>;
+        const response = new Response(new ReadableStream<Uint8Array>({ start(c) { oldStream = c; } }));
+        let calls = 0;
+        stubFetch(async () => ++calls === 1 ? response : closingSseResponse([
+            'event: flow\ndata: {"flows":[{"id":"new"}]}\n\n',
+            'event: complete\ndata: {"snapshotCount":1,"maxCount":10000}\n\n',
+        ]));
+        const cb = makeCallbacks();
+        cb.onCompleted = vi.fn();
+        const client = new FlowStreamClient({ observedNamespace: 'old', follow: false }, cb);
+        client.start();
+        await vi.advanceTimersByTimeAsync(0);
+        client.updateFilter({ observedNamespace: 'new', follow: false });
+        oldStream.enqueue(new TextEncoder().encode('event: flow\ndata: {"flows":[{"id":"old"}]}\n\n'));
+        oldStream.close();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(cb.flows).toEqual([{ id: 'new' }]);
+        expect(cb.onCompleted).toHaveBeenCalledTimes(1);
+        client.stop();
+    });
+
 });

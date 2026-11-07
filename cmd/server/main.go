@@ -252,11 +252,11 @@ func run() error {
 	}
 
 	// Admin-password sessions (session.KindImpersonate) carry no bearer token or client cert of
-	// their own, which is all the Flow Aggregator's FlowStreamService accepts. A real, short-lived
+	// their own, which is all a flow source's FlowStreamService accepts. A real, short-lived
 	// token is minted for the antrea-ui-admin ServiceAccount and used for those calls only.
 	// k8sClientset authenticates as antrea-ui's own ServiceAccount, which is what
 	// build/charts/antrea-ui/templates/role.yaml grants the "serviceaccounts/token" create verb
-	// to. The Flow Aggregator integration only needs it when auth.basic.enable is also set, since
+	// to. The flow source integration only needs it when auth.basic.enable is also set, since
 	// that is the only login mode that produces a KindImpersonate session and so the only one that
 	// ever needs this token minted.
 	var adminTokenSource *k8s.AdminTokenSource
@@ -265,27 +265,15 @@ func run() error {
 	}
 
 	var flowStreamSubscriber flowstream.FlowStreamSubscriber
-	var flowAggregatorWatcher *flowstream.WatchedSubscriber
-	if config.FlowAggregator.Enabled {
-		logger.Info("FlowAggregator integration enabled", "address", config.FlowAggregator.Address)
-
-		// The subscriber follows the CA ConfigMap (see WatchedSubscriber): a missing ConfigMap
-		// does not keep the rest of antrea-ui from running, flow requests fail with a retryable
-		// error which the UI shows as a banner until it exists.
-		watchedSubscriber, err := flowstream.NewWatchedSubscriber(logger, k8sClientset, flowstream.WatchedConfig{
-			Address:            config.FlowAggregator.Address,
-			Namespace:          config.FlowAggregator.Namespace,
-			CAConfigMap:        config.FlowAggregator.CAConfigMap,
-			InsecureSkipVerify: config.FlowAggregator.InsecureSkipVerify,
-			ServerName:         config.FlowAggregator.ServerName,
-			AdminTokenSource:   adminTokenSource,
-		})
+	var flowStreamRouter *flowstream.RoutedSubscriber
+	if len(config.FlowSources) > 0 {
+		router, err := flowstream.NewRoutedSubscriber(logger, k8sClientset, config.FlowSources, adminTokenSource)
 		if err != nil {
-			return fmt.Errorf("failed to create the FlowAggregator flow stream subscriber: %w", err)
+			return err
 		}
-		defer watchedSubscriber.Close()
-		flowStreamSubscriber = watchedSubscriber
-		flowAggregatorWatcher = watchedSubscriber
+		defer router.Close()
+		flowStreamSubscriber = router
+		flowStreamRouter = router
 	}
 
 	// The backend instruments itself whether or not metrics are enabled: the setting only decides
@@ -392,8 +380,8 @@ func run() error {
 	go traceflowHandler.Run(stopCh)
 	go antreaSvcHandler.Run(stopCh)
 	go sessionStore.Run(stopCh)
-	if flowAggregatorWatcher != nil {
-		go flowAggregatorWatcher.Run(stopCh)
+	if flowStreamRouter != nil {
+		go flowStreamRouter.Run(stopCh)
 	}
 	go pluginRegistry.RunConfigMapWatch(stopCh)
 	if config.Plugins.Directory != "" {

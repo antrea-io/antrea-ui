@@ -12,13 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+import { FlowStore } from '../lib/flow-store';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import './antrea-flow-visibility-page';
 import { SCOPE_CHANGE_EVENT, SCOPE_CHOSEN_EVENT } from '../lib/namespace-scope';
 import type { ScopeChangeDetail, ScopeChosenDetail } from '../lib/namespace-scope';
 import type { AntreaFlowVisibilityPage } from './antrea-flow-visibility-page';
 import { searchFilterOptions, typedNamespace, typedPod, typedService } from './antrea-flow-visibility-page';
-import type { FlowStreamFilter } from '../lib/flow-stream';
+import { FLOW_QUERY_STATE_EVENT } from '../lib/flow-stream';
+import type { FlowQuery, FlowQueryStateDetail, FlowStreamFilter } from '../lib/flow-stream';
 import { resetAccessSummary } from '../lib/access-api';
 import {
     Flow,
@@ -48,6 +50,7 @@ interface FlowOverrides {
     dstNs?: string;
     srcDisclosure?: EndpointDisclosure;
     dstDisclosure?: EndpointDisclosure;
+    svcDisclosure?: EndpointDisclosure;
     destService?: string;
     flowType?: FlowType;
 }
@@ -67,6 +70,7 @@ function makeFlow(overrides: FlowOverrides = {}): Flow {
             flowType: overrides.flowType ?? FlowType.InterNode,
             sourceDisclosure: overrides.srcDisclosure ?? EndpointDisclosure.Full,
             destinationDisclosure: overrides.dstDisclosure ?? EndpointDisclosure.Full,
+            destinationServiceDisclosure: overrides.svcDisclosure ?? EndpointDisclosure.Full,
             sourcePodNamespace: overrides.srcNs ?? 'default',
             sourcePodName: overrides.srcPod ?? 'client-abc12',
             sourcePodUid: '',
@@ -178,6 +182,8 @@ interface FlowAccessFixture {
     alsoExist?: string[]
     /** Incomplete rules, as with a webhook authorizer, without anything else changing. */
     incomplete?: boolean
+    /** The verb of the cluster-wide flows grant when `clusterWide` is `allowed`. */
+    verb?: 'watch' | 'list'
 }
 
 function flowAccessFixture(
@@ -189,10 +195,11 @@ function flowAccessFixture(
         lister: opts.lister,
         alsoExist: opts.alsoExist,
         incomplete: opts.incomplete,
+        verb: opts.verb,
     };
 }
 
-const FLOWS_WATCH_RULE = { verbs: ['watch'], apiGroups: ['observability.antrea.io'], resources: ['flows'] };
+const flowsRule = (verb: 'watch' | 'list') => ({ verbs: [verb], apiGroups: ['observability.antrea.io'], resources: ['flows'] });
 
 /** GET /api/v1/access-summary: the cluster-scoped one, which holds the grant for a cluster-wide
  * caller and names the namespaces the page offers. */
@@ -201,7 +208,7 @@ function accessSummaryResponse(f: FlowAccessFixture): Response {
         username: 'alice', groups: [], clusterAdmin: false,
         namespaces: f.lister ? ['*'] : f.namespaces,
         rules: {
-            resourceRules: f.clusterWide === 'allowed' ? [FLOWS_WATCH_RULE] : [],
+            resourceRules: f.clusterWide === 'allowed' ? [flowsRule(f.verb ?? 'watch')] : [],
             nonResourceRules: [],
             incomplete: f.clusterWide === 'unknown' || !!f.incomplete,
         },
@@ -218,7 +225,7 @@ function accessSummaryResponse(f: FlowAccessFixture): Response {
 // describe the stream.
 async function mount(
     fetchImpl: (url: string, init?: RequestInit) => Promise<Response>,
-    opts: { search?: string; flowAccess?: () => FlowAccessFixture } = {},
+    opts: { search?: string; flowAccess?: () => FlowAccessFixture; flowQuery?: FlowQuery } = {},
 ): Promise<AntreaFlowVisibilityPage> {
     // A page that mounts twice in one test must not be answered from the first one's summaries.
     resetAccessSummary();
@@ -245,6 +252,7 @@ async function mount(
         return fetchImpl(url, init);
     }));
     el = document.createElement('antrea-flow-visibility-page') as AntreaFlowVisibilityPage;
+    el.flowQuery = opts.flowQuery;
     document.body.appendChild(el);
     await el.updateComplete;
     // The namespace list has to resolve before any stream can open (see onSessionReady), so let
@@ -1408,27 +1416,6 @@ describe('AntreaFlowVisibilityPage — changing the scope', () => {
         expect(page.shadowRoot!.textContent).not.toContain('not authorized to observe flows in this scope');
     });
 
-    // No scope change can turn the integration on.
-    test('the integration-disabled banner stays', async () => {
-        const fetchMock = vi.fn(async (url: string) => url.includes('observedNamespace=ns-a')
-            ? new Response(JSON.stringify({ code: 'integration_disabled', message: 'off' }), { status: 501 })
-            : sseResponse([]));
-        const page = await mount(fetchMock, {
-            search: '/?namespace=ns-a',
-            flowAccess: () => flowAccessFixture({ namespaces: ['ns-a', 'ns-b'] }),
-        });
-        await vi.advanceTimersByTimeAsync(0);
-        await page.updateComplete;
-        const before = page.shadowRoot!.querySelector('antrea-alert[status="danger"]')?.textContent;
-
-        await chooseScope(page, 'ns-b');
-        await vi.advanceTimersByTimeAsync(0);
-        await page.updateComplete;
-
-        expect(before).toBeTruthy();
-        expect(page.shadowRoot!.querySelector('antrea-alert[status="danger"]')?.textContent).toBe(before);
-    });
-
     // Stopping a client flushes its pending batch, which must not land in a store that was just
     // cleared for the new scope.
     test('records still pending for the old scope do not appear under the new one', async () => {
@@ -1728,7 +1715,7 @@ describe('AntreaFlowVisibilityPage — filters, sort, text filter, pause/resume,
     test('Dest Service sorts a withheld Service apart from an absent one', async () => {
         const flows = [
             makeFlow({ srcPod: 'm-absent', srcIP: '10.0.0.1' }),
-            makeFlow({ srcPod: 'm-withheld', srcIP: '10.0.0.2', dstDisclosure: EndpointDisclosure.Flow }),
+            makeFlow({ srcPod: 'm-withheld', srcIP: '10.0.0.2', svcDisclosure: EndpointDisclosure.Flow }),
             makeFlow({ srcPod: 'm-named', srcIP: '10.0.0.3', destService: 'ns-a/svc:http' }),
         ];
         expect(await sortedBy(flows, 'Dest Service', ['m-absent', 'm-withheld', 'm-named']))
@@ -1805,20 +1792,34 @@ describe('AntreaFlowVisibilityPage — multiselect dropdown', () => {
     });
 });
 
-describe('AntreaFlowVisibilityPage — flow visibility disabled server-side', () => {
-    // The backend answers with 501 (a static per-deployment config choice, not a transient
-    // failure) when Flow Aggregator integration is off. This is terminal, like a 401: no retry.
-    test('a stream 501 shows the disabled message and does not retry the stream', async () => {
-        const fetchMock = vi.fn(async () => sseResponse([], 501));
+describe('AntreaFlowVisibilityPage — request not served by this deployment', () => {
+    const notServed = () => jsonResponse({ message: 'this deployment does not serve live streams', code: 'flow_source_not_served', retryable: false }, 501);
+
+    // The backend answers 501 when no configured source serves the requested mode. Like a 400,
+    // it stops that request and shows the backend's message, without retrying.
+    test('a stream 501 shows the backend message and does not retry the stream', async () => {
+        const fetchMock = vi.fn(async () => notServed());
         const page = await mount(fetchMock);
         await vi.advanceTimersByTimeAsync(0);
 
         expect(page.shadowRoot!.querySelector('antrea-alert[status="danger"]')?.textContent)
-            .toContain('Flow visibility is disabled');
+            .toContain('does not serve live streams');
 
         expect(streamCalls(fetchMock)).toHaveLength(1);
         await vi.advanceTimersByTimeAsync(60_000);
         expect(streamCalls(fetchMock)).toHaveLength(1);
+    });
+
+    test('a 501 on a live request does not stop later finite queries', async () => {
+        const fetchMock = vi.fn(async (url: string) => streamParams([url]).get('follow') === 'false'
+            ? finiteResponse([flowEventChunk([makeFlow()]), FINITE_COMPLETE])
+            : notServed());
+        const page = await mount(fetchMock);
+        await vi.advanceTimersByTimeAsync(0);
+        await setQuery(page, { follow: false });
+
+        expect(streamCalls(fetchMock)).toHaveLength(2);
+        expect((page as unknown as { _queryState: string })._queryState).toBe('complete');
     });
 });
 
@@ -1856,7 +1857,8 @@ describe('AntreaFlowVisibilityPage — stream status', () => {
         const fetchMock = vi.fn(async (url: string) => {
             if (!url.includes('/api/v1/flows/stream')) return jsonResponse({});
             if (++calls === 1) throw new Error('network down');
-            return sseResponse([], status);
+            // A closed body, as an error response has: the client reads it for the error payload.
+            return status === 501 ? new Response('', { status }) : sseResponse([], status);
         });
         const page = await mount(fetchMock);
         await vi.advanceTimersByTimeAsync(0);
@@ -1870,7 +1872,7 @@ describe('AntreaFlowVisibilityPage — stream status', () => {
     });
 });
 
-// The 403 twin of the 501 case above: since nothing on the frontend gates access to this page
+// Since nothing on the frontend gates access to this page
 // anymore (authorization is entirely FA's), a real per-scope denial has to render a terminal panel
 // naming the restriction on its own, rather than leaving the page retrying or showing nothing.
 describe('AntreaFlowVisibilityPage — forbidden', () => {
@@ -2733,10 +2735,49 @@ describe('AntreaFlowVisibilityPage — disclosure in the flow list', () => {
     });
 
     test('a withheld Dest Service is marked with its own explanation', async () => {
-        const row = await rowFor(makeFlow({ dstDisclosure: EndpointDisclosure.Flow, dstNs: 'ns-c', dstPod: '' }));
+        const row = await rowFor(makeFlow({
+            dstDisclosure: EndpointDisclosure.Flow, svcDisclosure: EndpointDisclosure.Flow, dstNs: 'ns-c', dstPod: '',
+        }));
         const svc = cell(row, 3);
         expect(svc.querySelector('.redacted')).not.toBeNull();
-        expect(svc.querySelector('.redacted')!.getAttribute('title')).toContain("destination's namespace");
+        expect(svc.querySelector('.redacted')!.getAttribute('title')).toContain('flows/identity in its namespace');
+    });
+
+    // The Service is disclosed at the tier of its own Namespace, which need not be the destination
+    // endpoint's: each cell follows its own marker.
+    test('a disclosed Dest Service shows on a withheld destination', async () => {
+        const row = await rowFor(makeFlow({
+            dstDisclosure: EndpointDisclosure.Flow, dstNs: 'ns-c', dstPod: '', destService: 'ns-b/frontend:http',
+        }));
+        expect(cell(row, 2).querySelector('.redacted')).not.toBeNull();
+        expect(cell(row, 3).textContent).toContain('ns-b/frontend');
+        expect(cell(row, 3).querySelector('.redacted')).toBeNull();
+    });
+
+    // A withheld destination says nothing about whether there was a Service: with the Service
+    // marker at Full, the record had none, and the cell must not claim one was withheld.
+    test('a withheld destination with no Service shows an unmarked dash', async () => {
+        const row = await rowFor(makeFlow({ dstDisclosure: EndpointDisclosure.Flow, dstNs: 'ns-c', dstPod: '' }));
+        expect(cell(row, 2).querySelector('.redacted')).not.toBeNull();
+        expect(cell(row, 3).textContent!.trim()).toBe('-');
+        expect(cell(row, 3).querySelector('.redacted')).toBeNull();
+    });
+
+    // Nothing of an external destination is withheld, but its Service has a Namespace of its own,
+    // and the Service marker tells a withheld one apart from none.
+    test('a withheld Dest Service is marked on an external destination', async () => {
+        const row = await rowFor(makeFlow({
+            flowType: FlowType.ToExternal, dstDisclosure: EndpointDisclosure.Flow, dstNs: '', dstPod: '',
+            dstIP: '203.0.113.10', svcDisclosure: EndpointDisclosure.Flow,
+        }));
+        expect(cell(row, 2).querySelector('.redacted')).toBeNull();
+        expect(cell(row, 3).querySelector('.redacted')).not.toBeNull();
+    });
+
+    test('a withheld Dest Service is marked on an identified destination', async () => {
+        const row = await rowFor(makeFlow({ dstNs: 'ns-a', dstPod: 'db-abc12', svcDisclosure: EndpointDisclosure.Flow }));
+        expect(cell(row, 2).querySelector('.redacted')).toBeNull();
+        expect(cell(row, 3).querySelector('.redacted')).not.toBeNull();
     });
 
     // The most diagnostically useful thing redaction preserves: the rule action outlives the
@@ -2924,5 +2965,358 @@ describe('AntreaFlowVisibilityPage — collapsed peers in the service map', () =
         const named = graph.nodes.find(n => n.id !== 'default/client')!;
         expect(named.kind).toBe('workload');
         expect(named.shortName).toBe('10.1.0.8');
+    });
+});
+
+
+const FINITE_COMPLETE = 'event: complete\ndata: {"snapshotCount":2,"maxCount":10000}\n\n';
+
+function finiteResponse(chunks: string[]): Response {
+    return new Response(new ReadableStream<Uint8Array>({
+        start(c) { c.enqueue(new TextEncoder().encode(chunks.join(''))); c.close(); },
+    }));
+}
+
+function streamParams(call: unknown[]): URLSearchParams {
+    return new URL(call[0] as string, 'http://test').searchParams;
+}
+
+/** Hands the page a query and lets the request it causes, and the render after it, land. */
+async function setQuery(page: AntreaFlowVisibilityPage, flowQuery: FlowQuery | undefined): Promise<void> {
+    page.flowQuery = flowQuery;
+    await page.updateComplete;
+    await vi.advanceTimersByTimeAsync(0);
+    await page.updateComplete;
+}
+
+describe('flowQuery', () => {
+    test('with no query, the request is a plain live stream and the page owns no query controls', async () => {
+        const fetchMock = vi.fn(async () => sseResponse([]));
+        const page = await mount(fetchMock);
+        const params = streamParams(streamCalls(fetchMock)[0]);
+        expect(params.has('source')).toBe(false);
+        expect(params.has('follow')).toBe(false);
+        expect(params.has('since')).toBe(false);
+        expect(params.has('maxCount')).toBe(false);
+        expect(page.shadowRoot!.querySelector('#flow-time-range')).toBeNull();
+        expect(fetchMock.mock.calls.some(c => String(c[0]).endsWith('/api/v1/settings'))).toBe(false);
+        expect(page.shadowRoot!.querySelector('slot[name="controls"]')).not.toBeNull();
+    });
+
+    test('a finite query is sent as given and ends without reconnecting', async () => {
+        const fetchMock = vi.fn(async () => finiteResponse([flowEventChunk([makeFlow()]), FINITE_COMPLETE]));
+        const flowQuery = { source: 'flow-history', follow: false, since: '2026-03-25T00:00:00.000Z', maxCount: 500 };
+        const page = await mount(fetchMock, { flowQuery });
+        const params = streamParams(streamCalls(fetchMock)[0]);
+        expect(params.get('source')).toBe('flow-history');
+        expect(params.get('follow')).toBe('false');
+        expect(params.get('since')).toBe('2026-03-25T00:00:00.000Z');
+        expect(params.get('maxCount')).toBe('500');
+        expect(page.shadowRoot!.textContent).toContain('Query complete');
+        expect(page.shadowRoot!.textContent).toContain('2 snapshots received');
+        await vi.advanceTimersByTimeAsync(30_000);
+        expect(streamCalls(fetchMock)).toHaveLength(1);
+    });
+
+    test('a finite query has no Pause, Clear or throughput, and says Loading while it runs', async () => {
+        const page = await mount(() => new Promise<Response>(() => {}), { flowQuery: { follow: false } });
+        const text = page.shadowRoot!.textContent!;
+        expect(text).toContain('Loading');
+        expect(text).not.toContain('Pause');
+        expect(text).not.toContain('Clear');
+    });
+
+    test('a finite query colors its status dot by the query state, not by the connection', async () => {
+        const dot = (page: AntreaFlowVisibilityPage) => page.shadowRoot!.querySelector('.status-dot')!.getAttribute('style');
+        const running = await mount(vi.fn(async () => sseResponse([])), { flowQuery: { follow: false } });
+        expect(running.shadowRoot!.textContent).toContain('Loading');
+        expect(dot(running)).toContain('antrea-color-warning');
+        const done = await mount(vi.fn(async () => finiteResponse([FINITE_COMPLETE])), { flowQuery: { follow: false } });
+        expect(done.shadowRoot!.textContent).toContain('Query complete');
+        expect(dot(done)).toContain('antrea-color-success');
+    });
+
+    test('a new query replaces the open one, and an equal one leaves it alone', async () => {
+        const signals: (AbortSignal | null | undefined)[] = [];
+        const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+            signals.push(init?.signal);
+            return finiteResponse([FINITE_COMPLETE]);
+        });
+        const first = { follow: false, since: '2026-03-25T00:00:00.000Z' };
+        const page = await mount(fetchMock, { flowQuery: first });
+        expect(streamCalls(fetchMock)).toHaveLength(1);
+
+        await setQuery(page, { ...first });
+        expect(streamCalls(fetchMock)).toHaveLength(1);
+
+        await setQuery(page, { follow: false, since: '2026-03-25T00:15:00.000Z' });
+        expect(streamCalls(fetchMock)).toHaveLength(2);
+        expect(streamParams(streamCalls(fetchMock)[1]).get('since')).toBe('2026-03-25T00:15:00.000Z');
+        expect(signals[0]?.aborted).toBe(true);
+    });
+
+    test('naming another source is another request', async () => {
+        const fetchMock = vi.fn(async () => finiteResponse([FINITE_COMPLETE]));
+        const page = await mount(fetchMock, { flowQuery: { follow: false, source: 'a' } });
+        await setQuery(page, { follow: false, source: 'b' });
+        expect(streamCalls(fetchMock).map(c => streamParams(c).get('source'))).toEqual(['a', 'b']);
+    });
+
+    test.each(['list', 'map'] as const)('switching between live and finite in %s view', async view => {
+        const fetchMock = vi.fn(async (url: string) => streamParams([url]).get('follow') === 'false'
+            ? finiteResponse([flowEventChunk([makeFlow()]), FINITE_COMPLETE])
+            : sseResponse([]));
+        const page = await mount(fetchMock);
+        page.viewMode = view;
+        await page.updateComplete;
+        await setQuery(page, { follow: false, since: '2026-03-25T00:00:00.000Z' });
+        expect(page.shadowRoot!.textContent).toContain('Query complete');
+        await setQuery(page, undefined);
+        const last = streamParams(streamCalls(fetchMock).at(-1)!);
+        expect(last.has('follow')).toBe(false);
+        expect(last.has('since')).toBe(false);
+        expect(page.shadowRoot!.textContent).not.toContain('snapshots received');
+        expect(page.shadowRoot!.textContent).not.toContain('Query complete');
+    });
+
+    test('a change of mode loads the selector options for the verb of the new mode', async () => {
+        const page = await mount(async () => sseResponse([]), {
+            search: '/',
+            flowAccess: () => flowAccessFixture({ namespaces: ['team-a'], clusterWide: 'allowed', verb: 'list' }),
+        });
+        expect((await scopeMenu(page)).map(o => o.value)).not.toContain('__cluster_wide__');
+        await setQuery(page, { follow: false });
+        expect((await scopeMenu(page)).map(o => o.value)).toContain('__cluster_wide__');
+        await setQuery(page, undefined);
+        expect((await scopeMenu(page)).map(o => o.value)).not.toContain('__cluster_wide__');
+    });
+
+    test.each(['watch', 'list'] as const)(
+        'reselects the default scope when only %s is allowed cluster-wide', async verb => {
+            const signals: (AbortSignal | null | undefined)[] = [];
+            const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+                signals.push(init?.signal);
+                return streamParams([url]).get('follow') === 'false'
+                    ? finiteResponse([FINITE_COMPLETE])
+                    : sseResponse([]);
+            });
+            const page = await mount(fetchMock, {
+                search: '/',
+                flowAccess: () => flowAccessFixture({ namespaces: ['ns-a'], clusterWide: 'allowed', verb }),
+            });
+            const states: FlowQueryStateDetail[] = [];
+            page.addEventListener(FLOW_QUERY_STATE_EVENT, e => states.push((e as CustomEvent<FlowQueryStateDetail>).detail));
+
+            await setQuery(page, { follow: false });
+            await setQuery(page, undefined);
+
+            const calls = streamCalls(fetchMock);
+            // No intermediate request may reuse the previous mode's default scope.
+            expect(calls).toHaveLength(3);
+            expect(calls.map(call => {
+                const params = streamParams(call);
+                return [params.get('follow'), params.get('clusterWide'), params.get('observedNamespace')];
+            })).toEqual(verb === 'watch' ? [
+                [null, 'true', null], ['false', null, 'ns-a'], [null, 'true', null],
+            ] : [
+                [null, null, 'ns-a'], ['false', 'true', null], [null, null, 'ns-a'],
+            ]);
+            expect(signals[0]?.aborted).toBe(true);
+            expect(states.map(state => state.state)).not.toContain('error');
+            expect(window.location.search).toBe('');
+        },
+    );
+
+    test.each(['ns-a', '_all'])('keeps the explicit URL scope %s across mode changes', async namespace => {
+        const fetchMock = vi.fn(async (url: string) => streamParams([url]).get('follow') === 'false'
+            ? finiteResponse([FINITE_COMPLETE])
+            : sseResponse([]));
+        const page = await mount(fetchMock, {
+            search: `/?namespace=${namespace}`,
+            flowAccess: () => flowAccessFixture({ namespaces: ['ns-b'], clusterWide: 'allowed', verb: 'watch' }),
+        });
+        await setQuery(page, { follow: false });
+        await setQuery(page, undefined);
+
+        const calls = streamCalls(fetchMock);
+        expect(calls).toHaveLength(3);
+        for (const call of calls) {
+            const params = streamParams(call);
+            expect(params.get('clusterWide')).toBe(namespace === '_all' ? 'true' : null);
+            expect(params.get('observedNamespace')).toBe(namespace === '_all' ? null : namespace);
+        }
+        expect(window.location.search).toBe(`?namespace=${namespace}`);
+    });
+
+    test('a refused finite query says which verb it needs, and does not retry', async () => {
+        const fetchMock = vi.fn(async () => jsonResponse({ message: 'forbidden', retryable: false }, 403));
+        const page = await mount(fetchMock, { flowQuery: { follow: false } });
+        expect(page.shadowRoot!.textContent).toContain('"list" verb');
+        await vi.advanceTimersByTimeAsync(30_000);
+        expect(streamCalls(fetchMock)).toHaveLength(1);
+    });
+
+    test('a source the backend rejects is reported and not retried', async () => {
+        const fetchMock = vi.fn(async () =>
+            jsonResponse({ message: 'flow source "x" cannot serve this request', code: 'flow_source_unsupported' }, 400));
+        const page = await mount(fetchMock, { flowQuery: { follow: false, source: 'x' } });
+        expect(page.shadowRoot!.textContent).toContain('cannot serve this request');
+        await vi.advanceTimersByTimeAsync(30_000);
+        expect(streamCalls(fetchMock)).toHaveLength(1);
+    });
+
+    test('Last Seen carries the date in a finite query', async () => {
+        const earlier = new Date(2026, 2, 23, 12, 34, 56);
+        const later = new Date(2026, 2, 24, 12, 34, 56);
+        const flows = [
+            { ...makeFlow({ srcIP: '10.0.0.1' }), endTs: earlier.toISOString() },
+            { ...makeFlow({ srcIP: '10.0.0.3' }), endTs: later.toISOString() },
+        ];
+        const page = await mount(async url => streamParams([url]).get('follow') === 'false'
+            ? finiteResponse([flowEventChunk(flows), FINITE_COMPLETE])
+            : sseResponse([flowEventChunk(flows)]));
+        page.viewMode = 'list';
+        await vi.advanceTimersByTimeAsync(1000);
+        await page.updateComplete;
+        const lastSeen = () => Array.from(page.shadowRoot!.querySelectorAll('tbody tr'))
+            .map(row => row.querySelector('td')!.textContent!.trim());
+        expect(lastSeen()).toEqual([later.toLocaleTimeString(), earlier.toLocaleTimeString()]);
+
+        await setQuery(page, { follow: false });
+        await vi.advanceTimersByTimeAsync(1000);
+        await page.updateComplete;
+        const cells = lastSeen();
+        expect(cells).toHaveLength(2);
+        expect(cells[0]).toContain(later.toLocaleDateString());
+        expect(cells[1]).toContain(earlier.toLocaleDateString());
+        expect(cells[0]).toContain(later.toLocaleTimeString());
+
+        await setQuery(page, undefined);
+        await vi.advanceTimersByTimeAsync(1000);
+        await page.updateComplete;
+        expect(lastSeen()).toEqual([later.toLocaleTimeString(), earlier.toLocaleTimeString()]);
+    });
+});
+
+describe('flow query state event', () => {
+    function collect(page: AntreaFlowVisibilityPage): FlowQueryStateDetail[] {
+        const seen: FlowQueryStateDetail[] = [];
+        page.addEventListener(FLOW_QUERY_STATE_EVENT, e => seen.push((e as CustomEvent<FlowQueryStateDetail>).detail));
+        return seen;
+    }
+
+    test('reports loading, then the count and limit at completion', async () => {
+        const page = await mount(async () => sseResponse([]));
+        const seen = collect(page);
+        let finish!: () => void;
+        const fetchMock = vi.mocked(fetch);
+        fetchMock.mockImplementation(async () => new Promise<Response>(resolve => {
+            finish = () => resolve(finiteResponse([flowEventChunk([makeFlow(), makeFlow({ srcIP: '10.0.0.9' })]), FINITE_COMPLETE]));
+        }));
+        await setQuery(page, { follow: false, since: '2026-03-25T00:00:00.000Z' });
+        expect(seen.at(-1)).toEqual({ state: 'loading', snapshotCount: 0, maxCount: 0, truncated: false, evicted: false, droppedCount: 0 });
+        finish();
+        await vi.advanceTimersByTimeAsync(0);
+        await page.updateComplete;
+        expect(seen.at(-1)).toEqual({ state: 'complete', snapshotCount: 2, maxCount: 10000, truncated: false, evicted: false, droppedCount: 0 });
+    });
+
+    test('reports and warns about a truncated result', async () => {
+        const page = await mount(async () => sseResponse([]));
+        const seen = collect(page);
+        vi.mocked(fetch).mockImplementation(async () => finiteResponse([
+            flowEventChunk([makeFlow()]),
+            'event: complete\ndata: {"snapshotCount":1,"maxCount":1,"truncated":true}\n\n',
+        ]));
+        await setQuery(page, { follow: false, maxCount: 1 });
+        expect(seen.at(-1)).toMatchObject({ state: 'complete', maxCount: 1, truncated: true, evicted: false });
+        expect(page.shadowRoot!.textContent).toContain('Result truncated at 1 records');
+        expect(page.shadowRoot!.textContent).toContain('some connections may be missing or show older totals');
+        expect(page.shadowRoot!.textContent).toContain('Narrow the query with filters or a shorter time window');
+    });
+
+    test('reports the records a source dropped during a finite query', async () => {
+        const page = await mount(async () => sseResponse([]));
+        const seen = collect(page);
+        vi.mocked(fetch).mockImplementation(async () => finiteResponse([
+            flowEventChunk([makeFlow()]),
+            'event: dropped\ndata: {"droppedCount":5}\n\n',
+            FINITE_COMPLETE,
+        ]));
+        await setQuery(page, { follow: false });
+        expect(seen.at(-1)).toMatchObject({ state: 'complete', truncated: false, evicted: false, droppedCount: 5 });
+    });
+
+    test('reports and warns when the store evicted connections during a finite query', async () => {
+        const page = await mount(async () => sseResponse([]));
+        const seen = collect(page);
+        (page as unknown as { _store: FlowStore })._store = new FlowStore(1);
+        vi.mocked(fetch).mockImplementation(async () => finiteResponse([
+            flowEventChunk([makeFlow(), makeFlow({ srcIP: '10.0.0.9' })]), FINITE_COMPLETE,
+        ]));
+        await setQuery(page, { follow: false });
+        expect(seen.at(-1)).toMatchObject({ state: 'complete', truncated: false, evicted: true });
+        expect(page.shadowRoot!.textContent).toContain('some connections are missing or show older totals');
+        expect(page.shadowRoot!.textContent).not.toContain('oldest entries evicted');
+    });
+
+    test('a live stream keeps its own eviction warning and reports no eviction', async () => {
+        const page = await mount(async () => sseResponse([]));
+        const seen = collect(page);
+        (page as unknown as { _store: FlowStore })._store = new FlowStore(1);
+        vi.mocked(fetch).mockImplementation(async () =>
+            sseResponse([flowEventChunk([makeFlow(), makeFlow({ srcIP: '10.0.0.9' })])]));
+        await setQuery(page, { follow: true, requestId: 1 });
+        await vi.advanceTimersByTimeAsync(1000);
+        await page.updateComplete;
+        expect(page.shadowRoot!.textContent).toContain('Store limit reached, oldest entries evicted');
+        expect(seen.some(d => d.evicted)).toBe(false);
+    });
+
+    test('reports a failed query as an error', async () => {
+        const page = await mount(async () => sseResponse([]));
+        const seen = collect(page);
+        vi.mocked(fetch).mockImplementation(async () => jsonResponse({ message: 'down', retryable: false }, 503));
+        await setQuery(page, { follow: false });
+        expect(seen.at(-1)?.state).toBe('error');
+    });
+
+    test('does not report a failed live stream as a query error', async () => {
+        const page = await mount(async () => jsonResponse({ message: 'down', retryable: false }, 503));
+        const seen = collect(page);
+        await vi.advanceTimersByTimeAsync(1000);
+        await page.updateComplete;
+        expect(seen.map(d => d.state)).not.toContain('error');
+        expect((page as unknown as { _queryState: string })._queryState).toBe('idle');
+    });
+
+    test('does not report a refused live stream as a query error', async () => {
+        const page = await mount(async () => jsonResponse({ message: 'forbidden', retryable: false }, 403));
+        const seen = collect(page);
+        await vi.advanceTimersByTimeAsync(1000);
+        await page.updateComplete;
+        expect(seen.map(d => d.state)).not.toContain('error');
+        expect((page as unknown as { _queryState: string })._queryState).toBe('idle');
+    });
+
+    test('a new requestId re-runs a query whose other parameters are unchanged', async () => {
+        const fetchMock = vi.fn(async () => finiteResponse([flowEventChunk([makeFlow()]), FINITE_COMPLETE]));
+        const page = await mount(fetchMock, { flowQuery: { follow: false, requestId: 1 } });
+        expect(streamCalls(fetchMock)).toHaveLength(1);
+
+        await setQuery(page, { follow: false, requestId: 1 });
+        expect(streamCalls(fetchMock)).toHaveLength(1);
+
+        await setQuery(page, { follow: false, requestId: 2 });
+        expect(streamCalls(fetchMock)).toHaveLength(2);
+        expect(streamParams(streamCalls(fetchMock)[1]).has('requestId')).toBe(false);
+    });
+
+    test('is back to idle once the page returns to live data', async () => {
+        const page = await mount(async () => sseResponse([]), { flowQuery: { follow: false } });
+        const seen = collect(page);
+        vi.mocked(fetch).mockImplementation(async () => sseResponse([]));
+        await setQuery(page, undefined);
+        expect(seen.at(-1)).toEqual({ state: 'idle', snapshotCount: 0, maxCount: 0, truncated: false, evicted: false, droppedCount: 0 });
     });
 });

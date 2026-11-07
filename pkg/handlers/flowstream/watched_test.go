@@ -87,6 +87,7 @@ func newTestWatched(t *testing.T) (*WatchedSubscriber, *fakeCAProvider) {
 	t.Helper()
 	provider := &fakeCAProvider{}
 	w, err := newWatchedSubscriber(testr.New(t), WatchedConfig{
+		Name:        "test-source",
 		Address:     "127.0.0.1:0",
 		Namespace:   "flow-aggregator",
 		CAConfigMap: "flow-aggregator-ca",
@@ -212,7 +213,7 @@ func setCAConfigMap(t *testing.T, client kubernetes.Interface, ca string) {
 	t.Helper()
 	cm := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "flow-aggregator", Name: "flow-aggregator-ca"},
-		Data:       map[string]string{flowAggregatorCAKey: ca},
+		Data:       map[string]string{flowSourceCAKey: ca},
 	}
 	cms := client.CoreV1().ConfigMaps(cm.Namespace)
 	if _, err := cms.Update(t.Context(), cm, metav1.UpdateOptions{}); apierrors.IsNotFound(err) {
@@ -318,6 +319,17 @@ func TestWatchedSubscriberSubscribeDelegatesToTheCurrentSubscriber(t *testing.T)
 // already established must end like an ordinary disconnect, with no error, so that the client
 // reconnects instead of showing an error.
 func TestWatchedSubscriberRotationEndsLiveStreamWithoutError(t *testing.T) {
+	testWatchedSubscriberRotationEndsStream(t, &FlowStreamFilter{})
+}
+
+// A finite query interrupted by rotation must fail, rather than report a partial result as a
+// successful completion. The caller can then explicitly re-run it.
+func TestWatchedSubscriberRotationFailsFiniteQuery(t *testing.T) {
+	testWatchedSubscriberRotationEndsStream(t, finiteFilter())
+}
+
+func testWatchedSubscriberRotationEndsStream(t *testing.T, filter *FlowStreamFilter) {
+	t.Helper()
 	w, provider := newTestWatched(t)
 	provider.set(newTestCA(t))
 	w.Enqueue()
@@ -341,7 +353,7 @@ func TestWatchedSubscriberRotationEndsLiveStreamWithoutError(t *testing.T) {
 		Mode:       session.ModeToken,
 		Credential: session.Credential{Kind: session.KindBearer, Token: []byte("tok")},
 	})
-	flowsCh, errCh, readyCh := w.Subscribe(ctx, &FlowStreamScope{ClusterWide: true}, &FlowStreamFilter{})
+	flowsCh, errCh, readyCh := w.Subscribe(ctx, &FlowStreamScope{ClusterWide: true}, filter)
 	select {
 	case <-readyCh:
 	case err := <-errCh:
@@ -366,7 +378,15 @@ func TestWatchedSubscriberRotationEndsLiveStreamWithoutError(t *testing.T) {
 	}
 	select {
 	case err, ok := <-errCh:
-		assert.False(t, ok, "a CA rotation must not surface as a stream error: %v", err)
+		if filter.following() {
+			assert.False(t, ok, "a CA rotation must not surface as a live stream error: %v", err)
+		} else {
+			require.True(t, ok, "a CA rotation must fail an interrupted finite query")
+			var streamErr *StreamError
+			require.ErrorAs(t, err, &streamErr)
+			assert.True(t, streamErr.Retryable)
+			assert.Contains(t, streamErr.Error(), "canceled the query before completion")
+		}
 	case <-timeout:
 		require.FailNow(t, "timed out waiting for the stream to end")
 	}

@@ -23,7 +23,7 @@ import (
 //go:generate mockgen -source=interface.go -package=testing -destination=testing/mock_interface.go -copyright_file=$MOCKGEN_COPYRIGHT_FILE
 
 // FlowStreamSubscriber provides a channel-based interface for streaming flow data.
-// Implementations connect to the FlowAggregator's gRPC FlowStreamService (see grpc.go)
+// Implementations connect to a flow source's gRPC FlowStreamService (see grpc.go)
 // and relay flow events to the caller.
 type FlowStreamSubscriber interface {
 	// Subscribe starts streaming flows in the given scope, matching the given filter.
@@ -36,14 +36,14 @@ type FlowStreamSubscriber interface {
 	// The caller should read from all three until flowsCh and errCh are closed.
 	// Cancel the context to stop the stream.
 	//
-	// scope and filter are separate because they mean different things: scope is what the Flow
-	// Aggregator authorizes the stream against and resolves each endpoint's disclosure tier
+	// scope and filter are separate because they mean different things: scope is what the flow
+	// source authorizes the stream against and resolves each endpoint's disclosure tier
 	// relative to, while filter only narrows what the stream delivers within it. scope must
 	// have exactly one of its fields set; parseFlowStreamScope guarantees that for requests
 	// arriving over HTTP.
 	//
 	// ctx must carry the request's *session.RequestAuth (see session.WithRequestAuth): the
 	// GRPCFlowStreamSubscriber implementation reads it to decide which credential to present
-	// to the Flow Aggregator.
+	// to the flow source.
 	Subscribe(ctx context.Context, scope *FlowStreamScope, filter *FlowStreamFilter) (<-chan apisv1.FlowStreamEvent, <-chan error, <-chan struct{})
 }

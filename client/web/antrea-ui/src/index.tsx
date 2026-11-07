@@ -21,7 +21,7 @@ import { RouterProvider } from 'react-router/dom';
 import { setApiBase } from '@antrea/ui-components';
 import './index.css';
 import App from './App';
-import { OverviewPage, SummaryPage, TraceflowPage, FlowVisibilityPage, FlowsRedirect, SettingsPage, PluginPage, HomeRedirect } from './pages';
+import { OverviewPage, SummaryPage, TraceflowPage, FlowVisibilityPage, FlowsRedirect, SupportBundlePage, SettingsPage, PluginPage, HomeRedirect } from './pages';
 import reportWebVitals from './reportWebVitals';
 import config from './config';
 import { loadPlugins, getPluginRoutes, getPluginSidebarEntries, getLandingPageTabs, getIncompatiblePlugins } from './plugins';
@@ -78,6 +78,10 @@ async function main() {
                 {
                     path: "flows/map",
                     element: <FlowVisibilityPage view="map" />,
+                },
+                {
+                    path: "supportbundle",
+                    element: <SupportBundlePage />,
                 },
                 {
                     path: "settings",

@@ -32,10 +32,7 @@ import (
 )
 
 const (
-	// DefaultFlowAggregatorNamespace is the Namespace of the Flow Aggregator CA ConfigMap when
-	// WatchedConfig.Namespace is empty.
-	DefaultFlowAggregatorNamespace = "flow-aggregator"
-	flowAggregatorCAKey            = "ca.crt"
+	flowSourceCAKey = "ca.crt"
 
 	// caWaitReminderInterval is how often a WatchedSubscriber, while it has no CA bundle yet,
 	// logs a message about why that may be taking long.
@@ -46,23 +43,24 @@ const (
 // subscriber. The cause is only logged: it names Kubernetes objects and is meant for the operator,
 // not for every user who can open a flow stream.
 var errWatchedSubscriberUnavailable = retryableInternalStreamError(errors.New(
-	"flow visibility is unavailable: the backend has not loaded the Flow Aggregator CA certificate, " +
-		"check the antrea-ui backend logs and the flowAggregator configuration"))
+	"flow visibility is unavailable: the backend has not loaded the flow source CA certificate, " +
+		"check the antrea-ui backend logs and the flowSources configuration"))
 
 // WatchedConfig holds the settings of a WatchedSubscriber.
 type WatchedConfig struct {
-	// Address is the Flow Aggregator gRPC address.
+	// Name is the configured source name, included in logs and passed to GRPCConfig.
+	Name string
+	// Address is the flow source's gRPC address.
 	Address string
 	// Namespace and CAConfigMap locate the ConfigMap whose "ca.crt" key holds the CA bundle that
-	// verifies the Flow Aggregator's certificate. Namespace defaults to
-	// DefaultFlowAggregatorNamespace. An empty CAConfigMap means there is nothing to watch: the
-	// system trust store is used.
+	// verifies the source's certificate. Namespace is required when CAConfigMap is set.
+	// An empty CAConfigMap means there is nothing to watch: the system trust store is used.
 	Namespace   string
 	CAConfigMap string
-	// InsecureSkipVerify disables verification of the Flow Aggregator's certificate, so there is
+	// InsecureSkipVerify disables verification of the source's certificate, so there is
 	// no CA to watch either.
 	InsecureSkipVerify bool
-	// ServerName overrides the name the Flow Aggregator's certificate is verified against.
+	// ServerName overrides the name the source's certificate is verified against.
 	ServerName string
 	// AdminTokenSource is passed to the GRPCFlowStreamSubscriber, see GRPCConfig.
 	AdminTokenSource *k8s.AdminTokenSource
@@ -74,7 +72,7 @@ type caBundleProvider interface {
 	CurrentCABundleContent() []byte
 }
 
-// WatchedSubscriber is a FlowStreamSubscriber that follows the Flow Aggregator's CA ConfigMap. It
+// WatchedSubscriber is a FlowStreamSubscriber that follows one flow source's CA ConfigMap. It
 // builds a GRPCFlowStreamSubscriber for each CA bundle it sees, swaps it in and closes the one it
 // replaces, so a CA rotation takes effect without restarting antrea-ui. A stream on the closed
 // subscriber ends and its client reconnects through the new one.
@@ -120,16 +118,14 @@ var (
 // is not loaded until Run starts; otherwise the subscriber is built here, and an error means the
 // configuration cannot work.
 func NewWatchedSubscriber(logger logr.Logger, client kubernetes.Interface, cfg WatchedConfig) (*WatchedSubscriber, error) {
-	if cfg.Namespace == "" {
-		cfg.Namespace = DefaultFlowAggregatorNamespace
-	}
+	logger = logger.WithValues("source", cfg.Name)
 	if !cfg.watchesCA() {
 		return newWatchedSubscriber(logger, cfg, nil, nil)
 	}
 	controller, err := dynamiccertificates.NewDynamicCAFromConfigMapController(
-		"flow-aggregator-ca", cfg.Namespace, cfg.CAConfigMap, flowAggregatorCAKey, client)
+		"flow-source-"+cfg.Name+"-ca", cfg.Namespace, cfg.CAConfigMap, flowSourceCAKey, client)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create the Flow Aggregator CA controller: %w", err)
+		return nil, fmt.Errorf("failed to create the flow source CA controller: %w", err)
 	}
 	w, err := newWatchedSubscriber(logger, cfg, controller, func(ctx context.Context) { controller.Run(ctx, 1) })
 	if err != nil {
@@ -200,7 +196,7 @@ func (w *WatchedSubscriber) Run(stopCh <-chan struct{}) {
 				if w.available() {
 					return
 				}
-				w.logger.Info("Flow visibility is still waiting for the Flow Aggregator CA certificate: "+
+				w.logger.Info("Flow visibility is still waiting for the flow source CA certificate: "+
 					"check that the ConfigMap exists, has a ca.crt key holding a valid, non-empty "+
 					"PEM bundle, and that antrea-ui may get, list and watch it",
 					"namespace", w.cfg.Namespace, "configMap", w.cfg.CAConfigMap)
@@ -215,7 +211,7 @@ func (w *WatchedSubscriber) Run(stopCh <-chan struct{}) {
 // bundle.
 func (w *WatchedSubscriber) Enqueue() {
 	if err := w.rebuild(w.caProvider.CurrentCABundleContent()); err != nil {
-		w.logger.Error(err, "Failed to apply the Flow Aggregator CA bundle, keeping the current one",
+		w.logger.Error(err, "Failed to apply the flow source CA bundle, keeping the current one",
 			"namespace", w.cfg.Namespace, "configMap", w.cfg.CAConfigMap)
 	}
 }
@@ -235,9 +231,10 @@ func (w *WatchedSubscriber) rebuild(caData []byte) error {
 
 	tlsCfg, err := buildTLSConfig(w.logger, w.cfg, caData)
 	if err != nil {
-		return fmt.Errorf("failed to build TLS config for the Flow Aggregator: %w", err)
+		return fmt.Errorf("failed to build TLS config for the flow source: %w", err)
 	}
 	sub, err := NewGRPCFlowStreamSubscriber(w.logger, GRPCConfig{
+		Name:             w.cfg.Name,
 		Address:          w.cfg.Address,
 		TLSConfig:        tlsCfg,
 		AdminTokenSource: w.cfg.AdminTokenSource,
@@ -260,10 +257,10 @@ func (w *WatchedSubscriber) rebuild(caData []byte) error {
 	w.mu.Unlock()
 
 	if previous != nil {
-		w.logger.Info("The Flow Aggregator CA bundle changed, replaced the connection", "generation", generation)
+		w.logger.Info("The flow source CA bundle changed, replaced the connection", "generation", generation)
 		previous.Close()
 	} else if caData != nil {
-		w.logger.Info("Loaded the Flow Aggregator CA bundle, flow visibility is available")
+		w.logger.Info("Loaded the flow source CA bundle, flow visibility is available")
 	}
 	return nil
 }
@@ -311,7 +308,7 @@ func (w *WatchedSubscriber) Close() error {
 
 func buildTLSConfig(logger logr.Logger, cfg WatchedConfig, caData []byte) (*tls.Config, error) {
 	if cfg.InsecureSkipVerify {
-		logger.Info("WARNING: TLS certificate verification is disabled for the FlowAggregator gRPC connection. This should only be used for development/testing.")
+		logger.Info("WARNING: TLS certificate verification is disabled for the flow source gRPC connection. This should only be used for development/testing.")
 	}
 	tlsCfg := &tls.Config{
 		MinVersion: tls.VersionTLS12,
@@ -321,7 +318,7 @@ func buildTLSConfig(logger logr.Logger, cfg WatchedConfig, caData []byte) (*tls.
 	} else if len(caData) > 0 {
 		pool := x509.NewCertPool()
 		if !pool.AppendCertsFromPEM(caData) {
-			return nil, errors.New("failed to parse FlowAggregator CA cert")
+			return nil, errors.New("failed to parse flow source CA cert")
 		}
 		tlsCfg.RootCAs = pool
 	}

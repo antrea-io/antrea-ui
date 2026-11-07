@@ -195,3 +195,31 @@ never sees https.caConfigMap, so mistakes in it are reported here. */ -}}
 {{- end -}}
 {{- toYaml $sources -}}
 {{- end -}}
+
+{{- /* flowSources as the backend reads them: the Flow Aggregator, when enabled, comes first as a
+`watch` source named flow-aggregator, followed by .Values.flowSources. The backend validates each
+entry; mistakes the backend never sees, such as a clash with the Flow Aggregator's name, are
+reported here so that helm install fails rather than a Pod crashing. */ -}}
+{{- define "antrea-ui.flowSources" -}}
+{{- $sources := list -}}
+{{- if .Values.flowAggregator.enabled -}}
+{{- $sources = append $sources (dict
+  "name" "flow-aggregator"
+  "capabilities" (list "watch")
+  "address" .Values.flowAggregator.address
+  "caConfigMap" .Values.flowAggregator.caConfigMap
+  "namespace" (.Values.flowAggregator.namespace | default "flow-aggregator")
+  "serverName" .Values.flowAggregator.serverName
+  "insecureSkipVerify" .Values.flowAggregator.insecureSkipVerify) -}}
+{{- end -}}
+{{- range $i, $source := .Values.flowSources -}}
+{{- if and $.Values.flowAggregator.enabled (eq (default "" $source.name) "flow-aggregator") -}}
+{{- fail (printf "flowSources[%d].name must not be flow-aggregator while flowAggregator.enabled is true" $i) -}}
+{{- end -}}
+{{- if and $source.caConfigMap (not $source.namespace) -}}
+{{- fail (printf "flowSources[%d].namespace is required when caConfigMap is set" $i) -}}
+{{- end -}}
+{{- $sources = append $sources $source -}}
+{{- end -}}
+{{- toYaml $sources -}}
+{{- end -}}

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { accessSummary, onAccessSummaryReset, verdict, GATE_FLOWS_WATCH } from './access-api.js';
+import { accessSummary, onAccessSummaryReset, verdict, GATE_FLOWS_WATCH, GATE_FLOWS_LIST } from './access-api.js';
 import type { AccessSummary, Verdict } from './access-api.js';
 import { apiFetchJSON, APIError } from './api.js';
 
@@ -20,7 +20,8 @@ import { apiFetchJSON, APIError } from './api.js';
  * What a Namespace picker offers: whether the user holds the cluster scope, and the namespaces to
  * choose from. Derived from the cluster-scoped access summary, which knows nothing about any
  * page: the resources and verbs the verdict is about are the page's own, given to
- * namespaceAccess() as a callback (flowAccess() asks about watch on flows).
+ * namespaceAccess() as a callback (flowAccess() asks about watch on flows, or list for a finite
+ * query).
  *
  * A rendering hint and never an authorization decision: the API decides what the user gets.
  */
@@ -143,11 +144,11 @@ export async function namespaceAccess(
 }
 
 /** What the observed-namespace selector of the flow page offers. Its cluster-wide verdict is
- * watch on flows, the only scope in which the Flow Aggregator redacts nothing; the Flow
- * Aggregator authorizes and redacts every stream itself. */
-export async function flowAccess(): Promise<NamespaceAccess> {
+ * watch on flows for a live stream (follow), the only scope in which nothing is redacted, and
+ * list for a finite query. The flow source authorizes and redacts every response itself. */
+export async function flowAccess(follow = true): Promise<NamespaceAccess> {
     const summary = await accessSummary().catch(() => null);
-    return namespaceAccess(summary, s => verdict(s, GATE_FLOWS_WATCH));
+    return namespaceAccess(summary, s => verdict(s, follow ? GATE_FLOWS_WATCH : GATE_FLOWS_LIST));
 }
 
 /**
