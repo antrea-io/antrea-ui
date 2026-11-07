@@ -41,11 +41,9 @@ import (
 
 // flowSourceConnKeyPrefix, followed by the source's name, is the session transport/connection
 // cache key for a per-credential gRPC connection to a flow source (a KindCert credential; see
-// connFor). The key has no "/" so it is never treated as versioned - a flow source's TLS
-// settings do not change under a live session - and sources cannot evict each other's
-// connections. If CA reloading is ever added, the key must become
-// "flow-source-<name>/<digest>", with the name still ahead of the first "/": the session treats
-// that prefix as the upstream.
+// connFor). connFor is a plain map lookup with no version handling and never evicts a
+// connection, so a flow source's connection lives as long as the session. That is enough because
+// a flow source's TLS settings do not change under a live session.
 const flowSourceConnKeyPrefix = "flow-source-"
 
 // StreamError classifies a flow-stream failure for callers that need to react to it (the frontend,

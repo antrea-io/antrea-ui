@@ -67,7 +67,7 @@ export interface FlowQueryCompletion { snapshotCount: number; maxCount: number; 
 
 /** Fired by the flow page whenever the state of its query changes, so that a host can disable its
  * own controls while a query runs and report an incomplete result. `maxCount` is the limit of the
- * query (as many as the source allows when the query sets none; the source is asked for one
+ * query (the backend's default of 1,000,000 when the query sets none; the source is asked for one
  * record more to detect truncation), known once the query completes, until then it is 0. A
  * finite query is incomplete for any of three reasons: `truncated` is true when the source had
  * more records than `maxCount`; `evicted` is true when the page's store evicted connections

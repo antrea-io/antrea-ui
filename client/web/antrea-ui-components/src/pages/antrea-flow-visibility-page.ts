@@ -847,8 +847,9 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
      * that differs from the one open changes the stream. */
     @property({ attribute: false }) flowQuery?: FlowQuery;
     // A finite query's progress, reported to the host in a FLOW_QUERY_STATE_EVENT. _resultLimit is
-    // the limit requested from the source (the backend's filter.resultLimit()), not one the source
-    // applied, known only once the query completes.
+    // the query's limit as the backend reports it in the completion event (its resultLimit(), the
+    // default when the query sets none), known only once the query completes. The source is asked
+    // for one record more, to detect truncation.
     @state() private _queryState: FlowQueryStateDetail['state'] = 'idle';
     @state() private _snapshotCount = 0;
     @state() private _resultLimit = 0;
