@@ -86,6 +86,43 @@ describe('FlowStore', () => {
         expect(store.size()).toBe(1);
     });
 
+    test('a finite query keeps the record with the latest endTs whatever the arrival order', () => {
+        const store = new FlowStore();
+        const newer = makeFlow('10.0.0.2', 80);
+        newer.id = 'newer';
+        newer.endTs = '2026-03-25T00:05:00Z';
+        const older = makeFlow('10.0.0.2', 80);
+        older.id = 'older';
+        older.transport.sourcePort = 54321;
+
+        store.upsertBatch([newer, older], true);
+
+        expect(store.getAll().map(e => e.flow.id)).toEqual(['newer']);
+    });
+
+    test('a finite query still replaces a record with an equal or newer endTs', () => {
+        const store = new FlowStore();
+        const first = makeFlow('10.0.0.2', 80);
+        const second = makeFlow('10.0.0.2', 80);
+        second.id = 'second';
+
+        store.upsertBatch([first, second], true);
+
+        expect(store.getAll().map(e => e.flow.id)).toEqual(['second']);
+    });
+
+    test('a live stream replaces a record even when its endTs is older', () => {
+        const store = new FlowStore();
+        const newer = makeFlow('10.0.0.2', 80);
+        newer.endTs = '2026-03-25T00:05:00Z';
+        const older = makeFlow('10.0.0.2', 80);
+        older.id = 'older';
+
+        store.upsertBatch([newer, older]);
+
+        expect(store.getAll().map(e => e.flow.id)).toEqual(['older']);
+    });
+
     test('upsert with same connection key deduplicates', () => {
         const store = new FlowStore();
         const flow1 = makeFlow('10.0.0.2', 80);
@@ -195,4 +232,17 @@ describe('FlowStore', () => {
         const store = new FlowStore();
         expect(store.get('nonexistent')).toBeUndefined();
     });
+});
+
+
+test('finite query snapshots preserve the latest total without becoming live rate samples', () => {
+    const store = new FlowStore();
+    const first = makeFlow('10.0.0.2', 80);
+    first.stats.octetTotalCount = 100;
+    store.upsert(first, true);
+    const last = { ...first, endTs: '2026-03-25T00:02:00Z', stats: { ...first.stats, octetTotalCount: 500 } };
+    store.upsert(last, true);
+    expect(store.getAll()).toHaveLength(1);
+    expect(store.getAll()[0].flow.stats.octetTotalCount).toBe(500);
+    expect(store.getAll()[0].samples).toEqual([]);
 });

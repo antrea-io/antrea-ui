@@ -162,6 +162,25 @@ describe('apiFetchAppSettings', () => {
         expect(await apiFetchAppSettings()).toEqual(settings);
     });
 
+    test('keeps the flow sources, in the order given', async () => {
+        const settings = {
+            version: 'v1.0.0',
+            auth: { basicEnabled: true, oidcEnabled: false, kubeconfigEnabled: false, tokenEnabled: true },
+            features: {
+                flowVisibilityEnabled: true,
+                flowSources: [
+                    { name: 'flow-aggregator', capabilities: ['watch'] },
+                    { name: 'flow-history', capabilities: ['list'] },
+                ],
+            },
+        };
+        vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(settings)));
+
+        const got = await apiFetchAppSettings();
+        expect(got.features?.flowSources?.map(s => s.name)).toEqual(['flow-aggregator', 'flow-history']);
+        expect(got.features?.flowSources?.[1].capabilities).toEqual(['list']);
+    });
+
     test('throws APIError with a fallback message when the response body is empty', async () => {
         vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('', {
             status: 500,

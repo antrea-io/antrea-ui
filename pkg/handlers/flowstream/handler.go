@@ -15,6 +15,7 @@
 package flowstream
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -40,6 +41,11 @@ const (
 	FlowFilterDirectionTo   FlowFilterDirection = 2
 )
 
+// MaxFiniteSnapshots bounds the size of a finite query (follow=false), in records. It is a bound
+// on the query, not a match for the browser's flow store, which counts connections: a connection
+// that lasts is reported in many records, and the store keeps one entry per connection.
+const MaxFiniteSnapshots uint32 = 1_000_000
+
 // FlowStreamFilter represents the parsed query parameters for the flow stream endpoint.
 // All specified filters are AND-ed. Within each filter, values are OR-ed.
 //
@@ -48,6 +54,13 @@ const (
 // explicitly allows naming a Namespace that is outside the stream's scope, which is how a flow is
 // selected by its peer rather than by its own end.
 type FlowStreamFilter struct {
+	// Source names the flow source to read from. Empty selects the first configured source with
+	// the capability the request needs.
+	Source string
+	// Follow is nil for clients predating finite queries, which means a live stream.
+	Follow           *bool
+	Since            time.Time
+	MaxCount         uint32
 	Namespaces       []string
 	PodNames         []string
 	PodLabelSelector string
@@ -57,14 +70,36 @@ type FlowStreamFilter struct {
 	Direction        FlowFilterDirection
 }
 
+func (f *FlowStreamFilter) following() bool { return f.Follow == nil || *f.Follow }
+
+func (f *FlowStreamFilter) resultLimit() uint32 {
+	if f.MaxCount != 0 {
+		return f.MaxCount
+	}
+	if !f.following() {
+		return MaxFiniteSnapshots
+	}
+	return 0
+}
+
+// requestLimit is the max_count sent to the source. A finite query asks for one record more than
+// the limit, so that receiving it proves the result was truncated; a source honoring max_count
+// ends the stream right after it. A live stream sends none.
+func (f *FlowStreamFilter) requestLimit() uint32 {
+	if f.following() {
+		return 0
+	}
+	return f.resultLimit() + 1
+}
+
 // FlowStreamScope is the authorization scope of a stream, distinct from the filters that narrow
-// it: the Flow Aggregator checks RBAC against this and resolves each endpoint's disclosure tier
+// it: the flow source checks RBAC against this and resolves each endpoint's disclosure tier
 // relative to it. Exactly one of ObservedNamespace and ClusterWide must be set.
 //
-// Scalar, though the protobuf field is repeated: the Flow Aggregator names one Namespace per
-// stream at most (maxRequestedNamespaces), and a cap it set to match this UI's single-select is
-// not worth carrying a slice through every layer for. filterToGetFlowsRequest builds the
-// one-element slice.
+// Scalar, though the protobuf field is repeated: a flow source such as the Flow Aggregator names
+// one Namespace per stream at most (maxRequestedNamespaces), and a cap it set to match this UI's
+// single-select is not worth carrying a slice through every layer for. filterToGetFlowsRequest
+// builds the one-element slice.
 type FlowStreamScope struct {
 	ObservedNamespace string
 	ClusterWide       bool
@@ -107,9 +142,9 @@ func streamErrorEvent(streamErr error) apisv1.FlowStreamErrorEvent {
 //
 // Deliberately never 401, even for StreamErrorCodeUnauthenticated: a 401 from any antrea-ui
 // endpoint means "your antrea-ui session is over, log in again", and the frontend acts on it by
-// doing exactly that. A credential the Flow Aggregator rejects says nothing about the antrea-ui
-// session - FA is a different server, trusting a different CA and potentially a different audience
-// than the kube-apiserver (see classifyStreamErr for the full reasoning, and
+// doing exactly that. A credential a flow source rejects says nothing about the antrea-ui
+// session - the source is a different server, trusting a different CA and potentially a different
+// audience than the kube-apiserver (see classifyStreamErr for the full reasoning, and
 // TestSubscribeDoesNotInvalidateSessionOnUnauthenticated for the backend half of it). Returning a
 // 401 here would log the user out of every page in the UI because flow visibility alone could not
 // authenticate, on every single re-login, whenever that mismatch is simply how the deployment is
@@ -118,12 +153,20 @@ func streamErrorEvent(streamErr error) apisv1.FlowStreamErrorEvent {
 func statusForStreamErr(err error) int {
 	if streamErr, ok := errors.AsType[*StreamError](err); ok {
 		switch streamErr.Code {
+		case StreamErrorCodeSourceUnsupported:
+			// The request names a source that is unknown or lacks the capability.
+			return http.StatusBadRequest
+		case StreamErrorCodeSourceNotServed:
+			// A static per-deployment choice: no source serves the requested mode.
+			return http.StatusNotImplemented
+		case StreamErrorCodeSourceUnavailable:
+			return http.StatusServiceUnavailable
 		case StreamErrorCodeResourceExhausted:
 			// Capacity, not a broken upstream: the one pre-200 failure worth retrying, and
 			// 503 is the status that says so.
 			return http.StatusServiceUnavailable
 		case StreamErrorCodeForbidden:
-			// The Flow Aggregator authenticated the credential but refused the stream: a
+			// The flow source authenticated the credential but refused the stream: a
 			// real 403, the same as any other antrea-ui endpoint's RBAC denial, and the one
 			// status FlowStreamClient checks for to render the "missing flows grant" panel
 			// instead of a generic error.
@@ -138,8 +181,8 @@ func statusForStreamErr(err error) int {
 var errUnauthenticatedStream = errors.New("flow stream request carries no resolved identity")
 
 // errInitialResponseTimeout means Subscribe neither confirmed the stream was live nor reported a
-// failure within initialResponseTimeout: the Flow Aggregator accepted the call and then never
-// responded. Retryable, since nothing about the request itself is at fault: a hung Flow Aggregator
+// failure within initialResponseTimeout: the flow source accepted the call and then never
+// responded. Retryable, since nothing about the request itself is at fault: a hung flow source
 // is not expected to hang the same way on a fresh attempt. The other cause, a Flow Aggregator too
 // old to send anything before a matching flow, cannot be told apart from a hang here. Retrying it
 // is harmless: nothing is forwarded, and an attempt during which a matching flow arrives fails
@@ -148,7 +191,7 @@ var errInitialResponseTimeout = retryableInternalStreamError(errors.New("timed o
 
 // SSEHandler handles the SSE endpoint for flow streaming.
 //
-// This endpoint is authenticated here and authorized entirely by the Flow Aggregator. The
+// This endpoint is authenticated here and authorized entirely by the flow source. The
 // subscriber presents the caller's own credential (a bearer token or client cert; see grpc.go's
 // resolveCall), and FlowStreamService checks Kubernetes RBAC against a virtual "flows" resource
 // in the scope the request names, then resolves each endpoint of each record to the disclosure
@@ -156,7 +199,7 @@ var errInitialResponseTimeout = retryableInternalStreamError(errors.New("timed o
 //
 // antrea-ui performs no redaction of its own and must not: doing so would need antrea-ui's own
 // ServiceAccount to hold unredacted cluster-wide flow access, making it a privileged component
-// and duplicating the Flow Aggregator's tier logic. All this handler does with the scope is parse
+// and duplicating the flow source's tier logic. All this handler does with the scope is parse
 // it and validate it locally - see parseFlowStreamScope - so a request that cannot be authorized
 // is refused without a connection.
 type SSEHandler struct {
@@ -200,6 +243,41 @@ func parseFlowType(s string) (apisv1.FlowType, error) {
 
 func parseFlowStreamFilter(c *gin.Context) (*FlowStreamFilter, error) {
 	filter := &FlowStreamFilter{}
+	for _, key := range []string{"source", "follow", "since", "maxCount"} {
+		values, present := c.Request.URL.Query()[key]
+		if present && (len(values) != 1 || values[0] == "") {
+			return nil, fmt.Errorf("%s must have exactly one non-empty value", key)
+		}
+	}
+	// The value is only ever matched against configured names, never treated as an address:
+	// every source receives the user's credential.
+	filter.Source = c.Query("source")
+	if value, present := c.GetQuery("follow"); present {
+		if value != "true" && value != "false" {
+			return nil, fmt.Errorf("follow must be true or false")
+		}
+		follow := value == "true"
+		filter.Follow = &follow
+	}
+	if value, present := c.GetQuery("since"); present {
+		since, err := time.Parse(time.RFC3339Nano, value)
+		if err != nil || since.Year() < 1 {
+			return nil, fmt.Errorf("since must be an RFC3339 timestamp")
+		}
+		filter.Since = since
+	}
+	if value, present := c.GetQuery("maxCount"); present {
+		limit, err := strconv.ParseUint(value, 10, 32)
+		if err != nil || limit == 0 || limit > uint64(MaxFiniteSnapshots) {
+			return nil, fmt.Errorf("maxCount must be between 1 and %d", MaxFiniteSnapshots)
+		}
+		filter.MaxCount = uint32(limit)
+	}
+	// maxCount bounds a finite query. A source that honored it on a live stream would end the
+	// stream with a clean EOF after that many records, and the client would reconnect forever.
+	if filter.MaxCount != 0 && filter.following() {
+		return nil, fmt.Errorf("maxCount requires follow=false")
+	}
 
 	if ns := c.Query("namespaces"); ns != "" {
 		filter.Namespaces = splitTrimmed(ns)
@@ -240,7 +318,7 @@ func parseFlowStreamFilter(c *gin.Context) (*FlowStreamFilter, error) {
 
 // parseFlowStreamScope reads the stream's authorization scope from the query string.
 //
-// Every rejection here is one the Flow Aggregator would also make, with INVALID_ARGUMENT, but
+// Every rejection here is one a flow source would also make, with INVALID_ARGUMENT, but
 // answering locally gives a message that names the query parameter at fault and costs no
 // connection to a server that was only going to refuse. A comma-separated list (or a repeated
 // parameter) is rejected rather than truncated to its first element, so a client can never come
@@ -285,16 +363,21 @@ func parseFlowStreamScope(c *gin.Context) (*FlowStreamScope, error) {
 func (h *SSEHandler) StreamFlows(c *gin.Context) {
 	filter, err := parseFlowStreamFilter(c)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, apisv1.FlowStreamErrorEvent{
+			Message: err.Error(), Code: StreamErrorCodeInvalidRequest, Retryable: false,
+		})
 		return
 	}
 	scope, err := parseFlowStreamScope(c)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, apisv1.FlowStreamErrorEvent{
+			Message: err.Error(), Code: StreamErrorCodeInvalidRequest, Retryable: false,
+		})
 		return
 	}
 
-	ctx := c.Request.Context()
+	ctx, cancel := context.WithCancel(c.Request.Context())
+	defer cancel()
 	flowsCh, errCh, readyCh := h.handler.Subscribe(ctx, scope, filter)
 
 	// Every failure this endpoint can hit today - a rejected credential, FA at capacity, a dial
@@ -302,7 +385,7 @@ func (h *SSEHandler) StreamFlows(c *gin.Context) {
 	// Recv (see startStream), not partway through an established stream. Waiting for either errCh
 	// or readyCh (see Subscribe) lets a real failure reach the client as an HTTP status instead of
 	// prose inside a 200 body, and lets a real success commit to the 200 as soon as it is known
-	// rather than guessed - the timeout below is a fallback for a Flow Aggregator that accepts the
+	// rather than guessed - the timeout below is a fallback for a flow source that accepts the
 	// call and then never responds, not the common path.
 	select {
 	case streamErr, ok := <-errCh:
@@ -392,6 +475,8 @@ func (h *SSEHandler) StreamFlows(c *gin.Context) {
 		return false
 	}
 
+	var received uint64
+	truncated := false
 	c.Stream(func(w io.Writer) bool {
 		select {
 		case <-ctx.Done():
@@ -426,7 +511,15 @@ func (h *SSEHandler) StreamFlows(c *gin.Context) {
 					}
 				default:
 				}
+				if !filter.following() && ctx.Err() == nil {
+					c.SSEvent("complete", map[string]any{
+						"snapshotCount": received, "maxCount": filter.resultLimit(), "truncated": truncated,
+					})
+				}
 				return false
+			}
+			if event.Truncated {
+				truncated = true
 			}
 			if event.DroppedCount > 0 {
 				droppedEvt := apisv1.FlowStreamDroppedEvent{DroppedCount: event.DroppedCount}
@@ -438,6 +531,7 @@ func (h *SSEHandler) StreamFlows(c *gin.Context) {
 				c.SSEvent("dropped", string(data))
 			}
 			if len(event.Flows) > 0 {
+				received += uint64(len(event.Flows))
 				flowEvt := apisv1.FlowStreamEvent{Flows: event.Flows}
 				data, err := json.Marshal(flowEvt)
 				if err != nil {

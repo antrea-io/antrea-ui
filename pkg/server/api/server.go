@@ -170,22 +170,24 @@ func (s *Server) AddFlowStreamRoutes(r *gin.RouterGroup) {
 		flows.GET("/stream", s.flowStreamDisabled)
 		return
 	}
-	// No antrea-ui-side authorization gate: the Flow Aggregator's FlowStreamService authorizes
+	// No antrea-ui-side authorization gate: the flow source's FlowStreamService authorizes
 	// each stream with Kubernetes RBAC against the scope the request names, and redacts each
 	// endpoint to the tier the caller is entitled to. An admin-only gate here (the removed
 	// requireFlowVisibility) would make every per-Namespace grant unreachable - a Namespace
-	// administrator holding flow access in their own Namespace would be refused before the Flow
-	// Aggregator ever saw the request.
+	// administrator holding flow access in their own Namespace would be refused before the flow
+	// source ever saw the request.
 	flows.GET("/stream", s.flowStreamSSEHandler.StreamFlows)
 }
 
-// flowStreamDisabled handles GET /api/v1/flows/stream when Flow Aggregator integration is off.
+// flowStreamDisabled handles GET /api/v1/flows/stream when no flow source is configured.
 //
 // 501, not 503: this is a static per-deployment configuration choice, not a transient condition
-// that a retry could resolve. The frontend treats 501 on this endpoint as terminal.
+// that a retry could resolve. The body has the shape of every other stream error
+// (apisv1.FlowStreamErrorEvent), so a client shows its message the same way.
 func (s *Server) flowStreamDisabled(c *gin.Context) {
-	c.JSON(http.StatusNotImplemented, gin.H{
-		"error": "Flow Aggregator integration is not enabled for this Antrea UI instance (set flowAggregator.enabled in the Helm chart).",
+	c.JSON(http.StatusNotImplemented, apisv1.FlowStreamErrorEvent{
+		Message: "No flow source is configured for this Antrea UI instance (set flowAggregator.enabled or flowSources in the Helm chart).",
+		Code:    flowstream.StreamErrorCodeSourceNotServed,
 	})
 }
 

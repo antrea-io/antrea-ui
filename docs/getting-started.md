@@ -48,8 +48,54 @@ helm upgrade antrea-ui antrea/antrea-ui --namespace kube-system [--version <TAG>
 
 ## Chart Values
 
-The list of values supported by the chart can be found
-[here](../build/charts/antrea-ui/README.md).
+See the [chart values reference](../build/charts/antrea-ui/README.md) for all
+supported settings.
+
+## Flow visibility
+
+Flow visibility reads from sources implementing `FlowStreamService`, such as
+the Flow Aggregator (FA). Deploy sources separately; the UI chart configures
+only the client connections.
+
+### Flow sources
+
+`flowSources` is the complete configuration. Each entry needs a unique `name`,
+an `address` and `capabilities`: `watch` (live streams), `list` (finite queries),
+or both. Entries have no defaults; for example:
+
+```yaml
+flowAggregator:
+  enabled: false
+flowSources:
+  - name: flow-aggregator
+    capabilities: [watch]
+    address: flow-aggregator.flow-aggregator.svc:14740
+    namespace: flow-aggregator
+    caConfigMap: flow-aggregator-ca
+```
+
+`flowAggregator.enabled=true` remains a supported Helm shorthand. It inserts
+FA as the first `watch` source, before `flowSources`.
+
+With `caConfigMap` set, create that ConfigMap in the source's `namespace`
+with the CA under `ca.crt`. The chart grants read access; the backend loads
+the CA at startup and fails if it cannot. With no CA ConfigMap, it uses the
+system trust store. Keep TLS verification enabled in production:
+`insecureSkipVerify: true` trusts any server at the configured address with every
+viewer's credentials.
+
+This UI uses only the first `watch` source and ignores `list` sources.
+Without a `watch` source, the Flows page reports that visibility is unavailable.
+Finite queries are for other UIs built on the shared components.
+
+See the [chart values](../build/charts/antrea-ui/README.md) for all options and
+[flow sources](authentication.md#flow-sources) for permissions and request
+routing. Sources must satisfy the
+[flow source contract](../pkg/flowpb/README.md#flow-source-contract).
+
+Hand-written backend configurations must replace `flowAggregator` with
+`flowSources`; the old key is rejected at startup. Existing Helm values remain
+supported.
 
 ## Accessing the web UI
 

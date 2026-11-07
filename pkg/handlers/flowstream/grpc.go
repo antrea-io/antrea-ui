@@ -30,6 +30,7 @@ import (
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 
 	apisv1 "antrea.io/antrea-ui/apis/v1"
@@ -38,11 +39,12 @@ import (
 	"antrea.io/antrea-ui/pkg/k8s"
 )
 
-// flowStreamConnKey is the session transport/connection cache key for a per-credential
-// FlowAggregator gRPC connection (a KindCert credential; see connFor). It has no "/" so it is
-// never treated as versioned - unlike the Antrea Service's TLS settings, the Flow Aggregator's
-// do not change under a live session.
-const flowStreamConnKey = "flow-aggregator-grpc"
+// flowSourceConnKeyPrefix, followed by the source's name, is the session transport/connection
+// cache key for a per-credential gRPC connection to a flow source (a KindCert credential; see
+// connFor). connFor is a plain map lookup with no version handling and never evicts a
+// connection, so a flow source's connection lives as long as the session. That is enough because
+// a flow source's TLS settings do not change under a live session.
+const flowSourceConnKeyPrefix = "flow-source-"
 
 // StreamError classifies a flow-stream failure for callers that need to react to it (the frontend,
 // via the "code"/"retryable" fields on apisv1.FlowStreamErrorEvent) without parsing Error() text.
@@ -58,28 +60,32 @@ type StreamError struct {
 func (e *StreamError) Error() string { return e.msg }
 
 const (
-	// StreamErrorCodeUnauthenticated means the Flow Aggregator rejected the credential it was
+	// StreamErrorCodeUnauthenticated means the flow source rejected the credential it was
 	// presented. Not retryable: the same credential will be rejected again.
 	StreamErrorCodeUnauthenticated = "unauthenticated"
-	// StreamErrorCodeResourceExhausted means the Flow Aggregator is at capacity (its stream
-	// limiter or its token-auth semaphore). Retryable: capacity is expected to free up.
+	// StreamErrorCodeResourceExhausted means the flow source is at capacity (for the Flow
+	// Aggregator, its stream limiter or its token-auth semaphore). Retryable: capacity is expected to free up.
 	StreamErrorCodeResourceExhausted = "resource_exhausted"
-	// StreamErrorCodeForbidden means the Flow Aggregator authenticated the credential but
+	// StreamErrorCodeForbidden means the flow source authenticated the credential but
 	// refused the stream: the caller does not hold the flows RBAC grant in the scope it asked
 	// for. Not retryable - a permanent 403 retried in a reconnect loop is the failure mode to
 	// avoid. Raised both at stream open and mid-stream, when upstream's periodic revalidation
 	// finds a grant has been revoked.
 	StreamErrorCodeForbidden = "forbidden"
-	// StreamErrorCodeInvalidRequest means the Flow Aggregator rejected the request itself: an
-	// unset or over-long scope, or an empty Namespace name. A client bug, not a permission
-	// problem. Not retryable: the same request will be rejected again.
+	// StreamErrorCodeInvalidRequest means the flow source rejected the request itself: an
+	// unset or over-long scope, an empty Namespace name, or a max_count above the source's own
+	// cap, which the flow source contract has a source reject rather than cut short. Usually a
+	// client bug, but a cap below what this backend asks for makes every finite query without a
+	// maxCount fail this way. Not a permission problem. Not retryable: the same request will be
+	// rejected again.
 	StreamErrorCodeInvalidRequest = "invalid_request"
-	// StreamErrorCodeFlowAggregatorTooOld means the Flow Aggregator predates per-user flow
+	// StreamErrorCodeFlowAggregatorTooOld means the flow source predates per-user flow
 	// authorization, so it would ignore the stream's scope and stream every flow it has,
-	// unredacted. Not retryable, and terminal for this deployment until the Flow Aggregator is
-	// upgraded. The frontend has no dedicated panel for this code yet, unlike onDisabled's 501
-	// or onForbidden's 403 - it falls through to the generic permanent-error banner via onError,
-	// whose message (see flowAggregatorTooOldErr) at least names the address to upgrade. See
+	// unredacted. The value predates flow sources and is kept because it is part of the SSE
+	// error event. Not retryable, and terminal for this deployment until the source is
+	// upgraded. The frontend has no dedicated panel for this code yet, unlike
+	// onForbidden's 403 - it falls through to the generic permanent-error banner via onError,
+	// whose message (see flowSourceTooOldErr) at least names the source to upgrade. See
 	// Subscribe's check on the stream's first response.
 	StreamErrorCodeFlowAggregatorTooOld = "flow_aggregator_too_old"
 	// StreamErrorCodeInternal covers everything else: a dial failure, a credential this backend
@@ -89,7 +95,7 @@ const (
 )
 
 // internalStreamError wraps err as a non-retryable StreamError with StreamErrorCodeInternal, for
-// failures resolved locally, rather than reported by the Flow Aggregator, that retrying will not
+// failures resolved locally, rather than reported by the flow source, that retrying will not
 // fix: a wiring bug, a credential shape this backend does not support, a fixed configuration
 // mismatch.
 func internalStreamError(err error) *StreamError {
@@ -103,14 +109,15 @@ func retryableInternalStreamError(err error) *StreamError {
 	return &StreamError{msg: err.Error(), Code: StreamErrorCodeInternal, Retryable: true}
 }
 
-// flowAggregatorTooOldErr builds the error a caller gets when the Flow Aggregator predates
-// per-user flow authorization. It names the address, because the operator's next question is
+// flowSourceTooOldErr builds the error a caller gets when a flow source predates per-user flow
+// authorization. It names the source and its address, because the operator's next question is
 // which component to upgrade.
-func flowAggregatorTooOldErr(address string) *StreamError {
+func flowSourceTooOldErr(name, address string) *StreamError {
 	return &StreamError{
-		msg: fmt.Sprintf("the Flow Aggregator at %s does not support per-user flow authorization; "+
-			"flow visibility requires a Flow Aggregator built with that support "+
-			"(see antrea-io/antrea#8221)", address),
+		msg: fmt.Sprintf("the flow source %q at %s sent no stream epoch in its first response, so it "+
+			"may not support per-user flow authorization; every flow source must send one "+
+			"(for the Flow Aggregator, this means it predates that support, see antrea-io/antrea#8221)",
+			name, address),
 		Code:      StreamErrorCodeFlowAggregatorTooOld,
 		Retryable: false,
 	}
@@ -118,22 +125,25 @@ func flowAggregatorTooOldErr(address string) *StreamError {
 
 // isMessageSizeErr reports whether a ResourceExhausted error is grpc-go's own "message too large
 // for the configured limit" (4 MiB by default on receive), raised in the client rather than sent by
-// the Flow Aggregator. Nothing in the gRPC status distinguishes the two, so this matches on the
+// the flow source. Nothing in the gRPC status distinguishes the two, so this matches on the
 // message grpc-go builds - deliberately on the substring common to all of its variants (receive,
 // receive-after-decompression, send), since which one fires does not change the answer.
 //
 // It matters because the two ends of this one code need opposite handling: FA at capacity is
 // transient and worth retrying, while a batch that will not fit is a fixed mismatch between FA's
 // batch size and this client's limit. Retrying it just re-fetches the same oversized batch, and
-// reporting it as "FlowAggregator is at capacity" sends whoever debugs it looking at FA's load
+// reporting it as "at capacity" sends whoever debugs it looking at the source's load
 // instead of at the size limit.
 func isMessageSizeErr(err error) bool {
 	return strings.Contains(status.Convert(err).Message(), "larger than max")
 }
 
-// GRPCFlowStreamSubscriber connects to the FlowAggregator's FlowStreamService
-// over gRPC and implements the FlowStreamSubscriber interface.
+// GRPCFlowStreamSubscriber connects to a flow source's FlowStreamService (the Flow Aggregator,
+// for example) over gRPC and implements the FlowStreamSubscriber interface.
 type GRPCFlowStreamSubscriber struct {
+	// name is the flow source's configured name, used in messages and to key the per-session
+	// certificate connection.
+	name   string
 	logger logr.Logger
 	// address and tlsConfig are kept so that a per-credential connection (KindCert) can be
 	// dialed with the same server-verification settings as the shared one.
@@ -148,8 +158,10 @@ type GRPCFlowStreamSubscriber struct {
 	adminTokenSource *k8s.AdminTokenSource
 }
 
-// GRPCConfig holds the connection parameters for the FlowAggregator gRPC server.
+// GRPCConfig holds the connection parameters for a flow source's gRPC server.
 type GRPCConfig struct {
+	// Name is the flow source's configured name.
+	Name    string
 	Address string
 	// TLSConfig is the TLS configuration used for the gRPC connection. Its Certificates field
 	// is left unset here: a KindCert session credential adds its own, on a separate
@@ -176,9 +188,10 @@ func NewGRPCFlowStreamSubscriber(logger logr.Logger, cfg GRPCConfig) (*GRPCFlowS
 	// Note: grpc.NewClient is lazy — the connection is not established until the first
 	// RPC call. This log confirms the client was created successfully, not that the
 	// server is reachable.
-	logger.Info("FlowAggregator gRPC client created", "address", cfg.Address)
+	logger.Info("Flow source gRPC client created", "source", cfg.Name, "address", cfg.Address)
 
 	return &GRPCFlowStreamSubscriber{
+		name:             cfg.Name,
 		logger:           logger,
 		address:          cfg.Address,
 		tlsConfig:        cfg.TLSConfig,
@@ -195,7 +208,7 @@ func (h *GRPCFlowStreamSubscriber) Close() error {
 	return nil
 }
 
-// buildCertConn dials a connection to the Flow Aggregator presenting cred's client certificate as
+// buildCertConn dials a connection to the flow source presenting cred's client certificate as
 // the TLS handshake credential. It is a session.ConnBuilder, cached per session by connFor: FA
 // authenticates a KindCert credential from the connection, not from per-call metadata, so it
 // needs its own connection (and its own pool) rather than reusing the shared one.
@@ -204,12 +217,12 @@ func (h *GRPCFlowStreamSubscriber) buildCertConn(cred *session.Credential) (*grp
 		// (*tls.Config).Clone() returns nil for a nil receiver, which would nil-panic below.
 		// NewGRPCFlowStreamSubscriber rejects a nil TLSConfig, so this only guards against a
 		// struct built directly (e.g. by a test) with tlsConfig left unset.
-		return nil, nil, fmt.Errorf("flow aggregator client TLS config is not configured")
+		return nil, nil, fmt.Errorf("flow source client TLS config is not configured")
 	}
 	cert, err := tls.X509KeyPair(cred.CertPEM, cred.KeyPEM)
 	if err != nil {
 		// Deliberately not wrapping err with any credential detail.
-		return nil, nil, fmt.Errorf("failed to build FlowAggregator client certificate")
+		return nil, nil, fmt.Errorf("failed to build flow source client certificate")
 	}
 	tlsCfg := h.tlsConfig.Clone()
 	tlsCfg.Certificates = []tls.Certificate{cert}
@@ -235,9 +248,9 @@ func (h *GRPCFlowStreamSubscriber) resolveCall(ctx context.Context) (flowpb.Flow
 	case session.KindBearer:
 		return h.client, metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+string(cred.Token)), nil
 	case session.KindCert:
-		conn, err := ra.ConnFor(flowStreamConnKey, h.buildCertConn)
+		conn, err := ra.ConnFor(flowSourceConnKeyPrefix+h.name, h.buildCertConn)
 		if err != nil {
-			return nil, nil, internalStreamError(fmt.Errorf("failed to build FlowAggregator client certificate connection: %w", err))
+			return nil, nil, internalStreamError(fmt.Errorf("failed to build flow source client certificate connection: %w", err))
 		}
 		return flowpb.NewFlowStreamServiceClient(conn), ctx, nil
 	case session.KindImpersonate:
@@ -301,12 +314,14 @@ func (h *GRPCFlowStreamSubscriber) Subscribe(ctx context.Context, scope *FlowStr
 			return
 		}
 		// The first Recv succeeded (or hit an immediate EOF, which startStream reports as a nil
-		// firstResp): the call cleared authentication and authorization. A Flow Aggregator
-		// with per-user flow authorization always sends a first response carrying a
-		// resume_token with a non-empty stream_epoch before anything else, and one that
-		// predates it cannot produce one. A missing epoch (including no first response at
-		// all) therefore means this Flow Aggregator parsed cluster_wide/namespaces into
-		// unknown fields and ignored them - see flowAggregatorTooOldErr. The check keys on
+		// firstResp): the call cleared authentication and authorization. A flow source
+		// that follows service.proto always sends a first response carrying a
+		// resume_token with a non-empty stream_epoch before anything else, whatever the
+		// mode. The Flow Aggregator that predates per-user flow authorization cannot
+		// produce one, so for it a missing epoch (including no first response at all)
+		// means it parsed cluster_wide/namespaces into unknown fields and ignored them -
+		// see flowSourceTooOldErr. For any other source the epoch proves nothing about
+		// scope support, but it is still the contract. The check keys on
 		// the presence of the epoch rather than on the first response being empty: an old
 		// Flow Aggregator's first response can also be empty of flows, when its ring buffer
 		// wrapped and every record read was filtered out, and it would still go on to stream
@@ -315,7 +330,7 @@ func (h *GRPCFlowStreamSubscriber) Subscribe(ctx context.Context, scope *FlowStr
 		// old replica, stream unredacted data with no error for as long as the verdict stayed
 		// trusted.
 		if firstResp.GetResumeToken().GetStreamEpoch() == "" {
-			errCh <- flowAggregatorTooOldErr(h.address)
+			errCh <- flowSourceTooOldErr(h.name, h.address)
 			return
 		}
 		close(ready)
@@ -332,6 +347,10 @@ func (h *GRPCFlowStreamSubscriber) Subscribe(ctx context.Context, scope *FlowStr
 		for {
 			resp, err := stream.Recv()
 			if err != nil {
+				if !filter.following() && ctx.Err() == nil && status.Code(err) == codes.Canceled {
+					errCh <- retryableInternalStreamError(fmt.Errorf("flow source %q canceled the query before completion", h.name))
+					return
+				}
 				if errors.Is(err, io.EOF) || ctx.Err() != nil || status.Code(err) == codes.Canceled {
 					// A Canceled Recv with ctx still alive means the connection itself was
 					// closed out from under this call - e.g. a KindCert session logging out
@@ -364,7 +383,7 @@ func (h *GRPCFlowStreamSubscriber) Subscribe(ctx context.Context, scope *FlowStr
 // server-streaming RPC, FA reports both Unauthenticated and ResourceExhausted before sending any
 // message, and that kind of error does not surface on the call that opens the stream - only on
 // the first Recv. A nil firstResp with a nil error means the server closed the stream immediately
-// with no error and no message, which a Flow Aggregator with per-user flow authorization never
+// with no error and no message, which a flow source with per-user flow authorization never
 // does; the caller rejects it the same as any other first response with no stream epoch. A nil
 // stream with a nil error means ctx ended, or the underlying connection was closed
 // (codes.Canceled) while this call or the wait for the first response was still in flight
@@ -421,60 +440,69 @@ func (h *GRPCFlowStreamSubscriber) forwardResp(ctx context.Context, resp *flowpb
 // classifyStreamErr turns a gRPC error from GetFlows/Recv into a StreamError callers of Subscribe
 // (ultimately the frontend, via FlowStreamErrorEvent's code/retryable fields) can act on without
 // parsing the message:
-//   - Unauthenticated: the credential FA saw was rejected. Not retryable. This is deliberately
-//     *not* treated as a reason to invalidate the antrea-ui session the way an upstream 401 from
-//     the kube-apiserver is (see RequestAuth.Invalidate): FA is a different server, trusting a
-//     different CA and (for a bearer token) potentially a different audience than the
-//     kube-apiserver, so a credential FA rejects may still be perfectly valid for every other
-//     antrea-ui call. Ending the whole UI session over it would log the user out of pages that
-//     have nothing to do with flow visibility, on every single re-login, if that mismatch is
-//     simply how the deployment is configured.
-//   - PermissionDenied: FA authenticated the credential but the caller does not hold the flows
-//     RBAC grant in the scope it asked for. Not retryable. Raised both at stream open and
-//     mid-stream by FA's periodic revalidation when a grant is revoked. Note the asymmetry
-//     upstream documents: a stream open fails closed, while revalidation fails open, so a revoked
-//     grant ends a running stream on the next revalidation interval rather than immediately.
-//   - InvalidArgument: FA rejected the request itself. A client bug; parseFlowStreamScope's local
-//     400s should make it unreachable, but it is classified anyway so it surfaces as a bug rather
+//   - Unauthenticated: the credential the flow source saw was rejected. Not retryable. This is
+//     deliberately *not* treated as a reason to invalidate the antrea-ui session the way an
+//     upstream 401 from the kube-apiserver is (see RequestAuth.Invalidate): the source is a
+//     different server, trusting a different CA and (for a bearer token) potentially a different
+//     audience than the kube-apiserver, so a credential a source rejects may still be perfectly
+//     valid for every other antrea-ui call. Ending the whole UI session over it would log the
+//     user out of pages that have nothing to do with flow visibility, on every single re-login,
+//     if that mismatch is simply how the deployment is configured.
+//   - PermissionDenied: the source authenticated the credential but the caller does not hold the
+//     flows RBAC grant in the scope it asked for. Not retryable. Raised both at stream open and
+//     mid-stream by the source's periodic revalidation when a grant is revoked. Note the
+//     asymmetry upstream documents for the Flow Aggregator: a stream open fails closed, while
+//     revalidation fails open, so a revoked grant ends a running stream on the next
+//     revalidation interval rather than immediately.
+//   - InvalidArgument: the source rejected the request itself. Usually a client bug, which
+//     parseFlowStreamScope's local 400s should make unreachable, but they do not check max_count
+//     against a source's cap: a source rejects a max_count above its own cap with this code, as
+//     the flow source contract requires. It is classified so it surfaces as an error rather
 //     than a retry storm.
-//   - ResourceExhausted: FA is at capacity (its stream limiter or its token-auth semaphore).
+//   - ResourceExhausted: the source is at capacity (for the Flow Aggregator, its stream limiter or
+//     its token-auth semaphore).
 //     Retryable - except for the one ResourceExhausted grpc-go raises locally, see
 //     isMessageSizeErr.
-//   - anything else: retryable by default. Most codes that reach here - Unavailable,
-//     DeadlineExceeded, Aborted - are what grpc-go returns for an ordinary transient failure (FA
-//     restarting, rolling, or a network blip), and before this package existed, the frontend's
-//     own reconnect loop recovered from exactly these the same way. A permanent failure gets its
+//   - FailedPrecondition, Unavailable: the source cannot serve right now (restarting, rolling, or
+//     not ready). Retryable, and reported as flow_source_unavailable so a client can tell it from
+//     a failure of this backend.
+//   - anything else: retryable by default. Most codes that reach here - DeadlineExceeded,
+//     Aborted - are what grpc-go returns for an ordinary transient failure (a source restarting,
+//     rolling, or a network blip), and before this package existed, the frontend's own reconnect
+//     loop recovered from exactly these the same way. A permanent failure gets its
 //     own case above instead of falling through to a non-retryable default here.
 func (h *GRPCFlowStreamSubscriber) classifyStreamErr(err error) *StreamError {
 	switch status.Code(err) {
+	case codes.FailedPrecondition, codes.Unavailable:
+		return dependencyUnavailable(fmt.Sprintf("flow source %q is unavailable: %v", h.name, err))
 	case codes.Unauthenticated:
 		return &StreamError{
-			msg:       fmt.Errorf("FlowAggregator rejected the credential: %w", err).Error(),
+			msg:       fmt.Errorf("flow source %q rejected the credential: %w", h.name, err).Error(),
 			Code:      StreamErrorCodeUnauthenticated,
 			Retryable: false,
 		}
 	case codes.PermissionDenied:
 		return &StreamError{
-			msg:       fmt.Errorf("FlowAggregator refused the flow stream: %w", err).Error(),
+			msg:       fmt.Errorf("flow source %q refused the flow stream: %w", h.name, err).Error(),
 			Code:      StreamErrorCodeForbidden,
 			Retryable: false,
 		}
 	case codes.InvalidArgument:
 		return &StreamError{
-			msg:       fmt.Errorf("FlowAggregator rejected the flow stream request: %w", err).Error(),
+			msg:       fmt.Errorf("flow source %q rejected the flow stream request: %w", h.name, err).Error(),
 			Code:      StreamErrorCodeInvalidRequest,
 			Retryable: false,
 		}
 	case codes.ResourceExhausted:
 		if isMessageSizeErr(err) {
 			return &StreamError{
-				msg:       fmt.Errorf("FlowAggregator sent a message larger than this client accepts: %w", err).Error(),
+				msg:       fmt.Errorf("flow source %q sent a message larger than this client accepts: %w", h.name, err).Error(),
 				Code:      StreamErrorCodeInternal,
 				Retryable: false,
 			}
 		}
 		return &StreamError{
-			msg:       fmt.Errorf("FlowAggregator is at capacity, please retry: %w", err).Error(),
+			msg:       fmt.Errorf("flow source %q is at capacity, please retry: %w", h.name, err).Error(),
 			Code:      StreamErrorCodeResourceExhausted,
 			Retryable: true,
 		}
@@ -489,9 +517,9 @@ func (h *GRPCFlowStreamSubscriber) classifyStreamErr(err error) *StreamError {
 
 // logDenial records a refused flow stream, with the username it was refused for.
 //
-// Authorization is now entirely the Flow Aggregator's decision, so antrea-ui no longer denies
+// Authorization is now entirely the flow source's decision, so antrea-ui no longer denies
 // these itself - but nothing else here would record that a flow stream was refused, and the
-// removed requireFlowVisibility gate logged exactly that. The Flow Aggregator's own audit trail
+// removed requireFlowVisibility gate logged exactly that. The flow source's own audit trail
 // names the subject it reviewed, not the antrea-ui session it arrived from, so this line is what
 // ties the two together.
 func (h *GRPCFlowStreamSubscriber) logDenial(ctx context.Context, err error) {
@@ -503,7 +531,7 @@ func (h *GRPCFlowStreamSubscriber) logDenial(ctx context.Context, err error) {
 	if ra, ok := session.RequestAuthFrom(ctx); ok {
 		username = ra.Username
 	}
-	h.logger.Info("FlowAggregator denied flow visibility request", "username", username, "reason", streamErr.Error())
+	h.logger.Info("Flow source denied flow visibility request", "source", h.name, "username", username, "reason", streamErr.Error())
 }
 
 var filterDirectionToProto = map[FlowFilterDirection]flowpb.FlowFilterDirection{
@@ -535,10 +563,14 @@ func filterToGetFlowsRequest(scope *FlowStreamScope, filter *FlowStreamFilter) *
 	}
 	req := &flowpb.GetFlowsRequest{
 		Filters: []*flowpb.FlowFilter{pbFilter},
-		// The SSE flow stream always requires follow mode so the Flow Aggregator does not
-		// close the gRPC stream on the first empty ring-buffer read (!follow && n==0).
-		// It is also why the RBAC verb the Flow Aggregator checks is watch, not list.
-		Follow: true,
+		// follow=false asks for a finite query and is authorized by the list verb; follow=true
+		// is a live stream, authorized by watch. A live stream on a source whose buffer is
+		// empty must not close on the first empty read, which is why live is the default.
+		Follow:   filter.following(),
+		MaxCount: filter.requestLimit(),
+	}
+	if !filter.Since.IsZero() {
+		req.Since = timestamppb.New(filter.Since)
 	}
 	if scope != nil {
 		req.ClusterWide = scope.ClusterWide

@@ -55,7 +55,7 @@ server {
         proxy_cookie_flags ~ httponly;
         {{- end }}
 
-        # Flow SSE can be idle for a long time when the Flow Aggregator ring buffer has no matching
+        # Flow SSE can be idle for a long time when the flow source has no matching
         # records; nginx's default proxy_read_timeout (~60s) then returns 504 to the browser.
         location /api/v1/flows/stream {
             {{- include "antrea-ui.nginx.sse" . | nindent 12 }}

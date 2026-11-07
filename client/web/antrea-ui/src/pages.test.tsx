@@ -91,7 +91,7 @@ describe('FlowVisibilityPage — route guard', () => {
     }
 
     function renderPage(summary: AccessSummary) {
-        vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
+        vi.stubGlobal('fetch', vi.fn(async () =>
             new Response(JSON.stringify(summary), { status: 200 })));
         const store = setupStore({ session: 'authenticated' });
         return render(
@@ -129,6 +129,37 @@ describe('FlowVisibilityPage — route guard', () => {
         }));
         await waitFor(() => expect(document.querySelector('antrea-flow-visibility-page')).not.toBeNull());
         expect(document.querySelector('antrea-alert')).toBeNull();
+    });
+});
+
+describe('FlowVisibilityPage — flow sources', () => {
+    const grant: AccessSummary = {
+        username: 'alice', groups: [], clusterAdmin: true, namespaces: [],
+        rules: { resourceRules: [], nonResourceRules: [], incomplete: false },
+    };
+
+    function renderWithSources(flowSources: { name: string, capabilities: string[] }[]) {
+        const fetchMock = vi.fn(async (url: string) => new Response(JSON.stringify(
+            url.endsWith('/api/v1/settings') ? { version: 'v', auth: {}, features: { flowSources } } : grant), { status: 200 }));
+        vi.stubGlobal('fetch', fetchMock);
+        const store = setupStore({ session: 'authenticated' });
+        render(<Provider store={store}><AccessProvider><MemoryRouter><FlowVisibilityPage view="list" /></MemoryRouter></AccessProvider></Provider>);
+        return fetchMock;
+    }
+
+    test.each([
+        { name: 'no source', sources: [] },
+        { name: 'only list sources', sources: [{ name: 'hist', capabilities: ['list'] }] },
+    ])('does not mount the page with $name', async ({ sources }) => {
+        renderWithSources(sources);
+        await waitFor(() => expect(document.querySelector('antrea-alert')).not.toBeNull());
+        expect(document.querySelector('antrea-alert')!.textContent).toContain('Flow visibility is not available');
+        expect(document.querySelector('antrea-flow-visibility-page')).toBeNull();
+    });
+
+    test('mounts the page when a source can watch', async () => {
+        renderWithSources([{ name: 'hist', capabilities: ['list'] }, { name: 'fa', capabilities: ['watch'] }]);
+        await waitFor(() => expect(document.querySelector('antrea-flow-visibility-page')).not.toBeNull());
     });
 });
 

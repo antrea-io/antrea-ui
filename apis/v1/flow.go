@@ -37,7 +37,7 @@ const (
 )
 
 // EndpointDisclosure records how much of one endpoint of a flow, or of its destination Service,
-// this user was authorized to see. Set by the Flow Aggregator's FlowStreamService only. Zero is
+// this user was authorized to see. Set by the flow source's FlowStreamService only. Zero is
 // Full, not "unspecified": a record nothing redacted reads as fully disclosed, which is every record
 // on a cluster-wide stream.
 type EndpointDisclosure int32
@@ -116,7 +116,7 @@ type FlowKubernetes struct {
 	FlowType FlowType `json:"flowType"`
 
 	// SourceDisclosure and DestinationDisclosure report the tier each endpoint was disclosed
-	// at, so a withheld field is distinguishable from a field the Flow Aggregator never had.
+	// at, so a withheld field is distinguishable from a field the flow source never had.
 	// DestinationServiceDisclosure does the same for the destination Service, which is
 	// disclosed at the tier of its own Namespace, not necessarily the destination endpoint's.
 	//
@@ -192,6 +192,9 @@ type Flow struct {
 type FlowStreamEvent struct {
 	Flows        []Flow `json:"flows,omitempty"`
 	DroppedCount uint64 `json:"droppedCount,omitempty"`
+	// Truncated is set internally, never serialized, on the event in which a finite query's
+	// source delivered the record beyond the result limit, which was dropped from Flows.
+	Truncated bool `json:"-"`
 }
 
 // FlowStreamDroppedEvent is the JSON payload for an SSE "dropped" event.
