@@ -28,6 +28,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -276,9 +277,10 @@ func (s *Session) MarshalJSON() ([]byte, error) {
 //
 // key is either a bare name for an upstream whose transports never go stale on their own, or
 // "<upstream>/<version>" for one whose settings can change under a live session — the Antrea
-// Service, whose transports are rebuilt whenever the Antrea CA bundle rotates. A new version
-// supersedes the older ones under the same upstream, which are released rather than left to
-// accumulate for the rest of the session.
+// Service, whose transports are rebuilt whenever the Antrea CA bundle rotates. Building a version
+// releases every other version under the same upstream, rather than leaving them to accumulate for
+// the rest of the session. This treats versions as opaque, unlike connFor, which only releases
+// older ones.
 func (s *Session) transportFor(key string, build TransportBuilder) (http.RoundTripper, error) {
 	s.mutex.RLock()
 	cached, ok := s.transports[key]
@@ -307,7 +309,10 @@ func (s *Session) transportFor(key string, build TransportBuilder) (http.RoundTr
 
 // connFor returns the gRPC connection cached under key for this session's current credential,
 // building it with build on first use. It is the gRPC counterpart of transportFor: see that
-// method for why the per-key cache and the double-checked lock exist.
+// method for why the per-key cache and the double-checked lock exist, and for the
+// "<upstream>/<version>" key form. Unlike transportFor, building a version closes only the older
+// versions of the upstream, ordered as integers (see dropSupersededConnsLocked), so a late request
+// for an older version cannot close a newer connection.
 func (s *Session) connFor(key string, build ConnBuilder) (*grpc.ClientConn, error) {
 	s.mutex.RLock()
 	cached, ok := s.conns[key]
@@ -322,6 +327,7 @@ func (s *Session) connFor(key string, build ConnBuilder) (*grpc.ClientConn, erro
 	if cached, ok := s.conns[key]; ok {
 		return cached.conn, nil
 	}
+	s.dropSupersededConnsLocked(key)
 	conn, cleanup, err := build(&s.credential)
 	if err != nil {
 		return nil, err
@@ -363,6 +369,50 @@ func (s *Session) dropSupersededTransportsLocked(key string) {
 		}
 		delete(s.transports, k)
 	}
+}
+
+// dropSupersededConnsLocked closes every cached gRPC connection for the same upstream as key but
+// an older version of it. The caller must hold s.mutex.
+//
+// A connection is superseded when the settings it was dialed with, such as the CA bundle it
+// verifies the server against, were replaced. It can still carry a live stream, which this ends:
+// the CA that stream trusts is gone, so it would not survive its next reconnect anyway, and the
+// client reconnects on the new connection.
+//
+// Versions are compared as integers (generations). A request that read an older generation just
+// before it was replaced can arrive after a newer connection is cached: it must not close that
+// connection. Versions that are not integers cannot be ordered, and every other version of the
+// upstream is then treated as older.
+func (s *Session) dropSupersededConnsLocked(key string) {
+	upstream, versioned := transportUpstream(key)
+	if !versioned {
+		return
+	}
+	for k, cached := range s.conns {
+		if k == key {
+			continue
+		}
+		if u, versioned := transportUpstream(k); !versioned || u != upstream {
+			continue
+		}
+		if isNewerVersion(k, key) {
+			continue
+		}
+		if cached.cleanup != nil {
+			cached.cleanup()
+		}
+		delete(s.conns, k)
+	}
+}
+
+// isNewerVersion reports whether the version of key a is a larger integer than that of key b.
+// It is false if either version is not an integer.
+func isNewerVersion(a, b string) bool {
+	_, va, _ := strings.Cut(a, "/")
+	_, vb, _ := strings.Cut(b, "/")
+	na, errA := strconv.Atoi(va)
+	nb, errB := strconv.Atoi(vb)
+	return errA == nil && errB == nil && na > nb
 }
 
 // dropTransportsLocked discards every cached transport and gRPC connection. The caller must hold

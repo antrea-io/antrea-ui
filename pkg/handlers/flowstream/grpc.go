@@ -22,6 +22,7 @@ import (
 	"io"
 	"net/netip"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -39,12 +40,19 @@ import (
 	"antrea.io/antrea-ui/pkg/k8s"
 )
 
-// flowSourceConnKeyPrefix, followed by the source's name, is the session transport/connection
-// cache key for a per-credential gRPC connection to a flow source (a KindCert credential; see
-// connFor). connFor is a plain map lookup with no version handling and never evicts a
-// connection, so a flow source's connection lives as long as the session. That is enough because
-// a flow source's TLS settings do not change under a live session.
-const flowSourceConnKeyPrefix = "flow-source-"
+var flowStreamSourceID atomic.Uint64
+
+// newFlowStreamConnKeyPrefix allocates a session cache namespace for one source. It contains no
+// slash: connFor treats everything before the first slash as the upstream being superseded.
+func newFlowStreamConnKeyPrefix() string {
+	return fmt.Sprintf("flow-source-grpc-%d", flowStreamSourceID.Add(1))
+}
+
+// flowStreamConnKey scopes a CA generation to its source, so rotating one source closes only that
+// source's older per-session connections.
+func flowStreamConnKey(prefix string, generation int) string {
+	return fmt.Sprintf("%s/%d", prefix, generation)
+}
 
 // StreamError classifies a flow-stream failure for callers that need to react to it (the frontend,
 // via the "code"/"retryable" fields on apisv1.FlowStreamErrorEvent) without parsing Error() text.
@@ -141,8 +149,7 @@ func isMessageSizeErr(err error) bool {
 // GRPCFlowStreamSubscriber connects to a flow source's FlowStreamService (the Flow Aggregator,
 // for example) over gRPC and implements the FlowStreamSubscriber interface.
 type GRPCFlowStreamSubscriber struct {
-	// name is the flow source's configured name, used in messages and to key the per-session
-	// certificate connection.
+	// name is the flow source's configured name, used in messages.
 	name   string
 	logger logr.Logger
 	// address and tlsConfig are kept so that a per-credential connection (KindCert) can be
@@ -156,6 +163,9 @@ type GRPCFlowStreamSubscriber struct {
 	// adminTokenSource mints the bearer token used for admin-password (KindImpersonate)
 	// sessions. Nil disables flow streaming for that login mode.
 	adminTokenSource *k8s.AdminTokenSource
+	// connKeyPrefix and generation identify the source and its CA bundle in the session cache.
+	connKeyPrefix string
+	generation    int
 }
 
 // GRPCConfig holds the connection parameters for a flow source's gRPC server.
@@ -170,11 +180,26 @@ type GRPCConfig struct {
 	// AdminTokenSource mints the bearer token used for admin-password sessions. May be nil, in
 	// which case that login mode cannot use flow streaming.
 	AdminTokenSource *k8s.AdminTokenSource
+	// ConnKeyPrefix identifies one source in the per-session connection cache. Rebuilds of that
+	// source must reuse it; other sources must use distinct prefixes. It must not contain "/".
+	// When empty, a new prefix is allocated for this subscriber.
+	ConnKeyPrefix string
+	// Generation identifies the CA bundle TLSConfig was built from. A subscriber replacing
+	// another one for a new bundle must use a larger generation: a session closes the connections
+	// it dialed for smaller generations (see connFor), and reuses the one for an equal one, so a
+	// connection dialed for the old bundle would otherwise stay open or be reused.
+	Generation int
 }
 
 func NewGRPCFlowStreamSubscriber(logger logr.Logger, cfg GRPCConfig) (*GRPCFlowStreamSubscriber, error) {
 	if cfg.TLSConfig == nil {
 		return nil, fmt.Errorf("TLSConfig must not be nil")
+	}
+	if strings.Contains(cfg.ConnKeyPrefix, "/") {
+		return nil, fmt.Errorf("ConnKeyPrefix must not contain a slash")
+	}
+	if cfg.ConnKeyPrefix == "" {
+		cfg.ConnKeyPrefix = newFlowStreamConnKeyPrefix()
 	}
 	conn, err := grpc.NewClient(
 		cfg.Address,
@@ -188,7 +213,7 @@ func NewGRPCFlowStreamSubscriber(logger logr.Logger, cfg GRPCConfig) (*GRPCFlowS
 	// Note: grpc.NewClient is lazy — the connection is not established until the first
 	// RPC call. This log confirms the client was created successfully, not that the
 	// server is reachable.
-	logger.Info("Flow source gRPC client created", "source", cfg.Name, "address", cfg.Address)
+	logger.Info("Flow source gRPC client created", "address", cfg.Address)
 
 	return &GRPCFlowStreamSubscriber{
 		name:             cfg.Name,
@@ -198,9 +223,15 @@ func NewGRPCFlowStreamSubscriber(logger logr.Logger, cfg GRPCConfig) (*GRPCFlowS
 		client:           client,
 		conn:             conn,
 		adminTokenSource: cfg.AdminTokenSource,
+		connKeyPrefix:    cfg.ConnKeyPrefix,
+		generation:       cfg.Generation,
 	}, nil
 }
 
+// Close closes the connection shared by bearer-authenticated and admin-token calls, which ends the
+// streams running on it. It does not close the per-session connections of KindCert credentials,
+// which belong to their sessions: a session replaces one when it next asks for a connection under
+// a newer generation (see flowStreamConnKey), and closes it when it ends.
 func (h *GRPCFlowStreamSubscriber) Close() error {
 	if h.conn != nil {
 		return h.conn.Close()
@@ -248,7 +279,7 @@ func (h *GRPCFlowStreamSubscriber) resolveCall(ctx context.Context) (flowpb.Flow
 	case session.KindBearer:
 		return h.client, metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+string(cred.Token)), nil
 	case session.KindCert:
-		conn, err := ra.ConnFor(flowSourceConnKeyPrefix+h.name, h.buildCertConn)
+		conn, err := ra.ConnFor(flowStreamConnKey(h.connKeyPrefix, h.generation), h.buildCertConn)
 		if err != nil {
 			return nil, nil, internalStreamError(fmt.Errorf("failed to build flow source client certificate connection: %w", err))
 		}
@@ -531,7 +562,7 @@ func (h *GRPCFlowStreamSubscriber) logDenial(ctx context.Context, err error) {
 	if ra, ok := session.RequestAuthFrom(ctx); ok {
 		username = ra.Username
 	}
-	h.logger.Info("Flow source denied flow visibility request", "source", h.name, "username", username, "reason", streamErr.Error())
+	h.logger.Info("Flow source denied flow visibility request", "username", username, "reason", streamErr.Error())
 }
 
 var filterDirectionToProto = map[FlowFilterDirection]flowpb.FlowFilterDirection{

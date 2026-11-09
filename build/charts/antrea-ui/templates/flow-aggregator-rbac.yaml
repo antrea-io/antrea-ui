@@ -1,0 +1,40 @@
+{{- if and .Values.flowAggregator.enabled .Values.flowAggregator.caConfigMap (not .Values.flowAggregator.insecureSkipVerify) -}}
+# The backend watches the Flow Aggregator CA ConfigMap, which lives in the Flow Aggregator's
+# Namespace, to follow CA rotations. This Role grants exactly that, on that ConfigMap only: it is
+# owned by this chart rather than borrowed from the Flow Aggregator's, whose rules cover more than
+# antrea-ui needs and do not include list or watch.
+kind: Role
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  labels:
+    app: antrea-ui
+  name: antrea-ui-flow-aggregator-ca-watcher
+  namespace: {{ .Values.flowAggregator.namespace | default "flow-aggregator" }}
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  resourceNames:
+  - {{ .Values.flowAggregator.caConfigMap | quote }}
+  verbs:
+  - get
+  - list
+  - watch
+---
+kind: RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  labels:
+    app: antrea-ui
+  name: antrea-ui-flow-aggregator-ca-watcher
+  namespace: {{ .Values.flowAggregator.namespace | default "flow-aggregator" }}
+subjects:
+- kind: ServiceAccount
+  name: antrea-ui
+  namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: Role
+  name: antrea-ui-flow-aggregator-ca-watcher
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}

@@ -26,6 +26,7 @@ import (
 	"github.com/go-logr/logr/testr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc"
 	testingclock "k8s.io/utils/clock/testing"
 )
 
@@ -540,6 +541,98 @@ func TestVersionedTransportKeySupersedesOlderVersions(t *testing.T) {
 	assert.NotContains(t, s.transports, "antreasvc/1")
 	assert.Contains(t, s.transports, "antreasvc/2")
 	assert.Contains(t, s.transports, TransportKeyK8s, "an unversioned key supersedes nothing and is not superseded")
+}
+
+// connFor treats a versioned key the way transportFor does: a new version closes the connections
+// cached under older versions of the same upstream, and leaves unrelated keys alone.
+func TestVersionedConnKeySupersedesOlderVersions(t *testing.T) {
+	st, _ := newTestStore(t)
+	s, err := st.Create(bearerSpec("tok"))
+	require.NoError(t, err)
+
+	closed := map[string]int{}
+	buildFor := func(name string) ConnBuilder {
+		return func(cred *Credential) (*grpc.ClientConn, func(), error) {
+			return &grpc.ClientConn{}, func() { closed[name]++ }, nil
+		}
+	}
+	_, err = s.connFor("flow-aggregator-grpc/1", buildFor("fa1"))
+	require.NoError(t, err)
+	_, err = s.connFor("other/1", buildFor("other1"))
+	require.NoError(t, err)
+	_, err = s.connFor("unversioned", buildFor("unversioned"))
+	require.NoError(t, err)
+
+	_, err = s.connFor("flow-aggregator-grpc/2", buildFor("fa2"))
+	require.NoError(t, err)
+	assert.Equal(t, map[string]int{"fa1": 1}, closed, "only the superseded connection should be closed")
+
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+	assert.NotContains(t, s.conns, "flow-aggregator-grpc/1")
+	assert.Contains(t, s.conns, "flow-aggregator-grpc/2")
+	assert.Contains(t, s.conns, "other/1")
+	assert.Contains(t, s.conns, "unversioned")
+}
+
+// A request that read generation 1 just before it was replaced can reach connFor after generation
+// 2 is cached. It must not close the connection of the newer generation.
+func TestConnForKeepsNewerVersionWhenAnOlderOneArrivesLate(t *testing.T) {
+	st, _ := newTestStore(t)
+	s, err := st.Create(bearerSpec("tok"))
+	require.NoError(t, err)
+
+	closed := map[string]int{}
+	buildFor := func(name string) ConnBuilder {
+		return func(cred *Credential) (*grpc.ClientConn, func(), error) {
+			return &grpc.ClientConn{}, func() { closed[name]++ }, nil
+		}
+	}
+	_, err = s.connFor("up/2", buildFor("v2"))
+	require.NoError(t, err)
+	_, err = s.connFor("up/1", buildFor("v1"))
+	require.NoError(t, err)
+	assert.Empty(t, closed, "an older version must not supersede a newer one")
+
+	// The late connection does not outlive the next rotation.
+	_, err = s.connFor("up/3", buildFor("v3"))
+	require.NoError(t, err)
+	assert.Equal(t, map[string]int{"v1": 1, "v2": 1}, closed)
+}
+
+// Versions that are not integers cannot be ordered, so any other version of the upstream is
+// treated as older.
+func TestConnForSupersedesNonNumericVersions(t *testing.T) {
+	st, _ := newTestStore(t)
+	s, err := st.Create(bearerSpec("tok"))
+	require.NoError(t, err)
+
+	var closed atomic.Int32
+	build := func(cred *Credential) (*grpc.ClientConn, func(), error) {
+		return &grpc.ClientConn{}, func() { closed.Add(1) }, nil
+	}
+	_, err = s.connFor("up/b", build)
+	require.NoError(t, err)
+	_, err = s.connFor("up/a", build)
+	require.NoError(t, err)
+	assert.Equal(t, int32(1), closed.Load())
+}
+
+// A connection under an unversioned key is never superseded, whatever else is cached.
+func TestUnversionedConnKeySupersedesNothing(t *testing.T) {
+	st, _ := newTestStore(t)
+	s, err := st.Create(bearerSpec("tok"))
+	require.NoError(t, err)
+
+	var closed atomic.Int32
+	build := func(cred *Credential) (*grpc.ClientConn, func(), error) {
+		return &grpc.ClientConn{}, func() { closed.Add(1) }, nil
+	}
+	_, err = s.connFor("up/1", build)
+	require.NoError(t, err)
+	_, err = s.connFor("plain", build)
+	require.NoError(t, err)
+	assert.Zero(t, closed.Load())
 }
 
 // An attached flow stream calls Get every few seconds, which is what lets it outlive the idle

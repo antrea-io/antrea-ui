@@ -17,6 +17,7 @@ package flowstream
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"net"
 	"strings"
@@ -31,6 +32,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
@@ -152,9 +154,10 @@ func newCertTestSubscriber(t *testing.T, fake *fakeFlowStreamServer, ca *testcer
 	t.Cleanup(func() { lis.Close() })
 
 	return &GRPCFlowStreamSubscriber{
-		logger:    testr.New(t),
-		address:   lis.Addr().String(),
-		tlsConfig: &tls.Config{RootCAs: ca.CertPool(), ServerName: serverName},
+		logger:        testr.New(t),
+		address:       lis.Addr().String(),
+		tlsConfig:     &tls.Config{RootCAs: ca.CertPool(), ServerName: serverName},
+		connKeyPrefix: newFlowStreamConnKeyPrefix(),
 	}
 }
 
@@ -708,6 +711,56 @@ func TestSubscribeUsesClientCertForKindCert(t *testing.T) {
 	assert.Equal(t, int32(1), fake.calls.Load())
 	names, _ := fake.peerDNSNames.Load().([]string)
 	assert.Contains(t, names, clientName, "FA must see the credential's own client certificate on the connection")
+}
+
+// A KindCert session keeps one connection per CA generation: a subscriber built for a newer bundle
+// makes the session dial a new connection and close the one dialed against the previous bundle,
+// instead of reusing it for the rest of the session.
+func TestResolveCallKeysTheKindCertConnectionByGeneration(t *testing.T) {
+	ca := testcerts.NewCA()
+	clientKP, err := ca.NewKeyPair("flow-viewer-client")
+	require.NoError(t, err)
+
+	connKeyPrefix := newFlowStreamConnKeyPrefix()
+	newSub := func(generation int) *GRPCFlowStreamSubscriber {
+		return &GRPCFlowStreamSubscriber{
+			logger:        testr.New(t),
+			address:       "127.0.0.1:0", // Dialing is lazy: nothing connects.
+			tlsConfig:     &tls.Config{RootCAs: ca.CertPool()},
+			connKeyPrefix: connKeyPrefix,
+			generation:    generation,
+		}
+	}
+	store := newTestStore(t)
+	ctx, ra := ctxWithSessionAuth(t, store, &session.Spec{
+		Mode: session.ModeKubeconfig,
+		Credential: session.Credential{
+			Kind:    session.KindCert,
+			CertPEM: clientKP.PublicKey(),
+			KeyPEM:  clientKP.PrivateKey(),
+		},
+	})
+	t.Cleanup(func() { store.Delete(ra.SessionID()) })
+	// cached returns the connection the session has under a generation's key, without building one.
+	cached := func(generation int) *grpc.ClientConn {
+		conn, err := ra.ConnFor(flowStreamConnKey(connKeyPrefix, generation), func(*session.Credential) (*grpc.ClientConn, func(), error) {
+			return nil, nil, errors.New("no connection is cached under this generation")
+		})
+		require.NoError(t, err)
+		return conn
+	}
+
+	_, _, err = newSub(1).resolveCall(ctx)
+	require.NoError(t, err)
+	first := cached(1)
+
+	_, _, err = newSub(2).resolveCall(ctx)
+	require.NoError(t, err)
+	second := cached(2)
+
+	assert.NotSame(t, first, second)
+	assert.Equal(t, connectivity.Shutdown, first.GetState(), "the connection of the superseded generation should be closed")
+	assert.NotEqual(t, connectivity.Shutdown, second.GetState())
 }
 
 // When a KindCert session ends (logout, eviction, GC), Session.zero closes the per-session

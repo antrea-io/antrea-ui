@@ -265,13 +265,15 @@ func run() error {
 	}
 
 	var flowStreamSubscriber flowstream.FlowStreamSubscriber
+	var flowStreamRouter *flowstream.RoutedSubscriber
 	if len(config.FlowSources) > 0 {
-		router, err := flowstream.NewRoutedSubscriber(context.Background(), logger, k8sClientset, config.FlowSources, adminTokenSource)
+		router, err := flowstream.NewRoutedSubscriber(logger, k8sClientset, config.FlowSources, adminTokenSource)
 		if err != nil {
 			return err
 		}
 		defer router.Close()
 		flowStreamSubscriber = router
+		flowStreamRouter = router
 	}
 
 	// The backend instruments itself whether or not metrics are enabled: the setting only decides
@@ -378,6 +380,9 @@ func run() error {
 	go traceflowHandler.Run(stopCh)
 	go antreaSvcHandler.Run(stopCh)
 	go sessionStore.Run(stopCh)
+	if flowStreamRouter != nil {
+		go flowStreamRouter.Run(stopCh)
+	}
 	go pluginRegistry.RunConfigMapWatch(stopCh)
 	if config.Plugins.Directory != "" {
 		go pluginRegistry.RunDirectoryWatch(config.Plugins.Directory, stopCh)

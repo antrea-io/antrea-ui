@@ -1,9 +1,9 @@
-{{- /* Each flowSources entry with a caConfigMap gets read access to that ConfigMap in its own
-namespace: the backend reads the CA of a source through the Kubernetes API, and the CA can live in
+{{- /* Each flowSources entry with a caConfigMap and TLS verification gets get/list/watch access in its own
+namespace: the backend watches the CA of a source through the Kubernetes API, and the CA can live in
 another namespace. The names carry the entry's index so that two entries in one namespace do not
-collide. The Flow Aggregator's own CA is covered by flow-aggregator-rolebinding.yaml. */ -}}
+collide. The Flow Aggregator's own CA is covered by flow-aggregator-rbac.yaml. */ -}}
 {{- range $i, $source := .Values.flowSources }}
-{{- if $source.caConfigMap }}
+{{- if and $source.caConfigMap (not $source.insecureSkipVerify) }}
 {{- if not $source.namespace }}
 {{- fail (printf "flowSources[%d].namespace is required when caConfigMap is set" $i) }}
 {{- end }}
@@ -19,7 +19,7 @@ rules:
   - apiGroups: [""]
     resources: ["configmaps"]
     resourceNames: [{{ $source.caConfigMap | quote }}]
-    verbs: ["get"]
+    verbs: ["get", "list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
