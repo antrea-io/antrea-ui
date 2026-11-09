@@ -1,11 +1,12 @@
 {{- /* Each flowSources entry with a caConfigMap and TLS verification gets get/list/watch access in its own
 namespace: the backend watches the CA of a source through the Kubernetes API, and the CA can live in
 another namespace. The names carry the entry's index so that two entries in one namespace do not
-collide. The Flow Aggregator's own CA is covered by flow-aggregator-rbac.yaml. */ -}}
+collide. The Flow Aggregator's own CA is covered by flow-aggregator-rbac.yaml, and the CA of a
+source which enables discovery by flow-source-discovery.yaml. */ -}}
 {{- range $i, $source := .Values.flowSources }}
-{{- if and $source.caConfigMap (not $source.insecureSkipVerify) }}
+{{- if and $source.caConfigMap (not $source.insecureSkipVerify) (not (dig "discovery" "enabled" false $source)) }}
 {{- if not $source.namespace }}
-{{- fail (printf "flowSources[%d].namespace is required when caConfigMap is set" $i) }}
+{{- fail (printf "flowSources[%d].namespace is required when caConfigMap is set and discovery is disabled" $i) }}
 {{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1

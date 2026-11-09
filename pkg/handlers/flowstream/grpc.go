@@ -22,6 +22,7 @@ import (
 	"io"
 	"net/netip"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -166,6 +167,10 @@ type GRPCFlowStreamSubscriber struct {
 	// connKeyPrefix and generation identify the source and its CA bundle in the session cache.
 	connKeyPrefix string
 	generation    int
+	// retired is closed by Retire, which ends the streams of KindCert credentials too. Nil, and
+	// so never closed, for a subscriber not built by NewGRPCFlowStreamSubscriber.
+	retired    chan struct{}
+	retireOnce sync.Once
 }
 
 // GRPCConfig holds the connection parameters for a flow source's gRPC server.
@@ -216,6 +221,7 @@ func NewGRPCFlowStreamSubscriber(logger logr.Logger, cfg GRPCConfig) (*GRPCFlowS
 	logger.Info("Flow source gRPC client created", "address", cfg.Address)
 
 	return &GRPCFlowStreamSubscriber{
+		retired:          make(chan struct{}),
 		name:             cfg.Name,
 		logger:           logger,
 		address:          cfg.Address,
@@ -237,6 +243,18 @@ func (h *GRPCFlowStreamSubscriber) Close() error {
 		return h.conn.Close()
 	}
 	return nil
+}
+
+// Retire closes the subscriber like Close and also ends the streams that run on the per-session
+// connections of KindCert credentials, which Close leaves alone: the endpoint these streams were
+// started against is gone. A live stream ends without an error, like on a closed connection, and
+// a finite query fails like one interrupted on it. Retire is for a flow source whose endpoint
+// changed; a CA rotation only needs Close.
+func (h *GRPCFlowStreamSubscriber) Retire() error {
+	if h.retired != nil {
+		h.retireOnce.Do(func() { close(h.retired) })
+	}
+	return h.Close()
 }
 
 // buildCertConn dials a connection to the flow source presenting cred's client certificate as
@@ -320,6 +338,29 @@ func (h *GRPCFlowStreamSubscriber) Subscribe(ctx context.Context, scope *FlowStr
 		defer close(errCh)
 		defer close(flowsCh)
 
+		// Retiring the subscriber ends this stream like a closed connection does. requestCtx
+		// tells that apart from the request ending.
+		requestCtx := ctx
+		ctx, cancel := context.WithCancel(requestCtx)
+		defer cancel()
+		go func() {
+			select {
+			case <-h.retired:
+				cancel()
+			case <-ctx.Done():
+			}
+		}()
+		// failIfRetired reports a finite query that Retire stopped before it completed, which
+		// must not look like a finished query with fewer results. It returns true when it did.
+		// A live stream, or a request that ended on its own, ends without an error.
+		failIfRetired := func() bool {
+			if filter.following() || requestCtx.Err() != nil || ctx.Err() == nil {
+				return false
+			}
+			errCh <- retryableInternalStreamError(fmt.Errorf("flow source %q canceled the query before completion", h.name))
+			return true
+		}
+
 		client, callCtx, err := h.resolveCall(ctx)
 		if err != nil {
 			h.logger.Error(err, "Failed to resolve credential for flow stream")
@@ -341,7 +382,8 @@ func (h *GRPCFlowStreamSubscriber) Subscribe(ctx context.Context, scope *FlowStr
 		if stream == nil {
 			// ctx ended, or the connection was closed from under the call (e.g. a KindCert
 			// session logging out): an ordinary client disconnect, not a stream failure.
-			// Nothing to report.
+			// Nothing to report, unless Retire interrupted a finite query.
+			failIfRetired()
 			return
 		}
 		// The first Recv succeeded (or hit an immediate EOF, which startStream reports as a nil
@@ -372,13 +414,14 @@ func (h *GRPCFlowStreamSubscriber) Subscribe(ctx context.Context, scope *FlowStr
 		var lastDroppedCount uint64
 		if firstResp != nil {
 			if !h.forwardResp(ctx, firstResp, &lastDroppedCount, flowsCh) {
+				failIfRetired()
 				return
 			}
 		}
 		for {
 			resp, err := stream.Recv()
 			if err != nil {
-				if !filter.following() && ctx.Err() == nil && status.Code(err) == codes.Canceled {
+				if !filter.following() && requestCtx.Err() == nil && status.Code(err) == codes.Canceled {
 					errCh <- retryableInternalStreamError(fmt.Errorf("flow source %q canceled the query before completion", h.name))
 					return
 				}
@@ -396,6 +439,7 @@ func (h *GRPCFlowStreamSubscriber) Subscribe(ctx context.Context, scope *FlowStr
 				return
 			}
 			if !h.forwardResp(ctx, resp, &lastDroppedCount, flowsCh) {
+				failIfRetired()
 				return
 			}
 		}

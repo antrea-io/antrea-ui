@@ -103,6 +103,69 @@ Hand-written backend configurations must replace `flowAggregator` with
 `flowSources`; the old key is rejected at startup. Existing Helm values remain
 supported.
 
+### Flow source discovery
+
+A cluster may run multiple Flow Aggregators, only some of which expose
+FlowStreamService. To discover the Service instead of configuring its address,
+enable discovery on the Flow Aggregator:
+
+```yaml
+flowAggregator:
+  enabled: true
+  discovery:
+    enabled: true
+  caConfigMap: flow-aggregator-ca
+```
+
+A `flowSources` entry takes the same setting, `discovery: {enabled: true}`, and
+at most one source can enable it, since the label selects a single endpoint.
+
+Discovery is disabled by default. When enabled, the UI watches Services across
+all namespaces for `observability.antrea.io/flow-stream-service=true` and
+selects the `flowstream-grpc` TCP port. Antrea's FA chart adds the label when
+FlowStreamService is enabled, which is the default in Aggregate mode, from
+Antrea v2.8.0. An older Flow Aggregator does not label its Service, so
+discovery finds nothing for it: use a static address there. The UI ignores the
+static address and namespace and reads the named CA ConfigMap in the selected
+Service's namespace.
+
+`discovery.labelSelector` replaces the default label selector, for a Service
+labeled differently:
+
+```yaml
+flowAggregator:
+  discovery:
+    enabled: true
+    labelSelector: app=flow-aggregator,tier=visibility
+```
+
+It takes the syntax of `kubectl -l` and requires `discovery.enabled`. Keep it as
+narrow as the default: anyone who can create a matching Service in any
+namespace receives the credentials the UI forwards.
+
+With no match, or several, the source is unavailable and flow visibility shows
+an error until there is exactly one; the rest of the UI remains available. The
+error does not name the Services, since every user who opens a flow stream sees
+it: the backend logs the candidates. Use a static address if several Services
+match. Other flow sources keep their static
+configuration.
+
+The backend follows the Service. When its address, its namespace, its
+`flowstream-grpc` port or target port, its cluster IP, its selector or its
+identity (it was recreated) changes, it reconnects:
+live streams end and their clients reconnect, including those of sessions logged
+in with a client certificate, and a finite query in flight fails and must be
+re-run. When the namespace changes, the source stays unavailable until the CA
+ConfigMap in the new namespace is loaded. Updates of the Service that leave
+these as they were, such as an annotation, do nothing. A CA rotation behaves as
+described for [flow sources](#flow-sources).
+
+The chart grants cluster-wide Service list and watch, and get, list and watch
+on ConfigMaps with the configured CA name, only when a source discovers. Matching
+Services and their CA ConfigMaps must be controlled by trusted administrators
+because the UI forwards user credentials to the endpoint; see the
+[trust requirements](authentication.md#flow-service-discovery-trust).
+
 ## Accessing the web UI
 
 If you installed the Helm chart using the command above, without overriding any

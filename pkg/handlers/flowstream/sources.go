@@ -27,8 +27,9 @@ import (
 
 // NewRoutedSubscriber builds a RoutedSubscriber over the configured flow sources, in order: the
 // first source with the capability a request needs is its default. Each source owns a
-// WatchedSubscriber, so a missing or rotated CA affects only that source. The caller must Run
-// the result to start its CA watchers, and Close it when done.
+// WatchedSubscriber, so a missing or rotated CA affects only that source, and so does a source
+// which discovers its Service. The caller must Run the result to start its CA and Service
+// watchers, and Close it when done.
 func NewRoutedSubscriber(
 	logger logr.Logger,
 	client kubernetes.Interface,
@@ -38,12 +39,17 @@ func NewRoutedSubscriber(
 	router := &RoutedSubscriber{}
 	for i := range configs {
 		cfg := &configs[i]
-		logger.Info("Flow source enabled", "source", cfg.Name, "capabilities", cfg.Capabilities, "address", cfg.Address)
+		if cfg.Discovery.Enabled {
+			logger.Info("Flow source enabled", "source", cfg.Name, "capabilities", cfg.Capabilities, "discovery", true)
+		} else {
+			logger.Info("Flow source enabled", "source", cfg.Name, "capabilities", cfg.Capabilities, "address", cfg.Address)
+		}
 		subscriber, err := NewWatchedSubscriber(logger, client, WatchedConfig{
 			Name:               cfg.Name,
 			Address:            cfg.Address,
 			Namespace:          cfg.Namespace,
 			CAConfigMap:        cfg.CAConfigMap,
+			Discovery:          cfg.Discovery,
 			InsecureSkipVerify: cfg.InsecureSkipVerify,
 			ServerName:         cfg.ServerName,
 			AdminTokenSource:   adminTokenSource,
@@ -62,7 +68,7 @@ func NewRoutedSubscriber(
 	return router, nil
 }
 
-// Run starts each source's CA watcher and blocks until stopCh is closed.
+// Run starts each source's CA and Service watchers and blocks until stopCh is closed.
 func (s *RoutedSubscriber) Run(stopCh <-chan struct{}) {
 	var wg sync.WaitGroup
 	for _, source := range s.Sources {

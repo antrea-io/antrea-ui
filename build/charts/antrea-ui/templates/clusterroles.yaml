@@ -20,6 +20,8 @@ rules:
   # "which namespaces can I see", so antrea-ui watches RoleBindings and reports the ones naming the
   # user as a subject. This is a cluster-wide read of RBAC topology. Along with the discovery of
   # Antrea Agents below, it is the only privileged read antrea-ui performs on the user's behalf.
+  # (Opt-in flow source discovery reads Services and a CA ConfigMap for the backend's own
+  # connection to the flow source, with the separate ClusterRole in flow-source-discovery.yaml.)
   - apiGroups:
       - rbac.authorization.k8s.io
     resources:

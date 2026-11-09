@@ -422,6 +422,30 @@ This repository's UI uses only the first `watch` source and shows that flow
 visibility is unavailable when none is configured. Finite queries are
 available to hosts using the shared components.
 
+#### Flow service discovery trust
+
+Cluster-wide discovery of a flow source's Service assumes that matching
+Services and their CA ConfigMaps are controlled by trusted administrators. The
+UI forwards user credentials to the discovered endpoint and trusts the CA read
+from that Service's namespace. A label is not proof of identity: TLS cannot
+establish independent trust if an untrusted actor can supply both the endpoint
+and its CA. The UI does not enforce ownership of these resources.
+
+By default the selector is `observability.antrea.io/flow-stream-service=true`,
+the label the Flow Aggregator chart sets on its own Service. It is configurable
+with `discovery.labelSelector`, and whoever can create a Service matching the
+selector in any namespace can capture the credentials forwarded to it. A broader
+selector widens that set of people, so keep it as narrow as the default, and
+make sure that creating Services with that label is restricted to trusted
+administrators.
+
+Discovery grants the UI ServiceAccount cluster-wide Service list/watch and
+ConfigMap get, list and watch restricted to the configured CA name, which the
+backend watches in the namespace of the Service it found. Kubernetes RBAC does
+not restrict Service list/watch by label; the selector filters discovery
+results. Static connections use namespaced CA permissions instead. See
+[configuration](getting-started.md#flow-source-discovery).
+
 ### Metrics are authorized by Antrea UI itself
 
 Everywhere else, Antrea UI forwards the user's own credential and lets the
@@ -584,6 +608,10 @@ than reusing a failure.
   what it knows for users it has first checked the `metrics.ui.antrea.io` grant
   of (see [Metrics are authorized by Antrea UI
   itself](#metrics-are-authorized-by-antrea-ui-itself)).
+  Optional [flow source discovery](getting-started.md#flow-source-discovery)
+  also uses the UI ServiceAccount to watch Services cluster-wide and the
+  configured CA ConfigMap name in the selected Service namespace. Flow queries
+  themselves continue to use the caller's credential.
 
   The scan sees RoleBindings only, so it cannot see a **ClusterRoleBinding**: a
   user granted namespaced access cluster-wide is the subject of no RoleBinding

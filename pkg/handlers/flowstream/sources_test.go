@@ -466,6 +466,28 @@ func TestNewRoutedSubscriber(t *testing.T) {
 		}
 	})
 
+	t.Run("a source which discovers its Service waits for it, alone", func(t *testing.T) {
+		client := fake.NewClientset()
+		router, err := NewRoutedSubscriber(testr.New(t), client, []serverconfig.FlowSourceConfig{
+			{Name: "flow-aggregator", Capabilities: watch, InsecureSkipVerify: true,
+				Discovery: serverconfig.FlowSourceDiscoveryConfig{Enabled: true}},
+			{Name: "flow-history", Capabilities: list, Address: "hist.example.test:14740", InsecureSkipVerify: true},
+		}, nil)
+		require.NoError(t, err)
+		runRoutedSubscriber(t, router)
+		discovering := router.Sources[0].Subscriber.(*WatchedSubscriber)
+		static := router.Sources[1].Subscriber.(*WatchedSubscriber)
+		assert.True(t, static.available(), "a source with an address does not wait for discovery")
+		assert.False(t, discovering.available())
+
+		_, err = client.CoreV1().Services("networking").Create(t.Context(), discoveryService("networking", "fa"), metav1.CreateOptions{})
+		require.NoError(t, err)
+		require.Eventually(t, discovering.available, 5*time.Second, 10*time.Millisecond)
+		current, _ := discovering.currentForTest()
+		assert.Equal(t, "fa.networking.svc:14740", current.address)
+		assert.Equal(t, "flow-aggregator", current.name)
+	})
+
 	for _, tc := range []struct {
 		name string
 		data map[string]string

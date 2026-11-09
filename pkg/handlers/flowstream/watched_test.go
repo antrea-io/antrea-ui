@@ -86,13 +86,13 @@ func newTestCA(t *testing.T) []byte {
 func newTestWatched(t *testing.T) (*WatchedSubscriber, *fakeCAProvider) {
 	t.Helper()
 	provider := &fakeCAProvider{}
-	w, err := newWatchedSubscriber(testr.New(t), WatchedConfig{
+	target := &watchTarget{address: "127.0.0.1:0", namespace: "flow-aggregator", caProvider: provider}
+	w := newWatchedSubscriber(testr.New(t), WatchedConfig{
 		Name:        "test-source",
 		Address:     "127.0.0.1:0",
 		Namespace:   "flow-aggregator",
 		CAConfigMap: "flow-aggregator-ca",
-	}, provider, nil)
-	require.NoError(t, err)
+	}, nil, target)
 	t.Cleanup(func() { w.Close() })
 	return w, provider
 }
@@ -140,6 +140,7 @@ func TestWatchedSubscriberSwapsSubscriberOnCAChange(t *testing.T) {
 	assert.Equal(t, 2, gen)
 	assert.Equal(t, 2, second.generation, "the new subscriber must carry the new generation")
 	assert.Equal(t, connectivity.Shutdown, first.conn.GetState(), "the replaced subscriber should be closed")
+	assert.False(t, isRetired(first), "a CA rotation leaves the streams of client-certificate sessions running")
 	assert.NotEqual(t, connectivity.Shutdown, second.conn.GetState())
 }
 
@@ -470,11 +471,11 @@ func TestWatchedSubscriberLogsUntilACABundleIsLoaded(t *testing.T) {
 		}
 
 		provider := &fakeCAProvider{}
-		w, err := newWatchedSubscriber(logger, WatchedConfig{
+		target := &watchTarget{address: "127.0.0.1:0", caProvider: provider, run: func(ctx context.Context) { <-ctx.Done() }}
+		w := newWatchedSubscriber(logger, WatchedConfig{
 			Address:     "127.0.0.1:0",
 			CAConfigMap: "flow-aggregator-ca",
-		}, provider, func(ctx context.Context) { <-ctx.Done() })
-		require.NoError(t, err)
+		}, nil, target)
 		defer w.Close()
 
 		stopCh := make(chan struct{})
