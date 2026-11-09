@@ -213,7 +213,7 @@ func NewGRPCFlowStreamSubscriber(logger logr.Logger, cfg GRPCConfig) (*GRPCFlowS
 	// Note: grpc.NewClient is lazy — the connection is not established until the first
 	// RPC call. This log confirms the client was created successfully, not that the
 	// server is reachable.
-	logger.Info("Flow source gRPC client created", "source", cfg.Name, "address", cfg.Address)
+	logger.Info("Flow source gRPC client created", "address", cfg.Address)
 
 	return &GRPCFlowStreamSubscriber{
 		name:             cfg.Name,
@@ -562,7 +562,7 @@ func (h *GRPCFlowStreamSubscriber) logDenial(ctx context.Context, err error) {
 	if ra, ok := session.RequestAuthFrom(ctx); ok {
 		username = ra.Username
 	}
-	h.logger.Info("Flow source denied flow visibility request", "source", h.name, "username", username, "reason", streamErr.Error())
+	h.logger.Info("Flow source denied flow visibility request", "username", username, "reason", streamErr.Error())
 }
 
 var filterDirectionToProto = map[FlowFilterDirection]flowpb.FlowFilterDirection{

@@ -187,8 +187,8 @@ flowAggregator:
   # request. If the ConfigMap does not exist yet, the backend keeps running and Flow Visibility
   # shows an error until it is created. A deleted ConfigMap or an invalid bundle keeps the last
   # good one.
-  # The chart grants antrea-ui get, list and watch on this ConfigMap only, so changing its name
-  # takes a helm upgrade.
+  # Unless insecureSkipVerify is set, the chart grants antrea-ui get, list and watch on this
+  # ConfigMap only, so changing its name takes a helm upgrade.
   caConfigMap: flow-aggregator-ca
   # -- Namespace where the Flow Aggregator is installed.
   namespace: flow-aggregator
@@ -463,8 +463,9 @@ hostAliases: []
 # and/or `list` (finite queries), at least one; `address` is the gRPC address (host:port);
 # `namespace` and `caConfigMap` locate a ConfigMap (key `ca.crt`) with the CA used to verify the
 # server, `namespace` is required when `caConfigMap` is set, and the chart grants the UI
-# `get`, `list` and `watch` on that ConfigMap (leaving both empty uses the system trust store, which will not
-# verify a self-signed certificate); `serverName` overrides the TLS server name used for
+# `get`, `list` and `watch` on that ConfigMap unless `insecureSkipVerify` is set (leaving both empty
+# uses the system trust store, which will not verify a self-signed certificate);
+# `serverName` overrides the TLS server name used for
 # verification, for example when dialing through kubectl port-forward; `insecureSkipVerify`
 # disables verification, for development and testing only: with it on, any server answering at
 # `address` is trusted, and the backend hands it every flow viewer's bearer token and, for

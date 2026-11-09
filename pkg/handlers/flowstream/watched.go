@@ -42,6 +42,8 @@ const (
 // errWatchedSubscriberUnavailable is what a client sees while a WatchedSubscriber has no
 // subscriber. The cause is only logged: it names Kubernetes objects and is meant for the operator,
 // not for every user who can open a flow stream.
+// An unloaded CA is a backend trust configuration issue, so this is internal rather than
+// flow_source_unavailable. It is retryable because loading the CA makes the source usable.
 var errWatchedSubscriberUnavailable = retryableInternalStreamError(errors.New(
 	"flow visibility is unavailable: the backend has not loaded the flow source CA certificate, " +
 		"check the antrea-ui backend logs and the flowSources configuration"))
@@ -74,8 +76,11 @@ type caBundleProvider interface {
 
 // WatchedSubscriber is a FlowStreamSubscriber that follows one flow source's CA ConfigMap. It
 // builds a GRPCFlowStreamSubscriber for each CA bundle it sees, swaps it in and closes the one it
-// replaces, so a CA rotation takes effect without restarting antrea-ui. A stream on the closed
-// subscriber ends and its client reconnects through the new one.
+// replaces, so a CA rotation takes effect without restarting antrea-ui. This closes the shared
+// connection for bearer and admin-password sessions: live clients reconnect through the new
+// subscriber, while interrupted finite queries fail. Client-certificate sessions keep their own
+// connections and ongoing streams; their next flow request to this source replaces the connection
+// using the new CA.
 //
 // Until the first bundle is loaded, Subscribe fails with a retryable error, which the UI shows as
 // a banner: a missing ConfigMap does not keep the rest of antrea-ui from running. Afterwards, the
@@ -275,8 +280,8 @@ func (w *WatchedSubscriber) available() bool {
 // closes flowsCh and errCh after sending one retryable error on errCh, and never closes the ready
 // channel.
 //
-// A Subscribe that reads the current subscriber just as a new bundle replaces it fails or ends on
-// the closed one like any stream on it; its client reconnects.
+// A Subscribe using the shared connection that reads the current subscriber just as a new bundle
+// replaces it fails or ends on the closed one like any stream on it; live clients reconnect.
 func (w *WatchedSubscriber) Subscribe(ctx context.Context, scope *FlowStreamScope, filter *FlowStreamFilter) (<-chan apisv1.FlowStreamEvent, <-chan error, <-chan struct{}) {
 	w.mu.RLock()
 	current := w.current
