@@ -124,6 +124,10 @@ jobs:
     # through kube-apiserver or over plain HTTP.
     - name: Create plugin ConfigMaps
       run: ci/e2e-plugins.sh create-plugins
+    # Runs the script plugin authors are given on the servers of these plugins: it has to accept
+    # those the backend loads in the e2e tests, and report the 403 of remote-plugin-denied.
+    - name: Validate plugin servers
+      run: ci/e2e-plugins.sh validate-servers
     # For e2e tests, Antrea UI should be installed first
     - name: Run e2e tests
       run: go test -v ./test/e2e

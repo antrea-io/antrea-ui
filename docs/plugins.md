@@ -700,13 +700,22 @@ ingress from antrea-ui.
 ### What the aggregated API server has to provide
 
 - A `uipluginbundles` resource in the manifest's group and version, with
-  objects named by digest. `GET <path>/uipluginbundles/<sha256>` returns a
-  standard Kubernetes object, the resource supports `LIST`, and its `download`
-  subresource, `GET <path>/uipluginbundles/<sha256>/download`, returns
-  `bundle.zip` (or 404 if
-  the replica does not have that digest). The resource must accept a
+  objects named by digest. Its `download` subresource,
+  `GET <path>/uipluginbundles/<sha256>/download`, returns `bundle.zip` (or 404
+  if the replica does not have that digest). The resource must accept a
   64-character hexadecimal name. The bundle is a subresource because resources
   exposed through aggregation have to be standard Kubernetes objects.
+
+  The `download` subresource is all Antrea UI requests. Serving the objects
+  themselves is recommended but optional: `GET <path>/uipluginbundles/<sha256>`
+  returning a standard Kubernetes object, and `LIST` on the resource. With
+  them, and the resource in the API's discovery document,
+  `kubectl get uipluginbundles` shows which digests a server publishes, which
+  is the first thing to look at when a download returns 404. Antrea UI does not
+  currently depend on them, and Kubernetes accepts an aggregated API without
+  them, as long as its discovery document only lists what the server serves.
+  The antrea-ui ServiceAccount needs no access to the objects: `kubectl get`
+  runs with the operator's own RBAC.
 - RBAC for the antrea-ui ServiceAccount, shipped with the plugin provider's chart.
   RBAC treats a subresource as a separate resource, so `get` on `download` has
   to be granted explicitly. The path has no namespace in it, so the resource is
@@ -720,9 +729,6 @@ ingress from antrea-ui.
   metadata:
     name: plugin-bundle-reader
   rules:
-  - apiGroups: ["ui.example.com"]
-    resources: ["uipluginbundles"]
-    verbs: ["get", "list"]
   - apiGroups: ["ui.example.com"]
     resources: ["uipluginbundles/download"]
     verbs: ["get"]
@@ -747,6 +753,65 @@ ingress from antrea-ui.
 
 `manifest.json.asc` signs the exact bytes of `manifest.json`, so the provider's
 chart must embed the signed file as is, without reformatting it.
+
+## Validating a plugin's server
+
+[`hack/validate-plugin-server.sh`](../hack/validate-plugin-server.sh) is a
+sanity check of a plugin's server, with no need for Antrea UI to load the
+plugin. It sends the requests the backend sends, for the
+[frontend bundle](#downloading-the-bundle) and for the
+[support bundle source](#support-bundle-sources), and checks the answers for
+the common mistakes, against what this document and
+[the source protocol](supportbundle.md#the-source-protocol) state. It is kept
+simple on purpose: it does not repeat every rule of the backend, which has the
+final word. It needs `curl` and `jq`, and `kubectl` for what goes through
+kube-apiserver.
+
+```bash
+# The plugin is installed: its ConfigMap has the manifest, and the bundleURL if there is one.
+hack/validate-plugin-server.sh --configmap antrea-ui-plugins/my-plugin --antrea-ui-namespace kube-system
+
+# The server is deployed in the cluster, the ConfigMap is not: the manifest is a local file.
+hack/validate-plugin-server.sh --manifest dist/manifest.json
+
+# The server runs outside of Kubernetes.
+hack/validate-plugin-server.sh --manifest dist/manifest.json --server https://localhost:8443 -- --cacert ca.crt
+
+# No manifest: the endpoints are options.
+hack/validate-plugin-server.sh --bundle-api-path /apis/ui.example.com/v1 --bundle-sha256 <digest> \
+    --supportbundle-api-path /apis/foo.example.com/v1
+```
+
+What the manifest declares decides what is checked: a `bundleSource`, a
+`supportBundle`, or both. An option naming an endpoint overrides the manifest.
+
+- An `/apis/<group>/<version>` path is requested from kube-apiserver, with the
+  current kubectl context, so the aggregated API server behind it has to be
+  registered with an APIService. With `--server`, it is requested from that
+  URL instead, which is how to check an aggregated API server on its own. The
+  arguments after `--` are given to `curl`, for what such a server needs: a CA,
+  a client certificate, the `X-Remote-*` headers of the aggregation layer.
+- Requests to kube-apiserver are sent as the current kubectl user. With
+  `--antrea-ui-namespace`, the requests the backend makes are sent as the
+  ServiceAccounts it uses, `antrea-ui` for a frontend bundle and
+  `antrea-ui-admin`, with its user extras, for a support bundle. This checks
+  the RBAC the plugin ships too. It takes the right to impersonate, and
+  Antrea UI installed in that namespace.
+- A `bundleURL` is requested from where the script runs. For an `http` one
+  that only resolves inside the cluster, forward a local port to its Service
+  with `kubectl port-forward`, and give
+  `--bundle-url http://localhost:<port>/<path>`. An `https` one that only
+  resolves inside the cluster cannot be checked.
+- A support bundle source is asked for a bundle, with no `since`, as the
+  support bundle page asks for one (`--since` sets one). The bundle is then
+  downloaded and deleted.
+
+The script prints `FAIL` for what the backend rejects, and exits with an error
+if there is any. It prints `WARN` for what may be a problem, such as a download
+larger than the backend's default limit (`--max-bundle-bytes` and
+`--max-source-bytes` take the limits of an installation), or a support bundle
+the source does not delete. It does not check the manifest, nor its signature,
+nor the content of the frontend bundle, which its SHA-256 ties to the manifest.
 
 ## Version compatibility
 

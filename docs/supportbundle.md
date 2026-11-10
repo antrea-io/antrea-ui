@@ -242,6 +242,10 @@ Antrea UI:
 A source authorizes each request itself. A 401 or 403 from a source only fails
 that source.
 
+For the source of a plugin, `hack/validate-plugin-server.sh` sends these
+requests in place of Antrea UI: see
+[Validating a plugin's server](plugins.md#validating-a-plugins-server).
+
 ### Concurrent collections
 
 By default, Antrea UI may collect from a source for several bundles at once,

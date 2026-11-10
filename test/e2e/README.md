@@ -55,6 +55,10 @@ Tear down with `kind delete cluster && ci/e2e-oidc.sh stop`.
 `TestPluginLoading` additionally needs the pod-counter example plugin built and installed as a
 labeled ConfigMap — see the corresponding steps in `.github/workflows/kind_e2e.yml`.
 
+Once the plugins are installed, `ci/e2e-plugins.sh validate-servers` runs
+`hack/validate-plugin-server.sh` on those which have a server. It is a step of the workflow, not a
+Go test.
+
 `TestSupportBundle` collects from a support bundle source deployed by `ci/e2e-supportbundle.sh`,
 reached both as an APIService declared by a plugin (`supportbundle-plugin`, installed by
 `ci/e2e-plugins.sh`) and as an HTTPS extra source. Before installing Antrea UI, build and load the
