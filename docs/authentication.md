@@ -424,27 +424,25 @@ available to hosts using the shared components.
 
 #### Flow service discovery trust
 
-Cluster-wide discovery of a flow source's Service assumes that matching
-Services and their CA ConfigMaps are controlled by trusted administrators. The
-UI forwards user credentials to the discovered endpoint and trusts the CA read
-from that Service's namespace. A label is not proof of identity: TLS cannot
-establish independent trust if an untrusted actor can supply both the endpoint
-and its CA. The UI does not enforce ownership of these resources.
+Discovery of a flow source's Service assumes that matching Services and their CA
+ConfigMaps are controlled by trusted administrators. The UI forwards user
+credentials to the discovered endpoint and trusts the CA read from that
+Service's namespace. A label is not proof of identity, and TLS cannot establish
+independent trust if an untrusted actor can supply both the endpoint and its CA.
+The UI does not enforce ownership of these resources.
 
-By default the selector is `observability.antrea.io/flow-stream-service=true`,
-the label the Flow Aggregator chart sets on its own Service. It is configurable
-with `discovery.labelSelector`, and whoever can create a Service matching the
-selector in any namespace can capture the credentials forwarded to it. A broader
-selector widens that set of people, so keep it as narrow as the default, and
-make sure that creating Services with that label is restricted to trusted
+The default selector is `observability.antrea.io/flow-stream-service=true`, the
+label the Flow Aggregator chart sets on its Service; `discovery.labelSelector`
+changes it for a source. Whoever can create a Service matching the selector in
+any namespace can capture the forwarded credentials, so keep the selector as
+narrow as the default and restrict creating such Services to trusted
 administrators.
 
-Discovery grants the UI ServiceAccount cluster-wide Service list/watch and
-ConfigMap get, list and watch restricted to the configured CA name, which the
-backend watches in the namespace of the Service it found. Kubernetes RBAC does
-not restrict Service list/watch by label; the selector filters discovery
-results. Static connections use namespaced CA permissions instead. See
-[configuration](getting-started.md#flow-source-discovery).
+Discovery grants the UI ServiceAccount cluster-wide Service list/watch
+(Kubernetes RBAC cannot restrict it by label; the selector filters the results)
+and ConfigMap get, list and watch on the configured CA names, read in the
+namespace of the Service found. Static connections use namespaced CA
+permissions. See [configuration](getting-started.md#flow-source-discovery).
 
 ### Metrics are authorized by Antrea UI itself
 

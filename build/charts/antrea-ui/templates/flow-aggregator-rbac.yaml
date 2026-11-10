@@ -1,6 +1,4 @@
-{{- /* With discovery, flow-source-discovery.yaml grants the CA watch in whichever namespace the
-Service is. */ -}}
-{{- if and .Values.flowAggregator.enabled .Values.flowAggregator.caConfigMap (not .Values.flowAggregator.insecureSkipVerify) (not .Values.flowAggregator.discovery.enabled) -}}
+{{- if and .Values.flowAggregator.enabled .Values.flowAggregator.caConfigMap (not .Values.flowAggregator.insecureSkipVerify) -}}
 # The backend watches the Flow Aggregator CA ConfigMap, which lives in the Flow Aggregator's
 # Namespace, to follow CA rotations. This Role grants exactly that, on that ConfigMap only: it is
 # owned by this chart rather than borrowed from the Flow Aggregator's, whose rules cover more than

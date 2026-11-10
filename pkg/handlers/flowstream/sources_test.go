@@ -557,6 +557,71 @@ func TestNewRoutedSubscriber(t *testing.T) {
 	}
 }
 
+// Every discovering source follows the Service its own selector matches, and when that Service
+// moves the other sources keep their connections.
+func TestNewRoutedSubscriberWithSeveralDiscoveringSources(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		client := fake.NewClientset()
+		serviceIn := func(namespace, name, label string) *corev1.Service {
+			svc := discoveryService(namespace, name)
+			if label != "" {
+				svc.Labels = map[string]string{"app": label}
+			}
+			return svc
+		}
+		router, err := NewRoutedSubscriber(testr.New(t), client, []serverconfig.FlowSourceConfig{
+			{Name: "flow-aggregator", Capabilities: []string{serverconfig.FlowSourceCapabilityWatch},
+				Discovery: serverconfig.FlowSourceDiscoveryConfig{Enabled: true}},
+			{Name: "flow-history", Capabilities: []string{serverconfig.FlowSourceCapabilityList},
+				Discovery: serverconfig.FlowSourceDiscoveryConfig{Enabled: true, LabelSelector: "app=flow-history"}},
+		}, nil)
+		require.NoError(t, err)
+		runRoutedSubscriber(t, router)
+		aggregator := router.Sources[0].Subscriber.(*WatchedSubscriber)
+		history := router.Sources[1].Subscriber.(*WatchedSubscriber)
+		settle()
+		assert.False(t, aggregator.available())
+		assert.False(t, history.available())
+
+		// A Service which matches only the second selector serves only that source.
+		for _, svc := range []*corev1.Service{
+			serviceIn("history-ns", "history", "flow-history"),
+			serviceIn("networking-a", "fa", ""),
+		} {
+			_, err = client.CoreV1().Services(svc.Namespace).Create(t.Context(), svc, metav1.CreateOptions{})
+			require.NoError(t, err)
+		}
+		settle()
+		require.True(t, aggregator.available())
+		require.True(t, history.available())
+		aggregatorSub, _ := aggregator.currentForTest()
+		historySub, historyGeneration := history.currentForTest()
+		assert.Equal(t, "fa.networking-a.svc:14740", aggregatorSub.address)
+		assert.Equal(t, "history.history-ns.svc:14740", historySub.address)
+
+		// The aggregator's Service moves: only that source reconnects.
+		require.NoError(t, client.CoreV1().Services("networking-a").Delete(t.Context(), "fa", metav1.DeleteOptions{}))
+		_, err = client.CoreV1().Services("networking-b").Create(t.Context(), serviceIn("networking-b", "fa", ""), metav1.CreateOptions{})
+		require.NoError(t, err)
+		settle()
+		moved, generation := aggregator.currentForTest()
+		assert.Equal(t, "fa.networking-b.svc:14740", moved.address)
+		assert.Equal(t, 2, generation)
+		assert.Equal(t, connectivity.Shutdown, aggregatorSub.conn.GetState())
+		current, generation := history.currentForTest()
+		assert.Same(t, historySub, current, "another discovering source keeps its subscriber")
+		assert.Equal(t, historyGeneration, generation)
+		assert.NotEqual(t, connectivity.Shutdown, current.conn.GetState())
+		assert.False(t, isRetired(current))
+
+		// Losing its Service makes one source unavailable and leaves the other serving.
+		require.NoError(t, client.CoreV1().Services("history-ns").Delete(t.Context(), "history", metav1.DeleteOptions{}))
+		settle()
+		assert.False(t, history.available())
+		assert.True(t, aggregator.available())
+	})
+}
+
 func runRoutedSubscriber(t *testing.T, router *RoutedSubscriber) {
 	t.Helper()
 	stopCh := make(chan struct{})

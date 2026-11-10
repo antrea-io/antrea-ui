@@ -142,8 +142,7 @@ const DefaultFlowServiceSelector = "observability.antrea.io/flow-stream-service=
 
 // FlowSourceDiscoveryConfig configures optional discovery of a flow source's endpoint.
 // When enabled, the backend watches Services in every namespace for LabelSelector and connects to
-// the one match's flowstream-grpc port. The selector picks a single endpoint, so at most one
-// source can enable it.
+// the one match's flowstream-grpc port.
 type FlowSourceDiscoveryConfig struct {
 	Enabled bool
 	// LabelSelector selects the Service, as for kubectl -l. Whoever can create a matching Service
@@ -434,8 +433,6 @@ func validateDiscoverySelector(i int, source *FlowSourceConfig) error {
 
 func validateFlowSources(sources []FlowSourceConfig) error {
 	names := sets.New[string]()
-	// discovering names the source which enabled discovery, once there is one.
-	var discovering string
 	for i, source := range sources {
 		if errs := validation.IsDNS1123Label(source.Name); len(errs) > 0 {
 			return fmt.Errorf("flowSources[%d].name %q is invalid: %s", i, source.Name, strings.Join(errs, "; "))
@@ -447,13 +444,7 @@ func validateFlowSources(sources []FlowSourceConfig) error {
 		if err := validateDiscoverySelector(i, &source); err != nil {
 			return err
 		}
-		if source.Discovery.Enabled {
-			if discovering != "" {
-				return fmt.Errorf("flowSources[%d] (%s) enables discovery, like %s: the Service label selects "+
-					"a single endpoint, so at most one source can", i, source.Name, discovering)
-			}
-			discovering = fmt.Sprintf("flowSources[%q]", source.Name)
-		} else if source.Address == "" {
+		if !source.Discovery.Enabled && source.Address == "" {
 			return fmt.Errorf("flowSources[%d] (%s) address must not be empty", i, source.Name)
 		}
 		if len(source.Capabilities) == 0 {

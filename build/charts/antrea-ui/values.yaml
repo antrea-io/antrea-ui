@@ -172,30 +172,12 @@ supportBundle:
 
 # Flow Aggregator gRPC integration (live flow visibility in the UI).
 flowAggregator:
-  # -- Discover the labeled FlowStreamService across all namespaces. Matching Services and
-  # their CA ConfigMaps must be controlled by trusted administrators, since the UI forwards
-  # user credentials to the Service it finds.
-  # When the Service's address, namespace, selector, target port, cluster IP or identity
-  # change, the backend reconnects: live flow streams end and their clients reconnect, and a
-  # finite query in flight fails. With no match, or several, Flow Visibility shows an error
-  # until there is exactly one.
-  # Opt in explicitly; by default, preserve the configured address.
-  discovery:
-    enabled: false
-    # -- Label selector of the Service to discover, as for `kubectl -l`. Leave empty for
-    # `observability.antrea.io/flow-stream-service=true`, which the Flow Aggregator chart sets
-    # on its Service when FlowStreamService is enabled (the default in Aggregate mode), from
-    # Antrea v2.8.0; older Flow Aggregators do not label their Service, so nothing is found. Whoever can create a Service matching the selector
-    # in any namespace can capture forwarded credentials: keep it as narrow as the default.
-    # Only used when discovery is enabled.
-    labelSelector: ""
   # -- When true, the backend connects to Flow Aggregator's FlowStreamService over gRPC.
   enabled: false
-  # -- gRPC address (host:port) of the FlowStreamService. Ignored when discovery is enabled.
+  # -- gRPC address (host:port) of the FlowStreamService.
   address: "flow-aggregator.flow-aggregator.svc:14740"
-  # -- Name of the ConfigMap containing the CA certificate (key: ca.crt) used to verify
-  # the FlowStreamService server certificate. Discovery reads it in the selected Service
-  # namespace; static connections use the namespace below.
+  # -- Name of the ConfigMap (in namespace below) containing the CA certificate (key: ca.crt)
+  # used to verify the FlowStreamService server certificate.
   # Leaving this empty does not skip server certificate verification: it falls back to the
   # system trust store, which will not verify the Flow Aggregator's self-signed certificate, and
   # the connection will fail. Use insecureSkipVerify below for that (dev/test only).
@@ -206,15 +188,14 @@ flowAggregator:
   # shows an error until it is created. A deleted ConfigMap or an invalid bundle keeps the last
   # good one.
   # Unless insecureSkipVerify is set, the chart grants antrea-ui get, list and watch on this
-  # ConfigMap only, so changing its name takes a helm upgrade. With discovery, the grant covers
-  # a ConfigMap of that name in any namespace, since the namespace is not known in advance.
+  # ConfigMap only, so changing its name takes a helm upgrade.
   caConfigMap: flow-aggregator-ca
-  # -- Namespace of the CA ConfigMap for static connections. Ignored when discovery is enabled.
+  # -- Namespace where the Flow Aggregator is installed.
   namespace: flow-aggregator
   # -- Override the TLS server name used for certificate verification. Useful when dialing
   # via kubectl port-forward (loopback address) while the server cert is issued for the
   # in-cluster Service DNS name (e.g. flow-aggregator.flow-aggregator.svc).
-  # Leave empty to use the hostname from the discovered or configured address.
+  # Leave empty to use the hostname from the address field.
   serverName: ""
   # -- Disable TLS server certificate verification. Should only be used for development
   # or testing; never enable this in production. With this on, any server answering at
@@ -481,15 +462,16 @@ hostAliases: []
 # `name` is a unique DNS-1123 label, used in requests as `source=<name>` (`flow-aggregator` is
 # reserved while `flowAggregator.enabled` is true); `capabilities` lists `watch` (live streams)
 # and/or `list` (finite queries), at least one; `address` is the gRPC address (host:port);
-# `discovery.enabled` finds the Service labeled `observability.antrea.io/flow-stream-service=true`
-# (or matching `discovery.labelSelector`) in any namespace instead, like
-# `flowAggregator.discovery.enabled`, ignores `address` and `namespace`, and can be set on one
-# source only, counting the Flow Aggregator's;
+# `discovery.enabled` replaces it: the UI then finds the Service labeled
+# `observability.antrea.io/flow-stream-service=true` in any namespace (or matching
+# `discovery.labelSelector`, which takes the syntax of `kubectl -l`), connects to its
+# `flowstream-grpc` port, and ignores `address` and `namespace` (the Flow Aggregator chart sets the
+# default label from Antrea v2.8.0);
 # `namespace` and `caConfigMap` locate a ConfigMap (key `ca.crt`) with the CA used to verify the
 # server, `namespace` is required when `caConfigMap` is set and discovery is not enabled (with
-# discovery, the ConfigMap is read in the namespace of the Service found), and the chart grants the UI
-# `get`, `list` and `watch` on that ConfigMap unless `insecureSkipVerify` is set (leaving both empty
-# uses the system trust store, which will not verify a self-signed certificate);
+# discovery, the ConfigMap is read in the namespace of the Service found), and the chart grants
+# the UI `get`, `list` and `watch` on that ConfigMap unless `insecureSkipVerify` is set (leaving
+# both empty uses the system trust store, which will not verify a self-signed certificate);
 # `serverName` overrides the TLS server name used for
 # verification, for example when dialing through kubectl port-forward; `insecureSkipVerify`
 # disables verification, for development and testing only: with it on, any server answering at
@@ -497,13 +479,14 @@ hostAliases: []
 # admin-password sessions, a freshly minted antrea-ui-admin token, all replayable against the
 # real Kubernetes API server by whoever controls that address.
 # See [Flow sources](../../../docs/getting-started.md#flow-sources) for a Flow Aggregator
-# configuration example.
+# configuration example, and [Flow source discovery](../../../docs/getting-started.md#flow-source-discovery)
+# for the same with discovery, and its
+# [trust requirements](../../../docs/authentication.md#flow-service-discovery-trust).
 # The backend watches each source's CA independently. A missing or invalid initial CA leaves only
 # that source unavailable; once loaded, a deleted or invalid bundle keeps the last good one.
 # CA changes replace that source's shared connection: live clients reconnect, while an interrupted
 # finite query fails and must be re-run. Client-certificate sessions pick up the new CA on their
-# next request. A source with discovery follows its Service the same way, and a change of the
-# Service's address or namespace also ends client-certificate streams.
+# next request. A source with discovery also follows its Service in the same way.
 # The UI in this chart only offers flows when a source has the `watch` capability. Without one,
 # the Flows page shows that flow visibility is not available. This UI ignores `list` sources and
 # uses only the first `watch` source. Other capabilities are for other UIs built on the same components.

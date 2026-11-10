@@ -523,8 +523,9 @@ func TestRetargetSupersedesSessionConnectionsOfEarlierTargets(t *testing.T) {
 		t.Cleanup(func() { w.Close() })
 		return w
 	}
-	discovered, static := newWatched(true), newWatched(false)
+	discovered, other, static := newWatched(true), newWatched(true), newWatched(false)
 	discovered.retarget(DiscoveredEndpoint{Address: "fa.networking-a.svc:14740", Namespace: "networking-a", Revision: "1"}, nil)
+	other.retarget(DiscoveredEndpoint{Address: "history.history-ns.svc:14740", Namespace: "history-ns", Revision: "1"}, nil)
 
 	clientKP, err := testcerts.NewCA().NewKeyPair("viewer")
 	require.NoError(t, err)
@@ -552,7 +553,8 @@ func TestRetargetSupersedesSessionConnectionsOfEarlierTargets(t *testing.T) {
 
 	first, _ := discovered.currentForTest()
 	staticSub, _ := static.currentForTest()
-	firstConn, staticConn := connection(first), connection(staticSub)
+	otherSub, _ := other.currentForTest()
+	firstConn, staticConn, otherConn := connection(first), connection(staticSub), connection(otherSub)
 
 	discovered.retarget(DiscoveredEndpoint{Address: "fa.networking-b.svc:14740", Namespace: "networking-b", Revision: "1"}, nil)
 	second, generation := discovered.currentForTest()
@@ -561,6 +563,7 @@ func TestRetargetSupersedesSessionConnectionsOfEarlierTargets(t *testing.T) {
 	assert.NotSame(t, firstConn, secondConn)
 	assert.Equal(t, connectivity.Shutdown, firstConn.GetState(), "the session replaces the connection of the earlier target")
 	assert.NotEqual(t, connectivity.Shutdown, staticConn.GetState(), "another source's connection is left alone")
+	assert.NotEqual(t, connectivity.Shutdown, otherConn.GetState(), "another discovering source's connection is left alone")
 
 	_, _, err = first.resolveCall(ctx)
 	require.NoError(t, err)

@@ -1,9 +1,9 @@
-{{- /* Opt-in discovery of a flow source's Service (flowAggregator.discovery.enabled, or discovery
-on a flowSources entry) reads Services in every namespace and the CA ConfigMap in the namespace of
-the Service it finds, which is not known in advance, and the backend watches that ConfigMap, so the
-grant is get, list and watch. It is limited to the CA names the discovering sources configure, and
-left out for a source which skips TLS verification. Static sources keep their namespaced CA
-access. */ -}}
+{{- /* Opt-in discovery of a flow source's Service (discovery.enabled on a flowSources entry) reads
+Services in every namespace and the CA ConfigMap in the namespace of the Service it finds, which is
+not known in advance, and the backend watches that ConfigMap, so the grant is get, list and watch.
+One ClusterRole serves every discovering source: it is limited to the CA names those sources
+configure, and left out for a source which skips TLS verification. Static sources keep their
+namespaced CA access. */ -}}
 {{- $discovering := list }}
 {{- range (include "antrea-ui.flowSources" . | fromYamlArray) }}
 {{- if dig "discovery" "enabled" false . }}

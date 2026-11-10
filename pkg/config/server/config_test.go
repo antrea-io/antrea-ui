@@ -442,8 +442,20 @@ func TestValidateFlowSourceDiscovery(t *testing.T) {
 			s.Capabilities = nil
 			return []FlowSourceConfig{s}
 		}},
-		{name: "one source only", wantErr: "at most one source can", sources: func() []FlowSourceConfig {
+		{name: "each discovering source has its own selector", sources: func() []FlowSourceConfig {
+			first, second := discovered("flow-aggregator"), discovered("flow-history")
+			first.Discovery.LabelSelector = "app=flow-aggregator"
+			second.Capabilities = []string{FlowSourceCapabilityList}
+			second.Discovery.LabelSelector = "app=flow-history"
+			return []FlowSourceConfig{first, second}
+		}},
+		{name: "discovering sources may use the default selector", sources: func() []FlowSourceConfig {
 			return []FlowSourceConfig{discovered("first"), discovered("second")}
+		}},
+		{name: "every discovering source has its selector checked", wantErr: "flowSources[1] (second) has an invalid discovery.labelSelector", sources: func() []FlowSourceConfig {
+			second := discovered("second")
+			second.Discovery.LabelSelector = "app in (a"
+			return []FlowSourceConfig{discovered("first"), second}
 		}},
 		{name: "a static source still needs an address", wantErr: "address must not be empty", sources: func() []FlowSourceConfig {
 			return []FlowSourceConfig{discovered("first"), {Name: "second", Capabilities: []string{FlowSourceCapabilityList}}}
