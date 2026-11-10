@@ -53,6 +53,7 @@
 #   ci/e2e-plugins.sh sign               # generate a key and sign the built plugin
 #   ci/e2e-plugins.sh configure-cluster  # run BEFORE installing Antrea UI
 #   ci/e2e-plugins.sh create-plugins     # run after Antrea UI is up
+#   ci/e2e-plugins.sh validate-servers   # run hack/validate-plugin-server.sh on the plugins above
 #   ci/e2e-plugins.sh clean              # drop the ConfigMaps, the plugins namespace and the key
 
 set -eo pipefail
@@ -149,7 +150,7 @@ function configure_cluster() {
 }
 
 # Deploys the stub aggregated API server, registers it with kube-apiserver and grants the
-# antrea-ui ServiceAccount read access to uipluginbundles (and only that).
+# antrea-ui ServiceAccount the download of uipluginbundles (and only that).
 function create_bundle_server() {
     log "Deploying the stub bundle server"
     local dir="${WORK_DIR}/bundle-server"
@@ -242,9 +243,6 @@ kind: ClusterRole
 metadata:
   name: ${BUNDLE_SERVER}-reader
 rules:
-- apiGroups: ["${BUNDLE_API_GROUP}"]
-  resources: ["uipluginbundles"]
-  verbs: ["get", "list"]
 - apiGroups: ["${BUNDLE_API_GROUP}"]
   resources: ["uipluginbundles/download"]
   verbs: ["get"]
@@ -352,6 +350,45 @@ function create_plugins() {
     kubectl label configmap "${SUPPORTBUNDLE_PLUGIN_NAME}" --namespace "${PLUGINS_NAMESPACE}" ui.antrea.io/plugin=true
 }
 
+# Runs hack/validate-plugin-server.sh on the plugins that have a server, which keeps the script in
+# line with the backend: it has to accept the servers the backend loads plugins from, and to tell
+# the plugin the backend is refused access to.
+function validate_servers() {
+    local validate="${ROOT_DIR}/hack/validate-plugin-server.sh" name output
+    for name in remote-plugin "${SUPPORTBUNDLE_PLUGIN_NAME}"; do
+        log "Validating the server of ${name}"
+        "${validate}" --configmap "${PLUGINS_NAMESPACE}/${name}" --antrea-ui-namespace "${RELEASE_NAMESPACE}"
+    done
+
+    log "Validating the server of remote-plugin-denied (expected to fail with a 403)"
+    if output="$("${validate}" --configmap "${PLUGINS_NAMESPACE}/remote-plugin-denied" \
+            --antrea-ui-namespace "${RELEASE_NAMESPACE}")" || ! grep -q "status 403" <<< "${output}"; then
+        echo "${output}"
+        echo "Error: the download for remote-plugin-denied was not reported as refused with a 403" >&2
+        exit 1
+    fi
+    echo "${output}"
+
+    log "Validating the server of http-plugin"
+    # Its bundleURL only resolves inside the cluster, so the Service is reached through a port
+    # forward, on a local port that kubectl picks and prints.
+    local port_forward_log="${WORK_DIR}/port-forward.log" port=""
+    kubectl port-forward --namespace "${PLUGINS_NAMESPACE}" "service/${BUNDLE_SERVER}" :8080 \
+        > "${port_forward_log}" 2>&1 &
+    trap "kill $! 2>/dev/null || true" EXIT
+    for _ in $(seq 50); do
+        port="$(sed -n 's/^Forwarding from 127\.0\.0\.1:\([0-9]*\) .*/\1/p' "${port_forward_log}")"
+        [ -z "${port}" ] || break
+        sleep 0.2
+    done
+    if [ -z "${port}" ]; then
+        echo "Error: no port forwarded to ${BUNDLE_SERVER}: $(cat "${port_forward_log}")" >&2
+        exit 1
+    fi
+    "${validate}" --configmap "${PLUGINS_NAMESPACE}/http-plugin" \
+        --bundle-url "http://127.0.0.1:${port}/bundles/$(jq -r '.bundleSha256' "${WORK_DIR}/http-plugin/manifest.json")"
+}
+
 function clean() {
     log "Removing the plugins namespace, the key ConfigMap and the throwaway key"
     # Deleting the namespace takes the plugin ConfigMaps with it.
@@ -368,9 +405,10 @@ case "${1:-}" in
     sign) sign ;;
     configure-cluster) configure_cluster ;;
     create-plugins) create_plugins ;;
+    validate-servers) validate_servers ;;
     clean) clean ;;
     *)
-        echo "Usage: $0 {sign|configure-cluster|create-plugins|clean}" >&2
+        echo "Usage: $0 {sign|configure-cluster|create-plugins|validate-servers|clean}" >&2
         exit 1
         ;;
 esac
