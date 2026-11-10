@@ -2800,7 +2800,7 @@ describe('AntreaFlowVisibilityPage — disclosure in the flow list', () => {
 // The service map's two collapsed forms. antrea-ui redacts nothing itself; these are renderings
 // of the disclosure markers the Flow Aggregator put on each record.
 describe('AntreaFlowVisibilityPage — collapsed peers in the service map', () => {
-    interface TestNode { id: string; shortName: string; kind: string; detail: string }
+    interface TestNode { id: string; shortName: string; namespace: string; kind: string; detail: string }
     interface TestEdge { source: string; target: string; connectionCount: number; totalBytesForward: number }
     interface TestGraph { nodes: TestNode[]; edges: TestEdge[] }
 
@@ -2952,6 +2952,55 @@ describe('AntreaFlowVisibilityPage — collapsed peers in the service map', () =
         expect(labels[0]).toContain('Workloads in ns-c are not shown');
         expect(labels[0]).toContain('watch on flows or get on flows/identity in ns-c');
         expect(page.shadowRoot!.querySelectorAll('#graph-svg title')).toHaveLength(0);
+    });
+
+    // The Service is disclosed by its own namespace, so it can be shown on a destination that is
+    // withheld. The map shows it then as it would for a disclosed destination, rather than
+    // folding the flow into the endpoint's collapsed namespace.
+    test('a Service shown on a withheld destination names the node', async () => {
+        const { graph } = await graphFor([
+            makeFlow({
+                srcIP: '10.0.0.1', dstIP: '10.1.0.1', dstNs: 'ns-c', dstPod: '',
+                dstDisclosure: EndpointDisclosure.Flow, destService: 'ns-b/xsvc:http',
+            }),
+            makeFlow({
+                srcIP: '10.0.0.1', dstIP: '10.1.0.2', dstNs: 'ns-c', dstPod: '',
+                dstDisclosure: EndpointDisclosure.Flow, svcDisclosure: EndpointDisclosure.Flow,
+            }),
+        ]);
+
+        const service = graph.nodes.find(n => n.id === 'ns-b/xsvc');
+        expect(service).toMatchObject({ kind: 'workload', shortName: 'xsvc', namespace: 'ns-b' });
+        // Only the flow whose Service name was cleared, as a withheld Service's is, collapses.
+        const collapsed = byKind(graph, 'undisclosedNamespace');
+        expect(collapsed).toHaveLength(1);
+        expect(collapsed[0].detail).toBe('10.1.0.2');
+    });
+
+    // A Service's endpoints can be in another namespace than the Service. The node is the
+    // Service, so it sits in the Service's namespace hull.
+    test('a Service node is in the Service\'s namespace, not its endpoint\'s', async () => {
+        const { graph } = await graphFor([
+            makeFlow({ dstNs: 'ns-c', dstPod: 'server-xyz34', destService: 'ns-b/xsvc:http' }),
+        ]);
+
+        expect(graph.nodes.find(n => n.id === 'ns-b/xsvc')).toMatchObject({ namespace: 'ns-b', detail: 'ns-b' });
+    });
+
+    // A destination outside the Pod network is exported as To External, but the Service the
+    // client called is still known, and the Flow List shows it.
+    test('a Service in front of a destination outside the Pod network names the node', async () => {
+        const external = { flowType: FlowType.ToExternal, dstNs: '', dstPod: '' };
+        const { graph } = await graphFor([
+            makeFlow({ ...external, dstIP: '172.18.0.2', dstPort: 6443, destService: 'default/kubernetes:https' }),
+            makeFlow({ ...external, dstIP: '8.8.8.8', dstPort: 443 }),
+        ]);
+
+        expect(graph.nodes.find(n => n.id === 'default/kubernetes'))
+            .toMatchObject({ kind: 'workload', shortName: 'kubernetes', namespace: 'default' });
+        // Only the flow with no Service goes to External.
+        expect(byKind(graph, 'external')).toHaveLength(1);
+        expect(graph.edges.filter(e => e.target === 'external')).toHaveLength(1);
     });
 
     // The latent bug the collapse had to fix regardless: getWorkloadName returns "ns/" for an
