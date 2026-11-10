@@ -19,6 +19,7 @@ import { accessSummary } from '@antrea/ui-components';
 import type { AccessSummary } from '@antrea/ui-components';
 import { useSelector } from 'react-redux';
 import type { RootState } from './store';
+import { publishPluginAccess } from './plugins';
 
 interface AccessContextType {
     summary: AccessSummary | null
@@ -55,6 +56,9 @@ export function AccessProvider(props: React.PropsWithChildren) {
             .catch(() => { if (!cancelled) { setSummary(null); setLoaded(true); } });
         return () => { cancelled = true; };
     }, [session]);
+
+    // Plugins read the same state through window.__antreaPluginHost.access.
+    useEffect(() => { publishPluginAccess(loaded, summary); }, [loaded, summary]);
 
     return (
         <AccessContext.Provider value={{ summary, loaded }}>

@@ -21,7 +21,7 @@ import { navigateTo, resetAccessSummary, SCOPE_CHANGE_EVENT, SCOPE_CHOSEN_EVENT 
 import type { AccessSummary } from '@antrea/ui-components';
 import { setAuthenticated, setupStore } from './store';
 import { MemoryRouter, Route, Routes, useLocation, useNavigate } from 'react-router';
-import { FlowsRedirect, FlowVisibilityPage, OverviewPage, SummaryPage, SupportBundlePage } from './pages';
+import { FlowsRedirect, FlowVisibilityPage, OverviewPage, PluginPage, SummaryPage, SupportBundlePage } from './pages';
 import { getLastScope } from './lastScope';
 import type { LandingPageTab } from './plugins';
 import { AccessProvider } from './access';
@@ -339,6 +339,26 @@ describe('OverviewPage', () => {
         });
     });
 
+    describe('gated plugin tabs', () => {
+        const gatedTabs: LandingPageTab[] = [
+            ...pluginTabs,
+            { id: 'admin', label: 'Admin', tag: 'antrea-test-admin-tab', access: [{ clusterAdmin: true }] },
+        ];
+
+        test('a tab the user does not meet is left out, and ?tab= naming it falls back to the built-in tab', async () => {
+            renderOverview({ tabs: gatedTabs, entry: '/overview?tab=admin' });
+            await waitFor(() => expect(tabLabels()).toEqual(['Inventory & Events', 'Security']));
+            expect(activeTab()).toBe('Inventory & Events');
+            expect(document.querySelector('antrea-test-admin-tab')).toBeNull();
+        });
+
+        test('a tab the user meets is listed', async () => {
+            renderOverview({ tabs: gatedTabs, summary: { ...granted, clusterAdmin: true }, entry: '/overview?tab=admin' });
+            await waitFor(() => expect(tabLabels()).toEqual(['Inventory & Events', 'Security', 'Admin']));
+            expect(activeTab()).toBe('Admin');
+        });
+    });
+
     describe('scope in the URL', () => {
         test('the page is handed the query string of the location', async () => {
             renderOverview({ entry: '/overview?namespace=ns-a' });
@@ -523,5 +543,71 @@ describe('FlowsRedirect', () => {
         );
         await waitFor(() => expect(document.querySelector('[data-testid="location"]')?.textContent)
             .toBe('/flows/list?namespace=dev'));
+    });
+});
+
+describe('PluginPage', () => {
+    class AdminPageElement extends HTMLElement {}
+    customElements.define('antrea-test-admin-page', AdminPageElement);
+
+    const summary = (clusterAdmin: boolean): AccessSummary => ({
+        username: 'alice', groups: [], clusterAdmin, namespaces: [],
+        rules: { resourceRules: [], nonResourceRules: [], incomplete: false },
+    });
+
+    function renderPluginPage(clusterAdmin: boolean, access = [{ clusterAdmin: true }]) {
+        resetAccessSummary();
+        vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify(summary(clusterAdmin)), { status: 200 })));
+        render(
+            <Provider store={setupStore({ session: 'authenticated' })}>
+                <AccessProvider>
+                    <MemoryRouter>
+                        <PluginPage tag="antrea-test-admin-page" access={access} />
+                    </MemoryRouter>
+                </AccessProvider>
+            </Provider>,
+        );
+    }
+
+    afterEach(() => {
+        vi.unstubAllGlobals();
+        resetAccessSummary();
+    });
+
+    class AwarePageElement extends HTMLElement { locationSearch: string | undefined = undefined; }
+    customElements.define('antrea-test-aware-page', AwarePageElement);
+
+    test('a Namespace-aware page is handed the query string', async () => {
+        resetAccessSummary();
+        vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify(summary(false)), { status: 200 })));
+        render(
+            <Provider store={setupStore({ session: 'authenticated' })}>
+                <AccessProvider>
+                    <MemoryRouter initialEntries={['/plugin/aware?namespace=ns-a']}>
+                        <PluginPage tag="antrea-test-aware-page" access={[{ namespaceScope: true }]} />
+                    </MemoryRouter>
+                </AccessProvider>
+            </Provider>,
+        );
+        await waitFor(() => expect(document.querySelector('antrea-test-aware-page')).not.toBeNull());
+        expect((document.querySelector('antrea-test-aware-page') as AwarePageElement).locationSearch).toBe('?namespace=ns-a');
+    });
+
+    test('renders the permission panel instead of a gated page for a user who does not meet it', async () => {
+        renderPluginPage(false);
+        await waitFor(() => expect(document.querySelector('antrea-alert')).not.toBeNull());
+        expect(document.querySelector('antrea-alert')!.textContent).toContain('You do not have permission to view this page.');
+        expect(document.querySelector('antrea-test-admin-page')).toBeNull();
+    });
+
+    test('renders a gated page for a user who meets it', async () => {
+        renderPluginPage(true);
+        await waitFor(() => expect(document.querySelector('antrea-test-admin-page')).not.toBeNull());
+        expect(document.querySelector('antrea-alert')).toBeNull();
+    });
+
+    test('an ungated page renders without waiting for the access summary', () => {
+        renderPluginPage(false, []);
+        expect(document.querySelector('antrea-test-admin-page')).not.toBeNull();
     });
 });

@@ -15,6 +15,7 @@
 package plugins
 
 import (
+	"encoding/json"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -70,6 +71,78 @@ func TestRegistryUpsertAndIndex(t *testing.T) {
 
 	_, _, ok = r.File("does-not-exist", "index.js")
 	assert.False(t, ok)
+}
+
+func TestRegistryKeepsFederationRouteRequirements(t *testing.T) {
+	r := newTestRegistry(t)
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "cm"},
+		Data: map[string]string{"manifest.json": withCompatibleAntreaUI(
+			`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[
+				{"path":"/admin","sidebarLabel":"Admin","exposedModule":"./Admin","requires":{"clusterAdmin":true}},
+				{"path":"/policies","sidebarLabel":"Policies","exposedModule":"./Policies","requires":{"resources":[{"group":"crd.antrea.io","resource":"clusternetworkpolicies","verb":"create"}]}},
+				{"path":"/open","sidebarLabel":"Open","exposedModule":"./Open"}
+			]}}`)},
+		BinaryData: map[string][]byte{"bundle.zip": buildZip(t, map[string]string{"index.js": "x", "remoteEntry.json": "x"})},
+	}
+
+	r.handleUpsert(t.Context(), cm)
+
+	index := r.Index()
+	require.Len(t, index, 1)
+	require.NotNil(t, index[0].Federation)
+	routes := index[0].Federation.Routes
+	require.Len(t, routes, 3)
+	assert.Equal(t, &apisv1.PluginAccessRequirement{ClusterAdmin: true}, routes[0].Requires)
+	assert.Equal(t, &apisv1.PluginAccessRequirement{Resources: &apisv1.PluginResourceRequirement{
+		AllOf: []apisv1.PluginResourceQuery{{Group: "crd.antrea.io", Resource: "clusternetworkpolicies", Verb: "create"}},
+		Array: true,
+	}}, routes[1].Requires)
+	assert.Nil(t, routes[2].Requires)
+}
+
+func TestRegistryKeepsNamespaceScopeAndResourceForms(t *testing.T) {
+	r := newTestRegistry(t)
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "cm"},
+		Data: map[string]string{"manifest.json": withCompatibleAntreaUI(
+			`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[
+				{"path":"/ns","sidebarLabel":"Ns","exposedModule":"./Ns","requires":{"namespaceScope":true}},
+				{"path":"/any","sidebarLabel":"Any","exposedModule":"./Any","requires":{"namespaceScope":true,"resources":{"anyOf":[{"group":"","resource":"pods","verb":"list"},{"group":"","resource":"services","verb":"list"}]}}},
+				{"path":"/all","sidebarLabel":"All","exposedModule":"./All","requires":{"resources":{"allOf":[{"group":"","resource":"pods","verb":"list"}]}}},
+				{"path":"/arr","sidebarLabel":"Arr","exposedModule":"./Arr","requires":{"namespaceScope":true,"resources":[{"group":"","resource":"pods","verb":"list"}]}}
+			]}}`)},
+		BinaryData: map[string][]byte{"bundle.zip": buildZip(t, map[string]string{"index.js": "x", "remoteEntry.json": "x"})},
+	}
+
+	r.handleUpsert(t.Context(), cm)
+
+	index := r.Index()
+	require.Len(t, index, 1)
+	routes := index[0].Federation.Routes
+	require.Len(t, routes, 4)
+	assert.Equal(t, &apisv1.PluginAccessRequirement{NamespaceScope: true}, routes[0].Requires)
+	assert.Equal(t, &apisv1.PluginAccessRequirement{NamespaceScope: true, Resources: &apisv1.PluginResourceRequirement{
+		AnyOf: []apisv1.PluginResourceQuery{
+			{Group: "", Resource: "pods", Verb: "list"},
+			{Group: "", Resource: "services", Verb: "list"},
+		},
+	}}, routes[1].Requires)
+	assert.Equal(t, &apisv1.PluginResourceRequirement{
+		AllOf: []apisv1.PluginResourceQuery{{Group: "", Resource: "pods", Verb: "list"}},
+	}, routes[2].Requires.Resources)
+
+	// Each form is served as the manifest wrote it, so a frontend reads one shape.
+	served, err := json.Marshal([]*apisv1.PluginAccessRequirement{
+		routes[0].Requires, routes[1].Requires, routes[2].Requires, routes[3].Requires,
+	})
+	require.NoError(t, err)
+	assert.JSONEq(t, `[
+		{"namespaceScope":true},
+		{"namespaceScope":true,"resources":{"anyOf":[{"group":"","resource":"pods","verb":"list"},{"group":"","resource":"services","verb":"list"}]}},
+		{"resources":{"allOf":[{"group":"","resource":"pods","verb":"list"}]}},
+		{"namespaceScope":true,"resources":[{"group":"","resource":"pods","verb":"list"}]}
+	]`, string(served))
 }
 
 // TestRegistryUpsertReadsManifestFromBinaryData covers a ConfigMap where manifest.json landed in
@@ -230,6 +303,101 @@ func TestRegistrySkipsInvalidConfigMaps(t *testing.T) {
 		"route with an unknown kind": func(t *testing.T) *corev1.ConfigMap {
 			return withBundle(t,
 				`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"path":"/plugin","sidebarLabel":"Plugin","exposedModule":"./Page","kind":"route"}]}}`,
+				map[string]string{"index.js": "x", "remoteEntry.json": "x"})
+		},
+		"route requiring a resource query with no verb": func(t *testing.T) *corev1.ConfigMap {
+			return withBundle(t,
+				`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"path":"/plugin","sidebarLabel":"Plugin","exposedModule":"./Page","requires":{"resources":[{"group":"","resource":"pods"}]}}]}}`,
+				map[string]string{"index.js": "x", "remoteEntry.json": "x"})
+		},
+		"route requiring a resource query with no resource": func(t *testing.T) *corev1.ConfigMap {
+			return withBundle(t,
+				`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"path":"/plugin","sidebarLabel":"Plugin","exposedModule":"./Page","requires":{"resources":[{"group":"","verb":"list"}]}}]}}`,
+				map[string]string{"index.js": "x", "remoteEntry.json": "x"})
+		},
+		"route with an unknown requirement field": func(t *testing.T) *corev1.ConfigMap {
+			return withBundle(t,
+				`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"path":"/plugin","sidebarLabel":"Plugin","exposedModule":"./Page","requires":{"clusterAdmn":true}}]}}`,
+				map[string]string{"index.js": "x", "remoteEntry.json": "x"})
+		},
+		"route with an unknown requirement beside a valid one": func(t *testing.T) *corev1.ConfigMap {
+			return withBundle(t,
+				`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"path":"/plugin","sidebarLabel":"Plugin","exposedModule":"./Page","requires":{"clusterAdmn":true,"resources":[{"group":"","resource":"pods","verb":"list"}]}}]}}`,
+				map[string]string{"index.js": "x", "remoteEntry.json": "x"})
+		},
+		"route with an unknown resource query field": func(t *testing.T) *corev1.ConfigMap {
+			return withBundle(t,
+				`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"path":"/plugin","sidebarLabel":"Plugin","exposedModule":"./Page","requires":{"resources":[{"group":"","resource":"pods","verb":"list","names":["p"]}]}}]}}`,
+				map[string]string{"index.js": "x", "remoteEntry.json": "x"})
+		},
+		"route whose requires has a mistyped clusterAdmin": func(t *testing.T) *corev1.ConfigMap {
+			return withBundle(t,
+				`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"path":"/plugin","sidebarLabel":"Plugin","exposedModule":"./Page","requires":{"clusterAdmin":"yes"}}]}}`,
+				map[string]string{"index.js": "x", "remoteEntry.json": "x"})
+		},
+		"route with an empty resources array": func(t *testing.T) *corev1.ConfigMap {
+			return withBundle(t,
+				`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"path":"/plugin","sidebarLabel":"Plugin","exposedModule":"./Page","requires":{"resources":[]}}]}}`,
+				map[string]string{"index.js": "x", "remoteEntry.json": "x"})
+		},
+		"route with an empty allOf": func(t *testing.T) *corev1.ConfigMap {
+			return withBundle(t,
+				`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"path":"/plugin","sidebarLabel":"Plugin","exposedModule":"./Page","requires":{"resources":{"allOf":[]}}}]}}`,
+				map[string]string{"index.js": "x", "remoteEntry.json": "x"})
+		},
+		"route with an empty anyOf": func(t *testing.T) *corev1.ConfigMap {
+			return withBundle(t,
+				`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"path":"/plugin","sidebarLabel":"Plugin","exposedModule":"./Page","requires":{"resources":{"anyOf":[]}}}]}}`,
+				map[string]string{"index.js": "x", "remoteEntry.json": "x"})
+		},
+		"route with both allOf and anyOf": func(t *testing.T) *corev1.ConfigMap {
+			return withBundle(t,
+				`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"path":"/plugin","sidebarLabel":"Plugin","exposedModule":"./Page","requires":{"resources":{"allOf":[{"group":"","resource":"pods","verb":"list"}],"anyOf":[{"group":"","resource":"pods","verb":"get"}]}}}]}}`,
+				map[string]string{"index.js": "x", "remoteEntry.json": "x"})
+		},
+		"route with an empty resources object": func(t *testing.T) *corev1.ConfigMap {
+			return withBundle(t,
+				`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"path":"/plugin","sidebarLabel":"Plugin","exposedModule":"./Page","requires":{"resources":{}}}]}}`,
+				map[string]string{"index.js": "x", "remoteEntry.json": "x"})
+		},
+		"route with an unknown resources key": func(t *testing.T) *corev1.ConfigMap {
+			return withBundle(t,
+				`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"path":"/plugin","sidebarLabel":"Plugin","exposedModule":"./Page","requires":{"resources":{"oneOf":[{"group":"","resource":"pods","verb":"list"}]}}}]}}`,
+				map[string]string{"index.js": "x", "remoteEntry.json": "x"})
+		},
+		"route using allOf with namespaceScope": func(t *testing.T) *corev1.ConfigMap {
+			return withBundle(t,
+				`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"path":"/plugin","sidebarLabel":"Plugin","exposedModule":"./Page","requires":{"namespaceScope":true,"resources":{"allOf":[{"group":"","resource":"pods","verb":"list"}]}}}]}}`,
+				map[string]string{"index.js": "x", "remoteEntry.json": "x"})
+		},
+		"route with a mistyped namespaceScope": func(t *testing.T) *corev1.ConfigMap {
+			return withBundle(t,
+				`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"path":"/plugin","sidebarLabel":"Plugin","exposedModule":"./Page","requires":{"namespaceScope":"yes"}}]}}`,
+				map[string]string{"index.js": "x", "remoteEntry.json": "x"})
+		},
+		"route with a null resources": func(t *testing.T) *corev1.ConfigMap {
+			return withBundle(t,
+				`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"path":"/plugin","sidebarLabel":"Plugin","exposedModule":"./Page","requires":{"resources":null}}]}}`,
+				map[string]string{"index.js": "x", "remoteEntry.json": "x"})
+		},
+		"route with a null clusterAdmin": func(t *testing.T) *corev1.ConfigMap {
+			return withBundle(t,
+				`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"path":"/plugin","sidebarLabel":"Plugin","exposedModule":"./Page","requires":{"clusterAdmin":null}}]}}`,
+				map[string]string{"index.js": "x", "remoteEntry.json": "x"})
+		},
+		"route with a null allOf beside anyOf": func(t *testing.T) *corev1.ConfigMap {
+			return withBundle(t,
+				`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"path":"/plugin","sidebarLabel":"Plugin","exposedModule":"./Page","requires":{"resources":{"allOf":null,"anyOf":[{"group":"","resource":"pods","verb":"list"}]}}}]}}`,
+				map[string]string{"index.js": "x", "remoteEntry.json": "x"})
+		},
+		"route with a null query group": func(t *testing.T) *corev1.ConfigMap {
+			return withBundle(t,
+				`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"path":"/plugin","sidebarLabel":"Plugin","exposedModule":"./Page","requires":{"resources":[{"group":null,"resource":"pods","verb":"list"}]}}]}}`,
+				map[string]string{"index.js": "x", "remoteEntry.json": "x"})
+		},
+		"route with an anyOf query with no verb": func(t *testing.T) *corev1.ConfigMap {
+			return withBundle(t,
+				`{"name":"plugin","version":"0.1.0","entry":"index.js","federation":{"remoteEntry":"remoteEntry.json","routes":[{"path":"/plugin","sidebarLabel":"Plugin","exposedModule":"./Page","requires":{"resources":{"anyOf":[{"group":"","resource":"pods"}]}}}]}}`,
 				map[string]string{"index.js": "x", "remoteEntry.json": "x"})
 		},
 		"route nested under a routes-kind route": func(t *testing.T) *corev1.ConfigMap {

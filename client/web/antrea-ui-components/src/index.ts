@@ -31,7 +31,7 @@ export type {
     FlowTableColumnsProcessor,
 } from './pages/antrea-flow-visibility-page.js';
 export type { ScopeChangeDetail, ScopeChosenDetail } from './lib/namespace-scope.js';
-export { SCOPE_CHANGE_EVENT, SCOPE_CHOSEN_EVENT } from './lib/namespace-scope.js';
+export { SCOPE_CHANGE_EVENT, SCOPE_CHOSEN_EVENT, ALL_NAMESPACES_PARAM_VALUE } from './lib/namespace-scope.js';
 export type { FlowEntry } from './lib/flow-store.js';
 export { FLOW_QUERY_STATE_EVENT } from './lib/flow-stream.js';
 export type { FlowQuery, FlowQueryStateDetail } from './lib/flow-stream.js';
@@ -68,6 +68,7 @@ export {
     verdict,
     canNonResource,
     accessibleNamespaces,
+    reachesNamespace,
     canViewSummary,
     canViewFlows,
     holdsFlowsClusterWide,
@@ -94,5 +95,7 @@ export {
     GATE_ANTREA_NETWORKPOLICIES_LIST,
     GATE_EVENTS_LIST,
 } from './lib/access-api.js';
+export type { PluginAccessRequirement, PluginResourceRequirement, PluginHostAccess } from './lib/plugin-access.js';
+export { parseAccessRequirements, meetsAccessRequirements, isNamespaceAware, createPluginHostAccess } from './lib/plugin-access.js';
 export type { NamespaceAccess } from './lib/namespace-access.js';
-export { flowAccess } from './lib/namespace-access.js';
+export { flowAccess, isValidNamespaceName } from './lib/namespace-access.js';

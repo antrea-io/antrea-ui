@@ -27,12 +27,36 @@
 // npm dependency — a registry living in a normally-imported package would not be the same
 // object your plugin and the host both see.
 //
-// EdgeSelection/FlowEntry-derived types are re-exported from @antrea/ui-components (a peer
-// dependency, types-only — nothing from it ends up in your plugin's bundle) so you don't
+// EdgeSelection/FlowEntry-derived and access types are re-exported from @antrea/ui-components
+// (a peer dependency, types-only — nothing from it ends up in your plugin's bundle) so you don't
 // hand-roll the shape the host expects.
 
 export type { EdgeSelection, EdgeExtraRenderer, FlowEntry, FlowTableColumn, FlowTableColumnsProcessor } from '@antrea/ui-components';
-import type { EdgeExtraRenderer, FlowTableColumnsProcessor } from '@antrea/ui-components';
+export type {
+    AccessSummary, NamespaceAccessSummary, ResourceQuery, Verdict, PluginAccessRequirement,
+    PluginResourceRequirement, PluginHostAccess,
+} from '@antrea/ui-components';
+import type { EdgeExtraRenderer, FlowTableColumnsProcessor, PluginAccessRequirement, PluginHostAccess } from '@antrea/ui-components';
+
+// `requires` (below, on PluginRoute, PluginSidebarEntry and LandingPageTab) hides an item from
+// users who don't meet it, evaluated by the host against the user's access summary:
+//   - `{ clusterAdmin: true }`: cluster admins only. It decides alone: `namespaceScope` and
+//     `resources` beside it are ignored. `false` means "not written".
+//   - `{ resources: [{ group, resource, verb }] }`: users whose RBAC allows every query listed;
+//     `{ resources: { allOf: [...] } }` says the same, and `{ resources: { anyOf: [...] } }`
+//     needs only one.
+//   - `{ namespaceScope: true }`: the item is a Namespace-aware page (one that shows content for
+//     one Namespace or all, keeping the choice in `?namespace=<name>` or `?namespace=_all`). Its
+//     `resources` list the permissions it reads (a plain array or `anyOf`; any one allowed is
+//     enough, and `allOf` is rejected), and it shows to a user for whom those are not denied, who
+//     may list Namespaces, or who is named in at least one RoleBinding. With no `resources` it
+//     shows to every signed-in user. So it widens access: a user with a RoleBinding but without
+//     the permission sees the item and gets the API's 403, which the page must handle.
+// Gated items stay hidden until the summary has loaded, a malformed `requires` hides the item, and
+// a summary that failed to load shows it. This is a UI hint, not authorization: Kubernetes RBAC
+// still authorizes every API call your plugin makes. A host that predates `namespaceScope` or the
+// object form of `resources` hides such an item from everyone, and the backend rejects a manifest
+// that uses them, so raise your manifest's `compatibleAntreaUI` to the release that adds them.
 
 /** A route a whole-page plugin wants the host to mount. `tag` is the custom element the
  * plugin's entry module registers via customElements.define(...); the host renders it with the
@@ -51,6 +75,9 @@ export interface PluginRoute {
     // registration loses the race.
     path: string;
     tag: string;
+    // A user who doesn't meet it gets the host's "You do not have permission" page here instead,
+    // and the sidebar entry at the same `path` is hidden too.
+    requires?: PluginAccessRequirement;
 }
 
 /** A sidebar entry a whole-page plugin wants the host to render. Independent of registerRoute
@@ -75,6 +102,9 @@ export interface PluginSidebarEntry {
     // falls back to top-level the same way for such a user, but silently and per-user, since
     // the parentPath itself is always valid.
     parentPath?: string;
+    // Hides this entry, and any entries nested under it, from users who don't meet it. An entry
+    // also inherits the `requires` of the route registered at its `path`.
+    requires?: PluginAccessRequirement;
 }
 
 /** A tab a plugin wants added to the Overview landing page, alongside the built-in "Inventory &
@@ -87,6 +117,9 @@ export interface LandingPageTab {
     id: string;
     label: string;
     tag: string;
+    // Leaves the tab out for users who don't meet it; a ?tab= naming it falls back to the
+    // built-in tab.
+    requires?: PluginAccessRequirement;
 }
 
 // Kept in sync by hand with the identically-named interface in antrea-ui/src/plugins.ts, which
@@ -98,6 +131,8 @@ export interface AntreaPluginHost {
     registerEdgeExtraRenderer(fn: EdgeExtraRenderer): void;
     registerFlowTableColumnsProcessor(fn: FlowTableColumnsProcessor): void;
     registerLandingPageTab(tab: LandingPageTab): void;
+    // Optional so a plugin can still tell a host predating it apart (see access() below).
+    access?: PluginHostAccess;
 }
 
 declare global {
@@ -141,4 +176,17 @@ export function registerFlowTableColumnsProcessor(fn: FlowTableColumnsProcessor)
 /** Adds a tab to the Overview landing page, rendering `tab.tag`'s custom element when selected. */
 export function registerLandingPageTab(tab: LandingPageTab): void {
     host().registerLandingPageTab(tab);
+}
+
+/** The user's permissions, for hiding parts of your own UI: `can()`, `isClusterAdmin()`,
+ * `accessibleNamespaces()`, `forNamespace()`, and `subscribe()` for changes. Answers are only
+ * meaningful once `ready()` has resolved (before that the host has no summary and every check
+ * fails open), so await it before deciding what to render. Throws on a host too old to provide
+ * it. */
+export function access(): PluginHostAccess {
+    const a = host().access;
+    if (!a) {
+        throw new Error('@antrea/ui-plugin-sdk: this Antrea UI host does not provide access(); upgrade Antrea UI.');
+    }
+    return a;
 }
