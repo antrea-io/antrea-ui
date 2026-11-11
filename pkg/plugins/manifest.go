@@ -113,16 +113,6 @@ const maxCompatibleAntreaUILength = 256
 
 var compatibleAntreaUIRegexp = regexp.MustCompile(`^\s*` + semverSet + `(?:\s*\|\|\s*` + semverSet + `)*\s*$`)
 
-// validateCompatibleAntreaUI checks that compatibleAntreaUI is present and within the grammar
-// above: "||"-separated sets of space-separated comparators ("<", "<=", ">", ">=", "=", "^", "~"
-// or none), each followed by a full MAJOR.MINOR.PATCH[-prerelease] version, with no x-ranges, "*",
-// hyphen ranges, partial versions, "v" prefix or build metadata, and at most
-// maxCompatibleAntreaUILength characters. It deliberately does not
-// evaluate the range: only a frontend shell knows its own full release version (the backend
-// serves one index to every shell), so each shell does that against its build-time version - see
-// plugins.ts. The shared cases in client/web/antrea-ui/src/testdata/compatible_antrea_ui.json
-// mean "the backend accepts it": the Go test asserts every row, and the frontend test asserts
-// that the valid rows parse in node-semver.
 // validateAccessRequirement rejects a requirement a host could not evaluate. Rejecting it here,
 // rather than letting a host skip a query it can't read, keeps a typo from showing a page meant
 // for some users to everyone.
@@ -152,6 +142,16 @@ func validateAccessRequirement(r *apisv1.PluginAccessRequirement) error {
 	return nil
 }
 
+// validateCompatibleAntreaUI checks that compatibleAntreaUI is present and within the grammar
+// above: "||"-separated sets of space-separated comparators ("<", "<=", ">", ">=", "=", "^", "~"
+// or none), each followed by a full MAJOR.MINOR.PATCH[-prerelease] version, with no x-ranges, "*",
+// hyphen ranges, partial versions, "v" prefix or build metadata, and at most
+// maxCompatibleAntreaUILength characters. It deliberately does not
+// evaluate the range: only a frontend shell knows its own full release version (the backend
+// serves one index to every shell), so each shell does that against its build-time version - see
+// plugins.ts. The shared cases in client/web/antrea-ui/src/testdata/compatible_antrea_ui.json
+// mean "the backend accepts it": the Go test asserts every row, and the frontend test asserts
+// that the valid rows parse in node-semver.
 func validateCompatibleAntreaUI(r string) error {
 	if strings.TrimSpace(r) == "" {
 		return fmt.Errorf("manifest is missing 'compatibleAntreaUI'")
@@ -247,7 +247,7 @@ func parseManifest(manifestJSON []byte) (*apisv1.PluginManifest, error) {
 				return nil, fmt.Errorf("manifest's 'federation.routes[%d].kind' %q is not one of %q, %q", i, route.Kind, apisv1.PluginRouteKindComponent, apisv1.PluginRouteKindRoutes)
 			}
 			if err := validateAccessRequirement(route.Requires); err != nil {
-				return nil, fmt.Errorf("manifest's 'federation.routes[%d].requires' %w", i, err)
+				return nil, fmt.Errorf("manifest's 'federation.routes[%d].requires': %w", i, err)
 			}
 			// The reservations the backend can enforce on a route's Path itself are the root
 			// path and the nginx-served prefixes (see isReservedRoutePath), neither specific to

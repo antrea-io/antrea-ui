@@ -153,7 +153,8 @@ type PluginRoute struct {
 
 // PluginAccessRequirement mirrors PluginAccessRequirement in antrea-ui-plugin-sdk.
 //
-// ClusterAdmin decides alone: when it is set, NamespaceScope and Resources are ignored. Without
+// ClusterAdmin decides visibility alone: when it is set, NamespaceScope and Resources are ignored
+// for visibility, but NamespaceScope still enables Namespace scope behavior. Otherwise, without
 // NamespaceScope, Resources must hold cluster-wide. With it, the item is for a Namespace-aware
 // page: its verdict comes from Resources, and it is available to a user for whom that verdict is
 // not "denied", who may list Namespaces, or who is named in at least one RoleBinding. None of this

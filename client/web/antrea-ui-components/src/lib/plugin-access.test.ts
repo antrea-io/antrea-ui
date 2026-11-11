@@ -128,8 +128,8 @@ describe('meetsAccessRequirements: resources forms', () => {
     });
 });
 
-describe('meetsAccessRequirements: clusterAdmin decides alone', () => {
-    test('other fields are ignored when clusterAdmin is true', () => {
+describe('meetsAccessRequirements: clusterAdmin decides visibility alone', () => {
+    test('other fields are ignored for visibility when clusterAdmin is true', () => {
         const requirement = [{ clusterAdmin: true, namespaceScope: true, resources: [PODS_LIST] }];
         expect(meetsAccessRequirements(summary(), requirement)).toBe(false);
         expect(meetsAccessRequirements(summary({ clusterAdmin: true }), requirement)).toBe(true);
@@ -189,10 +189,12 @@ describe('meetsAccessRequirements: namespaceScope', () => {
 });
 
 describe('isNamespaceAware', () => {
-    test('is true only for namespaceScope without clusterAdmin', () => {
+    test('follows namespaceScope regardless of clusterAdmin', () => {
         expect(isNamespaceAware([{ namespaceScope: true }])).toBe(true);
         expect(isNamespaceAware([{ namespaceScope: true, resources: [PODS_LIST] }])).toBe(true);
-        expect(isNamespaceAware([{ namespaceScope: true, clusterAdmin: true }])).toBe(false);
+        expect(isNamespaceAware([{ namespaceScope: true, clusterAdmin: true }])).toBe(true);
+        expect(isNamespaceAware([{ clusterAdmin: true }, { namespaceScope: true }])).toBe(true);
+        expect(isNamespaceAware([{ clusterAdmin: true }])).toBe(false);
         expect(isNamespaceAware([{ namespaceScope: false }])).toBe(false);
         expect(isNamespaceAware([{ resources: [PODS_LIST] }])).toBe(false);
         expect(isNamespaceAware(undefined)).toBe(false);

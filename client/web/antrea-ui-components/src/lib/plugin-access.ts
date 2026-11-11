@@ -31,7 +31,8 @@ export type PluginResourceRequirement = ResourceQuery[] | { allOf: ResourceQuery
 /** Who may see a plugin item. Mirrors the Go PluginAccessRequirement in apis/v1/plugins.go, which
  * carries it on manifest routes.
  *
- * `clusterAdmin: true` decides alone: `namespaceScope` and `resources` are ignored. Without
+ * `clusterAdmin: true` decides visibility alone: `namespaceScope` and `resources` are ignored
+ * for visibility, but `namespaceScope` still enables Namespace scope behavior. Otherwise, without
  * `namespaceScope`, `resources` must hold cluster-wide. With it, the item is for a Namespace-aware
  * page: its verdict comes from `resources` (allowed if any query is allowed, denied if all are
  * denied; with no `resources`, allowed only for a cluster admin and unknown for anyone else), and
@@ -41,7 +42,7 @@ export type PluginResourceRequirement = ResourceQuery[] | { allOf: ResourceQuery
 export interface PluginAccessRequirement {
     /** true: only users whose access summary reports clusterAdmin. */
     clusterAdmin?: boolean;
-    /** true: the page is Namespace-aware and shows to users who can reach a Namespace. */
+    /** true: the page is Namespace-aware; without clusterAdmin, reaching a Namespace also allows it. */
     namespaceScope?: boolean;
     /** An unknown verdict counts as passing, as for the built-in pages. */
     resources?: PluginResourceRequirement;
@@ -133,11 +134,10 @@ export function meetsAccessRequirements(
     });
 }
 
-/** Whether any requirement marks its item as a Namespace-aware page (and the user is not held to
- * clusterAdmin alone, which ignores `namespaceScope`). Hosts use it to carry the last scope in the
- * item's navigation link. */
+/** Whether any requirement marks its item as a Namespace-aware page, regardless of clusterAdmin.
+ * Hosts use it to carry the last scope in the item's navigation link and wire scope events. */
 export function isNamespaceAware(requirements: readonly PluginAccessRequirement[] | undefined): boolean {
-    return (requirements ?? []).some(r => r !== INVALID && r.namespaceScope === true && !r.clusterAdmin);
+    return (requirements ?? []).some(r => r !== INVALID && r.namespaceScope === true);
 }
 
 /** The access API a host exposes to plugin code as window.__antreaPluginHost.access. */

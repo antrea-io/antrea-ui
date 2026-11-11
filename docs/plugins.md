@@ -1017,8 +1017,9 @@ shape.
 `requires` has three fields, and `false` for either flag means "not written":
 
 - `clusterAdmin: true` passes only for a user whose access summary reports
-  `clusterAdmin`. It decides alone: `namespaceScope` and `resources` beside it
-  are ignored.
+  `clusterAdmin`. It decides visibility alone: `namespaceScope` and `resources`
+  beside it are ignored for visibility. `namespaceScope` still enables Namespace
+  scope behavior for admins who see the page.
 - `resources` lists permission queries. Without `namespaceScope`, a plain array
   or `{ allOf: [...] }` needs every query to pass `can()`, and
   `{ anyOf: [...] }` needs one. `can()` treats an unknown verdict (incomplete
@@ -1042,9 +1043,9 @@ shape.
 **Namespace-aware pages.** A page that shows content for one Namespace or all of
 them follows the rules in
 [namespace-scope-ux.md](design/namespace-scope-ux.md). `namespaceScope: true`
-declares it, and the host then applies the same availability rule as for
-Overview and Flow Visibility, from the cluster-scoped access summary alone (no
-per-Namespace check):
+declares it. Unless `clusterAdmin: true` limits visibility to admins, the host
+applies the same availability rule as for Overview and Flow Visibility, from
+the cluster-scoped access summary alone (no per-Namespace check):
 
 - The page is denied only when `resources` (a plain array or `anyOf`) is set and
   every query in it is denied, meaning no rule grants it. Otherwise it is not
@@ -1072,8 +1073,10 @@ whether the tab shows: the tab replaces the Overview page and is not handed a sc
 
 - **Sidebar entries.** A user who doesn't meet a sidebar entry's
   requirement doesn't see the entry. A sidebar entry also inherits the
-  `requires` of the route at its `path`, so gating the page hides its entry
-  too. A hidden top-level entry hides the entries nested under it.
+  `requires` of the route at its pathname, ignoring the link's query string and
+  fragment, so gating the page hides its entries too. Different queries or
+  fragments can still have separate entries. A hidden top-level entry hides
+  the entries nested under it.
 - **Routes.** A user who doesn't meet a route's requirement gets the host's
   "You do not have permission to view this page." panel instead of the page.
   The Angular host also skips loading the route's federation remote.
@@ -1089,10 +1092,11 @@ whether the tab shows: the tab replaces the Overview page and is not handed a sc
 This is a UI hint, not authorization: Kubernetes RBAC still authorizes every
 API call your plugin makes, so keep handling a 403.
 
-`namespaceScope`, and the object form of `resources`, need a host that supports
-them. An older backend rejects a manifest that uses them, and an older frontend
-hides the item from everyone. Set `compatibleAntreaUI` to a range that starts
-at the release that adds them.
+Any `requires` needs a host that supports permission gating. Older backends
+silently drop `requires` from manifests, and older frontends ignore it and show
+the item to everyone, including items with `clusterAdmin: true`. Set
+`compatibleAntreaUI` to a range that starts at the release that adds permission
+gating. Only frontend shells evaluate that range; the backend does not.
 
 To hide parts of your own UI, use `access()` from `@antrea/ui-plugin-sdk`.
 It wraps `window.__antreaPluginHost.access`, which the host keeps in sync

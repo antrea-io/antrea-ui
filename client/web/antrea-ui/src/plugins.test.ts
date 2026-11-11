@@ -273,6 +273,31 @@ describe('permission requirements', () => {
         expect(getPluginSidebarEntries().find(entry => entry.path === 'gated-page')?.access).toEqual([{ clusterAdmin: true }]);
     });
 
+    test('distinct sidebar links inherit route requirements by pathname and keep their own requirements', () => {
+        const routeRequirement = { clusterAdmin: true, namespaceScope: true };
+        const entryRequirement = { resources: [{ group: '', resource: 'pods', verb: 'list' }] };
+        window.__antreaPluginHost!.registerRoute({ path: '/gated-views', tag: 'gated', requires: routeRequirement });
+        const paths = [
+            '/gated-views?view=a',
+            '/gated-views?view=b',
+            '/gated-views#details',
+            'gated-views?view=a#details',
+        ];
+        for (const path of paths) {
+            window.__antreaPluginHost!.registerSidebarEntry({ label: 'Gated', path, requires: entryRequirement });
+        }
+
+        const entries = getPluginSidebarEntries().filter(entry => paths.includes(entry.path));
+        const reader = admin(false);
+        reader.rules.resourceRules = [{ apiGroups: [''], resources: ['pods'], verbs: ['list'] }];
+        expect(entries.map(entry => entry.path)).toEqual(paths);
+        for (const entry of entries) {
+            expect(entry.access).toEqual([entryRequirement, routeRequirement]);
+            expect(allowsPluginItem({ summary: reader, loaded: true }, entry.access)).toBe(false);
+            expect(allowsPluginItem({ summary: admin(true), loaded: true }, entry.access)).toBe(true);
+        }
+    });
+
     test('a malformed `requires` is logged and denies', () => {
         const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
         window.__antreaPluginHost!.registerSidebarEntry({ label: 'Typo', path: '/gated-typo', requires: { clusterAdmin: 'yes' } as never });

@@ -634,6 +634,19 @@ describe('NavTab — plugin permission gating', () => {
         expect(document.querySelector('a[href="/admin"]')).not.toBeNull();
     });
 
+    test.each([false, true])('an admin-only Namespace-aware entry carries scope only for admins: %s', (clusterAdmin) => {
+        sessionStorage.clear();
+        setLastScope('alice', 'ns-admin');
+        mockUseAccess.mockReturnValue({ summary: admin(clusterAdmin), loaded: true });
+        render(<NavTab pluginSidebarEntries={[
+            { label: 'Admin', path: '/admin', access: [{ clusterAdmin: true, namespaceScope: true }] },
+        ]} />, { wrapper: MemoryRouter });
+
+        const link = document.querySelector('a[href="/admin?namespace=ns-admin"]');
+        expect(link !== null).toBe(clusterAdmin);
+        expect(document.querySelector('a[href="/admin"]')).toBeNull();
+    });
+
     test('keeps a gated entry hidden while access is still loading', () => {
         mockUseAccess.mockReturnValue({ summary: null, loaded: false });
         render(<NavTab pluginSidebarEntries={[{ label: 'Admin', path: '/admin', access: ADMIN_ONLY }]} />, { wrapper: MemoryRouter });

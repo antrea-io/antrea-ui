@@ -43,6 +43,7 @@
 import satisfies from 'semver/functions/satisfies';
 import valid from 'semver/functions/valid';
 import validRange from 'semver/ranges/valid';
+import { parsePath } from 'react-router';
 import config from './config';
 import { createPluginHostAccess, meetsAccessRequirements, parseAccessRequirements } from '@antrea/ui-components';
 import type { AccessSummary, EdgeExtraRenderer, FlowTableColumnsProcessor, PluginAccessRequirement } from '@antrea/ui-components';
@@ -190,12 +191,13 @@ export function resolveParentPaths(entries: PluginSidebarEntry[]): PluginSidebar
     });
 }
 
-// An entry also inherits the `access` of the route at its path, on top of its own: gating a page
-// must hide its sidebar entry too, even if the plugin only declared `requires` on one of them.
+// An entry also inherits the `access` of the route at its pathname, on top of its own, even when
+// its link carries a query or fragment: gating a page must hide its sidebar entries too.
 export function getPluginSidebarEntries(): PluginSidebarEntry[] {
     const routeAccess = new Map(getPluginRoutes().map(route => [stripLeadingSlash(route.path), route.access ?? []]));
     return resolveParentPaths(dedupeByPath(pluginSidebarEntries, 'sidebar entry')).map(entry => {
-        const access = [...(entry.access ?? []), ...(routeAccess.get(stripLeadingSlash(entry.path)) ?? [])];
+        const pathname = stripLeadingSlash(parsePath(entry.path).pathname ?? '');
+        const access = [...(entry.access ?? []), ...(routeAccess.get(pathname) ?? [])];
         return access.length > 0 ? { ...entry, access } : entry;
     });
 }

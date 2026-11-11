@@ -577,20 +577,42 @@ describe('PluginPage', () => {
     class AwarePageElement extends HTMLElement { locationSearch: string | undefined = undefined; }
     customElements.define('antrea-test-aware-page', AwarePageElement);
 
-    test('a Namespace-aware page is handed the query string', async () => {
+    test.each([false, true])('a Namespace-aware page receives the query and reports scope with clusterAdmin: %s', async (clusterAdmin) => {
+        sessionStorage.clear();
         resetAccessSummary();
-        vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify(summary(false)), { status: 200 })));
+        vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify(summary(clusterAdmin)), { status: 200 })));
+        function LocationProbe() {
+            const { pathname, search } = useLocation();
+            return <div data-testid="location">{pathname + search}</div>;
+        }
         render(
             <Provider store={setupStore({ session: 'authenticated' })}>
                 <AccessProvider>
                     <MemoryRouter initialEntries={['/plugin/aware?namespace=ns-a']}>
-                        <PluginPage tag="antrea-test-aware-page" access={[{ namespaceScope: true }]} />
+                        <LocationProbe />
+                        <PluginPage tag="antrea-test-aware-page" access={[{ namespaceScope: true, clusterAdmin }]} />
                     </MemoryRouter>
                 </AccessProvider>
             </Provider>,
         );
         await waitFor(() => expect(document.querySelector('antrea-test-aware-page')).not.toBeNull());
-        expect((document.querySelector('antrea-test-aware-page') as AwarePageElement).locationSearch).toBe('?namespace=ns-a');
+        const el = document.querySelector('antrea-test-aware-page') as AwarePageElement;
+        expect(el.locationSearch).toBe('?namespace=ns-a');
+
+        await act(async () => {
+            el.dispatchEvent(new CustomEvent(SCOPE_CHANGE_EVENT, {
+                detail: { search: '?namespace=ns-b' }, bubbles: true, composed: true,
+            }));
+        });
+        expect(document.querySelector('[data-testid="location"]')!.textContent).toBe('/plugin/aware?namespace=ns-b');
+        expect(el.locationSearch).toBe('?namespace=ns-b');
+
+        await act(async () => {
+            el.dispatchEvent(new CustomEvent(SCOPE_CHOSEN_EVENT, {
+                detail: { scope: 'ns-b' }, bubbles: true, composed: true,
+            }));
+        });
+        expect(getLastScope('alice')).toBe('ns-b');
     });
 
     test('renders the permission panel instead of a gated page for a user who does not meet it', async () => {

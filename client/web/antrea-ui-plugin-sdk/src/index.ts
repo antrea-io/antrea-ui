@@ -40,23 +40,26 @@ import type { EdgeExtraRenderer, FlowTableColumnsProcessor, PluginAccessRequirem
 
 // `requires` (below, on PluginRoute, PluginSidebarEntry and LandingPageTab) hides an item from
 // users who don't meet it, evaluated by the host against the user's access summary:
-//   - `{ clusterAdmin: true }`: cluster admins only. It decides alone: `namespaceScope` and
-//     `resources` beside it are ignored. `false` means "not written".
+//   - `{ clusterAdmin: true }`: cluster admins only. It decides visibility alone: `namespaceScope`
+//     and `resources` beside it are ignored for visibility, but `namespaceScope` still enables
+//     Namespace scope behavior. `false` means "not written".
 //   - `{ resources: [{ group, resource, verb }] }`: users whose RBAC allows every query listed;
 //     `{ resources: { allOf: [...] } }` says the same, and `{ resources: { anyOf: [...] } }`
 //     needs only one.
 //   - `{ namespaceScope: true }`: the item is a Namespace-aware page (one that shows content for
 //     one Namespace or all, keeping the choice in `?namespace=<name>` or `?namespace=_all`). Its
 //     `resources` list the permissions it reads (a plain array or `anyOf`; any one allowed is
-//     enough, and `allOf` is rejected), and it shows to a user for whom those are not denied, who
-//     may list Namespaces, or who is named in at least one RoleBinding. With no `resources` it
-//     shows to every signed-in user. So it widens access: a user with a RoleBinding but without
-//     the permission sees the item and gets the API's 403, which the page must handle.
+//     enough, and `allOf` is rejected). Without `clusterAdmin`, it shows to a user for whom those
+//     are not denied, who may list Namespaces, or who is named in at least one RoleBinding. With
+//     no `resources` it shows to every signed-in user. So it widens access: a user with a
+//     RoleBinding but without the permission sees the item and gets the API's 403, which the
+//     page must handle.
 // Gated items stay hidden until the summary has loaded, a malformed `requires` hides the item, and
 // a summary that failed to load shows it. This is a UI hint, not authorization: Kubernetes RBAC
-// still authorizes every API call your plugin makes. A host that predates `namespaceScope` or the
-// object form of `resources` hides such an item from everyone, and the backend rejects a manifest
-// that uses them, so raise your manifest's `compatibleAntreaUI` to the release that adds them.
+// still authorizes every API call your plugin makes. Any `requires` needs `compatibleAntreaUI`
+// raised to the release that adds permission gating. Older backends silently drop manifest
+// `requires`, and older frontends ignore it and show the item to everyone, even with
+// `clusterAdmin: true`. Only frontend shells evaluate that version range; the backend does not.
 
 /** A route a whole-page plugin wants the host to mount. `tag` is the custom element the
  * plugin's entry module registers via customElements.define(...); the host renders it with the
