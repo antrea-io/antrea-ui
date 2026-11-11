@@ -407,13 +407,6 @@ func (s *Server) OpenMetricsTap(c *gin.Context) {
 		return
 	}
 
-	// See flowstream.SSEHandler.StreamFlows for what each header is for, and for why the
-	// headers are flushed before there is anything to send.
-	c.Header("Content-Type", "text/event-stream")
-	c.Header("Cache-Control", "no-cache")
-	c.Header("Connection", "keep-alive")
-	c.Header("X-Accel-Buffering", "no")
-
 	rc := http.NewResponseController(c.Writer)
 	// setWriteDeadline gives the client metricsWriteTimeout to take in what is written next.
 	// It is called before every write of the stream, the one of the headers included: the tap
@@ -432,9 +425,17 @@ func (s *Server) OpenMetricsTap(c *gin.Context) {
 		return true
 	}
 
+	// Probe before setting SSE headers so a failure is returned as a JSON error.
 	if !setWriteDeadline() {
+		errors.HandleError(c, &errors.ServerError{Code: http.StatusInternalServerError})
 		return
 	}
+	// See flowstream.SSEHandler.StreamFlows for what each header is for, and for why the
+	// headers are flushed before there is anything to send.
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("Connection", "keep-alive")
+	c.Header("X-Accel-Buffering", "no")
 	c.Writer.Flush()
 
 	keepAlive := time.NewTicker(metricsKeepAliveInterval)
