@@ -57,8 +57,6 @@ server {
 
         # Flow SSE can be idle for a long time when the flow source has no matching
         # records; nginx's default proxy_read_timeout (~60s) then returns 504 to the browser.
-        # SSE streams must not be buffered by nginx and need a long read timeout, whatever
-        # headers and keepalives the backend handler sends, so both are set explicitly.
         location /api/v1/flows/stream {
             {{- include "antrea-ui.nginx.sse" . | nindent 12 }}
         }
@@ -101,10 +99,9 @@ server {
 {{- end }}
 
 {{- define "antrea-ui.nginx.sse" -}}
-# Inherit all forwarding headers from the outer location. Recent nginx versions (1.29.7 and
-# later) already omit the upstream Connection header, so no local proxy_set_header is needed.
+# Keep SSE responses unbuffered and allow long idle periods without relying on
+# buffering headers or keepalives from the backend.
 proxy_buffering off;
 proxy_read_timeout 86400s;
-proxy_send_timeout 86400s;
 proxy_pass http://127.0.0.1:{{ .Values.backend.port }};
 {{- end }}
