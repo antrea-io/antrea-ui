@@ -2800,7 +2800,7 @@ describe('AntreaFlowVisibilityPage — disclosure in the flow list', () => {
 // The service map's two collapsed forms. antrea-ui redacts nothing itself; these are renderings
 // of the disclosure markers the Flow Aggregator put on each record.
 describe('AntreaFlowVisibilityPage — collapsed peers in the service map', () => {
-    interface TestNode { id: string; shortName: string; namespace: string; kind: string; detail: string }
+    interface TestNode { id: string; shortName: string; namespace: string; kind: string; detail: string; serviceOnly: boolean }
     interface TestEdge { source: string; target: string; connectionCount: number; totalBytesForward: number }
     interface TestGraph { nodes: TestNode[]; edges: TestEdge[] }
 
@@ -2985,6 +2985,87 @@ describe('AntreaFlowVisibilityPage — collapsed peers in the service map', () =
         ]);
 
         expect(graph.nodes.find(n => n.id === 'ns-b/xsvc')).toMatchObject({ namespace: 'ns-b', detail: 'ns-b' });
+    });
+
+    // The node a Service names is the Service alone only while nothing else reached it as a
+    // workload: that is what the pill shape tells the reader.
+    test('a node that is only ever a destination Service is service-only', async () => {
+        const { graph } = await graphFor([
+            makeFlow({ dstNs: 'ns-b', dstPod: 'server-xyz34', destService: 'ns-b/xsvc:http' }),
+        ]);
+
+        expect(graph.nodes.find(n => n.id === 'ns-b/xsvc')?.serviceOnly).toBe(true);
+        expect(graph.nodes.find(n => n.id === 'default/client')?.serviceOnly).toBe(false);
+    });
+
+    test('a Service node that also sends traffic is not service-only', async () => {
+        const { graph } = await graphFor([
+            makeFlow({ dstNs: 'ns-b', dstPod: 'server-xyz34', destService: 'ns-b/xsvc:http' }),
+            makeFlow({ srcNs: 'ns-b', srcPod: 'xsvc-abc12', srcIP: '10.0.0.9', dstPod: 'other-xyz34' }),
+        ]);
+
+        expect(graph.nodes.filter(n => n.id === 'ns-b/xsvc')).toHaveLength(1);
+        expect(graph.nodes.find(n => n.id === 'ns-b/xsvc')?.serviceOnly).toBe(false);
+    });
+
+    test('a Service node that a flow reaches without the Service is not service-only', async () => {
+        const { graph } = await graphFor([
+            makeFlow({ dstNs: 'ns-b', dstPod: 'server-xyz34', destService: 'ns-b/xsvc:http' }),
+            makeFlow({ dstNs: 'ns-b', dstPod: 'xsvc-abc12', dstIP: '10.1.0.9' }),
+        ]);
+
+        expect(graph.nodes.find(n => n.id === 'ns-b/xsvc')?.serviceOnly).toBe(false);
+    });
+
+    test('a service-only node is drawn as a pill and a workload as a rounded rectangle', async () => {
+        const { page } = await graphFor([
+            makeFlow({ dstNs: 'ns-b', dstPod: 'server-xyz34', destService: 'ns-b/xsvc:http' }),
+        ]);
+
+        const rect = (name: string) => Array.from(page.shadowRoot!.querySelectorAll('#graph-svg g'))
+            .find(g => g.querySelector('rect') && g.querySelector('text')?.textContent === name)
+            ?.querySelector('rect');
+        const service = rect('xsvc')!;
+        expect(Number(service.getAttribute('rx'))).toBe(Number(service.getAttribute('height')) / 2);
+        const workload = rect('client')!;
+        expect(Number(workload.getAttribute('rx'))).toBeLessThan(Number(workload.getAttribute('height')) / 2);
+    });
+
+    test('the legend names the node shapes', async () => {
+        const { page } = await graphFor([makeFlow()]);
+
+        const rows = Array.from(page.shadowRoot!.querySelectorAll('.map-legend .legend-row'))
+            .map(r => r.textContent?.trim());
+        expect(rows).toEqual(expect.arrayContaining(['Service (destination only)', 'Workload', 'External']));
+    });
+
+    // The node and the edge are the same before and after: the second flow reaches the same node
+    // without the Service, so only its shape says it stopped being the Service alone.
+    test('the shape follows a Service node that stops being service-only', async () => {
+        const encoder = new TextEncoder();
+        let controller!: ReadableStreamDefaultController<Uint8Array>;
+        const stream = new ReadableStream<Uint8Array>({ start(c) { controller = c; } });
+        const page = await mount(async () => new Response(stream, { status: 200 }));
+        controller.enqueue(encoder.encode(flowEventChunk([
+            makeFlow({ dstNs: 'ns-b', dstPod: 'server-xyz34', destService: 'ns-b/xsvc:http' }),
+        ])));
+        await vi.advanceTimersByTimeAsync(1000);
+        page.viewMode = 'map';
+        await page.updateComplete;
+        const rx = () => Array.from(page.shadowRoot!.querySelectorAll('#graph-svg g'))
+            .find(g => g.querySelector('rect') && g.querySelector('text')?.textContent === 'xsvc')
+            ?.querySelector('rect')?.getAttribute('rx');
+        const pill = rx();
+
+        controller.enqueue(encoder.encode(flowEventChunk([
+            makeFlow({ dstNs: 'ns-b', dstPod: 'xsvc-abc12', dstIP: '10.1.0.9', srcIP: '10.0.0.9' }),
+        ])));
+        await vi.advanceTimersByTimeAsync(1000);
+        await page.updateComplete;
+
+        expect(pill).toBeDefined();
+        expect(rx()).toBe('8');
+        expect(rx()).not.toBe(pill);
     });
 
     // A destination outside the Pod network is exported as To External, but the Service the
