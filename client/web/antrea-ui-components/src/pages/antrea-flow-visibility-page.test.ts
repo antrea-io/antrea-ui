@@ -1523,6 +1523,152 @@ describe('AntreaFlowVisibilityPage — viewMode', () => {
     });
 });
 
+describe('AntreaFlowVisibilityPage — service map zoom controls', () => {
+    async function mountMap(flows: Flow[]): Promise<AntreaFlowVisibilityPage> {
+        const page = await mount(async () => sseResponse(flows.length ? [flowEventChunk(flows)] : []));
+        await page.updateComplete;
+        await vi.advanceTimersByTimeAsync(0);
+        await vi.advanceTimersByTimeAsync(1000);
+        page.viewMode = 'map';
+        await page.updateComplete;
+        return page;
+    }
+    const button = (page: AntreaFlowVisibilityPage, label: string) =>
+        page.shadowRoot!.querySelector<HTMLButtonElement>(`.map-controls button[aria-label="${label}"]`)!;
+    const atLimit = (page: AntreaFlowVisibilityPage, label: string) =>
+        button(page, label).getAttribute('aria-disabled') === 'true';
+    // The map's content group is the SVG's only direct <g> child.
+    const content = (page: AntreaFlowVisibilityPage) =>
+        page.shadowRoot!.querySelector<SVGGElement>('#graph-svg > g')!;
+    const scaleOf = (g: SVGGElement) => Number(/scale\(([^)]+)\)/.exec(g.getAttribute('transform') ?? '')?.[1]);
+
+    // jsdom does no SVG layout: d3-zoom reads the viewport from svg.width.baseVal, and the
+    // content bounds come from getBBox. Supply both from the element's attributes.
+    beforeEach(() => {
+        for (const name of ['width', 'height'] as const) {
+            Object.defineProperty(SVGSVGElement.prototype, name, {
+                configurable: true,
+                get(this: SVGSVGElement) { return { baseVal: { value: Number(this.getAttribute(name)) } }; },
+            });
+        }
+    });
+    afterEach(() => {
+        delete (SVGSVGElement.prototype as { width?: unknown }).width;
+        delete (SVGSVGElement.prototype as { height?: unknown }).height;
+        delete (SVGGraphicsElement.prototype as { getBBox?: unknown }).getBBox;
+    });
+
+    test('offers zoom in, zoom out and fit to view, in that order', async () => {
+        const page = await mountMap([makeFlow()]);
+        const labels = Array.from(page.shadowRoot!.querySelectorAll('.map-controls button'))
+            .map(b => b.getAttribute('aria-label'));
+        expect(labels).toEqual(['Zoom in', 'Zoom out', 'Fit to view']);
+    });
+
+    test('zoom in and zoom out scale the map and undo each other', async () => {
+        const page = await mountMap([makeFlow()]);
+        button(page, 'Zoom in').click();
+        expect(scaleOf(content(page))).toBeCloseTo(1.5);
+        button(page, 'Zoom out').click();
+        expect(scaleOf(content(page))).toBeCloseTo(1);
+    });
+
+    test('zooming in stops at the 3x limit of wheel zoom', async () => {
+        const page = await mountMap([makeFlow()]);
+        for (let i = 0; i < 10; i++) button(page, 'Zoom in').click();
+        expect(scaleOf(content(page))).toBeCloseTo(3);
+    });
+
+    test('zoom in is disabled at the maximum and zoom out at the minimum, and each frees the other', async () => {
+        const page = await mountMap([makeFlow()]);
+        for (let i = 0; i < 10; i++) button(page, 'Zoom in').click();
+        await page.updateComplete;
+        expect(atLimit(page, 'Zoom in')).toBe(true);
+        expect(atLimit(page, 'Zoom out')).toBe(false);
+
+        for (let i = 0; i < 10; i++) button(page, 'Zoom out').click();
+        await page.updateComplete;
+        expect(scaleOf(content(page))).toBeCloseTo(0.3);
+        expect(atLimit(page, 'Zoom out')).toBe(true);
+        expect(atLimit(page, 'Zoom in')).toBe(false);
+    });
+
+    test('a button at its limit stays focusable, so a keyboard user does not lose their place', async () => {
+        const page = await mountMap([makeFlow()]);
+        for (let i = 0; i < 10; i++) button(page, 'Zoom in').click();
+        await page.updateComplete;
+        expect(button(page, 'Zoom in').disabled).toBe(false);
+    });
+
+    test('a rebuild of the map restarts zooming from the scale it is drawn at', async () => {
+        const page = await mountMap([makeFlow()]);
+        for (let i = 0; i < 10; i++) button(page, 'Zoom in').click();
+        await page.updateComplete;
+        expect(atLimit(page, 'Zoom in')).toBe(true);
+
+        // A topology rebuild draws a new, untransformed content group.
+        (page as unknown as { _prevTopologyKey: string })._prevTopologyKey = '';
+        (page as unknown as { _buildServiceMap(): void })._buildServiceMap();
+        await page.updateComplete;
+        expect(content(page).getAttribute('transform')).toMatch(/scale\(1\)/);
+        expect(atLimit(page, 'Zoom in')).toBe(false);
+
+        button(page, 'Zoom out').click();
+        expect(scaleOf(content(page))).toBeCloseTo(1 / 1.5);
+    });
+
+    test('both zoom buttons are available at the initial scale', async () => {
+        const page = await mountMap([makeFlow()]);
+        await page.updateComplete;
+        expect(atLimit(page, 'Zoom in')).toBe(false);
+        expect(atLimit(page, 'Zoom out')).toBe(false);
+    });
+
+    test('fit to view centres the content, shrinking it to fit with padding', async () => {
+        const page = await mountMap([makeFlow()]);
+        const bounds = { x: 100, y: 50, width: 2000, height: 1000 };
+        (SVGGraphicsElement.prototype as unknown as { getBBox: () => unknown }).getBBox = () => bounds;
+        button(page, 'Fit to view').click();
+
+        const m = /translate\(([^,]+),([^)]+)\) scale\(([^)]+)\)/.exec(content(page).getAttribute('transform')!)!;
+        const [tx, ty, k] = [Number(m[1]), Number(m[2]), Number(m[3])];
+        const svg = page.shadowRoot!.querySelector('#graph-svg')!;
+        const width = Number(svg.getAttribute('width'));
+        const height = Number(svg.getAttribute('height'));
+        expect(k).toBeCloseTo(Math.min((width - 80) / bounds.width, (height - 80) / bounds.height));
+        // The centre of the content lands on the centre of the viewport.
+        expect(tx + k * (bounds.x + bounds.width / 2)).toBeCloseTo(width / 2);
+        expect(ty + k * (bounds.y + bounds.height / 2)).toBeCloseTo(height / 2);
+    });
+
+    test('fit to view does not enlarge a small map', async () => {
+        const page = await mountMap([makeFlow()]);
+        (SVGGraphicsElement.prototype as unknown as { getBBox: () => unknown }).getBBox =
+            () => ({ x: 0, y: 0, width: 100, height: 100 });
+        button(page, 'Fit to view').click();
+        expect(scaleOf(content(page))).toBeCloseTo(1);
+    });
+
+    test('after fitting a large map, zooming out is not stopped at the usual minimum', async () => {
+        const page = await mountMap([makeFlow()]);
+        (SVGGraphicsElement.prototype as unknown as { getBBox: () => unknown }).getBBox =
+            () => ({ x: 0, y: 0, width: 20000, height: 10000 });
+        button(page, 'Fit to view').click();
+        const fitted = scaleOf(content(page));
+        expect(fitted).toBeLessThan(0.3);
+        button(page, 'Zoom in').click();
+        button(page, 'Zoom out').click();
+        expect(scaleOf(content(page))).toBeCloseTo(fitted);
+    });
+
+    test('the controls are disabled while there is nothing to show', async () => {
+        const page = await mountMap([]);
+        for (const label of ['Zoom in', 'Zoom out', 'Fit to view']) {
+            expect(button(page, label).disabled).toBe(true);
+        }
+    });
+});
+
 describe('AntreaFlowVisibilityPage — antrea-edge-selected extension point', () => {
     async function mountWithOneEdge(): Promise<AntreaFlowVisibilityPage> {
         const page = await mount(async () => sseResponse([flowEventChunk([makeFlow({ ingressPolicy: 'allow-client' })])]));
