@@ -17,8 +17,8 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import './antrea-flow-visibility-page';
 import { SCOPE_CHANGE_EVENT, SCOPE_CHOSEN_EVENT } from '../lib/namespace-scope';
 import type { ScopeChangeDetail, ScopeChosenDetail } from '../lib/namespace-scope';
-import type { AntreaFlowVisibilityPage } from './antrea-flow-visibility-page';
-import { searchFilterOptions, typedNamespace, typedPod, typedService } from './antrea-flow-visibility-page';
+import type { AntreaFlowVisibilityPage, D3Node } from './antrea-flow-visibility-page';
+import { nodeBoundary, searchFilterOptions, typedNamespace, typedPod, typedService } from './antrea-flow-visibility-page';
 import { FLOW_QUERY_STATE_EVENT } from '../lib/flow-stream';
 import type { FlowQuery, FlowQueryStateDetail, FlowStreamFilter } from '../lib/flow-stream';
 import { resetAccessSummary } from '../lib/access-api';
@@ -3448,5 +3448,24 @@ describe('flow query state event', () => {
         vi.mocked(fetch).mockImplementation(async () => sseResponse([]));
         await setQuery(page, undefined);
         expect(seen.at(-1)).toEqual({ state: 'idle', snapshotCount: 0, maxCount: 0, truncated: false, evicted: false, droppedCount: 0 });
+    });
+});
+
+describe('nodeBoundary', () => {
+    const node = (serviceOnly: boolean): D3Node =>
+        ({ id: 'n', shortName: 'xsvc', namespace: 'ns', kind: 'workload', detail: 'ns', serviceOnly, x: 0, y: 0 });
+
+    test('a Service-only node ends an edge on its curved end, a workload on its corner', () => {
+        // Aimed at the bounding box's corner, where the pill is curved and the rectangle is not.
+        // hw = 28.4, hh = 23, so the pill's end is a semicircle of radius 23 centred at x = 5.4.
+        const [px, py] = nodeBoundary(node(true), 28.4, 23, 0);
+        expect(Math.hypot(px - 5.4, py)).toBeCloseTo(23, 5);
+        const [wx, wy] = nodeBoundary(node(false), 28.4, 23, 0);
+        expect([wx, wy]).toEqual([28.4, 23]);
+    });
+
+    test('a Service-only node ends an edge on its flat side where the pill is flat', () => {
+        const [x, y] = nodeBoundary(node(true), 0, 100, 0);
+        expect([x, y]).toEqual([0, 23]);
     });
 });
