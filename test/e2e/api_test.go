@@ -16,6 +16,7 @@ package e2e
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -26,7 +27,10 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 
@@ -92,6 +96,18 @@ func TestAPI(t *testing.T) {
 			require.Equal(t, http.StatusOK, resp.StatusCode)
 			assert.Equal(t, "antrea-controller", data.Name)
 		})
+		// The proxy subresource of a Service is refused by antrea-ui itself, before the API
+		// server sees the request: the body is antrea-ui's message, not a K8s Status.
+		t.Run("service proxy refused", func(t *testing.T) {
+			resp, err := Request(ctx, host, "GET", "api/v1/k8s/api/v1/namespaces/kube-system/services/kube-dns/proxy/", nil,
+				setAccessTokenMutator(token))
+			require.NoError(t, err)
+			defer resp.Body.Close()
+			assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+			body, err := io.ReadAll(resp.Body)
+			require.NoError(t, err)
+			assert.Contains(t, string(body), "proxy subresource")
+		})
 	})
 
 	t.Run("featuregates", func(t *testing.T) {
@@ -154,6 +170,78 @@ func TestAPI(t *testing.T) {
 			return strings.HasSuffix(resp.Request.URL.Path, "/result")
 		}, 30*time.Second, 1*time.Second)
 	})
+}
+
+// Writes go through the K8s proxy as the caller, with the caller's own RBAC: an identity allowed to
+// edit one Namespace can create, patch and delete a ConfigMap there, and is refused by the API
+// server anywhere else.
+func TestK8sProxyWrites(t *testing.T) {
+	ctx := t.Context()
+	ns, err := createTestNamespace(ctx)
+	require.NoError(t, err)
+	defer deleteNamespace(context.Background(), ns)
+	const saName = "k8s-proxy-writer"
+	token := createServiceAccountWithToken(ctx, t, ns, saName)
+	createRoleBinding(ctx, t, ns, saName, "edit", rbacv1.Subject{Kind: rbacv1.ServiceAccountKind, Name: saName, Namespace: ns})
+
+	request := func(method, path, contentType, body string) (int, []byte, error) {
+		mutators := []func(req *http.Request){setAccessTokenMutator(token)}
+		if contentType != "" {
+			mutators = append(mutators, func(req *http.Request) { req.Header.Set("Content-Type", contentType) })
+		}
+		resp, err := Request(ctx, host, method, "api/v1/k8s"+path, strings.NewReader(body), mutators...)
+		if err != nil {
+			return 0, nil, err
+		}
+		defer resp.Body.Close()
+		b, err := io.ReadAll(resp.Body)
+		return resp.StatusCode, b, err
+	}
+	configMapsPath := func(namespace string) string {
+		return fmt.Sprintf("/api/v1/namespaces/%s/configmaps", namespace)
+	}
+	const configMap = `{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"test"},"data":{"key":"v1"}}`
+
+	// Retried on 403, until the RoleBinding has reached the API server's authorizer, and on
+	// transient errors.
+	var code int
+	var body []byte
+	var lastErr string
+	require.NoError(t, wait.PollUntilContextTimeout(ctx, time.Second, 30*time.Second, true, func(ctx context.Context) (bool, error) {
+		var err error
+		code, body, err = request("POST", configMapsPath(ns), "application/json", configMap)
+		if err != nil {
+			lastErr = err.Error()
+			return false, nil
+		}
+		lastErr = fmt.Sprintf("HTTP %d: %s", code, body)
+		return code != http.StatusForbidden, nil
+	}), "the edit grant never propagated: %s", lastErr)
+	require.Equal(t, http.StatusCreated, code, string(body))
+
+	code, body, err = request("PATCH", configMapsPath(ns)+"/test", "application/merge-patch+json", `{"data":{"key":"v2"}}`)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, code, string(body))
+	var cm corev1.ConfigMap
+	require.NoError(t, json.Unmarshal(body, &cm))
+	assert.Equal(t, "v2", cm.Data["key"])
+
+	code, body, err = request("DELETE", configMapsPath(ns)+"/test", "", "")
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusOK, code, string(body))
+
+	// The binding covers ns only: the API server itself refuses the same write in another
+	// Namespace, so the response is a K8s Status, not one of antrea-ui's own errors. That
+	// Namespace is a test one too, so a wrongly accepted write is cleaned up with it.
+	otherNs, err := createTestNamespace(ctx)
+	require.NoError(t, err)
+	defer deleteNamespace(context.Background(), otherNs)
+	code, body, err = request("POST", configMapsPath(otherNs), "application/json", configMap)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusForbidden, code, string(body))
+	var status metav1.Status
+	require.NoError(t, json.Unmarshal(body, &status))
+	assert.Equal(t, metav1.StatusReasonForbidden, status.Reason)
 }
 
 func TestAPIUnauthorized(t *testing.T) {

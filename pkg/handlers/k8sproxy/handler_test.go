@@ -15,9 +15,11 @@
 package k8sproxy
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/go-logr/logr/testr"
@@ -83,6 +85,63 @@ func TestK8sProxyHandler(t *testing.T) {
 	assert.Empty(t, header.Get("Impersonate-Extra-foo"))
 	assert.Empty(t, header.Get("Cookie"))
 	assert.Empty(t, header.Get("Authorization"))
+}
+
+// A write request must reach the API server as sent: method, query (e.g. dryRun, fieldManager),
+// body, and the Content-Type which selects the patch strategy.
+func TestK8sProxyHandlerWriteRequest(t *testing.T) {
+	var capturedReq *http.Request
+	var capturedBody []byte
+	ts := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedReq = r
+		var err error
+		capturedBody, err = io.ReadAll(r.Body)
+		assert.NoError(t, err)
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	serverURL, err := url.Parse(upstreamURL)
+	require.NoError(t, err)
+	h := NewK8sProxyHandler(testr.New(t), serverURL, staticTransport(ts.Client().Transport))
+
+	const path = "/api/v1/namespaces/default/pods/test-pod?dryRun=All&fieldManager=antrea-ui"
+	const body = `{"metadata":{"labels":{"app":"test"}}}`
+	req := httptest.NewRequest("PATCH", path, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/merge-patch+json")
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	require.Equal(t, http.StatusOK, rr.Code)
+	require.NotNil(t, capturedReq)
+	assert.Equal(t, "PATCH", capturedReq.Method)
+	assert.Equal(t, path, capturedReq.URL.String())
+	assert.Equal(t, "application/merge-patch+json", capturedReq.Header.Get("Content-Type"))
+	assert.Equal(t, body, string(capturedBody))
+}
+
+// What the proxy relays reaches the browser on the UI's origin, and not all of it is the API
+// server's own (e.g. an aggregated API server's responses), so it must not be able to run script or
+// set cookies there, whatever headers it comes with.
+func TestK8sProxyHandlerSandboxesResponses(t *testing.T) {
+	ts := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.Header().Set("Content-Security-Policy", "script-src *")
+		w.Header().Add("Set-Cookie", "antrea-ui-session=attacker-session; Path=/")
+		w.Header().Add("Set-Cookie", "other=value; Path=/")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("<script>alert(1)</script>"))
+	}))
+
+	serverURL, err := url.Parse(upstreamURL)
+	require.NoError(t, err)
+	h := NewK8sProxyHandler(testr.New(t), serverURL, staticTransport(ts.Client().Transport))
+
+	req := httptest.NewRequest("GET", "/apis/example.com/v1/widgets", nil)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	require.Equal(t, http.StatusOK, rr.Code)
+	assert.Equal(t, []string{"sandbox"}, rr.Header().Values("Content-Security-Policy"))
+	assert.Equal(t, "nosniff", rr.Header().Get("X-Content-Type-Options"))
+	assert.Empty(t, rr.Header().Values("Set-Cookie"))
 }
 
 // The proxy must tell "the API server rejected the credential" (401) apart from "this user is not

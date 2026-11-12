@@ -960,14 +960,26 @@ The `build` script's `bundle.zip` step shells out to the `zip` binary, which
 needs to be installed separately — it isn't an npm dependency. Without it,
 `npm run build` fails with `zip: command not found`.
 
-Your plugin can proxy any K8s API path: there is no allowlist in front of the
-proxy, RBAC is the only guard (see
+Your plugin can proxy any K8s API path, for reads (`GET`) as well as writes
+(`POST`, `PUT`, `PATCH` and `DELETE`): there is no verb allowlist in front of
+the proxy, and RBAC is the guard (see
 [`pkg/server/api/k8s.go`](../pkg/server/api/k8s.go)). What decides whether the
 call succeeds is the RBAC of whoever is logged in — which is why the example
 handles a 403 rather than assuming the call goes through. Before the backend
 called Kubernetes as the end user, every UI user had the same access and that
 branch was dead code; now it is the ordinary outcome for a user whose role does
-not cover the path your plugin reads.
+not cover the path and verb your plugin uses.
+
+The one path the proxy refuses, with a 403, is the `proxy` subresource of
+Services, Pods and Nodes (for example
+`/api/v1/namespaces/<namespace>/services/<name>/proxy/`). It would serve a
+workload's own responses on the UI's origin, where any script or cookie they
+carry would act as the UI.
+
+Read proxied responses with `fetch`. The proxy sends every response from the
+API server with `Content-Security-Policy: sandbox` and drops any `Set-Cookie`,
+so a response opened directly in the browser renders without scripts. Do not link to or embed
+proxied responses.
 
 RBAC for that path is **not** added to Antrea UI's own `clusterroles.yaml`.
 Instead, ship your own `ClusterRole` labeled
@@ -976,7 +988,9 @@ Instead, ship your own `ClusterRole` labeled
 into the `antrea-ui-admin` ClusterRole automatically — see
 [`plugins/examples/pod-counter/clusterrole.yaml`](../plugins/examples/pod-counter/clusterrole.yaml).
 Creating (and RBAC-scoping) that ClusterRole is the responsibility of
-whoever deploys the plugin, not Antrea UI itself.
+whoever deploys the plugin, not Antrea UI itself. List only the verbs your
+plugin uses: a write verb in that ClusterRole lets everyone who logs in with
+the admin password make that write.
 
 That aggregation only covers the admin-password mode, which impersonates the
 `antrea-ui-admin` ServiceAccount, and support bundle collection, which always
