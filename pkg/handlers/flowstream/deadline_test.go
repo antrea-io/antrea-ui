@@ -167,20 +167,20 @@ func TestStreamFlowsUnreadStream(t *testing.T) {
 						select {
 						case subscriber.flows <- *tc.event:
 						case <-stillOpen:
-							t.Fatal("handler did not receive the flow event")
+							require.FailNow(t, "handler did not receive the flow event")
 						}
 					} else {
 						select {
 						case subscriber.errors <- tc.streamErr:
 						case <-stillOpen:
-							t.Fatal("handler did not receive the terminal error")
+							require.FailNow(t, "handler did not receive the terminal error")
 						}
 					}
 				}
 				select {
 				case <-handlerDone:
 				case <-stillOpen:
-					t.Fatal("an unread stream kept its handler running")
+					require.FailNow(t, "an unread stream kept its handler running")
 				}
 				assert.Equal(t, tc.wantElapsed, time.Since(start))
 				synctest.Wait()
@@ -188,7 +188,7 @@ func TestStreamFlowsUnreadStream(t *testing.T) {
 				select {
 				case <-subscriber.done:
 				default:
-					t.Fatal("the unread stream's subscription is still active")
+					require.FailNow(t, "the unread stream's subscription is still active")
 				}
 			})
 		})
@@ -213,7 +213,6 @@ func TestStreamFlowsUnsupportedWriteDeadline(t *testing.T) {
 		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &evt))
 		assert.Equal(t, StreamErrorCodeInternal, evt.Code)
 		assert.False(t, evt.Retryable)
-		synctest.Wait()
 	})
 }
 
@@ -268,7 +267,6 @@ func TestStreamFlowsWriteFailure(t *testing.T) {
 				assert.Equal(t, tc.wantWrites, w.writeCalls)
 				assert.Equal(t, tc.wantDeadlines, w.deadlineCalls)
 				assert.ErrorIs(t, (<-subscriber.opened).Err(), context.Canceled)
-				synctest.Wait()
 			})
 		})
 	}
