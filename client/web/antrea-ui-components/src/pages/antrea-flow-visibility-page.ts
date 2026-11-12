@@ -2164,6 +2164,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
                     <div class="legend-row"><svg width="24" height="14"><rect x="1" y="1" width="22" height="12" rx="6" ry="6" style="fill:${MAP_COLOR_VAR.nodeFill};stroke:${MAP_COLOR_VAR.nodeStroke}" stroke-width="1.5"/></svg><span>Service (destination only)</span></div>
                     <div class="legend-row"><svg width="24" height="14"><rect x="1" y="1" width="22" height="12" rx="3" ry="3" style="fill:${MAP_COLOR_VAR.nodeFill};stroke:${MAP_COLOR_VAR.nodeStroke}" stroke-width="1.5"/></svg><span>Workload</span></div>
                     <div class="legend-row"><svg width="24" height="14"><polygon points="12,1 23,7 12,13 1,7" style="fill:${MAP_COLOR_VAR.externalFill};stroke:${MAP_COLOR_VAR.externalStroke}" stroke-width="1.5"/></svg><span>External</span></div>
+                    <div class="legend-row"><svg width="24" height="14"><polygon points="12,1 23,7 12,13 1,7" style="fill:${MAP_COLOR_VAR.undisclosedFill};stroke:${MAP_COLOR_VAR.undisclosedStroke}" stroke-width="1.5"/></svg><span>Undisclosed (in cluster)</span></div>
                     <div style="margin-top:2px;color:var(--antrea-color-text-muted, #8899a4)">Line thickness = connection count</div>
                 </div>
                 ${this._renderEdgeDetails()}

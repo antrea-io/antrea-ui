@@ -3050,7 +3050,7 @@ describe('AntreaFlowVisibilityPage — collapsed peers in the service map', () =
 
         const rows = Array.from(page.shadowRoot!.querySelectorAll('.map-legend .legend-row'))
             .map(r => r.textContent?.trim());
-        expect(rows).toEqual(expect.arrayContaining(['Service (destination only)', 'Workload', 'External']));
+        expect(rows).toEqual(expect.arrayContaining(['Service (destination only)', 'Workload', 'External', 'Undisclosed (in cluster)']));
     });
 
     // The node and the edge are the same before and after: the second flow reaches the same node
