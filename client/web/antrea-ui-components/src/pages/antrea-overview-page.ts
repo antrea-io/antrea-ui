@@ -17,7 +17,7 @@ import { state, property } from 'lit/decorators.js';
 import { pageStyles, pickerStyles } from '../lib/styles.js';
 import { apiFetchJSON, APIError } from '../lib/api.js';
 import {
-    accessSummary, namespaceAccessSummaries, can, pageVerdict,
+    accessSummary, fetchAccessSummary, namespaceAccessSummaries, can, pageVerdict,
     GATE_NAMESPACES_LIST, GATE_PODS_LIST, GATE_SERVICES_LIST,
     GATE_DEPLOYMENTS_LIST, GATE_STATEFULSETS_LIST, GATE_DAEMONSETS_LIST,
     GATE_K8S_NETWORKPOLICIES_LIST, GATE_ANTREA_CLUSTERNETWORKPOLICIES_LIST, GATE_ANTREA_NETWORKPOLICIES_LIST,
@@ -223,7 +223,7 @@ export class AntreaOverviewPage extends SessionAwarePage {
     @state() private _cardErrors: string[] = [];
     // Every resource the selected scope was asked for was either gated off or came back 403, and
     // nothing failed otherwise: the user has nothing to see here, which is a different thing from
-    // "some of it is not shown". See _loadCounts().
+    // "some of it is not shown". See _fetchCounts().
     @state() private _nothingPermitted = false;
     // Why the scope is not what the user asked for: the URL carries an invalid one, or a name
     // they typed is not a valid Namespace name. Reported on the page.
@@ -465,9 +465,12 @@ export class AntreaOverviewPage extends SessionAwarePage {
      * added while the page is open shows up within about a minute (see namespaceAccessSummaries).
      * Fails open (null) when it cannot be fetched, and an item whose review failed carries
      * `incomplete`, which does the same. */
-    private async _summaryForScope(ns: string): Promise<HasRules | null> {
+    private async _summaryForScope(ns: string, fresh: boolean): Promise<HasRules | null> {
         try {
-            if (!ns) return await accessSummary();
+            // The cluster-scoped summary is kept for the whole session, which is right for the
+            // first load but not for a page left open: a refresh asks again, as it does for a
+            // Namespace, so that a grant added meanwhile shows up.
+            if (!ns) return await (fresh ? fetchAccessSummary() : accessSummary());
             return (await namespaceAccessSummaries([ns])).items[0] ?? null;
         } catch (err) {
             if (this.isSessionExpiredError(err)) throw err;
@@ -531,19 +534,33 @@ export class AntreaOverviewPage extends SessionAwarePage {
             this._nothingPermitted = false;
         }
         const namespace = scope === SCOPE_ALL ? '' : scope;
-        const requestSignal = AbortSignal.any([signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)]);
-        const summary = await this._summaryForScope(namespace);
+        const summary = await this._summaryForScope(namespace, this._loadedOnce);
         if (generation !== this._loadGeneration) return;
+        // Started only now, so that a slow summary does not use up the time of the requests.
+        // Combined by hand: AbortSignal.any is newer than the browsers the build targets.
+        const requests = new AbortController();
+        const abortRequests = () => requests.abort(signal.reason);
+        if (signal.aborted) abortRequests();
+        else signal.addEventListener('abort', abortRequests, { once: true });
+        const timer = setTimeout(
+            () => requests.abort(new DOMException('The operation timed out.', 'TimeoutError')),
+            REQUEST_TIMEOUT_MS);
 
         // A cluster-scoped resource is not asked about while a namespace is selected: see
         // ResourceSpec.clusterScoped. It is skipped outright, so it counts neither as hidden from
         // the user nor as something that could have been shown.
         const skipped = (r: ResourceSpec) => Boolean(r.clusterScoped && namespace);
-        const results = await Promise.allSettled(RESOURCES.map(r =>
-            !skipped(r) && can(summary, r.gate)
-                ? apiFetchJSON<K8sList>(withPageLimit(r.path(namespace), r.limit), { signal: requestSignal })
-                : Promise.reject(new Error('skipped: no permission')),
-        ));
+        let results: PromiseSettledResult<K8sList>[];
+        try {
+            results = await Promise.allSettled(RESOURCES.map(r =>
+                !skipped(r) && can(summary, r.gate)
+                    ? apiFetchJSON<K8sList>(withPageLimit(r.path(namespace), r.limit), { signal: requests.signal })
+                    : Promise.reject(new Error('skipped: no permission')),
+            ));
+        } finally {
+            clearTimeout(timer);
+            signal.removeEventListener('abort', abortRequests);
+        }
         if (generation !== this._loadGeneration) return;
 
         for (const result of results) {
@@ -744,7 +761,7 @@ export class AntreaOverviewPage extends SessionAwarePage {
                             <span class="text-muted">
                                 ${this._lastUpdated === null ? 'Not fully updated yet.'
                                 : `Last fully updated: ${new Date(this._lastUpdated).toLocaleString()}.`}
-                                Refreshes every 60 seconds while this tab is visible.
+                                Refreshes every ${REFRESH_INTERVAL_MS / 1000} seconds while this tab is visible.
                             </span>
                             <antrea-button type="button" action="outline" ?disabled=${this._inFlight}
                                 @click=${this._refresh}>Refresh now</antrea-button>

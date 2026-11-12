@@ -1184,8 +1184,8 @@ describe('automatic refresh', () => {
         visibility(false);
         await settle(page);
         expect(resourceCalls()).toHaveLength(3);
-        // Repeated ticks reuse the session's cluster permission summary.
-        expect(resourceCalls('access-summary')).toHaveLength(1);
+        // The first load reuses the session's cluster permission summary; each refresh asks again.
+        expect(resourceCalls('access-summary')).toHaveLength(3);
     });
 
     test('does not fetch on a hidden mount and starts when made visible', async () => {
@@ -1257,13 +1257,6 @@ describe('automatic refresh', () => {
 
     test('times out a request that never settles instead of blocking later refreshes', async () => {
         vi.useFakeTimers();
-        // AbortSignal.timeout is not driven by fake timers, so hand out signals the test aborts.
-        const timeouts: AbortController[] = [];
-        vi.spyOn(AbortSignal, 'timeout').mockImplementation(() => {
-            const controller = new AbortController();
-            timeouts.push(controller);
-            return controller.signal;
-        });
         let hang = false;
         const page = await mountWith(async (url, init?: RequestInit) => {
             const key = keyForUrl(url);
@@ -1280,7 +1273,7 @@ describe('automatic refresh', () => {
         await vi.advanceTimersByTimeAsync(60_000);
         const refresh = page.shadowRoot!.querySelector('antrea-button')!;
         expect(refresh.disabled).toBe(true);
-        timeouts.at(-1)!.abort(new DOMException('The operation timed out.', 'TimeoutError'));
+        await vi.advanceTimersByTimeAsync(30_000);
         await settle(page);
         expect(refresh.disabled).toBe(false);
         expect(tileValue(page, 'Pods')).toBe('1');
@@ -1289,6 +1282,58 @@ describe('automatic refresh', () => {
         await vi.advanceTimersByTimeAsync(60_000);
         expect(resourceCalls()).toHaveLength(3);
         expect(alertText(page, 'danger')).toBeNull();
+    });
+
+    test('gives the resource requests their full timeout after a slow access summary', async () => {
+        vi.useFakeTimers();
+        let slow = false;
+        let aborted = false;
+        await mountWith(async (url, init?: RequestInit) => {
+            const key = keyForUrl(url);
+            if (key === 'access-summary') {
+                if (slow) await new Promise(r => setTimeout(r, 10_000));
+                return jsonResponse(fullAccessSummary());
+            }
+            if (key === 'pods' && slow) {
+                return new Promise<Response>((_, reject) => {
+                    init!.signal!.addEventListener('abort', () => { aborted = true; reject(init!.signal!.reason); });
+                });
+            }
+            return jsonResponse({ items: [] });
+        });
+        slow = true;
+        await vi.advanceTimersByTimeAsync(60_000);
+        // The summary takes 10 seconds, so the request is aborted 30 seconds after that, not
+        // 30 after the refresh began.
+        await vi.advanceTimersByTimeAsync(39_000);
+        expect(aborted).toBe(false);
+        await vi.advanceTimersByTimeAsync(1_000);
+        expect(aborted).toBe(true);
+    });
+
+    test('a refresh notices a grant added cluster-wide while the page is open', async () => {
+        vi.useFakeTimers();
+        let granted = false;
+        const namespacesOnly = { apiGroups: [''], resources: ['namespaces'], verbs: ['list'] };
+        const podsToo = { apiGroups: [''], resources: ['pods'], verbs: ['list'] };
+        const page = await mountWith(async url => {
+            const key = keyForUrl(url);
+            if (key === 'access-summary') {
+                return jsonResponse({
+                    username: 'bob', groups: [], clusterAdmin: false, namespaces: ['*'],
+                    rules: {
+                        resourceRules: granted ? [namespacesOnly, podsToo] : [namespacesOnly],
+                        nonResourceRules: [], incomplete: false,
+                    },
+                });
+            }
+            if (key === 'pods') return jsonResponse(list(['a']));
+            return jsonResponse({ items: [] });
+        });
+        expect(hasTile(page, 'Pods')).toBe(false);
+        granted = true;
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(tileValue(page, 'Pods')).toBe('1');
     });
 
     test('does not claim previous values after a first load that failed', async () => {
