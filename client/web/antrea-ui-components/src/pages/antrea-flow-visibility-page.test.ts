@@ -13,6 +13,7 @@
 // limitations under the License.
 
 import { FlowStore } from '../lib/flow-store';
+import type { SeenNames } from '../lib/seen-names';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import './antrea-flow-visibility-page';
 import { SCOPE_CHANGE_EVENT, SCOPE_CHOSEN_EVENT } from '../lib/namespace-scope';
@@ -2001,11 +2002,11 @@ describe('AntreaFlowVisibilityPage — Namespaces filter', () => {
     // namespaces this user may read Kubernetes objects in: that is a different grant, and after
     // per-user redaction a namespace can only appear on a record the Flow Aggregator already
     // decided this user may identify.
-    test('offers every namespace seen in the current flows', async () => {
+    test('offers every namespace seen in flows', async () => {
         const page = await mountWithPeers();
         expect(menuOptions(page)).toEqual(['default', 'kube-system']);
         expect(page.shadowRoot!.querySelector('.multiselect-hint')!.textContent)
-            .toContain('seen in current flows');
+            .toContain('seen in flows in this scope');
     });
 
     // With the endpoint on the source or the destination, the observed namespace selects the
@@ -2032,14 +2033,19 @@ describe('AntreaFlowVisibilityPage — Namespaces filter', () => {
         expect(menuOptions(page)).toContain('default');
     });
 
-    test('a selection stays in the menu once its traffic goes quiet', async () => {
+    test('a selection stays in the menu once no name seen holds it', async () => {
         const page = await mountWithPeers();
         toggleOption(page, 'kube-system');
         await page.updateComplete;
 
-        (page as unknown as { _entries: unknown[] })._entries = [];
+        (page as unknown as { _seenNames: SeenNames })._seenNames.reset();
+        // Reopened: the rows of an open menu do not change.
+        const button = page.shadowRoot!.querySelector<HTMLButtonElement>('.multiselect-btn')!;
+        button.click();
         await page.updateComplete;
-        expect(menuOptions(page)).toContain('kube-system');
+        button.click();
+        await page.updateComplete;
+        expect(menuOptions(page)).toEqual(['kube-system']);
     });
 
     test('it is labelled Namespaces, in both views', async () => {
@@ -2400,12 +2406,18 @@ describe('AntreaFlowVisibilityPage — keyboard focus in the filter menus', () =
         }));
     }
 
-    // As the stream's onFlows does, then drops the flows of the given Pods, as eviction would.
+    // As the stream's onFlows does, then drops the names of the given Pods' flows, as the bound
+    // on the names seen would.
     async function deliver(page: AntreaFlowVisibilityPage, flows: Flow[], dropPods: string[] = []): Promise<void> {
-        const internals = page as unknown as { _store: { upsertBatch(flows: Flow[]): void; getAll(): { flow: Flow }[] }; _entries: unknown[] };
+        const internals = page as unknown as { _store: FlowStore; _seenNames: SeenNames; _entries: unknown[] };
         internals._store.upsertBatch(flows);
-        internals._entries = internals._store.getAll().filter(e =>
-            !dropPods.includes(e.flow.k8s.sourcePodName) && !dropPods.includes(e.flow.k8s.destinationPodName));
+        internals._seenNames.recordBatch(flows);
+        if (dropPods.length > 0) {
+            internals._seenNames.reset();
+            internals._seenNames.recordBatch(internals._store.getAll().map(e => e.flow).filter(f =>
+                !dropPods.includes(f.k8s.sourcePodName) && !dropPods.includes(f.k8s.destinationPodName)));
+        }
+        internals._entries = internals._store.getAll();
         await page.updateComplete;
     }
 
@@ -2450,7 +2462,7 @@ describe('AntreaFlowVisibilityPage — keyboard focus in the filter menus', () =
         expect(focusedOption(page)).toBe('redis-0');
     });
 
-    test('unticking an option whose flows are gone keeps it in the menu', async () => {
+    test('unticking an option no longer offered keeps it in the menu', async () => {
         const page = await mountWith(threePeers());
         await toggleMenu(page, 'Pods');
         const before = menuOptions(page);
@@ -2469,7 +2481,7 @@ describe('AntreaFlowVisibilityPage — keyboard focus in the filter menus', () =
 
     // Rows changing under the focus would move it to another option, or drop it with a row that
     // leaves.
-    test('flows arriving or leaving do not change the open menu, and show once it is reopened', async () => {
+    test('names arriving or dropped do not change the open menu, and show once it is reopened', async () => {
         const page = await mountWith(twelveClients());
         await toggleMenu(page, 'Pods');
         const before = menuOptions(page);
@@ -2494,7 +2506,7 @@ describe('AntreaFlowVisibilityPage — keyboard focus in the filter menus', () =
 
     // The offer follows the rows: a name that no row shows can be added, and one that a row shows
     // is not offered twice.
-    test('the offer to add a typed name does not change as flows arrive or leave', async () => {
+    test('the offer to add a typed name does not change as names arrive or are dropped', async () => {
         const page = await mountWith(threePeers());
         await toggleMenu(page, 'Pods');
         const search = menuOf(page, 'Pods').querySelector<HTMLInputElement>('.multiselect-search')!;
@@ -2641,6 +2653,290 @@ describe('AntreaFlowVisibilityPage — a scope change and the applied namespaces
         const params = new URL(calls[calls.length - 1][0] as string, 'http://example.test').searchParams;
         expect(params.get('observedNamespace')).toBe('ns-x');
         expect(params.get('namespaces')).toBe('ns-x,ns-y');
+    });
+});
+
+// The filter menus offer the names seen since the scope was selected, and not only those of the
+// flows on the page, which the applied filters decide: a filter would otherwise take away the
+// names the next filter needs.
+describe('AntreaFlowVisibilityPage — the names the filter menus offer', () => {
+    // In ns-a: client -> server, server -> the Service ns-b/web, and web -> redis-0 in ns-b.
+    const unfiltered = [
+        makeFlow({ srcNs: 'ns-a', srcPod: 'client', srcIP: '10.0.0.1', dstNs: 'ns-a', dstPod: 'server', dstIP: '10.0.0.2' }),
+        makeFlow({ srcNs: 'ns-a', srcPod: 'server', srcIP: '10.0.0.2', dstNs: 'ns-b', dstPod: 'web', dstIP: '10.0.1.1', destService: 'ns-b/web:http' }),
+        makeFlow({ srcNs: 'ns-b', srcPod: 'web', srcIP: '10.0.1.1', dstNs: 'ns-b', dstPod: 'redis-0', dstIP: '10.0.1.2' }),
+    ];
+    const allPods = ['client', 'redis-0', 'server', 'web'];
+    const inNsB = (pod: string) => makeFlow({ srcNs: 'ns-b', srcPod: pod, srcIP: '10.0.2.1', dstNs: 'ns-b', dstPod: 'db', dstIP: '10.0.2.2' });
+
+    function scopeOf(url: string): string | null {
+        return new URL(url, 'http://test').searchParams.get('observedNamespace');
+    }
+
+    function filtered(url: string): boolean {
+        return new URL(url, 'http://test').searchParams.has('pods');
+    }
+
+    /** Opens the menu, reads its options and closes it again. */
+    async function optionsOf(page: AntreaFlowVisibilityPage, label: string): Promise<string[]> {
+        const menu = Array.from(page.shadowRoot!.querySelectorAll('.multiselect'))
+            .find(el => el.querySelector('.multiselect-label')!.textContent!.trim() === label)!;
+        const button = menu.querySelector<HTMLButtonElement>('.multiselect-btn')!;
+        button.click();
+        await page.updateComplete;
+        const options = menuOptions(page);
+        button.click();
+        await page.updateComplete;
+        return options;
+    }
+
+    async function hintsOf(page: AntreaFlowVisibilityPage, label: string): Promise<string[]> {
+        const menu = Array.from(page.shadowRoot!.querySelectorAll('.multiselect'))
+            .find(el => el.querySelector('.multiselect-label')!.textContent!.trim() === label)!;
+        const button = menu.querySelector<HTMLButtonElement>('.multiselect-btn')!;
+        button.click();
+        await page.updateComplete;
+        const hints = Array.from(menu.querySelectorAll('.multiselect-hint')).map(el => el.textContent!.trim());
+        button.click();
+        await page.updateComplete;
+        return hints;
+    }
+
+    /** Lets the stream's records reach the page, past the client's batch interval. */
+    async function settle(page: AntreaFlowVisibilityPage): Promise<void> {
+        await vi.advanceTimersByTimeAsync(2000);
+        await page.updateComplete;
+    }
+
+    async function apply(page: AntreaFlowVisibilityPage, filter: FlowStreamFilter): Promise<void> {
+        (page as unknown as { _applyFilter(filter: FlowStreamFilter): void })._applyFilter(filter);
+        await page.updateComplete;
+        await settle(page);
+    }
+
+    async function click(page: AntreaFlowVisibilityPage, text: string): Promise<void> {
+        Array.from(page.shadowRoot!.querySelectorAll<HTMLElement>('.filter-actions antrea-button'))
+            .find(b => b.textContent!.trim() === text)!.click();
+        await page.updateComplete;
+        await settle(page);
+    }
+
+    function rows(page: AntreaFlowVisibilityPage): number {
+        return page.shadowRoot!.querySelectorAll('tbody tr').length;
+    }
+
+    // ns-a answers with every flow unfiltered and with client -> server under the Pod filter;
+    // ns-b with `nsB` under the Pod filter and with `nsBUnfiltered` otherwise.
+    async function mountScopes(opts: {
+        nsB?: Flow[], nsBUnfiltered?: Flow[], nsBStatus?: number, search?: string,
+    } = {}): Promise<{ page: AntreaFlowVisibilityPage, fetchMock: ReturnType<typeof vi.fn> }> {
+        const fetchMock = vi.fn(async (url: string) => {
+            if (scopeOf(url) === 'ns-b') {
+                return sseResponse([flowEventChunk(filtered(url) ? opts.nsB ?? [] : opts.nsBUnfiltered ?? [])], opts.nsBStatus);
+            }
+            return sseResponse([flowEventChunk(filtered(url) ? [unfiltered[0]] : unfiltered)]);
+        });
+        const page = await mount(fetchMock, {
+            search: opts.search ?? '/?namespace=ns-a',
+            flowAccess: () => flowAccessFixture({ namespaces: ['ns-a', 'ns-b'] }),
+        });
+        await settle(page);
+        return { page, fetchMock };
+    }
+
+    test('a filter applied keeps offering the names seen before it', async () => {
+        const { page } = await mountScopes();
+        await apply(page, { pods: ['server'] });
+        expect(rows(page)).toBe(1);
+
+        expect(await optionsOf(page, 'Namespaces')).toEqual(['ns-a', 'ns-b']);
+        expect(await optionsOf(page, 'Pods')).toEqual(allPods);
+        expect(await optionsOf(page, 'Services')).toEqual(['ns-b/web']);
+    });
+
+    test('Reset and Clear keep them', async () => {
+        let calls = 0;
+        const fetchMock = vi.fn(async () => sseResponse([flowEventChunk(calls++ === 0 ? unfiltered : [])]));
+        const page = await mount(fetchMock, { search: '/?namespace=ns-a' });
+        await settle(page);
+        await apply(page, { pods: ['server'] });
+
+        await click(page, 'Reset');
+        expect(streamCalls(fetchMock)).toHaveLength(3);
+        expect(await optionsOf(page, 'Pods')).toEqual(allPods);
+
+        await click(page, 'Clear');
+        expect(await optionsOf(page, 'Pods')).toEqual(allPods);
+    });
+
+    // The store empties, as for any new filter, and no stream opens to fill it.
+    test('a filter applied while paused keeps them', async () => {
+        const { page } = await mountScopes();
+        await click(page, 'Pause');
+        await apply(page, { pods: ['server'] });
+        expect(rows(page)).toBe(0);
+        expect(await optionsOf(page, 'Pods')).toEqual(allPods);
+    });
+
+    test('another scope starts with its own names', async () => {
+        const { page } = await mountScopes({ nsBUnfiltered: [inNsB('other')] });
+        await chooseScope(page, 'ns-b');
+        await settle(page);
+
+        expect(await optionsOf(page, 'Namespaces')).toEqual(['ns-b']);
+        expect(await optionsOf(page, 'Pods')).toEqual(['db', 'other']);
+        expect(await optionsOf(page, 'Services')).toEqual([]);
+    });
+
+    // Back and Forward.
+    test('another scope taken from the URL starts with its own names', async () => {
+        const { page } = await mountScopes({ nsBUnfiltered: [inNsB('other')] });
+        page.locationSearch = '?namespace=ns-a';
+        await page.updateComplete;
+
+        page.locationSearch = '?namespace=ns-b';
+        await page.updateComplete;
+        await settle(page);
+
+        expect(await optionsOf(page, 'Pods')).toEqual(['db', 'other']);
+    });
+
+    // Nothing arrives to replace the old scope's names, which must go all the same.
+    test.each(['refused', 'chosen while paused'])('another scope that is %s offers none', async how => {
+        const { page } = await mountScopes({ nsBUnfiltered: [inNsB('other')], nsBStatus: how === 'refused' ? 403 : 200 });
+        if (how === 'chosen while paused') await click(page, 'Pause');
+        await chooseScope(page, 'ns-b');
+        await settle(page);
+
+        expect(await optionsOf(page, 'Namespaces')).toEqual([]);
+        expect(await optionsOf(page, 'Pods')).toEqual([]);
+        expect(await hintsOf(page, 'Pods')).toContain('None seen in this scope yet.');
+    });
+
+    // Stopping the old scope's client flushes its pending batch, which is recorded before the
+    // names are reset.
+    test('records still pending for the old scope are not offered under the new one', async () => {
+        const fetchMock = vi.fn(async (url: string) => scopeOf(url) === 'ns-a'
+            ? sseResponse([flowEventChunk([makeFlow({ srcNs: 'ns-a', srcPod: 'old-pod' })])])
+            : sseResponse([]));
+        const page = await mount(fetchMock, {
+            search: '/?namespace=ns-a',
+            flowAccess: () => flowAccessFixture({ namespaces: ['ns-a', 'ns-b'] }),
+        });
+        // Received, and still inside the batch interval.
+        await vi.advanceTimersByTimeAsync(10);
+
+        await chooseScope(page, 'ns-b');
+        await settle(page);
+
+        expect(await optionsOf(page, 'Pods')).toEqual([]);
+    });
+
+    // The applied filters stay when the scope changes, so the new scope's names come from the
+    // filtered flows only, which the empty menu says, until Reset.
+    test('another scope chosen with filters applied fills from the filtered flows', async () => {
+        const { page } = await mountScopes({ nsB: [], nsBUnfiltered: [inNsB('other')] });
+        await apply(page, { pods: ['server'] });
+        await chooseScope(page, 'ns-b');
+        await settle(page);
+
+        expect(await optionsOf(page, 'Pods')).toEqual([]);
+        expect(await hintsOf(page, 'Pods')).toContain(
+            'None seen in this scope yet. The applied filters limit the flows received: Reset may show more.');
+
+        await click(page, 'Reset');
+        expect(await optionsOf(page, 'Pods')).toEqual(['db', 'other']);
+    });
+
+    // A switch to a query over a time window asks the same scope again, here of another flow source,
+    // as a host may name one that keeps history. With no scope in the URL, the page holds none
+    // until the new mode's default is known, which is the same namespace here.
+    test.each([['in the URL', '/?namespace=ns-a'], ['by default', '/']])(
+        'a change of mode keeps them, with the scope %s', async (_, search) => {
+            let live = 0;
+            const fetchMock = vi.fn(async (url: string) => new URL(url, 'http://test').searchParams.get('follow') === 'false'
+                ? finiteResponse([FINITE_COMPLETE])
+                : sseResponse([flowEventChunk(live++ === 0 ? unfiltered : [])]));
+            const page = await mount(fetchMock, { search, flowAccess: () => flowAccessFixture({ namespaces: ['ns-a'] }) });
+            await settle(page);
+
+            await setQuery(page, { follow: false, source: 'flow-history' });
+            await settle(page);
+            expect(await optionsOf(page, 'Pods')).toEqual(allPods);
+
+            await setQuery(page, undefined);
+            await settle(page);
+            expect(await optionsOf(page, 'Pods')).toEqual(allPods);
+            expect(streamCalls(fetchMock).map(c => scopeOf(c[0] as string))).toEqual(['ns-a', 'ns-a', 'ns-a']);
+        },
+    );
+
+    // The Pods menu narrows the names seen as it narrows the flows on the page: by the end the
+    // pending direction picks, and by the pending namespaces. Under the applied filter, only
+    // client -> server is on the page.
+    test('the Pods seen are narrowed by the pending direction and namespaces', async () => {
+        const { page } = await mountScopes();
+        await apply(page, { pods: ['server'] });
+        const priv = page as unknown as { _pendingDirection: string; _pendingNs: string[] };
+
+        priv._pendingDirection = 'from';
+        await page.updateComplete;
+        expect(await optionsOf(page, 'Pods')).toEqual(['client', 'server', 'web']);
+
+        priv._pendingDirection = 'to';
+        await page.updateComplete;
+        expect(await optionsOf(page, 'Pods')).toEqual(['redis-0', 'server', 'web']);
+
+        priv._pendingDirection = 'both';
+        priv._pendingNs = ['ns-b'];
+        await page.updateComplete;
+        expect(await optionsOf(page, 'Pods')).toEqual(['redis-0', 'web']);
+    });
+
+    // An invalid scope in the URL selects none: the names kept are the last scope's, which the
+    // menus do not offer for none.
+    test('no scope offers none', async () => {
+        const { page } = await mountScopes();
+        page.locationSearch = '?namespace=ns-a';
+        await page.updateComplete;
+
+        page.locationSearch = '?namespace=Not_Valid';
+        await page.updateComplete;
+        await settle(page);
+
+        expect(await optionsOf(page, 'Namespaces')).toEqual([]);
+        expect(await optionsOf(page, 'Pods')).toEqual([]);
+        expect(await optionsOf(page, 'Services')).toEqual([]);
+        expect(await hintsOf(page, 'Pods')).not.toContain('None seen in this scope yet.');
+    });
+
+    // Pods were seen, but none on the end or in the namespace selected: the menu is empty, and saying
+    // that none was seen would be wrong.
+    test('a Pods menu narrowed to nothing does not say none was seen', async () => {
+        const { page } = await mountScopes();
+        await apply(page, { pods: ['server'] });
+        (page as unknown as { _pendingNs: string[] })._pendingNs = ['ns-c'];
+        await page.updateComplete;
+
+        expect(await optionsOf(page, 'Pods')).toEqual([]);
+        expect((await hintsOf(page, 'Pods')).filter(h => h.startsWith('None seen'))).toEqual([]);
+    });
+
+    // The scope has not changed, though the stream had to be opened again.
+    test('an element moved in the document keeps them', async () => {
+        let calls = 0;
+        const fetchMock = vi.fn(async () => sseResponse([flowEventChunk(calls++ === 0 ? unfiltered : [])]));
+        const page = await mount(fetchMock, { search: '/?namespace=ns-a' });
+        await settle(page);
+
+        page.remove();
+        document.body.appendChild(page);
+        await page.updateComplete;
+        await settle(page);
+
+        expect(streamCalls(fetchMock)).toHaveLength(2);
+        expect(rows(page)).toBe(0);
+        expect(await optionsOf(page, 'Pods')).toEqual(allPods);
     });
 });
 
