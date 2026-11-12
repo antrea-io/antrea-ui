@@ -99,14 +99,9 @@ server {
 {{- end }}
 
 {{- define "antrea-ui.nginx.sse" -}}
-# proxy_set_header directives are inherited from the outer location only if this level defines
-# none of its own; Connection below forces re-declaring the rest.
-proxy_set_header Host $forwarded_host;
-proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-proxy_set_header X-Real-IP $remote_addr;
-proxy_set_header Connection '';
+# Keep SSE responses unbuffered and allow long idle periods without relying on
+# buffering headers or keepalives from the backend.
 proxy_buffering off;
 proxy_read_timeout 86400s;
-proxy_send_timeout 86400s;
 proxy_pass http://127.0.0.1:{{ .Values.backend.port }};
 {{- end }}
