@@ -617,7 +617,10 @@ function nodeHalfSize(d: D3Node): { hw: number; hh: number } {
     if (d.kind === 'undisclosedNamespace') {
         return { hw: Math.max(w, COLLAPSED_NS_MIN_WIDTH) / 2, hh: (COLLAPSED_NS_HEIGHT + NODE_PADDING_Y) / 2 };
     }
-    return { hw: w / 2, hh: (38 + NODE_PADDING_Y) / 2 };
+    const hh = (38 + NODE_PADDING_Y) / 2;
+    // A pill is a rect with rx = hh. Narrower than a circle, SVG clamps rx to the half width and
+    // draws an ellipse, which nodeBoundary does not model. Keep a pill at least as wide as one.
+    return { hw: d.serviceOnly ? Math.max(w / 2, hh) : w / 2, hh };
 }
 
 export function nodeBoundary(d: D3Node, tx: number, ty: number, gap: number): [number, number] {

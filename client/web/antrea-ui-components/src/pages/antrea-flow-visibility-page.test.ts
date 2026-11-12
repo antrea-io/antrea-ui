@@ -3031,6 +3031,20 @@ describe('AntreaFlowVisibilityPage — collapsed peers in the service map', () =
         expect(Number(workload.getAttribute('rx'))).toBeLessThan(Number(workload.getAttribute('height')) / 2);
     });
 
+    test('a service-only node with a very short name is still drawn as a pill, not an ellipse', async () => {
+        const { page } = await graphFor([
+            makeFlow({ dstNs: 'ns', dstPod: 'server-xyz34', destService: 'ns/a:http' }),
+        ]);
+
+        const rect = Array.from(page.shadowRoot!.querySelectorAll('#graph-svg g'))
+            .find(g => g.querySelector('rect') && g.querySelector('text')?.textContent === 'a')!
+            .querySelector('rect')!;
+        const [width, height, rx] = ['width', 'height', 'rx'].map(a => Number(rect.getAttribute(a)));
+        // SVG clamps rx to half the width, so a rect narrower than it is tall is an ellipse.
+        expect(rx).toBeLessThanOrEqual(width / 2);
+        expect(rx).toBe(height / 2);
+    });
+
     test('the legend names the node shapes', async () => {
         const { page } = await graphFor([makeFlow()]);
 
@@ -3465,7 +3479,9 @@ describe('nodeBoundary', () => {
     });
 
     test('a Service-only node ends an edge on its flat side where the pill is flat', () => {
-        const [x, y] = nodeBoundary(node(true), 0, 100, 0);
-        expect([x, y]).toEqual([0, 23]);
+        // Aimed slightly off the vertical, so that the ray reaches the box inside the flat side.
+        // Applying the semicircle there would end the edge at y of about 22.46, inside the side.
+        const [, y] = nodeBoundary(node(true), 2, 100, 0);
+        expect(y).toBeCloseTo(23, 5);
     });
 });
