@@ -834,7 +834,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
             border-radius: 4px; color: var(--antrea-color-map-legend-text, #adbbc4);
         }
         .map-control-btn:hover:not(:disabled):not([aria-disabled="true"]) { color: var(--antrea-color-text, #e9ecef); }
-        .map-control-btn:focus-visible { outline: 2px solid var(--antrea-color-primary, #0072a3); outline-offset: 1px; }
+        .map-control-btn:focus-visible { outline: 2px solid var(--antrea-color-primary, #0079b8); outline-offset: 1px; }
         .map-control-btn:disabled, .map-control-btn[aria-disabled="true"] { opacity: 0.4; cursor: not-allowed; }
         .map-legend-title { font-weight: 600; margin-bottom: 2px; }
         .legend-row { display: flex; align-items: center; gap: 6px; }

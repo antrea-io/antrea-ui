@@ -1542,19 +1542,9 @@ describe('AntreaFlowVisibilityPage — service map zoom controls', () => {
         page.shadowRoot!.querySelector<SVGGElement>('#graph-svg > g')!;
     const scaleOf = (g: SVGGElement) => Number(/scale\(([^)]+)\)/.exec(g.getAttribute('transform') ?? '')?.[1]);
 
-    // jsdom does no SVG layout: d3-zoom reads the viewport from svg.width.baseVal, and the
-    // content bounds come from getBBox. Supply both from the element's attributes.
-    beforeEach(() => {
-        for (const name of ['width', 'height'] as const) {
-            Object.defineProperty(SVGSVGElement.prototype, name, {
-                configurable: true,
-                get(this: SVGSVGElement) { return { baseVal: { value: Number(this.getAttribute(name)) } }; },
-            });
-        }
-    });
+    // jsdom does no SVG layout, so the fit tests assign getBBox themselves: it is what the
+    // component reads for the bounds of the content. Remove it again so no other test sees it.
     afterEach(() => {
-        delete (SVGSVGElement.prototype as { width?: unknown }).width;
-        delete (SVGSVGElement.prototype as { height?: unknown }).height;
         delete (SVGGraphicsElement.prototype as { getBBox?: unknown }).getBBox;
     });
 
