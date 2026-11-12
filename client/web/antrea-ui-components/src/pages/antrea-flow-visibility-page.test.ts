@@ -17,8 +17,8 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import './antrea-flow-visibility-page';
 import { SCOPE_CHANGE_EVENT, SCOPE_CHOSEN_EVENT } from '../lib/namespace-scope';
 import type { ScopeChangeDetail, ScopeChosenDetail } from '../lib/namespace-scope';
-import type { AntreaFlowVisibilityPage } from './antrea-flow-visibility-page';
-import { searchFilterOptions, typedNamespace, typedPod, typedService } from './antrea-flow-visibility-page';
+import type { AntreaFlowVisibilityPage, D3Node } from './antrea-flow-visibility-page';
+import { nodeBoundary, searchFilterOptions, typedNamespace, typedPod, typedService } from './antrea-flow-visibility-page';
 import { FLOW_QUERY_STATE_EVENT } from '../lib/flow-stream';
 import type { FlowQuery, FlowQueryStateDetail, FlowStreamFilter } from '../lib/flow-stream';
 import { resetAccessSummary } from '../lib/access-api';
@@ -2800,7 +2800,7 @@ describe('AntreaFlowVisibilityPage — disclosure in the flow list', () => {
 // The service map's two collapsed forms. antrea-ui redacts nothing itself; these are renderings
 // of the disclosure markers the Flow Aggregator put on each record.
 describe('AntreaFlowVisibilityPage — collapsed peers in the service map', () => {
-    interface TestNode { id: string; shortName: string; namespace: string; kind: string; detail: string }
+    interface TestNode { id: string; shortName: string; namespace: string; kind: string; detail: string; serviceOnly: boolean }
     interface TestEdge { source: string; target: string; connectionCount: number; totalBytesForward: number }
     interface TestGraph { nodes: TestNode[]; edges: TestEdge[] }
 
@@ -2985,6 +2985,101 @@ describe('AntreaFlowVisibilityPage — collapsed peers in the service map', () =
         ]);
 
         expect(graph.nodes.find(n => n.id === 'ns-b/xsvc')).toMatchObject({ namespace: 'ns-b', detail: 'ns-b' });
+    });
+
+    // The node a Service names is the Service alone only while nothing else reached it as a
+    // workload: that is what the pill shape tells the reader.
+    test('a node that is only ever a destination Service is service-only', async () => {
+        const { graph } = await graphFor([
+            makeFlow({ dstNs: 'ns-b', dstPod: 'server-xyz34', destService: 'ns-b/xsvc:http' }),
+        ]);
+
+        expect(graph.nodes.find(n => n.id === 'ns-b/xsvc')?.serviceOnly).toBe(true);
+        expect(graph.nodes.find(n => n.id === 'default/client')?.serviceOnly).toBe(false);
+    });
+
+    test('a Service node that also sends traffic is not service-only', async () => {
+        const { graph } = await graphFor([
+            makeFlow({ dstNs: 'ns-b', dstPod: 'server-xyz34', destService: 'ns-b/xsvc:http' }),
+            makeFlow({ srcNs: 'ns-b', srcPod: 'xsvc-abc12', srcIP: '10.0.0.9', dstPod: 'other-xyz34' }),
+        ]);
+
+        expect(graph.nodes.filter(n => n.id === 'ns-b/xsvc')).toHaveLength(1);
+        expect(graph.nodes.find(n => n.id === 'ns-b/xsvc')?.serviceOnly).toBe(false);
+    });
+
+    test('a Service node that a flow reaches without the Service is not service-only', async () => {
+        const { graph } = await graphFor([
+            makeFlow({ dstNs: 'ns-b', dstPod: 'server-xyz34', destService: 'ns-b/xsvc:http' }),
+            makeFlow({ dstNs: 'ns-b', dstPod: 'xsvc-abc12', dstIP: '10.1.0.9' }),
+        ]);
+
+        expect(graph.nodes.find(n => n.id === 'ns-b/xsvc')?.serviceOnly).toBe(false);
+    });
+
+    test('a service-only node is drawn as a pill and a workload as a rounded rectangle', async () => {
+        const { page } = await graphFor([
+            makeFlow({ dstNs: 'ns-b', dstPod: 'server-xyz34', destService: 'ns-b/xsvc:http' }),
+        ]);
+
+        const rect = (name: string) => Array.from(page.shadowRoot!.querySelectorAll('#graph-svg g'))
+            .find(g => g.querySelector('rect') && g.querySelector('text')?.textContent === name)
+            ?.querySelector('rect');
+        const service = rect('xsvc')!;
+        expect(Number(service.getAttribute('rx'))).toBe(Number(service.getAttribute('height')) / 2);
+        const workload = rect('client')!;
+        expect(Number(workload.getAttribute('rx'))).toBeLessThan(Number(workload.getAttribute('height')) / 2);
+    });
+
+    test('a service-only node with a very short name is still drawn as a pill, not an ellipse', async () => {
+        const { page } = await graphFor([
+            makeFlow({ dstNs: 'ns', dstPod: 'server-xyz34', destService: 'ns/a:http' }),
+        ]);
+
+        const rect = Array.from(page.shadowRoot!.querySelectorAll('#graph-svg g'))
+            .find(g => g.querySelector('rect') && g.querySelector('text')?.textContent === 'a')!
+            .querySelector('rect')!;
+        const [width, height, rx] = ['width', 'height', 'rx'].map(a => Number(rect.getAttribute(a)));
+        // SVG clamps rx to half the width, so a rect narrower than it is tall is an ellipse.
+        expect(rx).toBeLessThanOrEqual(width / 2);
+        expect(rx).toBe(height / 2);
+    });
+
+    test('the legend names the node shapes', async () => {
+        const { page } = await graphFor([makeFlow()]);
+
+        const rows = Array.from(page.shadowRoot!.querySelectorAll('.map-legend .legend-row'))
+            .map(r => r.textContent?.trim());
+        expect(rows).toEqual(expect.arrayContaining(['Service (destination only)', 'Workload', 'External', 'Undisclosed (in cluster)']));
+    });
+
+    // The node and the edge are the same before and after: the second flow reaches the same node
+    // without the Service, so only its shape says it stopped being the Service alone.
+    test('the shape follows a Service node that stops being service-only', async () => {
+        const encoder = new TextEncoder();
+        let controller!: ReadableStreamDefaultController<Uint8Array>;
+        const stream = new ReadableStream<Uint8Array>({ start(c) { controller = c; } });
+        const page = await mount(async () => new Response(stream, { status: 200 }));
+        controller.enqueue(encoder.encode(flowEventChunk([
+            makeFlow({ dstNs: 'ns-b', dstPod: 'server-xyz34', destService: 'ns-b/xsvc:http' }),
+        ])));
+        await vi.advanceTimersByTimeAsync(1000);
+        page.viewMode = 'map';
+        await page.updateComplete;
+        const rx = () => Array.from(page.shadowRoot!.querySelectorAll('#graph-svg g'))
+            .find(g => g.querySelector('rect') && g.querySelector('text')?.textContent === 'xsvc')
+            ?.querySelector('rect')?.getAttribute('rx');
+        const pill = rx();
+
+        controller.enqueue(encoder.encode(flowEventChunk([
+            makeFlow({ dstNs: 'ns-b', dstPod: 'xsvc-abc12', dstIP: '10.1.0.9', srcIP: '10.0.0.9' }),
+        ])));
+        await vi.advanceTimersByTimeAsync(1000);
+        await page.updateComplete;
+
+        expect(pill).toBeDefined();
+        expect(rx()).toBe('8');
+        expect(rx()).not.toBe(pill);
     });
 
     // A destination outside the Pod network is exported as To External, but the Service the
@@ -3367,5 +3462,26 @@ describe('flow query state event', () => {
         vi.mocked(fetch).mockImplementation(async () => sseResponse([]));
         await setQuery(page, undefined);
         expect(seen.at(-1)).toEqual({ state: 'idle', snapshotCount: 0, maxCount: 0, truncated: false, evicted: false, droppedCount: 0 });
+    });
+});
+
+describe('nodeBoundary', () => {
+    const node = (serviceOnly: boolean): D3Node =>
+        ({ id: 'n', shortName: 'xsvc', namespace: 'ns', kind: 'workload', detail: 'ns', serviceOnly, x: 0, y: 0 });
+
+    test('a Service-only node ends an edge on its curved end, a workload on its corner', () => {
+        // Aimed at the bounding box's corner, where the pill is curved and the rectangle is not.
+        // hw = 28.4, hh = 23, so the pill's end is a semicircle of radius 23 centred at x = 5.4.
+        const [px, py] = nodeBoundary(node(true), 28.4, 23, 0);
+        expect(Math.hypot(px - 5.4, py)).toBeCloseTo(23, 5);
+        const [wx, wy] = nodeBoundary(node(false), 28.4, 23, 0);
+        expect([wx, wy]).toEqual([28.4, 23]);
+    });
+
+    test('a Service-only node ends an edge on its flat side where the pill is flat', () => {
+        // Aimed slightly off the vertical, so that the ray reaches the box inside the flat side.
+        // Applying the semicircle there would end the edge at y of about 22.46, inside the side.
+        const [, y] = nodeBoundary(node(true), 2, 100, 0);
+        expect(y).toBeCloseTo(23, 5);
     });
 });

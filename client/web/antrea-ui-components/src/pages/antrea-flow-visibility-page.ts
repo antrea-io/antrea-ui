@@ -272,6 +272,11 @@ interface WorkloadNode {
      * distinct peer addresses behind it - a count that leaks nothing, since those addresses are
      * already in the records the client holds (addresses are kept at the Flow tier). */
     detail: string;
+    /** Whether every end that produced this node was a destination Service, and none was a
+     * workload: it was never the source of a flow, nor a destination reached without a Service.
+     * Such a node stands for the Service alone and is drawn in its own shape. A Service whose
+     * name matches a workload that does appear is one node, and so is not service-only. */
+    serviceOnly: boolean;
     /** Distinct peer addresses collapsed into this node, which `detail` is derived from once the
      * graph is complete. Deliberately not a workload or Pod count: it is a lower bound, it
      * over-counts a Pod that restarted with a new address, and for a host-network Pod it is a
@@ -304,7 +309,7 @@ interface GraphData { nodes: WorkloadNode[]; edges: WorkloadEdge[]; edgeMap: Map
  * the other end's, so the two have to be described before either is resolved. */
 type EndpointDesc =
     | { kind: 'external' }
-    | { kind: 'workload'; id: string; namespace: string; shortName: string }
+    | { kind: 'workload'; id: string; namespace: string; shortName: string; viaService?: boolean }
     | { kind: 'undisclosedNamespace'; namespace: string; address: string }
     | { kind: 'undisclosed'; address: string };
 
@@ -321,7 +326,7 @@ function describeEndpoint(flow: Flow, side: 'source' | 'destination'): EndpointD
     const svcKey = !isSource && k8s.destinationServicePortName
         ? destinationK8sServiceFilterKey(k8s.destinationServicePortName) : '';
     if (svcKey) {
-        return { kind: 'workload', id: svcKey, namespace: svcKey.split('/')[0], shortName: workloadShortName(svcKey) };
+        return { kind: 'workload', id: svcKey, namespace: svcKey.split('/')[0], shortName: workloadShortName(svcKey), viaService: true };
     }
     if (isSource ? flowType === FlowType.FromExternal : flowType === FlowType.ToExternal) {
         return { kind: 'external' };
@@ -378,13 +383,13 @@ function collapsedNodeId(desc: EndpointDesc, counterpartId: string | null): stri
 function nodeFor(desc: EndpointDesc, id: string): WorkloadNode {
     switch (desc.kind) {
         case 'external':
-            return { id, shortName: 'External', namespace: '', kind: 'external', detail: '' };
+            return { id, shortName: 'External', namespace: '', kind: 'external', detail: '', serviceOnly: false };
         case 'workload':
-            return { id, shortName: desc.shortName, namespace: desc.namespace, kind: 'workload', detail: desc.namespace };
+            return { id, shortName: desc.shortName, namespace: desc.namespace, kind: 'workload', detail: desc.namespace, serviceOnly: false };
         case 'undisclosedNamespace':
-            return { id, shortName: desc.namespace, namespace: desc.namespace, kind: 'undisclosedNamespace', detail: '', addresses: new Set() };
+            return { id, shortName: desc.namespace, namespace: desc.namespace, kind: 'undisclosedNamespace', detail: '', serviceOnly: false, addresses: new Set() };
         case 'undisclosed':
-            return { id, shortName: 'undisclosed', namespace: '', kind: 'undisclosed', detail: '', addresses: new Set() };
+            return { id, shortName: 'undisclosed', namespace: '', kind: 'undisclosed', detail: '', serviceOnly: false, addresses: new Set() };
     }
 }
 
@@ -399,6 +404,8 @@ function addressesLabel(addresses: Set<string>): string {
 function buildGraph(entries: FlowEntry[]): GraphData {
     const nodeMap = new Map<string, WorkloadNode>();
     const edgeMap = new Map<string, WorkloadEdge>();
+    // Ids that some end reached as a workload rather than through a destination Service.
+    const workloadIds = new Set<string>();
     for (const entry of entries) {
         const { flow } = entry;
         const flowType = flow.k8s.flowType as FlowType;
@@ -415,6 +422,7 @@ function buildGraph(entries: FlowEntry[]): GraphData {
         for (const [id, desc] of [[srcId, srcDesc], [dstId, dstDesc]] as [string, EndpointDesc][]) {
             let node = nodeMap.get(id);
             if (!node) { node = nodeFor(desc, id); nodeMap.set(id, node); }
+            if (desc.kind === 'workload' && !desc.viaService) workloadIds.add(id);
             if (node.addresses) {
                 const address = desc.kind === 'undisclosedNamespace' || desc.kind === 'undisclosed' ? desc.address : '';
                 if (address) node.addresses.add(address);
@@ -461,6 +469,7 @@ function buildGraph(entries: FlowEntry[]): GraphData {
         edge.flowTypes.add(flowType);
     }
     for (const node of nodeMap.values()) {
+        node.serviceOnly = node.kind === 'workload' && !workloadIds.has(node.id);
         if (node.addresses) node.detail = addressesLabel(node.addresses);
     }
     return { nodes: Array.from(nodeMap.values()), edges: Array.from(edgeMap.values()), edgeMap, nodeMap };
@@ -568,7 +577,7 @@ function edgeLabel(edge: WorkloadEdge): string {
 
 // ── D3 node geometry ─────────────────────────────────────────────────────────
 
-interface D3Node extends d3.SimulationNodeDatum { id: string; shortName: string; namespace: string; kind: NodeKind; detail: string; }
+export interface D3Node extends d3.SimulationNodeDatum { id: string; shortName: string; namespace: string; kind: NodeKind; detail: string; serviceOnly: boolean; }
 
 /** Whether this node is drawn as a diamond: an aggregate of unbounded cardinality with no
  * namespace, excluded from the hulls and not drillable. `undisclosed` reuses External's shape
@@ -608,10 +617,13 @@ function nodeHalfSize(d: D3Node): { hw: number; hh: number } {
     if (d.kind === 'undisclosedNamespace') {
         return { hw: Math.max(w, COLLAPSED_NS_MIN_WIDTH) / 2, hh: (COLLAPSED_NS_HEIGHT + NODE_PADDING_Y) / 2 };
     }
-    return { hw: w / 2, hh: (38 + NODE_PADDING_Y) / 2 };
+    const hh = (38 + NODE_PADDING_Y) / 2;
+    // A pill is a rect with rx = hh. Narrower than a circle, SVG clamps rx to the half width and
+    // draws an ellipse, which nodeBoundary does not model. Keep a pill at least as wide as one.
+    return { hw: d.serviceOnly ? Math.max(w / 2, hh) : w / 2, hh };
 }
 
-function nodeBoundary(d: D3Node, tx: number, ty: number, gap: number): [number, number] {
+export function nodeBoundary(d: D3Node, tx: number, ty: number, gap: number): [number, number] {
     const cx = d.x ?? 0; const cy = d.y ?? 0;
     const dx = tx - cx; const dy = ty - cy;
     const len = Math.sqrt(dx * dx + dy * dy) || 1;
@@ -621,6 +633,16 @@ function nodeBoundary(d: D3Node, tx: number, ty: number, gap: number): [number, 
     if (isDiamond(d)) scale = hw / (Math.abs(ux) + Math.abs(uy));
     else if (Math.abs(ux) * hh > Math.abs(uy) * hw) scale = hw / Math.abs(ux);
     else scale = hh / Math.abs(uy);
+    if (d.serviceOnly) {
+        // A pill's ends are semicircles of radius hh centred at (+/-ex, 0). Where the ray
+        // crosses the bounding box beyond that centre it would stop short of the curve, so
+        // leave through the semicircle instead.
+        const ex = Math.sign(ux) * Math.max(hw - hh, 0);
+        if (Math.abs(ux * scale) > Math.abs(ex)) {
+            const proj = ux * ex;
+            scale = proj + Math.sqrt(proj * proj - ex * ex + hh * hh);
+        }
+    }
     return [cx + ux * (scale + gap), cy + uy * (scale + gap)];
 }
 
@@ -1507,7 +1529,11 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
 
         // A collapsed node's label counts the peer addresses behind it, which can change while
         // its id does not, so the label is part of the key or the drawn count would go stale.
-        const nodeIds = graph.nodes.map(n => n.addresses ? `${n.id}=${n.detail}` : n.id).sort().join(',');
+        // So is whether a node is service-only: it picks the shape, and a flow can turn a
+        // Service node into a workload one with neither the node nor any edge changing.
+        const nodeIds = graph.nodes
+            .map(n => n.addresses ? `${n.id}=${n.detail}` : n.serviceOnly ? `${n.id}:service` : n.id)
+            .sort().join(',');
         const edgeIds = graph.edges.map(e => `${e.source}|${e.target}`).sort().join(',');
         const topologyKey = `${nodeIds}::${edgeIds}::${this._svgWidth}`;
 
@@ -1697,7 +1723,11 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
                 g.attr('role', 'img').attr('aria-label', collapsedNamespaceTooltip(d.shortName));
                 return;
             }
-            g.append('rect').attr('x', -hw).attr('y', -hh).attr('width', hw * 2).attr('height', hh * 2).attr('rx', NODE_RX).attr('ry', NODE_RX).style('fill', MAP_COLOR_VAR.nodeFill).style('stroke', MAP_COLOR_VAR.nodeStroke).attr('stroke-width', 1.5);
+            // A node that is only ever a destination Service is a pill, where a workload is a
+            // rounded rectangle. Same bounding box, so collision and hulls need no case; edges get
+            // one in nodeBoundary, because they end on the curve.
+            const rx = d.serviceOnly ? hh : NODE_RX;
+            g.append('rect').attr('x', -hw).attr('y', -hh).attr('width', hw * 2).attr('height', hh * 2).attr('rx', rx).attr('ry', rx).style('fill', MAP_COLOR_VAR.nodeFill).style('stroke', MAP_COLOR_VAR.nodeStroke).attr('stroke-width', 1.5);
             g.append('text').text(d.shortName).attr('dy', -3).attr('text-anchor', 'middle').style('fill', MAP_COLOR_VAR.nodeText).attr('font-size', '12px').attr('font-weight', '600');
             g.append('text').text(d.detail).attr('dy', 13).attr('text-anchor', 'middle').style('fill', MAP_COLOR_VAR.nodeNamespaceText).attr('font-size', '9px');
         });
@@ -2131,6 +2161,10 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
                     <div class="legend-row"><svg width="24" height="6"><line x1="0" y1="3" x2="24" y2="3" style="stroke:${EDGE_COLOR_VAR.allow}" stroke-width="2"/></svg><span>Allow</span></div>
                     <div class="legend-row"><svg width="24" height="6"><line x1="0" y1="3" x2="24" y2="3" style="stroke:${EDGE_COLOR_VAR.drop}" stroke-width="2"/></svg><span>Drop / Reject</span></div>
                     <div class="legend-row"><svg width="24" height="6"><line x1="0" y1="3" x2="24" y2="3" style="stroke:${EDGE_COLOR_VAR.default}" stroke-width="2"/></svg><span>No policy</span></div>
+                    <div class="legend-row"><svg width="24" height="14"><rect x="1" y="1" width="22" height="12" rx="6" ry="6" style="fill:${MAP_COLOR_VAR.nodeFill};stroke:${MAP_COLOR_VAR.nodeStroke}" stroke-width="1.5"/></svg><span>Service (destination only)</span></div>
+                    <div class="legend-row"><svg width="24" height="14"><rect x="1" y="1" width="22" height="12" rx="3" ry="3" style="fill:${MAP_COLOR_VAR.nodeFill};stroke:${MAP_COLOR_VAR.nodeStroke}" stroke-width="1.5"/></svg><span>Workload</span></div>
+                    <div class="legend-row"><svg width="24" height="14"><polygon points="12,1 23,7 12,13 1,7" style="fill:${MAP_COLOR_VAR.externalFill};stroke:${MAP_COLOR_VAR.externalStroke}" stroke-width="1.5"/></svg><span>External</span></div>
+                    <div class="legend-row"><svg width="24" height="14"><polygon points="12,1 23,7 12,13 1,7" style="fill:${MAP_COLOR_VAR.undisclosedFill};stroke:${MAP_COLOR_VAR.undisclosedStroke}" stroke-width="1.5"/></svg><span>Undisclosed (in cluster)</span></div>
                     <div style="margin-top:2px;color:var(--antrea-color-text-muted, #8899a4)">Line thickness = connection count</div>
                 </div>
                 ${this._renderEdgeDetails()}
