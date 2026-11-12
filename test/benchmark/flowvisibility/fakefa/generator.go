@@ -44,29 +44,24 @@ const (
 // conn is one connection of the synthetic cluster. Exactly one of src and srcIP, and of dst and
 // dstIP, is set: the Pod for an in-cluster endpoint, the address for an external one.
 type conn struct {
-	id       string
-	src, dst *pod
-	// srcGen/dstGen are the generations of src/dst the connection was opened against: a Pod
-	// replaced since then ends the connection.
-	srcGen, dstGen int
-	srcIP, dstIP   netip.Addr
-	svc            *service
-	srcPort        uint32
-	dstPort        uint32
-	policies       edgePolicies
-	start          time.Time
-	lastExport     time.Time
+	id           string
+	src, dst     *pod
+	srcIP, dstIP netip.Addr
+	svc          *service
+	srcPort      uint32
+	dstPort      uint32
+	policies     edgePolicies
+	start        time.Time
+	lastExport   time.Time
 	// Bytes per second in each direction, and the cumulative counts as of lastExport.
 	fwdRate, revRate   float64
 	fwdBytes, revBytes uint64
 	dead               bool
-	// reconnected is set once the client of a connection whose server was replaced has opened
-	// a new one, so that a server replaced twice does not get reconnected to twice.
-	reconnected bool
 }
 
+// stale reports whether one end of c was replaced, which ends the connection.
 func (c *conn) stale() bool {
-	return (c.src != nil && c.src.generation != c.srcGen) || (c.dst != nil && c.dst.generation != c.dstGen)
+	return (c.src != nil && c.src.replaced) || (c.dst != nil && c.dst.replaced)
 }
 
 // Generator produces the flow records of a synthetic cluster into a ring buffer, in real time.
@@ -200,8 +195,8 @@ func (g *Generator) newConn(at time.Time) *conn {
 func (g *Generator) newServiceConn(src *pod, peer *workload, at time.Time) *conn {
 	c := g.newConn(at)
 	dst := peer.pods[g.r.IntN(len(peer.pods))]
-	c.src, c.srcGen = src, src.generation
-	c.dst, c.dstGen = dst, dst.generation
+	c.src = src
+	c.dst = dst
 	c.svc = peer.svc
 	c.dstPort = peer.svc.targetPort
 	c.policies = g.cluster.policies[[2]*workload{src.workload, peer}]
@@ -210,7 +205,7 @@ func (g *Generator) newServiceConn(src *pod, peer *workload, at time.Time) *conn
 
 func (g *Generator) newExternalEgressConn(src *pod, at time.Time) *conn {
 	c := g.newConn(at)
-	c.src, c.srcGen = src, src.generation
+	c.src = src
 	c.dstIP = g.cluster.externalIPs[g.r.IntN(len(g.cluster.externalIPs))]
 	c.dstPort = 443
 	return c
@@ -219,7 +214,7 @@ func (g *Generator) newExternalEgressConn(src *pod, at time.Time) *conn {
 func (g *Generator) newExternalIngressConn(dst *pod, at time.Time) *conn {
 	c := g.newConn(at)
 	c.srcIP = g.cluster.externalIPs[g.r.IntN(len(g.cluster.externalIPs))]
-	c.dst, c.dstGen = dst, dst.generation
+	c.dst = dst
 	c.svc = dst.workload.svc
 	c.dstPort = dst.workload.svc.targetPort
 	return c
@@ -285,21 +280,20 @@ func (g *Generator) newShortConn(now time.Time) *conn {
 // IP. Its connections are reported as ended the next time they are due (see step); the
 // replacement opens fresh ones, and the Pods that were its clients reconnect to it.
 func (g *Generator) replaceRandomPod(now time.Time) {
-	p := g.cluster.pods[g.r.IntN(len(g.cluster.pods))]
-	g.cluster.respawnPod(p, g.r)
+	i := g.r.IntN(len(g.cluster.pods))
+	old := g.cluster.pods[i]
+	p := g.cluster.replacePod(i, g.r)
 	g.openClientConnections(p, now, false)
 	if p.workload.externalIngress {
 		g.addLongLived(g.newExternalIngressConn(p, now), false)
 	}
-	// Clients of p's workload whose connection is now stale reconnect to a random backend. They
-	// are found by scanning the wheel, which is cheap next to the rate at which Pods churn. A
-	// client replaced since it opened the connection is skipped: its replacement opened its own.
+	// Clients of the old Pod reconnect to a random backend of its workload. They are found by
+	// scanning the wheel, which is cheap next to the rate at which Pods churn. A client replaced
+	// since it opened the connection is skipped: its replacement opened its own.
 	var reconnect []*conn
 	for _, slot := range g.wheel {
 		for _, c := range slot {
-			if !c.dead && !c.reconnected && c.dst == p && c.src != nil && c.dstGen != p.generation &&
-				c.src.generation == c.srcGen {
-				c.reconnected = true
+			if !c.dead && c.dst == old && c.src != nil && !c.src.replaced {
 				reconnect = append(reconnect, c)
 			}
 		}
@@ -454,6 +448,13 @@ func (r *ring) oldest() int64 {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return max(0, r.next-int64(len(r.buf)))
+}
+
+// nextSequence returns the sequence number the next record appended will get.
+func (r *ring) nextSequence() int64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.next
 }
 
 // read returns up to maxCount records starting at sequence number from, the sequence number to

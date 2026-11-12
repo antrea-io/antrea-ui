@@ -117,7 +117,12 @@ func (s *scaleFlags) addFlags(fs *pflag.FlagSet, multi bool) {
 func (s *scaleFlags) resolve() ([]string, []fakefa.Scale, error) {
 	var names []string
 	var scales []fakefa.Scale
-	for _, p := range s.presets {
+	for i, p := range s.presets {
+		// A scale given twice would be measured with the backend and fakefa that served it the
+		// first time, and its results would overwrite the first ones.
+		if slices.Contains(s.presets[:i], p) {
+			return nil, nil, fmt.Errorf("scale preset %q given twice", p)
+		}
 		scale, ok := fakefa.Presets[p]
 		if !ok {
 			return nil, nil, fmt.Errorf("unknown scale preset %q", p)
@@ -302,9 +307,9 @@ Log in with this token (valid 24h, cluster-admin):
 %s
 
 Service map: %s/flows/map?namespace=_all
-To reach it from another machine: kubectl%s port-forward --address 0.0.0.0 -n %s svc/%s 3000:3000
+To reach it from another machine: kubectl%s port-forward --address 0.0.0.0 -n %s svc/antrea-ui 3000:3000
 
-`, url, token, url, kubectlContextFlag(o.context), o.uiNamespace, o.uiRelease)
+`, url, token, url, kubectlContextFlag(o.context), o.uiNamespace)
 	return nil
 }
 

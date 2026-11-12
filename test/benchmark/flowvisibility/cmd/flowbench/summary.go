@@ -98,22 +98,21 @@ var metricOrder = []metricDef{
 
 // pageSample is the subset of a browser/run.mjs sample the summary uses.
 type pageSample struct {
-	DT             float64  `json:"dt"`
-	MainThreadBusy float64  `json:"mainThreadBusy"`
-	ScriptBusy     float64  `json:"scriptBusy"`
-	LayoutBusy     float64  `json:"layoutBusy"`
-	StyleBusy      float64  `json:"styleBusy"`
-	JSHeapUsed     float64  `json:"jsHeapUsed"`
-	DOMNodes       float64  `json:"domNodes"`
-	FPS            float64  `json:"fps"`
-	LongTaskCount  float64  `json:"longTaskCount"`
-	LongTaskMaxMs  float64  `json:"longTaskMaxMs"`
-	MaxFrameGapMs  float64  `json:"maxFrameGapMs"`
-	MaxLoopLagMs   float64  `json:"maxLoopLagMs"`
-	MapNodes       float64  `json:"mapNodes"`
-	MapEdges       float64  `json:"mapEdges"`
-	SVGElements    float64  `json:"svgElements"`
-	StoreEntries   *float64 `json:"storeEntries"`
+	MainThreadBusy  float64  `json:"mainThreadBusy"`
+	ScriptBusy      float64  `json:"scriptBusy"`
+	LayoutBusy      float64  `json:"layoutBusy"`
+	StyleBusy       float64  `json:"styleBusy"`
+	JSHeapUsed      float64  `json:"jsHeapUsed"`
+	DOMNodes        float64  `json:"domNodes"`
+	FPS             float64  `json:"fps"`
+	LongTasksPerSec float64  `json:"longTasksPerSec"`
+	LongTaskMaxMs   float64  `json:"longTaskMaxMs"`
+	MaxFrameGapMs   float64  `json:"maxFrameGapMs"`
+	MaxLoopLagMs    float64  `json:"maxLoopLagMs"`
+	MapNodes        float64  `json:"mapNodes"`
+	MapEdges        float64  `json:"mapEdges"`
+	SVGElements     float64  `json:"svgElements"`
+	StoreEntries    *float64 `json:"storeEntries"`
 }
 
 func (s *summary) compute(host []hostSample, pageLines []json.RawMessage) {
@@ -132,7 +131,7 @@ func (s *summary) compute(host []hostSample, pageLines []json.RawMessage) {
 		add("jsHeapUsedMiB", p.JSHeapUsed/mib)
 		add("domNodes", p.DOMNodes)
 		add("fps", p.FPS)
-		add("longTasksPerSec", p.LongTaskCount/p.DT)
+		add("longTasksPerSec", p.LongTasksPerSec)
 		add("longTaskMaxMs", p.LongTaskMaxMs)
 		add("maxFrameGapMs", p.MaxFrameGapMs)
 		add("maxLoopLagMs", p.MaxLoopLagMs)
@@ -150,13 +149,18 @@ func (s *summary) compute(host []hostSample, pageLines []json.RawMessage) {
 		if dt <= 0 {
 			continue
 		}
+		// A counter that went backwards is a restart, of the backend or of fakefa: no rate is
+		// computed across it.
 		if prev.Backend != nil && cur.Backend != nil {
-			add("backendCPU", 100*(cur.Backend.CPUSeconds-prev.Backend.CPUSeconds)/dt)
+			if cur.Backend.CPUSeconds >= prev.Backend.CPUSeconds {
+				add("backendCPU", 100*(cur.Backend.CPUSeconds-prev.Backend.CPUSeconds)/dt)
+			}
 			add("backendRSSMiB", cur.Backend.RSSBytes/mib)
 			add("backendHeapMiB", cur.Backend.HeapInuse/mib)
 			add("backendGoroutines", cur.Backend.Goroutines)
 		}
-		if prev.FakeFA != nil && cur.FakeFA != nil {
+		if prev.FakeFA != nil && cur.FakeFA != nil &&
+			cur.FakeFA.RecordsSent >= prev.FakeFA.RecordsSent && cur.FakeFA.BytesSent >= prev.FakeFA.BytesSent {
 			add("flowsPerSec", float64(cur.FakeFA.RecordsSent-prev.FakeFA.RecordsSent)/dt)
 			add("streamMBps", float64(cur.FakeFA.BytesSent-prev.FakeFA.BytesSent)/dt/1e6)
 		}

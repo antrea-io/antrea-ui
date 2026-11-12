@@ -30,6 +30,7 @@ function instrument() {
         maxFrameGap: 0,
         lastFrame: 0,
         maxLoopLag: 0,
+        lastCollect: performance.now(),
         page: null,
     };
     window.__flowbench = s;
@@ -64,13 +65,16 @@ function instrument() {
         }
         return null;
     };
-    // Reads what is on screen, and resets the counters. The flow store's size is read from the
-    // page element's fields: private in TypeScript only, and read here, never written.
+    // Reads what is on screen, and resets the counters. pageDt is the time in seconds the counters
+    // cover. The flow store's size is read from the page element's fields: private in TypeScript
+    // only, and read here, never written.
     s.collect = () => {
+        const now = performance.now();
         if (!s.page || !s.page.isConnected) s.page = findDeep(document, 'antrea-flow-visibility-page');
         const p = s.page;
         const svg = p?.shadowRoot?.querySelector('#graph-svg');
         const out = {
+            pageDt: (now - s.lastCollect) / 1000,
             longTaskCount: s.longTasks.length,
             longTaskTotalMs: s.longTasks.reduce((a, b) => a + b, 0),
             longTaskMaxMs: s.longTasks.reduce((a, b) => Math.max(a, b), 0),
@@ -84,6 +88,7 @@ function instrument() {
             storeEntries: typeof p?._store?.size === 'function' ? p._store.size() : null,
             storeEvicted: typeof p?._store?.hasEvicted === 'function' ? p._store.hasEvicted() : null,
         };
+        s.lastCollect = now;
         s.longTasks = [];
         s.frames = 0;
         s.maxFrameGap = 0;
@@ -93,7 +98,7 @@ function instrument() {
 }
 
 const CDP_METRICS = [
-    'TaskDuration', 'ScriptDuration', 'LayoutDuration', 'RecalcStyleDuration',
+    'Timestamp', 'TaskDuration', 'ScriptDuration', 'LayoutDuration', 'RecalcStyleDuration',
     'JSHeapUsedSize', 'JSHeapTotalSize', 'Nodes', 'LayoutCount', 'RecalcStyleCount', 'JSEventListeners',
 ];
 
@@ -141,15 +146,15 @@ async function main() {
     // Samples are taken from the first render on. Those of the warmup are reported too, marked as
     // such, and tell how long the page took to settle: the first sample in which the main thread
     // was busy less than settleBusy of the time.
+    // Each source's rates are over its own interval: the CDP counters' between the Timestamps
+    // (in seconds) they come with, the page's between the collect() calls.
     await page.evaluate(() => window.__flowbench.collect());
     let prev = await cdpMetrics(cdp);
-    let prevT = Date.now();
     const sample = async (phase) => {
         await sleep((cfg.sampleIntervalSeconds ?? 2) * 1000);
-        const now = Date.now();
         const cur = await cdpMetrics(cdp);
         const pageStats = await page.evaluate(() => window.__flowbench.collect());
-        const dt = (now - prevT) / 1000;
+        const dt = cur.Timestamp - prev.Timestamp;
         const rate = (k) => (cur[k] - prev[k]) / dt;
         const s = {
             phase,
@@ -165,12 +170,12 @@ async function main() {
             jsHeapTotal: cur.JSHeapTotalSize,
             domNodes: cur.Nodes,
             jsEventListeners: cur.JSEventListeners,
-            fps: pageStats.frames / dt,
+            fps: pageStats.frames / pageStats.pageDt,
+            longTasksPerSec: pageStats.longTaskCount / pageStats.pageDt,
             ...pageStats,
         };
         emit('sample', s);
         prev = cur;
-        prevT = now;
         return s;
     };
 
@@ -186,24 +191,17 @@ async function main() {
     }
     emit('measure-start', { settled });
 
-    let tracing = false;
+    const end = Date.now() + (cfg.durationSeconds ?? 120) * 1000;
+    while (Date.now() < end) await sample('measure');
+    emit('done');
+
+    // The trace is recorded after the measurement, with the page under the same load, so that
+    // its overhead is in none of the summarized samples. Its own samples are reported, as
+    // "trace", to show that overhead.
     if (cfg.traceFile) {
         await browser.startTracing(page, { path: cfg.traceFile, screenshots: false });
-        tracing = true;
-    }
-    const end = Date.now() + (cfg.durationSeconds ?? 120) * 1000;
-    const traceEnd = Date.now() + (cfg.traceSeconds ?? 20) * 1000;
-    while (Date.now() < end) {
-        await sample('measure');
-        if (tracing && Date.now() >= traceEnd) {
-            await browser.stopTracing();
-            tracing = false;
-            emit('trace-written', { path: cfg.traceFile });
-        }
-    }
-    // Writing the trace and closing the browser are not part of the measurement.
-    emit('done');
-    if (tracing) {
+        const traceEnd = Date.now() + (cfg.traceSeconds ?? 20) * 1000;
+        while (Date.now() < traceEnd) await sample('trace');
         await browser.stopTracing();
         emit('trace-written', { path: cfg.traceFile });
     }

@@ -15,6 +15,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -30,6 +31,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -61,6 +63,10 @@ const (
 	faScaleConfig = "fakefa-scale"
 	faGRPCPort    = 14740
 	faStatsPort   = 8080
+	// flowStreamServiceLabel is set on the Flow Aggregator Service when its FlowStreamService is
+	// enabled (FlowStreamServiceLabelKey in Antrea's pkg/apis), for clients that discover it with a
+	// label selector. antrea-ui finds it by name instead.
+	flowStreamServiceLabel = "observability.antrea.io/flow-stream-service"
 
 	benchSA  = "flowbench"
 	benchCRB = "flowbench-cluster-admin"
@@ -86,6 +92,14 @@ type deployOptions struct {
 
 func deploy(ctx context.Context, o *deployOptions) error {
 	cs := o.clientset
+	exists, owned, err := uiReleaseOwnership(ctx, &o.cluster, o.uiNamespace, o.uiRelease)
+	if err != nil {
+		return err
+	}
+	if exists && !owned {
+		return fmt.Errorf("helm release %s/%s exists and flowbench did not install it: flowbench would replace it, "+
+			"use a cluster without antrea-ui", o.uiNamespace, o.uiRelease)
+	}
 	if err := ensureFakeFANamespace(ctx, cs); err != nil {
 		return err
 	}
@@ -121,7 +135,8 @@ func deploy(ctx context.Context, o *deployOptions) error {
 		return err
 	}
 	sum := sha256.Sum256(scaleJSON)
-	if err := apply(ctx, cs.AppsV1().Deployments(faNamespace), fakeFADeployment(o.fakeFAImage, hex.EncodeToString(sum[:8]))); err != nil {
+	scaleHash := hex.EncodeToString(sum[:8])
+	if err := apply(ctx, cs.AppsV1().Deployments(faNamespace), fakeFADeployment(o.fakeFAImage, scaleHash)); err != nil {
 		return err
 	}
 	if err := syncSyntheticNamespaces(ctx, cs, o.scale.Namespaces); err != nil {
@@ -134,7 +149,7 @@ func deploy(ctx context.Context, o *deployOptions) error {
 	if err := waitForDeployment(ctx, cs, faNamespace, faName); err != nil {
 		return err
 	}
-	if err := helmInstallUI(ctx, o); err != nil {
+	if err := helmInstallUI(ctx, o, scaleHash); err != nil {
 		return err
 	}
 	logf("Waiting for antrea-ui to be ready")
@@ -143,11 +158,20 @@ func deploy(ctx context.Context, o *deployOptions) error {
 
 func teardown(ctx context.Context, c *cluster, uiNamespace, uiRelease string) error {
 	cs := c.clientset
-	logf("Uninstalling Helm release %s/%s", uiNamespace, uiRelease)
-	// #nosec G204: helm, with arguments from flowbench's own flags
-	cmd := exec.CommandContext(ctx, "helm", append(c.helmArgs(), "uninstall", uiRelease, "-n", uiNamespace, "--ignore-not-found")...)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("helm uninstall failed: %w\n%s", err, out)
+	exists, owned, err := uiReleaseOwnership(ctx, c, uiNamespace, uiRelease)
+	switch {
+	case err != nil:
+		return err
+	case !exists:
+	case !owned:
+		logf("Keeping Helm release %s/%s: flowbench did not install it", uiNamespace, uiRelease)
+	default:
+		logf("Uninstalling Helm release %s/%s", uiNamespace, uiRelease)
+		// #nosec G204: helm, with arguments from flowbench's own flags
+		cmd := exec.CommandContext(ctx, "helm", append(c.helmArgs(), "uninstall", uiRelease, "-n", uiNamespace, "--ignore-not-found")...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("helm uninstall failed: %w\n%s", err, out)
+		}
 	}
 	if err := syncSyntheticNamespaces(ctx, cs, 0); err != nil {
 		return err
@@ -172,6 +196,29 @@ func teardown(ctx context.Context, c *cluster, uiNamespace, uiRelease string) er
 		return err
 	}
 	return nil
+}
+
+// uiReleaseOwnership reports whether the Helm release exists, and whether flowbench installed it:
+// helmInstallUI labels the release with partOfLabel.
+func uiReleaseOwnership(ctx context.Context, c *cluster, namespace, release string) (exists, owned bool, err error) {
+	// #nosec G204: helm, with arguments from flowbench's own flags
+	cmd := exec.CommandContext(ctx, "helm", append(c.helmArgs(), "get", "metadata", release, "-n", namespace, "-o", "json")...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		if strings.Contains(stderr.String(), "release: not found") {
+			return false, false, nil
+		}
+		return false, false, fmt.Errorf("helm get metadata failed: %w\n%s", err, stderr.Bytes())
+	}
+	var metadata struct {
+		Labels map[string]string `json:"labels"`
+	}
+	if err := json.Unmarshal(out, &metadata); err != nil {
+		return false, false, fmt.Errorf("failed to parse the metadata of Helm release %s/%s: %w", namespace, release, err)
+	}
+	return true, metadata.Labels[partOfLabel] == partOfValue, nil
 }
 
 // ensureFakeFANamespace creates the Namespace the fake Flow Aggregator runs in. It refuses one that
@@ -341,7 +388,10 @@ func generateCerts() (caPEM, certPEM, keyPEM []byte, err error) {
 
 func fakeFAService() *corev1.Service {
 	return &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{Name: faName, Labels: map[string]string{partOfLabel: partOfValue}},
+		ObjectMeta: metav1.ObjectMeta{Name: faName, Labels: map[string]string{
+			partOfLabel:            partOfValue,
+			flowStreamServiceLabel: "true",
+		}},
 		Spec: corev1.ServiceSpec{
 			Selector: map[string]string{"app": faName},
 			Ports: []corev1.ServicePort{
@@ -401,10 +451,15 @@ func fakeFADeployment(image, scaleHash string) *appsv1.Deployment {
 	}
 }
 
-func helmInstallUI(ctx context.Context, o *deployOptions) error {
+// helmInstallUI installs or upgrades antrea-ui. scaleHash goes into the Pod template, so that each
+// scale of a run is measured with a fresh backend rather than one that served the previous scale.
+func helmInstallUI(ctx context.Context, o *deployOptions, scaleHash string) error {
 	args := append(o.helmArgs(),
 		"upgrade", "--install", o.uiRelease, filepath.Join(o.repoRoot, "build/charts/antrea-ui"),
 		"-n", o.uiNamespace,
+		"--labels", partOfLabel+"="+partOfValue,
+		// --set-string, as a hash of digits only would otherwise be a number.
+		"--set-string", `podAnnotations.flowbench\.antrea\.io/scale-hash=`+scaleHash,
 		"--set", "flowAggregator.enabled=true",
 		"--set", "frontend.image.tag="+o.uiImageTag,
 		"--set", "backend.image.tag="+o.uiImageTag,

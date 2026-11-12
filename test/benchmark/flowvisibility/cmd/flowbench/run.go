@@ -59,7 +59,7 @@ func runRun(ctx context.Context, args []string) error {
 	fs.DurationVar(&o.duration, "duration", 2*time.Minute, "length of the measurement")
 	fs.DurationVar(&o.sampleInterval, "sample-interval", 2*time.Second, "interval between samples")
 	fs.StringVar(&o.resultsDir, "results", filepath.Join(o.repoRoot, "test/benchmark/flowvisibility/results"), "directory results are written under")
-	fs.IntVar(&o.traceSeconds, "trace-seconds", 0, "also record a Chrome performance trace of the first N seconds of the measurement (open it in DevTools' Performance panel)")
+	fs.IntVar(&o.traceSeconds, "trace-seconds", 0, "also record a Chrome performance trace of the N seconds after the measurement (open it in DevTools' Performance panel)")
 	fs.IntVar(&o.width, "width", 1600, "browser viewport width")
 	fs.IntVar(&o.height, "height", 1000, "browser viewport height")
 	fs.StringVar(&o.nodeBin, "node", "node", "Node.js binary")
@@ -231,7 +231,7 @@ func measure(ctx context.Context, o *runOptions, name, dir string) (*summary, er
 			sum.SettleSeconds = &settle
 			logf("Settled %.1fs after the first render", settle)
 		case "sample":
-			// Warmup samples are kept in the file, but only the measurement is summarized.
+			// Warmup and trace samples are kept in the file, but only the measurement is summarized.
 			if ev.Phase == "measure" {
 				pageLines = append(pageLines, line)
 			}

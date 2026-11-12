@@ -17,10 +17,12 @@ package fakefa
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"net/netip"
 	"slices"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -32,11 +34,10 @@ import (
 
 // Server implements FlowStreamService over a Generator's ring buffer.
 //
-// It follows the FlowStreamService contract where antrea-ui depends on it: exactly one scope per
-// request, a first response that carries a resume token with the stream epoch and no flows,
-// replay from the oldest record held, then follow mode. It does not authenticate or authorize the
-// caller, and discloses every endpoint in full, which is what a caller allowed to observe flows in
-// every Namespace would get.
+// It follows the FlowStreamService contract for what a request asks: exactly one scope, filters,
+// since, max_count, follow, and resume tokens, with dropped records reported. It does not
+// authenticate or authorize the caller, and discloses every endpoint in full, which is what a
+// caller allowed to observe flows in every Namespace would get.
 type Server struct {
 	flowpb.UnimplementedFlowStreamServiceServer
 	gen   *Generator
@@ -89,11 +90,21 @@ func (s *Server) GetFlows(req *flowpb.GetFlowsRequest, stream flowpb.FlowStreamS
 		return status.Error(codes.InvalidArgument, err.Error())
 	}
 
+	// The stream starts after the resume point, or at the oldest record held. A token from another
+	// epoch is treated as no token: the ring buffer it pointed into is gone. A resume point already
+	// evicted is reported as dropped by the first read.
+	ring := s.gen.ring
+	from := ring.oldest()
+	if t := req.Resume; t != nil && t.StreamEpoch == s.epoch {
+		if t.SequenceNumber < -1 || t.SequenceNumber >= ring.nextSequence() {
+			return status.Errorf(codes.InvalidArgument, "resume sequence_number %d was not issued by this server", t.SequenceNumber)
+		}
+		from = t.SequenceNumber + 1
+	}
+
 	s.streamsOpen.Add(1)
 	defer s.streamsOpen.Add(-1)
 
-	ring := s.gen.ring
-	from := ring.oldest()
 	if err := stream.Send(&flowpb.GetFlowsResponse{
 		ResumeToken: &flowpb.ResumeToken{StreamEpoch: s.epoch, SequenceNumber: from - 1},
 	}); err != nil {
@@ -101,16 +112,25 @@ func (s *Server) GetFlows(req *flowpb.GetFlowsRequest, stream flowpb.FlowStreamS
 	}
 
 	maxBatch := s.gen.scale.MaxBatchSize
+	maxCount := uint64(req.MaxCount)
 	var droppedTotal uint64
 	var sent uint64
 	for {
 		records, next, dropped, notify := ring.read(from, maxBatch)
+		first := next - int64(len(records))
 		from = next
 		droppedTotal += dropped
 		var out []*flowpb.Flow
-		for _, r := range records {
-			if m.match(r) {
-				out = append(out, r)
+		for i, r := range records {
+			if !m.match(r) {
+				continue
+			}
+			out = append(out, r)
+			if maxCount > 0 && sent+uint64(len(out)) == maxCount {
+				// The rest of the batch is not accounted for: the resume token stops at the last
+				// record sent.
+				from = first + int64(i) + 1
+				break
 			}
 		}
 		if len(out) > 0 || dropped > 0 {
@@ -126,6 +146,9 @@ func (s *Server) GetFlows(req *flowpb.GetFlowsRequest, stream flowpb.FlowStreamS
 			s.recordsSent.Add(uint64(len(out)))
 			s.bytesSent.Add(uint64(proto.Size(resp))) // #nosec G115: a size is never negative
 		}
+		if maxCount > 0 && sent >= maxCount {
+			return nil
+		}
 		if len(records) < maxBatch {
 			if !req.Follow {
 				return nil
@@ -136,15 +159,13 @@ func (s *Server) GetFlows(req *flowpb.GetFlowsRequest, stream flowpb.FlowStreamS
 			case <-notify:
 			}
 		}
-		if req.MaxCount > 0 && sent >= uint64(req.MaxCount) {
-			return nil
-		}
 	}
 }
 
 // matcher applies a request's scope and filters to a record.
 type matcher struct {
-	namespace string // the scope, or "" for cluster-wide
+	namespace string    // the scope, or "" for cluster-wide
+	since     time.Time // zero when unset
 	filters   []filter
 }
 
@@ -163,7 +184,13 @@ func newMatcher(req *flowpb.GetFlowsRequest) (*matcher, error) {
 	if len(req.Namespaces) == 1 {
 		m.namespace = req.Namespaces[0]
 	}
+	if req.Since != nil {
+		m.since = req.Since.AsTime()
+	}
 	for _, f := range req.Filters {
+		if f.Direction == flowpb.FlowFilterDirection_FLOW_FILTER_DIRECTION_FROM && len(f.ServiceNames) > 0 {
+			return nil, errors.New("a filter cannot combine direction FROM with service_names")
+		}
 		pf := filter{
 			namespaces: f.Namespaces,
 			pods:       f.PodNames,
@@ -197,6 +224,9 @@ func newMatcher(req *flowpb.GetFlowsRequest) (*matcher, error) {
 func (m *matcher) match(r *flowpb.Flow) bool {
 	k := r.K8S
 	if m.namespace != "" && k.SourcePodNamespace != m.namespace && k.DestinationPodNamespace != m.namespace {
+		return false
+	}
+	if !m.since.IsZero() && r.EndTs.AsTime().Before(m.since) {
 		return false
 	}
 	for i := range m.filters {
@@ -244,7 +274,7 @@ func (f *filter) matchEndpoint(e endpoint) bool {
 	if len(f.namespaces) > 0 && !slices.Contains(f.namespaces, e.namespace) {
 		return false
 	}
-	if len(f.pods) > 0 && !slices.Contains(f.pods, e.pod) && !slices.Contains(f.pods, e.namespace+"/"+e.pod) {
+	if len(f.pods) > 0 && !slices.Contains(f.pods, e.pod) {
 		return false
 	}
 	if f.selector != nil && (e.pod == "" || !f.selector.Matches(labels.Set(e.labels))) {

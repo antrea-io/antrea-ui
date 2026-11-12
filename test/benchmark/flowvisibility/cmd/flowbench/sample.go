@@ -195,14 +195,22 @@ type sampler struct {
 	browserRoot int // 0 when there is no browser
 }
 
+// scrapeTimeout bounds each request of a sample, to the backend or to fakefa.
+const scrapeTimeout = 5 * time.Second
+
 func (s *sampler) sample(ctx context.Context) hostSample {
 	hs := hostSample{T: time.Now()}
-	if m, err := scrapeBackend(ctx, s.url, s.token); err != nil {
+	// A request that hangs fails its sample, rather than stalling all the ones after it.
+	backendCtx, cancelBackend := context.WithTimeout(ctx, scrapeTimeout)
+	defer cancelBackend()
+	if m, err := scrapeBackend(backendCtx, s.url, s.token); err != nil {
 		hs.Errors = append(hs.Errors, "backend: "+err.Error())
 	} else {
 		hs.Backend = &m
 	}
-	if st, err := fakeFAStats(ctx, s.clientset); err != nil {
+	fakeFACtx, cancelFakeFA := context.WithTimeout(ctx, scrapeTimeout)
+	defer cancelFakeFA()
+	if st, err := fakeFAStats(fakeFACtx, s.clientset); err != nil {
 		hs.Errors = append(hs.Errors, "fakefa: "+err.Error())
 	} else {
 		st.Summary, st.Scale = "", nil

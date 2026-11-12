@@ -23,9 +23,10 @@ cluster (kind is fine)
 
 `fakefa` is deployed where the real Flow Aggregator would be (`flow-aggregator.flow-aggregator.svc:14740`),
 with its CA in the `flow-aggregator-ca` ConfigMap, so the chart's defaults find it. `flowbench`
-refuses a cluster whose `flow-aggregator` Namespace it did not create itself. `fakefa` does not
-authenticate or authorize callers, and discloses every endpoint in full: what a user allowed to
-observe flows in every Namespace would get.
+refuses a cluster whose `flow-aggregator` Namespace, or antrea-ui Helm release, it did not create
+itself, and `teardown` leaves those in place. `fakefa` does not authenticate or authorize callers,
+and discloses every endpoint in full: what a user allowed to observe flows in every Namespace would
+get.
 
 ## Setup
 
@@ -89,10 +90,10 @@ Results go to `test/benchmark/flowvisibility/results/<timestamp>/<scale>/`:
 | File | Content |
 | --- | --- |
 | `summary.md`, `summary.json` | The metrics below, summarized over the measurement |
-| `page-samples.jsonl` | Raw samples from inside the page, from the first render on (`"phase": "warmup"` or `"measure"`) |
+| `page-samples.jsonl` | Raw samples from inside the page, from the first render on (`"phase": "warmup"`, `"measure"` or `"trace"`) |
 | `host-samples.jsonl` | Raw samples of the backend, `fakefa` and the browser processes |
 | `scale.json` | The scale that was measured |
-| `trace.json` | With `--trace-seconds N`: a Chrome performance trace of the first N seconds, to open in DevTools' Performance panel |
+| `trace.json` | With `--trace-seconds N`: a Chrome performance trace of the N seconds after the measurement, with the page under the same load, to open in DevTools' Performance panel. It is recorded outside the measurement, so it does not affect the summary, and the run takes N seconds longer |
 
 With several scales, `comparison.md` puts them side by side.
 

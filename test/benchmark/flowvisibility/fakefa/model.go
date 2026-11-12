@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"net/netip"
+	"slices"
 	"time"
 )
 
@@ -33,7 +34,8 @@ type Scale struct {
 	// Nodes is the number of K8s Nodes. Pods are spread evenly across them; a connection between
 	// Pods on the same Node is intra-node, and inter-node otherwise.
 	Nodes int `json:"nodes"`
-	// PodsPerNode is the number of Pods on each Node (at most 250).
+	// PodsPerNode is the number of Pods on each Node (at most 249, leaving an address free for a
+	// replacement).
 	PodsPerNode int `json:"podsPerNode"`
 	// PodsPerWorkload is the number of replicas of each workload. A workload is one node of the
 	// service map, so Nodes*PodsPerNode/PodsPerWorkload is roughly the number of map nodes.
@@ -47,8 +49,8 @@ type Scale struct {
 	// CrossNamespaceFraction is the fraction of a workload's peers picked in another Namespace.
 	CrossNamespaceFraction float64 `json:"crossNamespaceFraction"`
 	// ConnectionsPerPeer is the number of long-lived connections each client Pod keeps open to
-	// each of its peers, each to a random backend Pod. With the source port masked, as the
-	// frontend's flow store does, this is the number of distinct connections per peer and Pod.
+	// each of its peers, each to a random backend Pod. The frontend's flow store masks the source
+	// port, so two of them that pick the same backend are a single connection there.
 	ConnectionsPerPeer int `json:"connectionsPerPeer"`
 	// ExternalEgressFraction is the fraction of workloads that also connect to destinations
 	// outside the cluster (one long-lived connection per Pod).
@@ -132,10 +134,11 @@ func (s *Scale) Validate() error {
 		return fmt.Errorf("namespaces must be at least 1")
 	case s.Nodes < 1 || s.Nodes > 60000:
 		return fmt.Errorf("nodes must be between 1 and 60000")
-	case s.PodsPerNode < 1 || s.PodsPerNode > 250:
-		return fmt.Errorf("podsPerNode must be between 1 and 250")
-	case s.PodsPerWorkload < 1:
-		return fmt.Errorf("podsPerWorkload must be at least 1")
+	case s.PodsPerNode < 1 || s.PodsPerNode > podHostsPerNode-1:
+		return fmt.Errorf("podsPerNode must be between 1 and %d", podHostsPerNode-1)
+	case s.PodsPerWorkload < 1 || s.PodsPerWorkload > s.Nodes*s.PodsPerNode:
+		// More would put more than podsPerNode Pods on a Node.
+		return fmt.Errorf("podsPerWorkload must be between 1 and nodes*podsPerNode (%d)", s.Nodes*s.PodsPerNode)
 	case s.ExternalIPs < 1:
 		return fmt.Errorf("externalIPs must be at least 1")
 	case s.ActiveTimeout < time.Second:
@@ -163,9 +166,9 @@ type pod struct {
 	node      *node
 	ip        netip.Addr
 	workload  *workload
-	// generation is bumped each time the Pod is replaced, so connections can tell a Pod they
-	// were opened against from its replacement.
-	generation int
+	// replaced is set once a new Pod has taken this one's place. The Pod keeps its identity, which
+	// the records of the connections it had open still report.
+	replaced bool
 }
 
 type service struct {
@@ -213,9 +216,27 @@ type cluster struct {
 	pods        []*pod
 	externalIPs []netip.Addr
 	policies    map[[2]*workload]edgePolicies
-	// nextPodIP tracks the next host address to hand out on each Node; a replaced Pod gets a new
-	// one, like a real IPAM would, so that its connections get new keys.
-	nextPodIP map[*node]int
+	podHosts    map[*node]*podHosts
+}
+
+// podHostsPerNode is the number of Pod addresses of a Node: 10.x.y.2 to 10.x.y.251.
+const podHostsPerNode = 250
+
+// podHosts hands out the host part of a Node's Pod addresses. A replaced Pod gets a new address,
+// like a real IPAM would, so that its connections get new keys; one held by a live Pod is skipped.
+type podHosts struct {
+	held [podHostsPerNode]bool
+	next int
+}
+
+func (h *podHosts) allocate() int {
+	for h.held[h.next] {
+		h.next = (h.next + 1) % podHostsPerNode
+	}
+	host := h.next
+	h.held[host] = true
+	h.next = (host + 1) % podHostsPerNode
+	return host
 }
 
 var workloadWords = []string{
@@ -242,7 +263,7 @@ func randUID(r *rand.Rand) string {
 func NamespaceName(i int) string { return fmt.Sprintf("ns-%03d", i) }
 
 func buildCluster(s Scale, r *rand.Rand) *cluster {
-	c := &cluster{policies: map[[2]*workload]edgePolicies{}, nextPodIP: map[*node]int{}}
+	c := &cluster{policies: map[[2]*workload]edgePolicies{}, podHosts: map[*node]*podHosts{}}
 	for i := range s.Namespaces {
 		c.namespaces = append(c.namespaces, NamespaceName(i))
 	}
@@ -288,8 +309,7 @@ func buildCluster(s Scale, r *rand.Rand) *cluster {
 		for range replicas {
 			n := c.nodes[podIdx%len(c.nodes)]
 			podIdx++
-			p := &pod{namespace: w.namespace, workload: w, node: n, labels: map[string]string{"app": w.name}}
-			c.respawnPod(p, r)
+			p := c.newPod(w, n, r)
 			w.pods = append(w.pods, p)
 			c.pods = append(c.pods, p)
 		}
@@ -344,15 +364,39 @@ func randomPolicies(s Scale, r *rand.Rand, src, dst *workload) edgePolicies {
 	return edgePolicies{}
 }
 
-// respawnPod gives p a fresh identity: name, UID and IP, as a Deployment replacing it would.
-func (c *cluster) respawnPod(p *pod, r *rand.Rand) {
-	p.name = fmt.Sprintf("%s-%s-%s", p.workload.name, randString(r, 10), randString(r, 5))
-	p.uid = randUID(r)
-	host := c.nextPodIP[p.node]
-	c.nextPodIP[p.node] = (host + 1) % 250
-	// #nosec G115: Validate bounds the Node index to 60000, and host is under 250
-	p.ip = netip.AddrFrom4([4]byte{10, byte(p.node.index / 256), byte(p.node.index % 256), byte(2 + host)})
-	p.generation++
+// newPod returns a Pod of w on n with a fresh identity: name, UID and IP, as a Deployment would
+// create.
+func (c *cluster) newPod(w *workload, n *node, r *rand.Rand) *pod {
+	hosts := c.podHosts[n]
+	if hosts == nil {
+		hosts = &podHosts{}
+		c.podHosts[n] = hosts
+	}
+	host := hosts.allocate()
+	return &pod{
+		name:      fmt.Sprintf("%s-%s-%s", w.name, randString(r, 10), randString(r, 5)),
+		uid:       randUID(r),
+		namespace: w.namespace,
+		labels:    map[string]string{"app": w.name},
+		node:      n,
+		// #nosec G115: Validate bounds the Node index to 60000, and host is under 250
+		ip:       netip.AddrFrom4([4]byte{10, byte(n.index / 256), byte(n.index % 256), byte(2 + host)}),
+		workload: w,
+	}
+}
+
+// replacePod replaces c.pods[i] the way a rollout would: a new Pod of the same workload, on the
+// same Node. It returns the new Pod. The new Pod's address is allocated before the old one's is
+// released, so they always differ.
+func (c *cluster) replacePod(i int, r *rand.Rand) *pod {
+	old := c.pods[i]
+	old.replaced = true
+	p := c.newPod(old.workload, old.node, r)
+	c.podHosts[old.node].held[int(old.ip.As4()[3])-2] = false
+	c.pods[i] = p
+	w := old.workload
+	w.pods[slices.Index(w.pods, old)] = p
+	return p
 }
 
 func (c *cluster) summary() string {
