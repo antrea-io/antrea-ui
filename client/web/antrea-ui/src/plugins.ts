@@ -45,7 +45,7 @@ import valid from 'semver/functions/valid';
 import validRange from 'semver/ranges/valid';
 import { parsePath } from 'react-router';
 import config from './config';
-import { createPluginHostAccess, meetsAccessRequirements, parseAccessRequirements } from '@antrea/ui-components';
+import { createPluginHostAccess, isNamespaceAware, meetsAccessRequirements, parseAccessRequirements } from '@antrea/ui-components';
 import type { AccessSummary, EdgeExtraRenderer, FlowTableColumnsProcessor, PluginAccessRequirement } from '@antrea/ui-components';
 // The host and the SDK must agree on AntreaPluginHost's shape (it's the contract every plugin's
 // registerX() call goes through), but only as types — importing them with `import type` here
@@ -65,7 +65,9 @@ interface Gated {
     access?: readonly PluginAccessRequirement[];
 }
 export type PluginRoute = SdkPluginRoute & Gated;
-export type PluginSidebarEntry = SdkPluginSidebarEntry & Gated;
+// `namespaceAware` is a property of the page, not of the entry: whether the route at the entry's
+// pathname declares `namespaceScope`. The entry's own `requires` only gates it.
+export type PluginSidebarEntry = SdkPluginSidebarEntry & Gated & { namespaceAware?: boolean };
 export type LandingPageTab = SdkLandingPageTab & Gated;
 
 function gated<T extends { requires?: PluginAccessRequirement }>(item: T, what: string): T & Gated {
@@ -192,13 +194,18 @@ export function resolveParentPaths(entries: PluginSidebarEntry[]): PluginSidebar
 }
 
 // An entry also inherits the `access` of the route at its pathname, on top of its own, even when
-// its link carries a query or fragment: gating a page must hide its sidebar entries too.
+// its link carries a query or fragment: gating a page must hide its sidebar entries too. It is
+// `namespaceAware` when that route is (see PluginPage), whatever the entry's own `requires` say.
 export function getPluginSidebarEntries(): PluginSidebarEntry[] {
     const routeAccess = new Map(getPluginRoutes().map(route => [stripLeadingSlash(route.path), route.access ?? []]));
     return resolveParentPaths(dedupeByPath(pluginSidebarEntries, 'sidebar entry')).map(entry => {
         const pathname = stripLeadingSlash(parsePath(entry.path).pathname ?? '');
-        const access = [...(entry.access ?? []), ...(routeAccess.get(pathname) ?? [])];
-        return access.length > 0 ? { ...entry, access } : entry;
+        const pageAccess = routeAccess.get(pathname) ?? [];
+        const access = [...(entry.access ?? []), ...pageAccess];
+        const namespaceAware = isNamespaceAware(pageAccess);
+        return access.length > 0 || namespaceAware
+            ? { ...entry, ...(access.length > 0 && { access }), ...(namespaceAware && { namespaceAware }) }
+            : entry;
     });
 }
 

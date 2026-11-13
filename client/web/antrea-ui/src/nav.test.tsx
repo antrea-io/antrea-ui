@@ -371,7 +371,7 @@ describe('NavTab — permission gating', () => {
     });
 
     describe('a Namespace-aware plugin entry', () => {
-        const aware: PluginSidebarEntry = { label: 'Aware', path: '/plugin/aware', access: [{ namespaceScope: true }] };
+        const aware: PluginSidebarEntry = { label: 'Aware', path: '/plugin/aware', access: [{ namespaceScope: true }], namespaceAware: true };
         const plain: PluginSidebarEntry = { label: 'Plain', path: '/plugin/plain', access: [{ resources: [{ group: '', resource: 'pods', verb: 'list' }] }] };
 
         beforeEach(() => {
@@ -384,6 +384,13 @@ describe('NavTab — permission gating', () => {
 
             expect(document.querySelector('a[href="/plugin/aware?namespace=ns-a"]')).not.toBeNull();
             expect(document.querySelector('a[href="/plugin/plain"]')).not.toBeNull();
+        });
+
+        test('an entry whose page is not Namespace-aware carries no scope, whatever its own requires say', () => {
+            setLastScope('alice', 'ns-a');
+            render(<NavTab pluginSidebarEntries={[{ label: aware.label, path: aware.path, access: aware.access }]} />, { wrapper: MemoryRouter });
+
+            expect(document.querySelector('a[href="/plugin/aware"]')).not.toBeNull();
         });
 
         test('carries no scope when none was chosen', () => {
@@ -639,7 +646,7 @@ describe('NavTab — plugin permission gating', () => {
         setLastScope('alice', 'ns-admin');
         mockUseAccess.mockReturnValue({ summary: admin(clusterAdmin), loaded: true });
         render(<NavTab pluginSidebarEntries={[
-            { label: 'Admin', path: '/admin', access: [{ clusterAdmin: true, namespaceScope: true }] },
+            { label: 'Admin', path: '/admin', access: [{ clusterAdmin: true, namespaceScope: true }], namespaceAware: true },
         ]} />, { wrapper: MemoryRouter });
 
         const link = document.querySelector('a[href="/admin?namespace=ns-admin"]');

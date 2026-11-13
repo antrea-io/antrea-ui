@@ -18,7 +18,7 @@ import React, { useSyncExternalStore } from 'react';
 import { useLocation } from 'react-router';
 import { Link, parsePath } from 'react-router';
 import '@antrea/ui-components';
-import { can, canViewSummary, canViewFlows, canViewOverview, isNamespaceAware, GATE_TRACEFLOW_CREATE, GATE_SUPPORTBUNDLE_LIST } from '@antrea/ui-components';
+import { can, canViewSummary, canViewFlows, canViewOverview, GATE_TRACEFLOW_CREATE, GATE_SUPPORTBUNDLE_LIST } from '@antrea/ui-components';
 import { allowsPluginItem, type PluginSidebarEntry } from './plugins';
 import { useAccess, useScopeUser } from './access';
 import { getLastScope, scopeSearch, subscribeLastScope } from './lastScope';
@@ -227,8 +227,9 @@ export default function NavTab({ pluginSidebarEntries: allPluginSidebarEntries }
     const entryScope = (onPage: boolean) => scopeSearch(onPage
         ? (pageScopes.length === 1 ? pageScopes[0] : null)
         : lastScope);
-    // A Namespace-aware plugin entry carries a scope like the built-in ones; any other does not.
-    const pluginScope = (entry: PluginSidebarEntry) => isNamespaceAware(entry.access)
+    // An entry for a Namespace-aware page (see getPluginSidebarEntries) carries a scope like the
+    // built-in ones; any other does not.
+    const pluginScope = (entry: PluginSidebarEntry) => entry.namespaceAware
         ? entryScope(pathStartsWith(pathname, entry.path))
         : '';
     const flowsSearch = entryScope(pathStartsWith(pathname, '/flows'));

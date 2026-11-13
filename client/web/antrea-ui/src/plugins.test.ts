@@ -298,6 +298,17 @@ describe('permission requirements', () => {
         }
     });
 
+    test('an entry is Namespace-aware when its route is, not when only its own requires say so', () => {
+        window.__antreaPluginHost!.registerRoute({ path: '/aware-page', tag: 'aware', requires: { clusterAdmin: true, namespaceScope: true } });
+        window.__antreaPluginHost!.registerSidebarEntry({ label: 'Aware', path: '/aware-page?view=a' });
+        window.__antreaPluginHost!.registerRoute({ path: '/plain-page', tag: 'plain' });
+        window.__antreaPluginHost!.registerSidebarEntry({ label: 'Plain', path: '/plain-page', requires: { namespaceScope: true } });
+
+        const entries = getPluginSidebarEntries();
+        expect(entries.find(e => e.path === '/aware-page?view=a')?.namespaceAware).toBe(true);
+        expect(entries.find(e => e.path === '/plain-page')?.namespaceAware).toBeUndefined();
+    });
+
     test('a malformed `requires` is logged and denies', () => {
         const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
         window.__antreaPluginHost!.registerSidebarEntry({ label: 'Typo', path: '/gated-typo', requires: { clusterAdmin: 'yes' } as never });

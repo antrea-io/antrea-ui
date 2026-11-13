@@ -1063,13 +1063,31 @@ page must handle a 403. List the permissions the page reads, never a write.
 `allOf` is rejected beside `namespaceScope`, because the verdict is any-of.
 
 A Namespace-aware page keeps its scope in the URL as `?namespace=<name>`, or
-`?namespace=_all` for all Namespaces, and uses `namespace` for nothing else. The
-host carries the last scope the user chose in the page's sidebar link. A
-custom-element route is handed the query string as a `locationSearch` property,
-and can report a change with the `antrea-namespace-scope-change` event or a choice with
-`antrea-namespace-scope-chosen`, as the built-in pages do. A federated Angular route reads
-`namespace` from the router itself. On an Overview tab, `namespaceScope` only decides
-whether the tab shows: the tab replaces the Overview page and is not handed a scope.
+`?namespace=_all` for all Namespaces. No page uses `namespace` for anything
+else, plugin pages included. The host carries the last scope the user chose in
+the sidebar links of such a page. Whether a sidebar entry carries it depends on
+the page, so it is the `namespaceScope` of the route at the entry's pathname that
+counts; the entry's own `requires` only gates it. A custom-element route, and an
+Overview tab, are handed the query string as a `locationSearch` property. A
+federated Angular route reads `namespace` from the router itself.
+
+A custom-element page does its part with two events and one property, as the
+built-in pages do. The host records the last scope chosen only from
+`antrea-namespace-scope-chosen`, so a page that merely reads `locationSearch`
+leaves the Overview and Flow Visibility entries carrying a stale scope. The page
+must:
+
+- Follow `locationSearch` when it changes, for example when the user follows a
+  sidebar link while the page is open.
+- Report every valid scope, whether taken from its picker or from
+  `locationSearch` (on mount and on each change), by dispatching
+  `antrea-namespace-scope-chosen` with `detail: { scope }`, where `scope` is the
+  name or `_all`. Never report a default, which is not a choice.
+- Write only an explicit choice to `?namespace=`, in place with
+  `history.replaceState`, then dispatch `antrea-namespace-scope-change` with
+  `detail: { search }`, the new query string with its leading `?`, so the host
+  router adopts the new location. Both events are `CustomEvent`s that bubble and
+  are composed.
 
 - **Sidebar entries.** A user who doesn't meet a sidebar entry's
   requirement doesn't see the entry. A sidebar entry also inherits the

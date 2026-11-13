@@ -173,7 +173,7 @@ export function OverviewPage({ pluginTabs = NO_PLUGIN_TABS }: { pluginTabs?: Lan
                 </div>
                 {activeTab.id === BUILTIN_LANDING_PAGE_TAB_ID
                     ? <antrea-overview-page ref={ref} locationSearch={search} />
-                    : React.createElement(activeTab.tag as string, { ref })}
+                    : React.createElement(activeTab.tag as string, { ref, locationSearch: search })}
             </div>
         </RequirePermission>
     );

@@ -194,7 +194,7 @@ describe('SupportBundlePage — route guard', () => {
 // own tests; what is pinned here is what this component decides.
 describe('OverviewPage', () => {
     // Defined once for the file: a custom element name cannot be registered twice.
-    class PluginTabElement extends HTMLElement {}
+    class PluginTabElement extends HTMLElement { locationSearch: string | undefined = undefined; }
     customElements.define('antrea-test-security-tab', PluginTabElement);
 
     const pluginTabs: LandingPageTab[] = [
@@ -312,6 +312,13 @@ describe('OverviewPage', () => {
             await waitFor(() => expect(document.querySelector('antrea-test-security-tab')).not.toBeNull());
             expect(activeTab()).toBe('Security');
             expect(document.querySelector('antrea-overview-page')).toBeNull();
+        });
+
+        test('hands the plugin tab the query string, as it does the built-in page', async () => {
+            renderOverview({ tabs: pluginTabs, entry: '/overview?tab=security&namespace=ns-a' });
+            await waitFor(() => expect(document.querySelector('antrea-test-security-tab')).not.toBeNull());
+            const el = document.querySelector('antrea-test-security-tab') as PluginTabElement;
+            expect(el.locationSearch).toBe('?tab=security&namespace=ns-a');
         });
 
         test('falls back to the built-in tab for an id nothing registered', async () => {
