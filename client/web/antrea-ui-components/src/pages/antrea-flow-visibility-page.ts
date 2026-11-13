@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { html, css, nothing } from 'lit';
+import { html, css, nothing, svg } from 'lit';
 import type { TemplateResult } from 'lit';
 import { state, query, property } from 'lit/decorators.js';
 import * as d3 from 'd3';
@@ -606,6 +606,8 @@ function inNamespaceHull(d: { kind: NodeKind; namespace: string }): boolean {
 interface D3Link extends d3.SimulationLinkDatum<D3Node> { edgeKey: string; connectionCount: number; role: EdgeRole; label: string; curveOffset: number; }
 
 const HEIGHT = 900;
+/** The factor one click of the zoom in/out buttons scales the map by. */
+const MAP_ZOOM_STEP = 1.5;
 const NODE_RX = 8;
 const NODE_PADDING_X = 14;
 const NODE_PADDING_Y = 8;
@@ -851,6 +853,20 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
             border-radius: 4px; padding: 8px 12px; font-size: 10px;
             color: var(--antrea-color-map-legend-text, #adbbc4); line-height: 1.8;
         }
+        .map-controls {
+            position: absolute; bottom: 10px; right: 10px;
+            display: flex; flex-direction: column; gap: 4px;
+        }
+        .map-control-btn {
+            display: flex; align-items: center; justify-content: center;
+            width: 32px; height: 32px; padding: 0; cursor: pointer;
+            background: var(--antrea-color-map-legend-bg, rgba(20,32,40,0.9));
+            border: 1px solid var(--antrea-color-map-legend-border, rgba(86,86,86,0.5));
+            border-radius: 4px; color: var(--antrea-color-map-legend-text, #adbbc4);
+        }
+        .map-control-btn:hover:not(:disabled):not([aria-disabled="true"]) { color: var(--antrea-color-text, #e9ecef); }
+        .map-control-btn:focus-visible { outline: 2px solid var(--antrea-color-primary, #0079b8); outline-offset: 1px; }
+        .map-control-btn:disabled, .map-control-btn[aria-disabled="true"] { opacity: 0.4; cursor: not-allowed; }
         .map-legend-title { font-weight: 600; margin-bottom: 2px; }
         .legend-row { display: flex; align-items: center; gap: 6px; }
         .edge-details {
@@ -1002,6 +1018,14 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
     private _seenNamesKey = '';
     private _client: FlowStreamClient | null = null;
     private _simulation: d3.Simulation<D3Node, D3Link> | null = null;
+    // The zoom behavior and content group of the map currently drawn, for the zoom controls.
+    // Both are replaced on every rebuild and cleared when the map is emptied.
+    private _mapZoom: d3.ZoomBehavior<SVGSVGElement, unknown> | null = null;
+    private _mapContent: SVGGElement | null = null;
+    // Whether the map is below and above its zoom limits, so the buttons can say when a click
+    // would do nothing. Only changes when a limit is reached or left, not on every zoom event.
+    @state() private _canZoomIn = true;
+    @state() private _canZoomOut = true;
     // The key of the request the open stream was built from, or '' when there is none. Compared
     // against itself to decide whether a change actually needs a reconnect.
     private _filterKey = '';
@@ -1521,6 +1545,36 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         if (w && w > 0) this._svgWidth = Math.floor(w);
     }
 
+    private _zoomMap(factor: number) {
+        if (!this._svgEl || !this._mapZoom) return;
+        d3.select(this._svgEl).call(this._mapZoom.scaleBy, factor);
+    }
+
+    private _fitServiceMap() {
+        const svgEl = this._svgEl;
+        const content = this._mapContent;
+        const zoom = this._mapZoom;
+        if (!svgEl || !content || !zoom) return;
+        // Measured once per click, never during simulation ticks. getBBox is in the content
+        // group's own coordinates, so it excludes the group's zoom transform.
+        const { x, y, width, height } = content.getBBox();
+        if (![x, y, width, height].every(Number.isFinite) || (!width && !height)) return;
+        const padding = Math.min(40, this._svgWidth / 4, HEIGHT / 4);
+        // Never enlarge a small map above its natural size.
+        const scale = Math.min(1,
+            (this._svgWidth - padding * 2) / Math.max(width, 1),
+            (HEIGHT - padding * 2) / Math.max(height, 1));
+        if (!Number.isFinite(scale) || scale <= 0) return;
+        // A large map may need less than the normal minimum. Widen the limit so that the next
+        // wheel zoom does not jump back to it.
+        const [minimum, maximum] = zoom.scaleExtent();
+        zoom.scaleExtent([Math.min(minimum, scale), maximum]);
+        d3.select(svgEl).call(zoom.transform, d3.zoomIdentity
+            .translate(this._svgWidth / 2, HEIGHT / 2)
+            .scale(scale)
+            .translate(-x - width / 2, -y - height / 2));
+    }
+
     private _buildServiceMap() {
         const svg = this._svgEl;
         if (!svg) return;
@@ -1564,6 +1618,8 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
 
         const d3svg = d3.select(svg);
         d3svg.selectAll('*').remove();
+        this._mapZoom = null;
+        this._mapContent = null;
 
         if (graph.nodes.length === 0) return;
 
@@ -1601,8 +1657,20 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
 
         const container = d3svg.append('g');
         const zoom = d3.zoom<SVGSVGElement, unknown>().scaleExtent([0.3, 3])
-            .on('zoom', event => container.attr('transform', event.transform));
+            .extent([[0, 0], [this._svgWidth, HEIGHT]])
+            .on('zoom', event => {
+                container.attr('transform', event.transform);
+                const [minimum, maximum] = zoom.scaleExtent();
+                this._canZoomIn = event.transform.k < maximum - 1e-9;
+                this._canZoomOut = event.transform.k > minimum + 1e-9;
+            });
         d3svg.call(zoom);
+        // d3 keeps the current transform on the <svg>, which outlives the contents just
+        // replaced, while the new content group is drawn untransformed. Without this reset the
+        // next zoom would start from the old transform and jump the map.
+        d3svg.call(zoom.transform, d3.zoomIdentity);
+        this._mapZoom = zoom;
+        this._mapContent = container.node();
 
         // Namespace hulls
         const nsMap = new Map<string, D3Node[]>();
@@ -2170,6 +2238,16 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         `;
     }
 
+    private _renderMapControl(label: string, onClick: () => void, icon: TemplateResult, atLimit = false) {
+        return html`
+            <button type="button" class="map-control-btn" part="map-control" aria-label=${label} title=${label}
+                ?disabled=${!this._entries.length} aria-disabled=${atLimit ? 'true' : 'false'}
+                @click=${onClick}>
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                    stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${icon}</svg>
+            </button>`;
+    }
+
     private _renderServiceMap() {
         return html`
             <div class="map-container">
@@ -2185,6 +2263,16 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
                     <div class="legend-row"><svg width="24" height="14"><polygon points="12,1 23,7 12,13 1,7" style="fill:${MAP_COLOR_VAR.externalFill};stroke:${MAP_COLOR_VAR.externalStroke}" stroke-width="1.5"/></svg><span>External</span></div>
                     <div class="legend-row"><svg width="24" height="14"><polygon points="12,1 23,7 12,13 1,7" style="fill:${MAP_COLOR_VAR.undisclosedFill};stroke:${MAP_COLOR_VAR.undisclosedStroke}" stroke-width="1.5"/></svg><span>Undisclosed (in cluster)</span></div>
                     <div style="margin-top:2px;color:var(--antrea-color-text-muted, #8899a4)">Line thickness = connection count</div>
+                </div>
+                <div class="map-controls" part="map-controls" role="group" aria-label="Map zoom controls">
+                    ${this._renderMapControl('Zoom in', () => this._zoomMap(MAP_ZOOM_STEP), svg`
+                        <circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.5" y2="16.5"/>
+                        <line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/>`, !this._canZoomIn)}
+                    ${this._renderMapControl('Zoom out', () => this._zoomMap(1 / MAP_ZOOM_STEP), svg`
+                        <circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.5" y2="16.5"/>
+                        <line x1="8" y1="11" x2="14" y2="11"/>`, !this._canZoomOut)}
+                    ${this._renderMapControl('Fit to view', () => this._fitServiceMap(), svg`
+                        <path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/><rect x="9" y="9" width="6" height="6"/>`)}
                 </div>
                 ${this._renderEdgeDetails()}
             </div>
