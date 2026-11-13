@@ -19,6 +19,7 @@ import { accessSummary } from '@antrea/ui-components';
 import type { AccessSummary } from '@antrea/ui-components';
 import { useSelector } from 'react-redux';
 import type { RootState } from './store';
+import { publishPluginAccess } from './plugins';
 
 interface AccessContextType {
     summary: AccessSummary | null
@@ -49,12 +50,30 @@ export function AccessProvider(props: React.PropsWithChildren) {
         if (session !== 'authenticated') return;
         let cancelled = false;
         accessSummary()
-            .then((s) => { if (!cancelled) { setSummary(s); setLoaded(true); } })
+            .then((s) => {
+                if (cancelled) return;
+                // Published here as well as by the effect below: that one runs after the commit
+                // that mounts a gated plugin page, so an element reading access() once in its
+                // connectedCallback would otherwise see an unloaded, null summary.
+                publishPluginAccess(true, s);
+                setSummary(s);
+                setLoaded(true);
+            })
             // Fetch failure fails open: summary stays null, and callers treat a null summary as
             // "allow everything" — exactly today's pre-access-summary behaviour.
-            .catch(() => { if (!cancelled) { setSummary(null); setLoaded(true); } });
+            .catch(() => {
+                if (cancelled) return;
+                publishPluginAccess(true, null);
+                setSummary(null);
+                setLoaded(true);
+            });
         return () => { cancelled = true; };
     }, [session]);
+
+    // Plugins read the same state through window.__antreaPluginHost.access. The fetch above
+    // publishes a result as it arrives, so this effect is what publishes the reset when the
+    // session changes (and repeats the result, which publishing ignores).
+    useEffect(() => { publishPluginAccess(loaded, summary); }, [loaded, summary]);
 
     return (
         <AccessContext.Provider value={{ summary, loaded }}>

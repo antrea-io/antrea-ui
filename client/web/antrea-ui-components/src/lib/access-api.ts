@@ -302,6 +302,16 @@ function matchesNonResourceURL(patterns: string[], want: string): boolean {
     });
 }
 
+/**
+ * Whether the user can reach at least one Namespace, as far as the cluster-scoped summary shows:
+ * they may list Namespaces, or a RoleBinding names them. A hint like every verdict: the binding may
+ * grant nothing a given page uses. Shared by the built-in pages' availability rules and by a
+ * plugin's `namespaceScope`.
+ */
+export function reachesNamespace(s: AccessSummary | null): boolean {
+    return can(s, GATE_NAMESPACES_LIST) || Boolean(accessibleNamespaces(s)?.length);
+}
+
 /** Returns the namespaces the user may access, or null when that is all/unknown (no filter
  * should be applied): summary is null, rules are incomplete, namespaces is missing, or it is
  * ["*"]. */
@@ -359,7 +369,7 @@ export function holdsFlowsClusterWide(s: AccessSummary | null): boolean {
 // ["*"]) may hold it in any. The price is that a caller with a RoleBinding but no flows grant sees
 // the entry and gets the flow source's 403 on the page.
 export function canViewFlows(s: AccessSummary | null): boolean {
-    return holdsFlowsClusterWide(s) || can(s, GATE_NAMESPACES_LIST) || Boolean(accessibleNamespaces(s)?.length);
+    return holdsFlowsClusterWide(s) || reachesNamespace(s);
 }
 
 export function canViewSummary(s: AccessSummary | null): boolean {
@@ -404,5 +414,5 @@ export function holdsOverviewResources(s: AccessSummary | null): boolean {
 // them the Namespaces tile and the full picker. The price is that a user whose only grant is
 // listing namespaces gets an entry with a single tile, since the two cannot be told apart.
 export function canViewOverview(s: AccessSummary | null): boolean {
-    return holdsOverviewResources(s) || can(s, GATE_NAMESPACES_LIST) || Boolean(accessibleNamespaces(s)?.length);
+    return holdsOverviewResources(s) || reachesNamespace(s);
 }

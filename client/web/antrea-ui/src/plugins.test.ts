@@ -14,7 +14,8 @@
  * limitations under the License.
  */
 
-import { loadPlugins, isCompatible, isValidRange, getIncompatiblePlugins, incompatiblePluginMessage, dedupeByPath, getPluginRoutes, resolveParentPaths, getLandingPageTabs, type PluginManifest, type PluginRoute, type PluginSidebarEntry, type LandingPageTab } from './plugins';
+import { loadPlugins, isCompatible, isValidRange, getIncompatiblePlugins, incompatiblePluginMessage, dedupeByPath, getPluginRoutes, getPluginSidebarEntries, resolveParentPaths, getLandingPageTabs, allowsPluginItem, publishPluginAccess, type PluginManifest, type PluginRoute, type PluginSidebarEntry, type LandingPageTab } from './plugins';
+import type { AccessSummary } from '@antrea/ui-components';
 
 // The shell version loadPlugins() matches compatibleAntreaUI against; a prerelease version, to
 // exercise the prerelease semantics a range has to get right.
@@ -248,5 +249,92 @@ describe('getLandingPageTabs / window.__antreaPluginHost', () => {
 
         expect(getLandingPageTabs().filter(t => t.id === 'dup-tab')).toEqual([{ id: 'dup-tab', label: 'First', tag: 'antrea-first' }]);
         expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('already claimed by another plugin'));
+    });
+});
+
+describe('permission requirements', () => {
+    const admin = (clusterAdmin: boolean): AccessSummary => ({
+        username: 'alice', groups: [], clusterAdmin, namespaces: [],
+        rules: { resourceRules: [], nonResourceRules: [], incomplete: false },
+    });
+
+    test('a registration keeps its validated `requires` as `access`', () => {
+        window.__antreaPluginHost!.registerRoute({ path: '/gated-route', tag: 'gated', requires: { clusterAdmin: true } });
+        window.__antreaPluginHost!.registerLandingPageTab({ id: 'gated-tab', label: 'Gated', tag: 'gated', requires: { clusterAdmin: true } });
+
+        expect(getPluginRoutes().find(route => route.path === '/gated-route')?.access).toEqual([{ clusterAdmin: true }]);
+        expect(getLandingPageTabs().find(tab => tab.id === 'gated-tab')?.access).toEqual([{ clusterAdmin: true }]);
+    });
+
+    test('a sidebar entry inherits the requirement of the route at its path', () => {
+        window.__antreaPluginHost!.registerRoute({ path: '/gated-page', tag: 'gated', requires: { clusterAdmin: true } });
+        window.__antreaPluginHost!.registerSidebarEntry({ label: 'Gated', path: 'gated-page' });
+
+        expect(getPluginSidebarEntries().find(entry => entry.path === 'gated-page')?.access).toEqual([{ clusterAdmin: true }]);
+    });
+
+    test('distinct sidebar links inherit route requirements by pathname and keep their own requirements', () => {
+        const routeRequirement = { clusterAdmin: true, namespaceScope: true };
+        const entryRequirement = { resources: [{ group: '', resource: 'pods', verb: 'list' }] };
+        window.__antreaPluginHost!.registerRoute({ path: '/gated-views', tag: 'gated', requires: routeRequirement });
+        const paths = [
+            '/gated-views?view=a',
+            '/gated-views?view=b',
+            '/gated-views#details',
+            'gated-views?view=a#details',
+        ];
+        for (const path of paths) {
+            window.__antreaPluginHost!.registerSidebarEntry({ label: 'Gated', path, requires: entryRequirement });
+        }
+
+        const entries = getPluginSidebarEntries().filter(entry => paths.includes(entry.path));
+        const reader = admin(false);
+        reader.rules.resourceRules = [{ apiGroups: [''], resources: ['pods'], verbs: ['list'] }];
+        expect(entries.map(entry => entry.path)).toEqual(paths);
+        for (const entry of entries) {
+            expect(entry.access).toEqual([entryRequirement, routeRequirement]);
+            expect(allowsPluginItem({ summary: reader, loaded: true }, entry.access)).toBe(false);
+            expect(allowsPluginItem({ summary: admin(true), loaded: true }, entry.access)).toBe(true);
+        }
+    });
+
+    test('an entry is Namespace-aware when its route is, not when only its own requires say so', () => {
+        window.__antreaPluginHost!.registerRoute({ path: '/aware-page', tag: 'aware', requires: { clusterAdmin: true, namespaceScope: true } });
+        window.__antreaPluginHost!.registerSidebarEntry({ label: 'Aware', path: '/aware-page?view=a' });
+        window.__antreaPluginHost!.registerRoute({ path: '/plain-page', tag: 'plain' });
+        window.__antreaPluginHost!.registerSidebarEntry({ label: 'Plain', path: '/plain-page', requires: { namespaceScope: true } });
+
+        const entries = getPluginSidebarEntries();
+        expect(entries.find(e => e.path === '/aware-page?view=a')?.namespaceAware).toBe(true);
+        expect(entries.find(e => e.path === '/plain-page')?.namespaceAware).toBeUndefined();
+    });
+
+    test('a malformed `requires` is logged and denies', () => {
+        const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+        window.__antreaPluginHost!.registerSidebarEntry({ label: 'Typo', path: '/gated-typo', requires: { clusterAdmin: 'yes' } as never });
+
+        const entry = getPluginSidebarEntries().find(e => e.path === '/gated-typo');
+        expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('malformed "requires"'));
+        expect(allowsPluginItem({ summary: admin(true), loaded: true }, entry?.access)).toBe(false);
+    });
+
+    test('allowsPluginItem hides a gated item until loaded, then follows the summary', () => {
+        const access = [{ clusterAdmin: true }];
+        expect(allowsPluginItem({ summary: null, loaded: false }, undefined)).toBe(true);
+        expect(allowsPluginItem({ summary: admin(true), loaded: false }, access)).toBe(false);
+        expect(allowsPluginItem({ summary: admin(false), loaded: true }, access)).toBe(false);
+        expect(allowsPluginItem({ summary: admin(true), loaded: true }, access)).toBe(true);
+        expect(allowsPluginItem({ summary: null, loaded: true }, access)).toBe(true);
+    });
+
+    test('the host exposes what it publishes to plugins as window.__antreaPluginHost.access', async () => {
+        const access = window.__antreaPluginHost!.access!;
+        publishPluginAccess(true, admin(true));
+
+        await expect(access.ready()).resolves.toEqual(admin(true));
+        expect(access.isClusterAdmin()).toBe(true);
+        expect(access.meets({ clusterAdmin: true })).toBe(true);
+
+        publishPluginAccess(false, null);
     });
 });

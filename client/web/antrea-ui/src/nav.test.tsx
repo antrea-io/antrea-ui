@@ -370,6 +370,101 @@ describe('NavTab — permission gating', () => {
         expect(document.querySelectorAll('a[href="/flows/list?namespace=ns-a"]')).toHaveLength(2);
     });
 
+    describe('a Namespace-aware plugin entry', () => {
+        const aware: PluginSidebarEntry = { label: 'Aware', path: '/plugin/aware', access: [{ namespaceScope: true }], namespaceAware: true };
+        const plain: PluginSidebarEntry = { label: 'Plain', path: '/plugin/plain', access: [{ resources: [{ group: '', resource: 'pods', verb: 'list' }] }] };
+
+        beforeEach(() => {
+            mockUseAccess.mockReturnValue({ summary: summaryAllowing({ resourceRules: [{ apiGroups: [''], resources: ['pods'], verbs: ['list'] }] }), loaded: true });
+        });
+
+        test('carries the last scope chosen, and another entry does not', () => {
+            setLastScope('alice', 'ns-a');
+            render(<NavTab pluginSidebarEntries={[aware, plain]} />, { wrapper: MemoryRouter });
+
+            expect(document.querySelector('a[href="/plugin/aware?namespace=ns-a"]')).not.toBeNull();
+            expect(document.querySelector('a[href="/plugin/plain"]')).not.toBeNull();
+        });
+
+        test('an entry whose page is not Namespace-aware carries no scope, whatever its own requires say', () => {
+            setLastScope('alice', 'ns-a');
+            render(<NavTab pluginSidebarEntries={[{ label: aware.label, path: aware.path, access: aware.access }]} />, { wrapper: MemoryRouter });
+
+            expect(document.querySelector('a[href="/plugin/aware"]')).not.toBeNull();
+        });
+
+        test('carries no scope when none was chosen', () => {
+            render(<NavTab pluginSidebarEntries={[aware]} />, { wrapper: MemoryRouter });
+
+            expect(document.querySelector('a[href="/plugin/aware"]')).not.toBeNull();
+        });
+
+        test.each([
+            ['/plugin/aware?view=summary', '/plugin/aware?view=summary&namespace=ns-a'],
+            ['/plugin/aware#details', '/plugin/aware?namespace=ns-a#details'],
+            ['/plugin/aware?view=summary#details', '/plugin/aware?view=summary&namespace=ns-a#details'],
+            ['/plugin/aware?namespace=old&view=summary&namespace=other#details', '/plugin/aware?namespace=ns-a&view=summary#details'],
+            ['plugin/aware?view=summary#details', '/plugin/aware?view=summary&namespace=ns-a#details'],
+        ])('merges the last scope into %s', (path, expected) => {
+            setLastScope('alice', 'ns-a');
+            render(<NavTab pluginSidebarEntries={[{ ...aware, path }]} />, { wrapper: MemoryRouter });
+
+            expect(document.querySelector(`a[href="${expected}"]`)).not.toBeNull();
+        });
+
+        test('preserves the original query and fragment when no scope is carried', () => {
+            const path = '/plugin/aware?view=summary#details';
+            render(<NavTab pluginSidebarEntries={[{ ...aware, path }]} />, { wrapper: MemoryRouter });
+
+            expect(document.querySelector(`a[href="${path}"]`)).not.toBeNull();
+        });
+
+        test('uses the current scope for a link with a query and fragment', () => {
+            setLastScope('alice', 'ns-last');
+            render(
+                <MemoryRouter initialEntries={['/plugin/aware?namespace=ns-current&view=other']}>
+                    <NavTab pluginSidebarEntries={[{ ...aware, path: '/plugin/aware?view=summary#details' }]} />
+                </MemoryRouter>
+            );
+
+            const link = document.querySelector('a[href="/plugin/aware?view=summary&namespace=ns-current#details"]');
+            expect(link).not.toBeNull();
+            const navItem = link!.closest('antrea-nav-item') as unknown as { active?: boolean };
+            expect(navItem.active).toBe(true);
+        });
+
+        test('does not add the last scope when its own page has none', () => {
+            setLastScope('alice', 'ns-last');
+            const path = '/plugin/aware?view=summary#details';
+            render(
+                <MemoryRouter initialEntries={['/plugin/aware?view=other']}>
+                    <NavTab pluginSidebarEntries={[{ ...aware, path }]} />
+                </MemoryRouter>
+            );
+
+            expect(document.querySelector(`a[href="${path}"]`)).not.toBeNull();
+        });
+
+        test('leaves external links unchanged', () => {
+            setLastScope('alice', 'ns-a');
+            const path = 'https://example.com/report?view=summary#details';
+            render(<NavTab pluginSidebarEntries={[{ ...aware, path }]} />, { wrapper: MemoryRouter });
+
+            expect(document.querySelector(`a[href="${path}"]`)).not.toBeNull();
+        });
+
+        test('keeps the scope in its own URL while on the page', () => {
+            setLastScope('alice', 'ns-a');
+            render(
+                <MemoryRouter initialEntries={['/plugin/aware?namespace=ns-b']}>
+                    <NavTab pluginSidebarEntries={[aware]} />
+                </MemoryRouter>
+            );
+
+            expect(document.querySelector('a[href="/plugin/aware?namespace=ns-b"]')).not.toBeNull();
+        });
+    });
+
     // ...but only the scope: another parameter on the flow page means nothing to the other view.
     test('only the scope is carried between the flow sub-pages', () => {
         render(
@@ -521,5 +616,70 @@ describe('NavTab — permission gating', () => {
         render(<NavTab pluginSidebarEntries={[]} />, { wrapper: MemoryRouter });
 
         expect(document.querySelector('a[href="/overview"]')).toBeNull();
+    });
+});
+
+describe('NavTab — plugin permission gating', () => {
+    const admin = (clusterAdmin: boolean) => ({ ...summaryAllowing(), clusterAdmin });
+    const ADMIN_ONLY = [{ clusterAdmin: true }];
+
+    test('hides an entry whose requirement the user does not meet', () => {
+        mockUseAccess.mockReturnValue({ summary: admin(false), loaded: true });
+        render(<NavTab pluginSidebarEntries={[
+            { label: 'Admin', path: '/admin', access: ADMIN_ONLY },
+            podCounterEntry,
+        ]} />, { wrapper: MemoryRouter });
+
+        expect(document.querySelector('a[href="/admin"]')).toBeNull();
+        expect(document.querySelector('a[href="/plugin/pod-counter"]')).not.toBeNull();
+    });
+
+    test('shows the entry to a user who meets it', () => {
+        mockUseAccess.mockReturnValue({ summary: admin(true), loaded: true });
+        render(<NavTab pluginSidebarEntries={[{ label: 'Admin', path: '/admin', access: ADMIN_ONLY }]} />, { wrapper: MemoryRouter });
+
+        expect(document.querySelector('a[href="/admin"]')).not.toBeNull();
+    });
+
+    test.each([false, true])('an admin-only Namespace-aware entry carries scope only for admins: %s', (clusterAdmin) => {
+        sessionStorage.clear();
+        setLastScope('alice', 'ns-admin');
+        mockUseAccess.mockReturnValue({ summary: admin(clusterAdmin), loaded: true });
+        render(<NavTab pluginSidebarEntries={[
+            { label: 'Admin', path: '/admin', access: [{ clusterAdmin: true, namespaceScope: true }], namespaceAware: true },
+        ]} />, { wrapper: MemoryRouter });
+
+        const link = document.querySelector('a[href="/admin?namespace=ns-admin"]');
+        expect(link !== null).toBe(clusterAdmin);
+        expect(document.querySelector('a[href="/admin"]')).toBeNull();
+    });
+
+    test('keeps a gated entry hidden while access is still loading', () => {
+        mockUseAccess.mockReturnValue({ summary: null, loaded: false });
+        render(<NavTab pluginSidebarEntries={[{ label: 'Admin', path: '/admin', access: ADMIN_ONLY }]} />, { wrapper: MemoryRouter });
+
+        expect(document.querySelector('a[href="/admin"]')).toBeNull();
+    });
+
+    test('a hidden plugin parent hides the entries nested under it', () => {
+        mockUseAccess.mockReturnValue({ summary: admin(false), loaded: true });
+        render(<NavTab pluginSidebarEntries={[
+            { label: 'Admin', path: '/admin', access: ADMIN_ONLY },
+            { label: 'Admin Child', path: '/admin-child', parentPath: 'admin' },
+        ]} />, { wrapper: MemoryRouter });
+
+        expect(document.querySelector('a[href="/admin"]')).toBeNull();
+        expect(document.querySelector('a[href="/admin-child"]')).toBeNull();
+    });
+
+    test('a gated child of a built-in page is hidden, its siblings stay', () => {
+        mockUseAccess.mockReturnValue({ summary: admin(false), loaded: true });
+        render(<NavTab pluginSidebarEntries={[
+            { label: 'Settings Admin', path: '/settings-admin', parentPath: 'settings', access: ADMIN_ONLY },
+            { label: 'Settings Extra', path: '/settings-extra', parentPath: 'settings' },
+        ]} />, { wrapper: MemoryRouter });
+
+        expect(document.querySelector('a[href="/settings-admin"]')).toBeNull();
+        expect(document.querySelector('a[href="/settings-extra"]')).not.toBeNull();
     });
 });

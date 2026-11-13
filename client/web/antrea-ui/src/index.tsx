@@ -89,7 +89,7 @@ async function main() {
                 },
                 ...getPluginRoutes().map((route) => ({
                     path: route.path.replace(/^\//, ''),
-                    element: <PluginPage tag={route.tag} />,
+                    element: <PluginPage tag={route.tag} access={route.access} />,
                 })),
             ],
         },

@@ -43,15 +43,53 @@
 import satisfies from 'semver/functions/satisfies';
 import valid from 'semver/functions/valid';
 import validRange from 'semver/ranges/valid';
+import { parsePath } from 'react-router';
 import config from './config';
-import type { EdgeExtraRenderer, FlowTableColumnsProcessor } from '@antrea/ui-components';
+import { createPluginHostAccess, isNamespaceAware, meetsAccessRequirements, parseAccessRequirements } from '@antrea/ui-components';
+import type { AccessSummary, EdgeExtraRenderer, FlowTableColumnsProcessor, PluginAccessRequirement } from '@antrea/ui-components';
 // The host and the SDK must agree on AntreaPluginHost's shape (it's the contract every plugin's
 // registerX() call goes through), but only as types — importing them with `import type` here
 // costs nothing at runtime, so there's no reason to hand-duplicate the interface as the actual
 // host-side implementation used to.
-import type { AntreaPluginHost, PluginRoute, PluginSidebarEntry, LandingPageTab } from '@antrea/ui-plugin-sdk';
+import type {
+    AntreaPluginHost,
+    PluginRoute as SdkPluginRoute,
+    PluginSidebarEntry as SdkPluginSidebarEntry,
+    LandingPageTab as SdkLandingPageTab,
+} from '@antrea/ui-plugin-sdk';
 
-export type { PluginRoute, PluginSidebarEntry, LandingPageTab };
+// Each registration keeps its `requires` (see the SDK) parsed into `access`, the list of
+// requirements that must all hold for the user to see it. Validated here, at registration, so
+// every reader shares one answer for a malformed value: always denied, logged once.
+interface Gated {
+    access?: readonly PluginAccessRequirement[];
+}
+export type PluginRoute = SdkPluginRoute & Gated;
+// `namespaceAware` is a property of the page, not of the entry: whether the route at the entry's
+// pathname declares `namespaceScope`. The entry's own `requires` only gates it.
+export type PluginSidebarEntry = SdkPluginSidebarEntry & Gated & { namespaceAware?: boolean };
+export type LandingPageTab = SdkLandingPageTab & Gated;
+
+function gated<T extends { requires?: PluginAccessRequirement }>(item: T, what: string): T & Gated {
+    const access = parseAccessRequirements(item.requires, what);
+    return access.length > 0 ? { ...item, access } : item;
+}
+
+/**
+ * Whether a plugin item gated by `access` should be shown, given useAccess()'s state. Gated items
+ * stay hidden until the summary has loaded, so an admin-only tab never flashes for other users.
+ */
+export function allowsPluginItem(
+    { summary, loaded }: { summary: AccessSummary | null; loaded: boolean },
+    access: readonly PluginAccessRequirement[] | undefined,
+): boolean {
+    return !access?.length || (loaded && meetsAccessRequirements(summary, access));
+}
+
+// window.__antreaPluginHost.access. AccessProvider (access.tsx) publishes into it, so plugin code
+// and this host's nav and routes see the same summary.
+const pluginAccess = createPluginHostAccess();
+export const publishPluginAccess = pluginAccess.publish;
 
 const pluginRoutes: PluginRoute[] = [];
 const pluginSidebarEntries: PluginSidebarEntry[] = [];
@@ -64,11 +102,12 @@ declare global {
 }
 
 window.__antreaPluginHost = {
-    registerRoute: route => pluginRoutes.push(route),
-    registerSidebarEntry: entry => pluginSidebarEntries.push(entry),
+    registerRoute: route => pluginRoutes.push(gated(route, `route "${route.path}"`)),
+    registerSidebarEntry: entry => pluginSidebarEntries.push(gated(entry, `sidebar entry "${entry.path}"`)),
     registerEdgeExtraRenderer: fn => edgeExtraRenderers.push(fn),
     registerFlowTableColumnsProcessor: fn => flowTableColumnsProcessors.push(fn),
-    registerLandingPageTab: tab => pluginLandingPageTabs.push(tab),
+    registerLandingPageTab: tab => pluginLandingPageTabs.push(gated(tab, `landing page tab "${tab.id}"`)),
+    access: pluginAccess.access,
 };
 
 // Top-level pages owned by Antrea UI itself, and the only paths a plugin sidebar entry's
@@ -154,8 +193,20 @@ export function resolveParentPaths(entries: PluginSidebarEntry[]): PluginSidebar
     });
 }
 
+// An entry also inherits the `access` of the route at its pathname, on top of its own, even when
+// its link carries a query or fragment: gating a page must hide its sidebar entries too. It is
+// `namespaceAware` when that route is (see PluginPage), whatever the entry's own `requires` say.
 export function getPluginSidebarEntries(): PluginSidebarEntry[] {
-    return resolveParentPaths(dedupeByPath(pluginSidebarEntries, 'sidebar entry'));
+    const routeAccess = new Map(getPluginRoutes().map(route => [stripLeadingSlash(route.path), route.access ?? []]));
+    return resolveParentPaths(dedupeByPath(pluginSidebarEntries, 'sidebar entry')).map(entry => {
+        const pathname = stripLeadingSlash(parsePath(entry.path).pathname ?? '');
+        const pageAccess = routeAccess.get(pathname) ?? [];
+        const access = [...(entry.access ?? []), ...pageAccess];
+        const namespaceAware = isNamespaceAware(pageAccess);
+        return access.length > 0 || namespaceAware
+            ? { ...entry, ...(access.length > 0 && { access }), ...(namespaceAware && { namespaceAware }) }
+            : entry;
+    });
 }
 
 // A sibling to dedupeByPath, keyed by `id` instead of `path`: landing page tabs have no path of
@@ -213,7 +264,10 @@ export interface PluginManifest {
         remoteEntry: string;
         // kind mirrors apis/v1's PluginRouteKindComponent/PluginRouteKindRoutes; the backend
         // rejects a manifest with any other value, so the union can't be widened by input.
-        routes: { path: string; sidebarLabel: string; icon?: string; exposedModule: string; kind?: 'component' | 'routes' }[];
+        routes: {
+            path: string; sidebarLabel: string; icon?: string; exposedModule: string; kind?: 'component' | 'routes';
+            requires?: PluginAccessRequirement;
+        }[];
     };
 }
 

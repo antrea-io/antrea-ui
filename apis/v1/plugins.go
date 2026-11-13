@@ -14,6 +14,13 @@
 
 package v1
 
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"slices"
+)
+
 // PluginManifest describes a frontend plugin discovered by the backend from a labeled ConfigMap
 // or a plugin directory (see pkg/plugins). Page extensions (edge details, flow table columns) are
 // always registered by the plugin's own code - the host needs an actual
@@ -138,4 +145,133 @@ type PluginRoute struct {
 	// owns, letting it nest its own sub-paths and register its own route-level providers without
 	// the host knowing anything about them.
 	Kind string `json:"kind,omitempty"`
+	// Requires, when set, makes a host hide this route and its sidebar entry from users who
+	// don't meet it, evaluated against their AccessSummary. It is a UI hint, not authorization:
+	// Kubernetes RBAC still authorizes every API call the plugin's page makes.
+	Requires *PluginAccessRequirement `json:"requires,omitempty"`
+}
+
+// PluginAccessRequirement mirrors PluginAccessRequirement in antrea-ui-plugin-sdk.
+//
+// ClusterAdmin decides visibility alone: when it is set, NamespaceScope and Resources are ignored
+// for visibility, but NamespaceScope still enables Namespace scope behavior. Otherwise, without
+// NamespaceScope, Resources must hold cluster-wide. With it, the item is for a Namespace-aware
+// page: its verdict comes from Resources, and it is available to a user for whom that verdict is
+// not "denied", who may list Namespaces, or who is named in at least one RoleBinding. None of this
+// is a per-Namespace review, and Kubernetes RBAC still authorizes every call.
+type PluginAccessRequirement struct {
+	// ClusterAdmin limits the item to users whose AccessSummary reports ClusterAdmin.
+	ClusterAdmin bool `json:"clusterAdmin,omitempty"`
+	// NamespaceScope declares the page Namespace-aware.
+	NamespaceScope bool `json:"namespaceScope,omitempty"`
+	// Resources lists queries checked against the user's rules. An unknown verdict (incomplete
+	// rules) counts as passing, the same as for the built-in pages.
+	Resources *PluginResourceRequirement `json:"resources,omitempty"`
+}
+
+// PluginResourceRequirement is "resources" of a PluginAccessRequirement: a plain array of queries
+// (all must pass, or with NamespaceScope any of them), {"allOf": [...]} (all must pass), or
+// {"anyOf": [...]} (at least one). It is served in the form the manifest wrote it.
+type PluginResourceRequirement struct {
+	AllOf []PluginResourceQuery
+	AnyOf []PluginResourceQuery
+	// Array is set when the manifest wrote the plain array, whose queries are in AllOf.
+	Array bool
+}
+
+// UnmarshalJSON accepts the plain array, or an object with exactly one of "allOf" and "anyOf".
+// Unknown keys are rejected, like the rest of a requirement.
+func (r *PluginResourceRequirement) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) > 0 && trimmed[0] == '[' {
+		var queries []PluginResourceQuery
+		decoder := json.NewDecoder(bytes.NewReader(trimmed))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&queries); err != nil {
+			return err
+		}
+		*r = PluginResourceRequirement{AllOf: queries, Array: true}
+		return nil
+	}
+	var decoded struct {
+		AllOf []PluginResourceQuery `json:"allOf"`
+		AnyOf []PluginResourceQuery `json:"anyOf"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(trimmed))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&decoded); err != nil {
+		return err
+	}
+	if (decoded.AllOf == nil) == (decoded.AnyOf == nil) {
+		return errors.New("must be an array of queries, or an object with exactly one of 'allOf' and 'anyOf'")
+	}
+	*r = PluginResourceRequirement{AllOf: decoded.AllOf, AnyOf: decoded.AnyOf}
+	return nil
+}
+
+// MarshalJSON writes the form the manifest used.
+func (r PluginResourceRequirement) MarshalJSON() ([]byte, error) {
+	switch {
+	case r.Array:
+		return json.Marshal(r.AllOf)
+	case r.AnyOf != nil:
+		return json.Marshal(struct {
+			AnyOf []PluginResourceQuery `json:"anyOf"`
+		}{r.AnyOf})
+	default:
+		return json.Marshal(struct {
+			AllOf []PluginResourceQuery `json:"allOf"`
+		}{r.AllOf})
+	}
+}
+
+// UnmarshalJSON rejects unknown requirement and resource-query fields so a misspelled
+// permission cannot silently become an unrestricted route. It also rejects a null anywhere in
+// the requirement, which decoding would turn into "not written" (dropping a gate), while a host
+// reading the manifest as written treats it as malformed.
+func (r *PluginAccessRequirement) UnmarshalJSON(data []byte) error {
+	var raw any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	if raw == nil {
+		return nil
+	}
+	if containsNull(raw) {
+		return errors.New("must not contain null: leave the field out instead")
+	}
+	type requirement PluginAccessRequirement
+	var decoded requirement
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&decoded); err != nil {
+		return err
+	}
+	*r = PluginAccessRequirement(decoded)
+	return nil
+}
+
+func containsNull(v any) bool {
+	switch v := v.(type) {
+	case nil:
+		return true
+	case map[string]any:
+		for _, e := range v {
+			if containsNull(e) {
+				return true
+			}
+		}
+	case []any:
+		return slices.ContainsFunc(v, containsNull)
+	}
+	return false
+}
+
+// PluginResourceQuery mirrors ResourceQuery in antrea-ui-components' access API.
+type PluginResourceQuery struct {
+	// Group is the API group, "" for the core group.
+	Group    string `json:"group"`
+	Resource string `json:"resource"`
+	Verb     string `json:"verb"`
+	Name     string `json:"name,omitempty"`
 }

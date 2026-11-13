@@ -16,10 +16,10 @@
 
 import React, { useSyncExternalStore } from 'react';
 import { useLocation } from 'react-router';
-import { Link } from 'react-router';
+import { Link, parsePath } from 'react-router';
 import '@antrea/ui-components';
 import { can, canViewSummary, canViewFlows, canViewOverview, GATE_TRACEFLOW_CREATE, GATE_SUPPORTBUNDLE_LIST } from '@antrea/ui-components';
-import type { PluginSidebarEntry } from './plugins';
+import { allowsPluginItem, type PluginSidebarEntry } from './plugins';
 import { useAccess, useScopeUser } from './access';
 import { getLastScope, scopeSearch, subscribeLastScope } from './lastScope';
 
@@ -74,12 +74,24 @@ function stripLeadingSlash(path: string): string {
 
 // Both operands are normalized before comparing: a plugin's registered path or parentPath may or
 // may not have a leading slash (dedupeByPath / plugins.ts's resolveParentPaths accept either),
-// while `pathname` from useLocation() always does.
+// while `pathname` from useLocation() always does. Query strings and fragments do not affect
+// pathname matching; a link with only those parts points at the current page.
 function pathStartsWith(pathname: string, path: string): boolean {
-    return stripLeadingSlash(pathname).startsWith(stripLeadingSlash(path));
+    return stripLeadingSlash(pathname).startsWith(stripLeadingSlash(parsePath(path).pathname ?? pathname));
 }
 function pathEquals(pathname: string, path: string): boolean {
     return stripLeadingSlash(pathname) === stripLeadingSlash(path);
+}
+
+// A plugin link may already have a query string or fragment. Merge the scope without turning it
+// into part of another parameter's value or the fragment, and keep relative paths relative.
+function withNamespaceScope(path: string, scope: string) {
+    const namespace = new URLSearchParams(scope).get('namespace');
+    if (namespace === null) return path;
+    const destination = parsePath(path);
+    const search = new URLSearchParams(destination.search);
+    search.set('namespace', namespace);
+    return { ...destination, search: `?${search}` };
 }
 
 function GearIcon() {
@@ -94,7 +106,7 @@ function GearIcon() {
 // Renders a single plugin sidebar entry as an antrea-nav-item — used both for top-level plugin
 // entries and for entries nested under a group via parentPath (see plugins.ts's
 // resolveParentPaths).
-function renderPluginNavItem(entry: PluginSidebarEntry, pathname: string) {
+function renderPluginNavItem(entry: PluginSidebarEntry, pathname: string, scopeFor: (entry: PluginSidebarEntry) => string) {
     const external = isExternalUrl(entry.path);
     const label = (
         <>
@@ -116,13 +128,13 @@ function renderPluginNavItem(entry: PluginSidebarEntry, pathname: string) {
                     {label}
                 </a>
             ) : (
-                <Link to={entry.path}>{label}</Link>
+                <Link to={withNamespaceScope(entry.path, scopeFor(entry))}>{label}</Link>
             )}
         </antrea-nav-item>
     );
 }
 
-export default function NavTab({ pluginSidebarEntries }: { pluginSidebarEntries: PluginSidebarEntry[] }) {
+export default function NavTab({ pluginSidebarEntries: allPluginSidebarEntries }: { pluginSidebarEntries: PluginSidebarEntry[] }) {
     const { pathname, search } = useLocation();
     const user = useScopeUser();
     // Subscribed: a page sets it after the navigation has rendered, when it takes a scope from its URL.
@@ -136,6 +148,15 @@ export default function NavTab({ pluginSidebarEntries }: { pluginSidebarEntries:
     const showTraceflow = loaded && can(summary, GATE_TRACEFLOW_CREATE);
     const showFlows = loaded && canViewFlows(summary);
     const showSupportBundle = loaded && can(summary, GATE_SUPPORTBUNDLE_LIST);
+
+    // Entries gated by `requires` (see plugins.ts) drop out for users who don't meet it. A hidden
+    // top-level plugin entry takes the entries nested under it along, unlike a gated built-in
+    // page below, whose children move to top level: a plugin's children are its own sub-pages.
+    const visibleEntries = allPluginSidebarEntries.filter((entry) => allowsPluginItem({ summary, loaded }, entry.access));
+    const visiblePaths = new Set(visibleEntries.map((entry) => stripLeadingSlash(entry.path)));
+    const pluginParents = new Set(allPluginSidebarEntries.filter((entry) => !entry.parentPath).map((entry) => stripLeadingSlash(entry.path)));
+    const pluginSidebarEntries = visibleEntries.filter((entry) =>
+        !entry.parentPath || !pluginParents.has(entry.parentPath) || visiblePaths.has(entry.parentPath));
 
     // Plugin entries with a parentPath (already resolved/normalized by plugins.ts's
     // resolveParentPaths — always a leading-slash-stripped path, whether that path belongs to a
@@ -176,7 +197,7 @@ export default function NavTab({ pluginSidebarEntries }: { pluginSidebarEntries:
         builtinChildren: { path: string; node: React.ReactNode }[] = []
     ): React.ReactNode {
         const pluginChildren = childrenByParent.get(path) ?? [];
-        const renderedPluginChildren = pluginChildren.map((child) => renderPluginNavItem(child, pathname));
+        const renderedPluginChildren = pluginChildren.map((child) => renderPluginNavItem(child, pathname, pluginScope));
 
         if (!show) {
             if (!loaded) return null;
@@ -206,6 +227,11 @@ export default function NavTab({ pluginSidebarEntries }: { pluginSidebarEntries:
     const entryScope = (onPage: boolean) => scopeSearch(onPage
         ? (pageScopes.length === 1 ? pageScopes[0] : null)
         : lastScope);
+    // An entry for a Namespace-aware page (see getPluginSidebarEntries) carries a scope like the
+    // built-in ones; any other does not.
+    const pluginScope = (entry: PluginSidebarEntry) => entry.namespaceAware
+        ? entryScope(pathStartsWith(pathname, entry.path))
+        : '';
     const flowsSearch = entryScope(pathStartsWith(pathname, '/flows'));
     const overviewSearch = entryScope(pathEquals(pathname, '/overview') || pathname === '/');
 
@@ -287,7 +313,7 @@ export default function NavTab({ pluginSidebarEntries }: { pluginSidebarEntries:
             {topLevelPluginEntries.map((entry) => withNestedChildren(
                 stripLeadingSlash(entry.path),
                 true,
-                renderPluginNavItem(entry, pathname)
+                renderPluginNavItem(entry, pathname, pluginScope)
             ))}
         </antrea-nav>
     );

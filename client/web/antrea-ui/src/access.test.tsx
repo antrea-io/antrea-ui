@@ -49,6 +49,27 @@ afterEach(() => {
 });
 
 describe('AccessProvider', () => {
+    test('publishes to plugins before the commit that renders the loaded state', async () => {
+        vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(summaryWith())));
+        const store = setupStore({ session: 'authenticated' });
+        const hostLoadedWhenRendered: boolean[] = [];
+        function HostProbe() {
+            const { loaded } = useAccess();
+            // A plugin element mounted by this render reads the host's view at that moment.
+            if (loaded) hostLoadedWhenRendered.push(window.__antreaPluginHost!.access!.loaded());
+            return null;
+        }
+
+        render(
+            <Provider store={store}>
+                <AccessProvider><HostProbe /></AccessProvider>
+            </Provider>,
+        );
+
+        await waitFor(() => expect(hostLoadedWhenRendered.length).toBeGreaterThan(0));
+        expect(hostLoadedWhenRendered[0]).toBe(true);
+    });
+
     test('fetches accessSummary once the session is authenticated', async () => {
         const fetchMock = vi.fn().mockResolvedValue(jsonResponse(summaryWith()));
         vi.stubGlobal('fetch', fetchMock);

@@ -26,6 +26,7 @@ import {
     canViewFlows,
     holdsFlowsClusterWide,
     canViewOverview,
+    reachesNamespace,
     holdsOverviewResources,
     GATE_CONTROLLER_INFO_GET,
     type AccessSummary,
@@ -632,5 +633,26 @@ describe('canViewOverview', () => {
 
     test('fails open on a null summary', () => {
         expect(canViewOverview(null)).toBe(true);
+    });
+});
+
+describe('reachesNamespace', () => {
+    const listNamespaces = rules({ resourceRules: [{ apiGroups: [''], resources: ['namespaces'], verbs: ['list'] }] });
+
+    test('true for a user who may list Namespaces', () => {
+        expect(reachesNamespace(summary({ rules: listNamespaces, namespaces: ['*'] }))).toBe(true);
+    });
+
+    test('true for a user named in a RoleBinding', () => {
+        expect(reachesNamespace(summary({ namespaces: ['team-a'] }))).toBe(true);
+    });
+
+    test('false for a user with neither', () => {
+        expect(reachesNamespace(summary())).toBe(false);
+    });
+
+    test('fails open on a null summary or incomplete rules', () => {
+        expect(reachesNamespace(null)).toBe(true);
+        expect(reachesNamespace(summary({ rules: rules({ incomplete: true }) }))).toBe(true);
     });
 });
