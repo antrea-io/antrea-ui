@@ -137,6 +137,17 @@ export function accessSummary(): Promise<AccessSummary> {
 }
 
 /**
+ * Fetches GET /api/v1/access-summary again, bypassing and leaving alone the memo of
+ * accessSummary(). For a page that outlives the answer it got at load and wants to notice a grant
+ * added since, without resetAccessSummary(), which is for logout: it also clears every Namespace
+ * memo and the shared Namespace list. The shell copied the summary into its own state once per
+ * session and does not see this one, so navigation gating is unchanged.
+ */
+export function fetchAccessSummary(): Promise<AccessSummary> {
+    return fetchWithTimeout<AccessSummary>('access-summary');
+}
+
+/**
  * Fetches GET /api/v1/access-summary/namespaces: the access summary of each Namespace named, in
  * one request, memoized so that every feature asking about the same Namespaces shares it. Unlike
  * accessSummary(), a success is only reused for NAMESPACE_ACCESS_TTL_MS: what it says can change

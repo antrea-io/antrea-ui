@@ -17,7 +17,7 @@ import { state, property } from 'lit/decorators.js';
 import { pageStyles, pickerStyles } from '../lib/styles.js';
 import { apiFetchJSON, APIError } from '../lib/api.js';
 import {
-    accessSummary, namespaceAccessSummaries, can, pageVerdict,
+    accessSummary, fetchAccessSummary, namespaceAccessSummaries, can, pageVerdict,
     GATE_NAMESPACES_LIST, GATE_PODS_LIST, GATE_SERVICES_LIST,
     GATE_DEPLOYMENTS_LIST, GATE_STATEFULSETS_LIST, GATE_DAEMONSETS_LIST,
     GATE_K8S_NETWORKPOLICIES_LIST, GATE_ANTREA_CLUSTERNETWORKPOLICIES_LIST, GATE_ANTREA_NETWORKPOLICIES_LIST,
@@ -31,6 +31,7 @@ import type { ScopeSelectDetail } from '../antrea-namespace-picker.js';
 import { SessionAwarePage } from '../lib/session-aware-page.js';
 import '../antrea-card';
 import '../antrea-alert';
+import '../antrea-button';
 import '../antrea-namespace-picker';
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -118,6 +119,10 @@ const COUNT_LIMIT = 100;
 // Overview: a larger request than the other kinds, but the newest events are more likely to be in
 // it.
 const EVENTS_LIMIT = 2000;
+const REFRESH_INTERVAL_MS = 60_000;
+// Bounds each resource request, so that one which never settles cannot keep the page marked as
+// loading, and so skip every later refresh, for good.
+const REQUEST_TIMEOUT_MS = 30_000;
 
 /** Appends a page limit to a resource path. The proxy forwards the query string untouched (see
  * pkg/server/api/k8s.go, which only rewrites the path). */
@@ -218,7 +223,7 @@ export class AntreaOverviewPage extends SessionAwarePage {
     @state() private _cardErrors: string[] = [];
     // Every resource the selected scope was asked for was either gated off or came back 403, and
     // nothing failed otherwise: the user has nothing to see here, which is a different thing from
-    // "some of it is not shown". See _loadCounts().
+    // "some of it is not shown". See _fetchCounts().
     @state() private _nothingPermitted = false;
     // Why the scope is not what the user asked for: the URL carries an invalid one, or a name
     // they typed is not a valid Namespace name. Reported on the page.
@@ -249,6 +254,62 @@ export class AntreaOverviewPage extends SessionAwarePage {
     // call (e.g. the namespace filter changed again before the first fetch returned) can't
     // overwrite state after a newer one has already resolved.
     private _loadGeneration = 0;
+    private _completedScope = '';
+    private _refreshTimer?: ReturnType<typeof setInterval>;
+    private _loadController?: AbortController;
+    private _sessionExpired = false;
+    @state() private _inFlight = false;
+    @state() private _lastUpdated: number | null = null;
+    // Whether the last completed load carried a value over from an earlier one for a resource
+    // that failed to refresh. Not the same as _lastUpdated: the first load of a scope can fail for
+    // one resource and leave _lastUpdated unset, and a later refresh then keeps what it got.
+    @state() private _keptPrevious = false;
+
+    private _stopRefresh() {
+        clearInterval(this._refreshTimer);
+        this._refreshTimer = undefined;
+    }
+
+    private _cancelLoad() {
+        this._loadGeneration++;
+        this._loadController?.abort();
+        this._loadController = undefined;
+        this._inFlight = false;
+    }
+
+    private _expireSession() {
+        if (this._sessionExpired) return;
+        this._sessionExpired = true;
+        this._stopRefresh();
+        this._cancelLoad();
+        this.dispatchSessionExpired();
+    }
+
+    private _refresh = () => {
+        if (!this.isConnected || document.hidden || this._sessionExpired || this._inFlight || !this._scope) return;
+        void this._loadCounts(this._completedScope === this._scope);
+    };
+
+    private _startRefresh() {
+        this._stopRefresh();
+        if (!document.hidden && !this._sessionExpired) {
+            this._refreshTimer = setInterval(this._refresh, REFRESH_INTERVAL_MS);
+        }
+    }
+
+    private _onVisibilityChange = () => {
+        if (document.hidden) {
+            this._stopRefresh();
+            this._cancelLoad();
+        } else if (!this._sessionExpired) {
+            if (!this._sessionStarted) this.onSessionReady();
+            else {
+                if (!this._access) void this._loadAccess();
+                this._refresh();
+                this._startRefresh();
+            }
+        }
+    };
 
     private _onPopState = () => {
         if (this.locationSearch === undefined) this._onLocationChange();
@@ -257,11 +318,18 @@ export class AntreaOverviewPage extends SessionAwarePage {
     override connectedCallback() {
         super.connectedCallback();
         window.addEventListener('popstate', this._onPopState);
+        document.addEventListener('visibilitychange', this._onVisibilityChange);
     }
 
     override disconnectedCallback() {
         super.disconnectedCallback();
         window.removeEventListener('popstate', this._onPopState);
+        document.removeEventListener('visibilitychange', this._onVisibilityChange);
+        this._stopRefresh();
+        this._cancelLoad();
+        this._loadedScope = '';
+        this._sessionStarted = false;
+        this._sessionExpired = false;
     }
 
     override willUpdate(changed: Map<string, unknown>) {
@@ -280,6 +348,8 @@ export class AntreaOverviewPage extends SessionAwarePage {
     }
 
     protected override onSessionReady() {
+        if (document.hidden || this._sessionExpired) return;
+        this._startRefresh();
         // A scope the URL carries is used as it is, so its content loads at once while the
         // namespace list loads for the picker. Only a default, when the URL has none, has to wait
         // for the list and the verdict: it is applied when they arrive (see _loadAccess).
@@ -293,13 +363,14 @@ export class AntreaOverviewPage extends SessionAwarePage {
     private async _loadAccess() {
         // A dead session shows here first when nothing else is fetched (no scope to load yet).
         const summary = await accessSummary().catch(err => {
-            if (this.isSessionExpiredError(err)) this.dispatchSessionExpired();
+            if (this.isSessionExpiredError(err)) this._expireSession();
             return null;
         });
+        if (!this.isConnected || document.hidden || this._sessionExpired) return;
         const access = await namespaceAccess(summary, s => pageVerdict(s, PAGE_GATES));
         // The page may have been left while this loaded: going on would load content nothing
         // will show.
-        if (!this.isConnected) return;
+        if (!this.isConnected || document.hidden || this._sessionExpired) return;
         this._access = access;
         // The URL the page last took or wrote, not the location prop: a scope picked while the
         // list loaded is in the former, and the router may not have delivered it to the latter.
@@ -363,7 +434,10 @@ export class AntreaOverviewPage extends SessionAwarePage {
         if (scope === this._loadedScope) return;
         if (scope === '') {
             // Nothing to show: drop what the previous scope loaded.
-            this._loadGeneration++;
+            this._cancelLoad();
+            this._lastUpdated = null;
+            this._keptPrevious = false;
+            this._completedScope = '';
             this._loadedScope = '';
             this._loadedOnce = false;
             this._counts = {};
@@ -377,7 +451,8 @@ export class AntreaOverviewPage extends SessionAwarePage {
             this._refreshing = false;
             return;
         }
-        void this._loadCounts();
+        this._lastUpdated = null;
+        if (!document.hidden && !this._sessionExpired) void this._loadCounts();
     }
 
     /** Notes that the selected namespace is not in the list (see scopeNote). */
@@ -395,11 +470,15 @@ export class AntreaOverviewPage extends SessionAwarePage {
      * added while the page is open shows up within about a minute (see namespaceAccessSummaries).
      * Fails open (null) when it cannot be fetched, and an item whose review failed carries
      * `incomplete`, which does the same. */
-    private async _summaryForScope(ns: string): Promise<HasRules | null> {
-        if (!ns) return accessSummary().catch(() => null);
+    private async _summaryForScope(ns: string, fresh: boolean): Promise<HasRules | null> {
         try {
+            // The cluster-scoped summary is kept for the whole session, which is right for the
+            // first load but not for a page left open: a refresh asks again, as it does for a
+            // Namespace, so that a grant added meanwhile shows up.
+            if (!ns) return await (fresh ? fetchAccessSummary() : accessSummary());
             return (await namespaceAccessSummaries([ns])).items[0] ?? null;
-        } catch {
+        } catch (err) {
+            if (this.isSessionExpiredError(err)) throw err;
             return null;
         }
     }
@@ -422,47 +501,89 @@ export class AntreaOverviewPage extends SessionAwarePage {
         void this._refreshScopeNote();
     }
 
-    private async _loadCounts() {
-        const generation = ++this._loadGeneration;
+    private async _loadCounts(background = false) {
+        this._cancelLoad();
+        const generation = this._loadGeneration;
+        const controller = new AbortController();
+        this._loadController = controller;
+        this._inFlight = true;
+        try {
+            await this._fetchCounts(background, generation, controller.signal);
+        } catch (err) {
+            if (generation === this._loadGeneration) {
+                if (this.isSessionExpiredError(err)) this._expireSession();
+                else this._recordFailure('Overview', err);
+            }
+        } finally {
+            if (generation === this._loadGeneration) {
+                this._inFlight = false;
+                this._loadController = undefined;
+                // Whatever ended the load, it no longer is one.
+                this._loading = false;
+                this._refreshing = false;
+            }
+        }
+    }
+
+    private async _fetchCounts(background: boolean, generation: number, signal: AbortSignal) {
         // Only the very first load replaces the page with a spinner. A namespace re-filter keeps
         // the previous tiles visible and just marks them stale.
         const scope = this._scope;
         this._loadedScope = scope;
-        if (this._loadedOnce) this._refreshing = true;
-        else this._loading = true;
-        this._someCardsForbidden = false;
-        this._cardErrors = [];
-        // Reset with the other two: the scope has already changed by now, and the stale page
-        // would otherwise tell the user they may see nothing in the namespace they just picked.
-        this._nothingPermitted = false;
+        if (!background) {
+            if (this._loadedOnce) this._refreshing = true;
+            else this._loading = true;
+            this._someCardsForbidden = false;
+            this._cardErrors = [];
+            // The old scope's notices do not describe the new selection.
+            this._nothingPermitted = false;
+        }
         const namespace = scope === SCOPE_ALL ? '' : scope;
-        const summary = await this._summaryForScope(namespace);
+        const summary = await this._summaryForScope(namespace, this._loadedOnce);
         if (generation !== this._loadGeneration) return;
+        // Started only now, so that a slow summary does not use up the time of the requests.
+        // Combined by hand: AbortSignal.any is newer than the browsers the build targets.
+        const requests = new AbortController();
+        const abortRequests = () => requests.abort(signal.reason);
+        if (signal.aborted) abortRequests();
+        else signal.addEventListener('abort', abortRequests, { once: true });
+        const timer = setTimeout(
+            () => requests.abort(new DOMException('The operation timed out.', 'TimeoutError')),
+            REQUEST_TIMEOUT_MS);
 
         // A cluster-scoped resource is not asked about while a namespace is selected: see
         // ResourceSpec.clusterScoped. It is skipped outright, so it counts neither as hidden from
         // the user nor as something that could have been shown.
         const skipped = (r: ResourceSpec) => Boolean(r.clusterScoped && namespace);
-        const results = await Promise.allSettled(RESOURCES.map(r =>
-            !skipped(r) && can(summary, r.gate)
-                ? apiFetchJSON<K8sList>(withPageLimit(r.path(namespace), r.limit))
-                : Promise.reject(new Error('skipped: no permission')),
-        ));
+        let results: PromiseSettledResult<K8sList>[];
+        try {
+            results = await Promise.allSettled(RESOURCES.map(r =>
+                !skipped(r) && can(summary, r.gate)
+                    ? apiFetchJSON<K8sList>(withPageLimit(r.path(namespace), r.limit), { signal: requests.signal })
+                    : Promise.reject(new Error('skipped: no permission')),
+            ));
+        } finally {
+            clearTimeout(timer);
+            signal.removeEventListener('abort', abortRequests);
+        }
         if (generation !== this._loadGeneration) return;
 
         for (const result of results) {
             if (result.status === 'rejected' && this.isSessionExpiredError(result.reason)) {
-                this.dispatchSessionExpired();
+                this._expireSession();
                 return;
             }
         }
 
+        this._someCardsForbidden = false;
+        this._cardErrors = [];
         const counts: Record<string, number> = {};
         const truncated: Record<string, boolean> = {};
         // Whether anything was shown or failed for a reason other than permission.
         let anythingShown = false;
         let events: K8sEvent[] = [];
         let eventsTruncated = false;
+        let keptPrevious = false;
 
         RESOURCES.forEach((r, i) => {
             if (skipped(r)) return;
@@ -492,10 +613,22 @@ export class AntreaOverviewPage extends SessionAwarePage {
                 this._recordFailure(r.label, result.reason);
                 // A 403 is not "shown" and not an error; anything else is already explained by
                 // the danger alert, and is not a permissions problem.
-                if (!(result.reason instanceof APIError && result.reason.code === 403)) anythingShown = true;
+                if (!(result.reason instanceof APIError && result.reason.code === 403)) {
+                    anythingShown = true;
+                    if (background && r.key in this._counts) {
+                        keptPrevious = true;
+                        counts[r.key] = this._counts[r.key];
+                        truncated[r.key] = this._truncated[r.key];
+                        if (r.key === 'events') {
+                            events = this._events;
+                            eventsTruncated = this._eventsTruncated;
+                        }
+                    }
+                }
             }
         });
         this._nothingPermitted = !anythingShown;
+        this._keptPrevious = keptPrevious;
 
         this._counts = counts;
         this._truncated = truncated;
@@ -504,6 +637,8 @@ export class AntreaOverviewPage extends SessionAwarePage {
         this._loading = false;
         this._refreshing = false;
         this._loadedOnce = true;
+        this._completedScope = scope;
+        if (this._cardErrors.length === 0) this._lastUpdated = Date.now();
     }
 
     /** Classifies a failed fetch the gate had allowed. A 403 means the access summary was wrong
@@ -624,10 +759,22 @@ export class AntreaOverviewPage extends SessionAwarePage {
                     ${this._cardErrors.length > 0 ? html`
                         <antrea-alert status="danger">
                             ${this._cardErrors.join('; ')}
+                            ${this._completedScope === this._scope && this._keptPrevious ? 'Some data could not be refreshed; previous values are shown where available.' : ''}
                         </antrea-alert>
                     ` : nothing}
 
                     ${this._renderScopeSelect()}
+                    ${this._scope ? html`
+                        <div class="row">
+                            <span class="text-muted">
+                                ${this._lastUpdated === null ? 'Not fully updated yet.'
+                                : `Last fully updated: ${new Date(this._lastUpdated).toLocaleString()}.`}
+                                Refreshes every ${REFRESH_INTERVAL_MS / 1000} seconds while this tab is visible.
+                            </span>
+                            <antrea-button type="button" action="outline" ?disabled=${this._inFlight}
+                                @click=${this._refresh}>Refresh now</antrea-button>
+                        </div>
+                    ` : nothing}
 
                     ${this._scope === '' ? this._renderNoScope()
                     : this._loading ? html`<div class="loading-row"><span class="spinner"></span><span>Loading…</span></div>`

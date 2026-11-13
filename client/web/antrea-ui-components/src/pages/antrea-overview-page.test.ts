@@ -90,9 +90,11 @@ const ALL = '__cluster_wide__';
 let el: AntreaOverviewPage | undefined;
 
 afterEach(() => {
-    el?.remove();
+    document.querySelectorAll('antrea-overview-page').forEach(page => page.remove());
     el = undefined;
     vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    vi.useRealTimers();
     resetAccessSummary();
     window.history.replaceState(null, '', '/');
 });
@@ -105,8 +107,11 @@ async function mountWith(handler: (url: string) => Promise<Response>, search?: s
     if (search !== undefined) el.locationSearch = search;
     document.body.appendChild(el);
     await el.updateComplete;
-    await new Promise(r => setTimeout(r, 0));
-    await new Promise(r => setTimeout(r, 0));
+    if (vi.isFakeTimers()) await vi.advanceTimersByTimeAsync(0);
+    else {
+        await new Promise(r => setTimeout(r, 0));
+        await new Promise(r => setTimeout(r, 0));
+    }
     await el.updateComplete;
     return el;
 }
@@ -129,8 +134,11 @@ async function mount(
 
 async function settle(page: AntreaOverviewPage) {
     await page.updateComplete;
-    await new Promise(r => setTimeout(r, 0));
-    await new Promise(r => setTimeout(r, 0));
+    if (vi.isFakeTimers()) await vi.advanceTimersByTimeAsync(0);
+    else {
+        await new Promise(r => setTimeout(r, 0));
+        await new Promise(r => setTimeout(r, 0));
+    }
     await page.updateComplete;
 }
 
@@ -1140,5 +1148,382 @@ describe('AntreaOverviewPage — Recent Events', () => {
         };
         const page = await mount({ pods: list(['p1'], 'default') }, summary);
         expect(hasTile(page, 'Recent Events')).toBe(false);
+    });
+});
+
+
+describe('automatic refresh', () => {
+    function visibility(hidden: boolean) {
+        vi.spyOn(document, 'hidden', 'get').mockReturnValue(hidden);
+        document.dispatchEvent(new Event('visibilitychange'));
+    }
+
+    function resourceCalls(key = 'pods') {
+        return vi.mocked(fetch).mock.calls.filter(([url]) => keyForUrl(String(url)) === key);
+    }
+
+    function deferred<T>() {
+        let resolve!: (value: T) => void;
+        const promise = new Promise<T>(r => { resolve = r; });
+        return { promise, resolve };
+    }
+
+    test('refreshes after 60 seconds, pauses while hidden, and resumes immediately', async () => {
+        vi.useFakeTimers();
+        const page = await mount({ pods: list(['a']) });
+        expect(resourceCalls()).toHaveLength(1);
+        await vi.advanceTimersByTimeAsync(59_999);
+        expect(resourceCalls()).toHaveLength(1);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(resourceCalls()).toHaveLength(2);
+        expect(tileValue(page, 'Pods')).toBe('1');
+        expect(page.shadowRoot!.textContent).toContain('Last fully updated:');
+        visibility(true);
+        await vi.advanceTimersByTimeAsync(180_000);
+        expect(resourceCalls()).toHaveLength(2);
+        visibility(false);
+        await settle(page);
+        expect(resourceCalls()).toHaveLength(3);
+        // The first load reuses the session's cluster permission summary; each refresh asks again.
+        expect(resourceCalls('access-summary')).toHaveLength(3);
+    });
+
+    test('does not fetch on a hidden mount and starts when made visible', async () => {
+        vi.useFakeTimers();
+        visibility(true);
+        const page = await mount();
+        expect(fetch).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(fetch).not.toHaveBeenCalled();
+        visibility(false);
+        await settle(page);
+        expect(resourceCalls()).toHaveLength(1);
+    });
+
+    test('skips in-flight ticks and manual clicks without dimming or clearing notices', async () => {
+        vi.useFakeTimers();
+        let hold = false;
+        const pending = deferred<Response>();
+        const page = await mountWith(async url => {
+            const key = keyForUrl(url);
+            if (key === 'access-summary') return jsonResponse(fullAccessSummary());
+            if (key === 'services') return jsonResponse({}, 403);
+            if (key === 'pods') return hold ? pending.promise : jsonResponse(list(['a']));
+            return jsonResponse({ items: [] });
+        });
+        const notice = alertText(page, 'info');
+        hold = true;
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(page.shadowRoot!.querySelector('.stale')).toBeNull();
+        expect(alertText(page, 'info')).toBe(notice);
+        expect(tileValue(page, 'Pods')).toBe('1');
+        const refresh = page.shadowRoot!.querySelector('antrea-button')!;
+        expect(refresh.disabled).toBe(true);
+        refresh.click();
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(resourceCalls()).toHaveLength(2);
+        pending.resolve(jsonResponse(list(['a', 'b'])));
+        await settle(page);
+        expect(tileValue(page, 'Pods')).toBe('2');
+        expect(refresh.disabled).toBe(false);
+    });
+
+    test('retains failed values and event truncation but removes forbidden values', async () => {
+        vi.useFakeTimers();
+        let status = 200;
+        const page = await mountWith(async url => {
+            const key = keyForUrl(url);
+            if (key === 'access-summary') return jsonResponse(fullAccessSummary());
+            if (key === 'pods') return jsonResponse(list(['a']), status);
+            if (key === 'events') return jsonResponse({
+                items: [event({ name: 'old-event' })], metadata: { continue: 'more' },
+            }, status);
+            return jsonResponse({ items: [] });
+        });
+        const updated = page.shadowRoot!.textContent!.match(/Last fully updated:.*?\./)?.[0];
+        status = 503;
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(tileValue(page, 'Pods')).toBe('1');
+        expect(listRows(page, 'Recent Events')).toHaveLength(1);
+        expect(page.shadowRoot!.textContent).toContain('the newest may not be listed');
+        expect(page.shadowRoot!.textContent).toContain(updated);
+        expect(alertText(page, 'danger')).toContain('previous values are shown');
+        status = 403;
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(hasTile(page, 'Pods')).toBe(false);
+        expect(hasTile(page, 'Recent Events')).toBe(false);
+        expect(alertText(page, 'danger')).toBeNull();
+    });
+
+    test('times out a request that never settles instead of blocking later refreshes', async () => {
+        vi.useFakeTimers();
+        let hang = false;
+        const page = await mountWith(async (url, init?: RequestInit) => {
+            const key = keyForUrl(url);
+            if (key === 'access-summary') return jsonResponse(fullAccessSummary());
+            if (key === 'pods' && hang) {
+                return new Promise<Response>((_, reject) => {
+                    init!.signal!.addEventListener('abort', () => reject(init!.signal!.reason));
+                });
+            }
+            if (key === 'pods') return jsonResponse(list(['a']));
+            return jsonResponse({ items: [] });
+        });
+        hang = true;
+        await vi.advanceTimersByTimeAsync(60_000);
+        const refresh = page.shadowRoot!.querySelector('antrea-button')!;
+        expect(refresh.disabled).toBe(true);
+        await vi.advanceTimersByTimeAsync(30_000);
+        await settle(page);
+        expect(refresh.disabled).toBe(false);
+        expect(tileValue(page, 'Pods')).toBe('1');
+        expect(alertText(page, 'danger')).toContain('Pods');
+        hang = false;
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(resourceCalls()).toHaveLength(3);
+        expect(alertText(page, 'danger')).toBeNull();
+    });
+
+    test('gives the resource requests their full timeout after a slow access summary', async () => {
+        vi.useFakeTimers();
+        let slow = false;
+        let aborted = false;
+        await mountWith(async (url, init?: RequestInit) => {
+            const key = keyForUrl(url);
+            if (key === 'access-summary') {
+                if (slow) await new Promise(r => setTimeout(r, 10_000));
+                return jsonResponse(fullAccessSummary());
+            }
+            if (key === 'pods' && slow) {
+                return new Promise<Response>((_, reject) => {
+                    init!.signal!.addEventListener('abort', () => { aborted = true; reject(init!.signal!.reason); });
+                });
+            }
+            return jsonResponse({ items: [] });
+        });
+        slow = true;
+        await vi.advanceTimersByTimeAsync(60_000);
+        // The summary takes 10 seconds, so the request is aborted 30 seconds after that, not
+        // 30 after the refresh began.
+        await vi.advanceTimersByTimeAsync(39_000);
+        expect(aborted).toBe(false);
+        await vi.advanceTimersByTimeAsync(1_000);
+        expect(aborted).toBe(true);
+    });
+
+    test('a refresh notices a grant added cluster-wide while the page is open', async () => {
+        vi.useFakeTimers();
+        let granted = false;
+        const namespacesOnly = { apiGroups: [''], resources: ['namespaces'], verbs: ['list'] };
+        const podsToo = { apiGroups: [''], resources: ['pods'], verbs: ['list'] };
+        const page = await mountWith(async url => {
+            const key = keyForUrl(url);
+            if (key === 'access-summary') {
+                return jsonResponse({
+                    username: 'bob', groups: [], clusterAdmin: false, namespaces: ['*'],
+                    rules: {
+                        resourceRules: granted ? [namespacesOnly, podsToo] : [namespacesOnly],
+                        nonResourceRules: [], incomplete: false,
+                    },
+                });
+            }
+            if (key === 'pods') return jsonResponse(list(['a']));
+            return jsonResponse({ items: [] });
+        });
+        expect(hasTile(page, 'Pods')).toBe(false);
+        granted = true;
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(tileValue(page, 'Pods')).toBe('1');
+    });
+
+    test('does not claim previous values after a first load that failed', async () => {
+        vi.useFakeTimers();
+        const page = await mountWith(async url => {
+            const key = keyForUrl(url);
+            if (key === 'access-summary') return jsonResponse(fullAccessSummary());
+            if (key === 'pods') return jsonResponse({}, 503);
+            return jsonResponse({ items: [] });
+        });
+        expect(alertText(page, 'danger')).toContain('Pods');
+        expect(alertText(page, 'danger')).not.toContain('previous values are shown');
+    });
+
+    test('says previous values are shown when a refresh keeps one, though no load ever fully succeeded', async () => {
+        vi.useFakeTimers();
+        let podsStatus = 200;
+        const page = await mountWith(async url => {
+            const key = keyForUrl(url);
+            if (key === 'access-summary') return jsonResponse(fullAccessSummary());
+            if (key === 'pods') return jsonResponse(list(['a']), podsStatus);
+            if (key === 'services') return jsonResponse({}, 503);
+            return jsonResponse({ items: [] });
+        });
+        expect(alertText(page, 'danger')).toContain('Services');
+        expect(alertText(page, 'danger')).not.toContain('previous values are shown');
+        podsStatus = 503;
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(tileValue(page, 'Pods')).toBe('1');
+        expect(alertText(page, 'danger')).toContain('Pods');
+        expect(alertText(page, 'danger')).toContain('previous values are shown');
+        podsStatus = 200;
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(alertText(page, 'danger')).not.toContain('Pods');
+        expect(alertText(page, 'danger')).not.toContain('previous values are shown');
+    });
+
+    test('loads again when reattached after the session expired', async () => {
+        vi.useFakeTimers();
+        let status = 200;
+        let items = ['a'];
+        const page = await mountWith(async url => {
+            const key = keyForUrl(url);
+            if (key === 'access-summary') return jsonResponse(fullAccessSummary());
+            if (key === 'pods') return jsonResponse(list(items), status);
+            return jsonResponse({ items: [] });
+        });
+        status = 401;
+        await vi.advanceTimersByTimeAsync(60_000);
+        page.remove();
+        status = 200;
+        items = ['a', 'b'];
+        document.body.appendChild(page);
+        await settle(page);
+        expect(tileValue(page, 'Pods')).toBe('2');
+    });
+
+    test('aborts on disconnect, ignores late results, and refreshes on reconnect', async () => {
+        vi.useFakeTimers();
+        let hold = false;
+        const pending = deferred<Response>();
+        const page = await mountWith(async url => {
+            const key = keyForUrl(url);
+            if (key === 'access-summary') return jsonResponse(fullAccessSummary());
+            if (key === 'pods') return hold ? pending.promise : jsonResponse(list(['a']));
+            return jsonResponse({ items: [] });
+        });
+        hold = true;
+        await vi.advanceTimersByTimeAsync(60_000);
+        const signal = resourceCalls().at(-1)![1]!.signal!;
+        page.remove();
+        expect(signal.aborted).toBe(true);
+        pending.resolve(jsonResponse(list(['a', 'b'])));
+        await vi.advanceTimersByTimeAsync(180_000);
+        expect(resourceCalls()).toHaveLength(2);
+        expect(tileValue(page, 'Pods')).toBe('1');
+        hold = false;
+        document.body.appendChild(page);
+        await settle(page);
+        expect(resourceCalls()).toHaveLength(3);
+    });
+
+    test('aborts hidden loads and ignores their late results after a visible refresh', async () => {
+        vi.useFakeTimers();
+        let hold = false;
+        const pending = deferred<Response>();
+        const page = await mountWith(async url => {
+            const key = keyForUrl(url);
+            if (key === 'access-summary') return jsonResponse(fullAccessSummary());
+            if (key === 'pods') return hold ? pending.promise : jsonResponse(list(['a']));
+            return jsonResponse({ items: [] });
+        });
+        hold = true;
+        await vi.advanceTimersByTimeAsync(60_000);
+        const signal = resourceCalls().at(-1)![1]!.signal!;
+        visibility(true);
+        expect(signal.aborted).toBe(true);
+        hold = false;
+        visibility(false);
+        await settle(page);
+        pending.resolve(jsonResponse(list(['a', 'b'])));
+        await settle(page);
+        expect(tileValue(page, 'Pods')).toBe('1');
+    });
+
+    test('manual refresh works and a resource 401 stops subsequent polling', async () => {
+        vi.useFakeTimers();
+        let status = 200;
+        const page = await mountWith(async url => {
+            const key = keyForUrl(url);
+            if (key === 'access-summary') return jsonResponse(fullAccessSummary());
+            return jsonResponse({ items: [] }, status);
+        });
+        const expired = vi.fn();
+        page.addEventListener('antrea-session-expired', expired);
+        page.shadowRoot!.querySelector('antrea-button')!.click();
+        await settle(page);
+        expect(resourceCalls()).toHaveLength(2);
+        status = 401;
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(expired).toHaveBeenCalledTimes(1);
+        await vi.advanceTimersByTimeAsync(120_000);
+        visibility(true);
+        visibility(false);
+        await settle(page);
+        expect(resourceCalls()).toHaveLength(3);
+    });
+
+    test('does not start resource requests when a pending permission lookup completes hidden', async () => {
+        vi.useFakeTimers();
+        const pending = deferred<Response>();
+        const page = await mountWith(async url => {
+            const key = keyForUrl(url);
+            if (key === 'access-summary') return pending.promise;
+            return jsonResponse({ items: [] });
+        }, '?namespace=_all');
+        visibility(true);
+        pending.resolve(jsonResponse(fullAccessSummary()));
+        await settle(page);
+        expect(resourceCalls()).toHaveLength(0);
+        expect(resourceCalls('namespaces')).toHaveLength(0);
+        visibility(false);
+        await settle(page);
+        expect(resourceCalls()).toHaveLength(1);
+    });
+
+    test('a namespace selection supersedes a pending refresh and never retains the old scope', async () => {
+        vi.useFakeTimers();
+        let hold = false;
+        const pending = deferred<Response>();
+        const page = await mountWith(async url => {
+            const key = keyForUrl(url);
+            if (key === 'access-summary') return jsonResponse(fullAccessSummary());
+            if (key === 'access-summary-namespaces') return jsonResponse({
+                items: [{ namespace: 'demo', rules: fullAccessSummary().rules }],
+            });
+            if (key === 'pods') {
+                if (url.includes('/namespaces/demo/')) return jsonResponse({}, 503);
+                return hold ? pending.promise : jsonResponse(list(['old-scope-pod']));
+            }
+            return jsonResponse({ items: [] });
+        }, '?namespace=_all');
+        hold = true;
+        await vi.advanceTimersByTimeAsync(60_000);
+        const signal = resourceCalls().at(-1)![1]!.signal!;
+        page.locationSearch = '?namespace=demo';
+        await settle(page);
+        expect(signal.aborted).toBe(true);
+        expect(hasTile(page, 'Pods')).toBe(false);
+        pending.resolve(jsonResponse(list(['old-scope-pod', 'another-old-pod'])));
+        await settle(page);
+        expect(hasTile(page, 'Pods')).toBe(false);
+    });
+
+    test('a namespace permission 401 expires the session before resource requests', async () => {
+        vi.useFakeTimers();
+        let status = 200;
+        const page = await mountWith(async url => {
+            const key = keyForUrl(url);
+            if (key === 'access-summary') return jsonResponse(fullAccessSummary());
+            if (key === 'access-summary-namespaces') return jsonResponse({
+                items: [{ namespace: 'demo', rules: fullAccessSummary().rules }],
+            }, status);
+            return jsonResponse({ items: [] });
+        }, '?namespace=demo');
+        const expired = vi.fn();
+        page.addEventListener('antrea-session-expired', expired);
+        status = 401;
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(expired).toHaveBeenCalledTimes(1);
+        expect(resourceCalls()).toHaveLength(1);
     });
 });
