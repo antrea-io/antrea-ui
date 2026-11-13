@@ -332,14 +332,6 @@ func (w *writeGate) Write(p []byte) (int, error) {
 	return w.closeNotifyRecorder.Write(p)
 }
 
-// WriteString must funnel through Write rather than httptest.ResponseRecorder's own WriteString
-// (which would otherwise be promoted as-is): gin's ResponseWriter writes SSE payloads with
-// io.WriteString, which prefers a io.StringWriter implementation over Write when the underlying
-// writer has one - bypassing the gate above entirely and writing the event before started fires.
-func (w *writeGate) WriteString(s string) (int, error) {
-	return w.Write([]byte(s))
-}
-
 // flowsChErrChRaceSubscriber sends one flow event and then, once told the caller is busy
 // delivering it (see writeGate), fails the same way every GRPCFlowStreamSubscriber.Subscribe error
 // path does: buffer err into errCh, then close flowsCh (its deferred close(flowsCh) then
