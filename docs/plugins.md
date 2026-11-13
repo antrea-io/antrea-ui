@@ -1089,6 +1089,8 @@ must:
   router adopts the new location. Both events are `CustomEvent`s that bubble and
   are composed.
 
+The host applies `requires` as follows:
+
 - **Sidebar entries.** A user who doesn't meet a sidebar entry's
   requirement doesn't see the entry. A sidebar entry also inherits the
   `requires` of the route at its pathname, ignoring the link's query string and
