@@ -42,7 +42,8 @@ is more specific, it wins.
 
 A page is available, both in the navigation and through a direct link, if the page's verdict
 is *allowed* or *unknown*, the user may list Namespaces, or the Namespace list is not empty. A
-scope in the URL does not make an unavailable page available.
+scope in the URL does not make an unavailable page available. A plugin page may be available to
+fewer users (rule 11).
 
 ## 2. The picker
 
@@ -153,10 +154,12 @@ refreshes them.
 A plugin page is Namespace-aware when it declares so, and then follows these rules, including
 the URL parameters of rule 12, like any other page. It may replace parts of them, such as its
 picker or how it picks its scope; a scope it sets through Antrea UI is still kept in its URL and
-becomes the last scope chosen, like any other. Its verdict comes from the permissions it
-declares; when it declares none, it is *allowed* for a user who may do every verb on every
-resource (the access summary says so), and *unknown* otherwise. A plugin page that declares
-nothing is not Namespace-aware.
+becomes the last scope chosen, like any other. It may also be available to fewer users than
+rule 1 makes it available to, for example only to users who may do every verb on every
+resource, and it follows these rules for the users it is available to. Its verdict comes from
+the permissions it declares; when it declares none, it is *allowed* for a user who may do every
+verb on every resource (the access summary says so), and *unknown* otherwise. A plugin page that
+declares nothing is not Namespace-aware.
 
 ## 12. The scope in the URL
 
