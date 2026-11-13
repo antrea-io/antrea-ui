@@ -2188,12 +2188,12 @@ __metadata:
   languageName: node
   linkType: hard
 
-"d3-delaunay@npm:^6.0.5":
-  version: 6.0.5
-  resolution: "d3-delaunay@npm:6.0.5"
+"d3-delaunay@npm:^6.0.6":
+  version: 6.0.6
+  resolution: "d3-delaunay@npm:6.0.6"
   dependencies:
     delaunator: "npm:5"
-  checksum: 10c0/ee29d7549fcd3c3e7730c324705e8095b115b9e9166f2d24d89304e71e994a4185130bd624af9b6518d0008ff22d32559e75522a0dd19745ca49ad5246ecd7a9
+  checksum: 10c0/cecec91a48e5df25b709fa19deb2212896ab662e3b935333a3aa62492ede9553733598b02147ff70a4ba42d96faf9ab6e5110f922c23434f883289e908585ceb
   languageName: node
   linkType: hard
 
@@ -2569,8 +2569,8 @@ __metadata:
   linkType: hard
 
 "d3@npm:^7.9.0":
-  version: 7.9.1
-  resolution: "d3@npm:7.9.1"
+  version: 7.9.2
+  resolution: "d3@npm:7.9.2"
   dependencies:
     d3-array: "npm:^3.2.5"
     d3-axis: "npm:^3.0.1"
@@ -2578,7 +2578,7 @@ __metadata:
     d3-chord: "npm:^3.0.2"
     d3-color: "npm:^3.1.1"
     d3-contour: "npm:^4.0.3"
-    d3-delaunay: "npm:^6.0.5"
+    d3-delaunay: "npm:^6.0.6"
     d3-dispatch: "npm:^3.0.2"
     d3-drag: "npm:^3.0.1"
     d3-dsv: "npm:^3.0.2"
@@ -2602,7 +2602,7 @@ __metadata:
     d3-timer: "npm:^3.0.2"
     d3-transition: "npm:^3.0.2"
     d3-zoom: "npm:^3.0.1"
-  checksum: 10c0/b33ef6c1129a27c0751270e727b8f15f288ec9c5a1c9fb9eae97c5eb414caae5b8956ff4d5a80b1e33bc0191877520a96581d0c2d410999b472b801d089900f3
+  checksum: 10c0/779dab79424e3d9cea7151059e6770369f13d5e7dc11eb6d08ead0e9bf5dbca134b32b6559a635ca6c62b18e7cba202919931cafa54a6306c305d190a8b6c502
   languageName: node
   linkType: hard
 
