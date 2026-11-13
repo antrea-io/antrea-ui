@@ -1348,6 +1348,29 @@ describe('automatic refresh', () => {
         expect(alertText(page, 'danger')).not.toContain('previous values are shown');
     });
 
+    test('says previous values are shown when a refresh keeps one, though no load ever fully succeeded', async () => {
+        vi.useFakeTimers();
+        let podsStatus = 200;
+        const page = await mountWith(async url => {
+            const key = keyForUrl(url);
+            if (key === 'access-summary') return jsonResponse(fullAccessSummary());
+            if (key === 'pods') return jsonResponse(list(['a']), podsStatus);
+            if (key === 'services') return jsonResponse({}, 503);
+            return jsonResponse({ items: [] });
+        });
+        expect(alertText(page, 'danger')).toContain('Services');
+        expect(alertText(page, 'danger')).not.toContain('previous values are shown');
+        podsStatus = 503;
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(tileValue(page, 'Pods')).toBe('1');
+        expect(alertText(page, 'danger')).toContain('Pods');
+        expect(alertText(page, 'danger')).toContain('previous values are shown');
+        podsStatus = 200;
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(alertText(page, 'danger')).not.toContain('Pods');
+        expect(alertText(page, 'danger')).not.toContain('previous values are shown');
+    });
+
     test('loads again when reattached after the session expired', async () => {
         vi.useFakeTimers();
         let status = 200;

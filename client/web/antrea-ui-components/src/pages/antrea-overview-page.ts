@@ -260,6 +260,10 @@ export class AntreaOverviewPage extends SessionAwarePage {
     private _sessionExpired = false;
     @state() private _inFlight = false;
     @state() private _lastUpdated: number | null = null;
+    // Whether the last completed load carried a value over from an earlier one for a resource
+    // that failed to refresh. Not the same as _lastUpdated: the first load of a scope can fail for
+    // one resource and leave _lastUpdated unset, and a later refresh then keeps what it got.
+    @state() private _keptPrevious = false;
 
     private _stopRefresh() {
         clearInterval(this._refreshTimer);
@@ -432,6 +436,7 @@ export class AntreaOverviewPage extends SessionAwarePage {
             // Nothing to show: drop what the previous scope loaded.
             this._cancelLoad();
             this._lastUpdated = null;
+            this._keptPrevious = false;
             this._completedScope = '';
             this._loadedScope = '';
             this._loadedOnce = false;
@@ -578,6 +583,7 @@ export class AntreaOverviewPage extends SessionAwarePage {
         let anythingShown = false;
         let events: K8sEvent[] = [];
         let eventsTruncated = false;
+        let keptPrevious = false;
 
         RESOURCES.forEach((r, i) => {
             if (skipped(r)) return;
@@ -610,6 +616,7 @@ export class AntreaOverviewPage extends SessionAwarePage {
                 if (!(result.reason instanceof APIError && result.reason.code === 403)) {
                     anythingShown = true;
                     if (background && r.key in this._counts) {
+                        keptPrevious = true;
                         counts[r.key] = this._counts[r.key];
                         truncated[r.key] = this._truncated[r.key];
                         if (r.key === 'events') {
@@ -621,6 +628,7 @@ export class AntreaOverviewPage extends SessionAwarePage {
             }
         });
         this._nothingPermitted = !anythingShown;
+        this._keptPrevious = keptPrevious;
 
         this._counts = counts;
         this._truncated = truncated;
@@ -751,7 +759,7 @@ export class AntreaOverviewPage extends SessionAwarePage {
                     ${this._cardErrors.length > 0 ? html`
                         <antrea-alert status="danger">
                             ${this._cardErrors.join('; ')}
-                            ${this._completedScope === this._scope && this._lastUpdated !== null ? 'Some data could not be refreshed; previous values are shown where available.' : ''}
+                            ${this._completedScope === this._scope && this._keptPrevious ? 'Some data could not be refreshed; previous values are shown where available.' : ''}
                         </antrea-alert>
                     ` : nothing}
 
