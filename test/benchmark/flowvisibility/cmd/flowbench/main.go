@@ -32,9 +32,11 @@ import (
 	"time"
 
 	"github.com/spf13/pflag"
+	"helm.sh/helm/v4/pkg/action"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/cli-runtime/pkg/genericclioptions"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/util/retry"
@@ -59,23 +61,26 @@ func logf(format string, args ...any) {
 	fmt.Fprintf(os.Stderr, "[%s] %s\n", time.Now().Format("15:04:05"), fmt.Sprintf(format, args...))
 }
 
-// cluster is how flowbench reaches the cluster: client-go for the objects it manages, and the
-// same kubeconfig and context for helm.
+// cluster is how flowbench reaches the cluster: client-go for the objects it manages, and the Helm
+// SDK, with the same kubeconfig and context, for antrea-ui.
 type cluster struct {
 	kubeconfig string
 	context    string
 	clientset  kubernetes.Interface
 }
 
-func (c *cluster) helmArgs() []string {
-	var args []string
-	if c.kubeconfig != "" {
-		args = append(args, "--kubeconfig", c.kubeconfig)
+// helmConfig returns the Helm action configuration for releases in namespace, stored as Secrets
+// like the Helm CLI does by default.
+func (c *cluster) helmConfig(namespace string) (*action.Configuration, error) {
+	flags := genericclioptions.NewConfigFlags(true)
+	flags.KubeConfig = &c.kubeconfig
+	flags.Context = &c.context
+	flags.Namespace = &namespace
+	cfg := action.NewConfiguration()
+	if err := cfg.Init(flags, namespace, "secret"); err != nil {
+		return nil, fmt.Errorf("failed to initialize Helm: %w", err)
 	}
-	if c.context != "" {
-		args = append(args, "--kube-context", c.context)
-	}
-	return args
+	return cfg, nil
 }
 
 func (c *cluster) addFlags(fs *pflag.FlagSet) {
@@ -213,7 +218,7 @@ func addDeployFlags(fs *pflag.FlagSet, o *deployOptions) {
 	fs.StringVar(&o.uiNamespace, "ui-namespace", metav1.NamespaceSystem, "Namespace antrea-ui is installed in")
 	fs.StringVar(&o.uiRelease, "ui-release", "antrea-ui", "Helm release name of antrea-ui")
 	fs.IntVar(&o.nodePort, "node-port", 31234, "NodePort of the antrea-ui Service")
-	fs.StringArrayVar(&o.helmSets, "helm-set", nil, "extra --set for the antrea-ui chart (repeatable)")
+	fs.StringArrayVar(&o.helmSets, "helm-set", nil, "extra value for the antrea-ui chart, in helm --set syntax (repeatable)")
 }
 
 func main() {

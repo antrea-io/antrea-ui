@@ -15,7 +15,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -26,14 +25,19 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"math/big"
-	"os"
-	"os/exec"
 	"path/filepath"
-	"strings"
 	"time"
 
+	"helm.sh/helm/v4/pkg/action"
+	"helm.sh/helm/v4/pkg/chart/v2/loader"
+	"helm.sh/helm/v4/pkg/kube"
+	releasecommon "helm.sh/helm/v4/pkg/release/common"
+	releasev1 "helm.sh/helm/v4/pkg/release/v1"
+	"helm.sh/helm/v4/pkg/storage/driver"
+	"helm.sh/helm/v4/pkg/strvals"
 	appsv1 "k8s.io/api/apps/v1"
 	authenticationv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -92,7 +96,21 @@ type deployOptions struct {
 
 func deploy(ctx context.Context, o *deployOptions) error {
 	cs := o.clientset
-	exists, owned, err := uiReleaseOwnership(ctx, &o.cluster, o.uiNamespace, o.uiRelease)
+	scaleJSON, err := json.MarshalIndent(o.scale, "", "  ")
+	if err != nil {
+		return err
+	}
+	sum := sha256.Sum256(scaleJSON)
+	scaleHash := hex.EncodeToString(sum[:8])
+	uiVals, err := uiValues(o, scaleHash)
+	if err != nil {
+		return err
+	}
+	helmCfg, err := o.helmConfig(o.uiNamespace)
+	if err != nil {
+		return err
+	}
+	exists, owned, err := uiReleaseOwnership(helmCfg, o.uiRelease)
 	if err != nil {
 		return err
 	}
@@ -121,10 +139,6 @@ func deploy(ctx context.Context, o *deployOptions) error {
 	}); err != nil {
 		return err
 	}
-	scaleJSON, err := json.MarshalIndent(o.scale, "", "  ")
-	if err != nil {
-		return err
-	}
 	if err := apply(ctx, cs.CoreV1().ConfigMaps(faNamespace), &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{Name: faScaleConfig, Labels: map[string]string{partOfLabel: partOfValue}},
 		Data:       map[string]string{"scale.json": string(scaleJSON)},
@@ -134,8 +148,6 @@ func deploy(ctx context.Context, o *deployOptions) error {
 	if err := apply(ctx, cs.CoreV1().Services(faNamespace), fakeFAService()); err != nil {
 		return err
 	}
-	sum := sha256.Sum256(scaleJSON)
-	scaleHash := hex.EncodeToString(sum[:8])
 	if err := apply(ctx, cs.AppsV1().Deployments(faNamespace), fakeFADeployment(o.fakeFAImage, scaleHash)); err != nil {
 		return err
 	}
@@ -149,7 +161,7 @@ func deploy(ctx context.Context, o *deployOptions) error {
 	if err := waitForDeployment(ctx, cs, faNamespace, faName); err != nil {
 		return err
 	}
-	if err := helmInstallUI(ctx, o, scaleHash); err != nil {
+	if err := helmInstallUI(ctx, o, helmCfg, exists, uiVals); err != nil {
 		return err
 	}
 	logf("Waiting for antrea-ui to be ready")
@@ -158,7 +170,11 @@ func deploy(ctx context.Context, o *deployOptions) error {
 
 func teardown(ctx context.Context, c *cluster, uiNamespace, uiRelease string) error {
 	cs := c.clientset
-	exists, owned, err := uiReleaseOwnership(ctx, c, uiNamespace, uiRelease)
+	helmCfg, err := c.helmConfig(uiNamespace)
+	if err != nil {
+		return err
+	}
+	exists, owned, err := uiReleaseOwnership(helmCfg, uiRelease)
 	switch {
 	case err != nil:
 		return err
@@ -167,10 +183,12 @@ func teardown(ctx context.Context, c *cluster, uiNamespace, uiRelease string) er
 		logf("Keeping Helm release %s/%s: flowbench did not install it", uiNamespace, uiRelease)
 	default:
 		logf("Uninstalling Helm release %s/%s", uiNamespace, uiRelease)
-		// #nosec G204: helm, with arguments from flowbench's own flags
-		cmd := exec.CommandContext(ctx, "helm", append(c.helmArgs(), "uninstall", uiRelease, "-n", uiNamespace, "--ignore-not-found")...)
-		if out, err := cmd.CombinedOutput(); err != nil {
-			return fmt.Errorf("helm uninstall failed: %w\n%s", err, out)
+		uninstall := action.NewUninstall(helmCfg)
+		uninstall.IgnoreNotFound = true
+		uninstall.WaitStrategy = kube.HookOnlyStrategy
+		uninstall.Timeout = 5 * time.Minute
+		if _, err := uninstall.Run(uiRelease); err != nil {
+			return fmt.Errorf("failed to uninstall Helm release %s/%s: %w", uiNamespace, uiRelease, err)
 		}
 	}
 	if err := syncSyntheticNamespaces(ctx, cs, 0); err != nil {
@@ -199,26 +217,29 @@ func teardown(ctx context.Context, c *cluster, uiNamespace, uiRelease string) er
 }
 
 // uiReleaseOwnership reports whether the Helm release exists, and whether flowbench installed it:
-// helmInstallUI labels the release with partOfLabel.
-func uiReleaseOwnership(ctx context.Context, c *cluster, namespace, release string) (exists, owned bool, err error) {
-	// #nosec G204: helm, with arguments from flowbench's own flags
-	cmd := exec.CommandContext(ctx, "helm", append(c.helmArgs(), "get", "metadata", release, "-n", namespace, "-o", "json")...)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	out, err := cmd.Output()
+// helmInstallUI labels the release with partOfLabel. An uninstalled release whose history was
+// kept does not exist: it has no objects left, and installing over it replaces it.
+func uiReleaseOwnership(helmCfg *action.Configuration, name string) (exists, owned bool, err error) {
+	r, err := action.NewGet(helmCfg).Run(name)
+	if errors.Is(err, driver.ErrReleaseNotFound) {
+		return false, false, nil
+	}
 	if err != nil {
-		if strings.Contains(stderr.String(), "release: not found") {
-			return false, false, nil
-		}
-		return false, false, fmt.Errorf("helm get metadata failed: %w\n%s", err, stderr.Bytes())
+		return false, false, fmt.Errorf("failed to get Helm release %s: %w", name, err)
 	}
-	var metadata struct {
-		Labels map[string]string `json:"labels"`
+	var rel *releasev1.Release
+	switch r := r.(type) {
+	case *releasev1.Release:
+		rel = r
+	case releasev1.Release:
+		rel = &r
+	default:
+		return false, false, fmt.Errorf("unsupported Helm release type %T", r)
 	}
-	if err := json.Unmarshal(out, &metadata); err != nil {
-		return false, false, fmt.Errorf("failed to parse the metadata of Helm release %s/%s: %w", namespace, release, err)
+	if rel.Info != nil && rel.Info.Status == releasecommon.StatusUninstalled {
+		return false, false, nil
 	}
-	return true, metadata.Labels[partOfLabel] == partOfValue, nil
+	return true, rel.Labels[partOfLabel] == partOfValue, nil
 }
 
 // ensureFakeFANamespace creates the Namespace the fake Flow Aggregator runs in. It refuses one that
@@ -451,31 +472,58 @@ func fakeFADeployment(image, scaleHash string) *appsv1.Deployment {
 	}
 }
 
-// helmInstallUI installs or upgrades antrea-ui. scaleHash goes into the Pod template, so that each
-// scale of a run is measured with a fresh backend rather than one that served the previous scale.
-func helmInstallUI(ctx context.Context, o *deployOptions, scaleHash string) error {
-	args := append(o.helmArgs(),
-		"upgrade", "--install", o.uiRelease, filepath.Join(o.repoRoot, "build/charts/antrea-ui"),
-		"-n", o.uiNamespace,
-		"--labels", partOfLabel+"="+partOfValue,
-		// --set-string, as a hash of digits only would otherwise be a number.
-		"--set-string", `podAnnotations.flowbench\.antrea\.io/scale-hash=`+scaleHash,
-		"--set", "flowAggregator.enabled=true",
-		"--set", "frontend.image.tag="+o.uiImageTag,
-		"--set", "backend.image.tag="+o.uiImageTag,
-		"--set", "service.type=NodePort",
-		"--set", fmt.Sprintf("service.nodePort=%d", o.nodePort),
-		"--wait", "--timeout", "5m",
-	)
-	for _, s := range o.helmSets {
-		args = append(args, "--set", s)
+// uiValues returns the values antrea-ui is installed with: flowbench's own, then the --helm-set ones
+// over them. scaleHash goes into the Pod template, so that each scale of a run is measured with a
+// fresh backend rather than one that served the previous scale.
+func uiValues(o *deployOptions, scaleHash string) (map[string]any, error) {
+	vals := map[string]any{
+		"podAnnotations": map[string]any{"flowbench.antrea.io/scale-hash": scaleHash},
+		"flowAggregator": map[string]any{"enabled": true},
+		"frontend":       map[string]any{"image": map[string]any{"tag": o.uiImageTag}},
+		"backend":        map[string]any{"image": map[string]any{"tag": o.uiImageTag}},
+		"service":        map[string]any{"type": "NodePort", "nodePort": o.nodePort},
 	}
-	logf("Installing the antrea-ui chart: helm %v", args)
-	// #nosec G204: helm, with arguments from flowbench's own flags
-	cmd := exec.CommandContext(ctx, "helm", args...)
-	cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("helm upgrade --install failed: %w", err)
+	for _, s := range o.helmSets {
+		if err := strvals.ParseInto(s, vals); err != nil {
+			return nil, fmt.Errorf("--helm-set %q: %w", s, err)
+		}
+	}
+	return vals, nil
+}
+
+// helmInstallUI installs antrea-ui from the repository's chart, or upgrades the release if it
+// exists, and waits for its objects to be ready.
+func helmInstallUI(ctx context.Context, o *deployOptions, helmCfg *action.Configuration, exists bool, vals map[string]any) error {
+	chart, err := loader.Load(filepath.Join(o.repoRoot, "build/charts/antrea-ui"))
+	if err != nil {
+		return fmt.Errorf("failed to load the antrea-ui chart: %w", err)
+	}
+	labels := map[string]string{partOfLabel: partOfValue}
+	if exists {
+		logf("Upgrading Helm release %s/%s", o.uiNamespace, o.uiRelease)
+		upgrade := action.NewUpgrade(helmCfg)
+		upgrade.Namespace = o.uiNamespace
+		upgrade.Labels = labels
+		// The helm CLI's default: each deploy, and each scale of a run, adds a revision.
+		upgrade.MaxHistory = 10
+		upgrade.WaitStrategy = kube.StatusWatcherStrategy
+		upgrade.Timeout = 5 * time.Minute
+		_, err = upgrade.RunWithContext(ctx, o.uiRelease, chart, vals)
+	} else {
+		logf("Installing Helm release %s/%s", o.uiNamespace, o.uiRelease)
+		install := action.NewInstall(helmCfg)
+		install.ReleaseName = o.uiRelease
+		install.Namespace = o.uiNamespace
+		install.Labels = labels
+		// Reuses the name of an uninstalled release whose history was kept, like helm upgrade
+		// --install does.
+		install.Replace = true
+		install.WaitStrategy = kube.StatusWatcherStrategy
+		install.Timeout = 5 * time.Minute
+		_, err = install.RunWithContext(ctx, chart, vals)
+	}
+	if err != nil {
+		return fmt.Errorf("failed to install Helm release %s/%s: %w", o.uiNamespace, o.uiRelease, err)
 	}
 	return nil
 }

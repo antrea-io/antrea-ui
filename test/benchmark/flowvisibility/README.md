@@ -30,7 +30,7 @@ get.
 
 ## Setup
 
-From the repository root, with Docker, Helm, Go and Node.js:
+From the repository root, with Docker, Go and Node.js:
 
 ```bash
 # A cluster. Kind's default CNI is fine: no Antrea is needed.
