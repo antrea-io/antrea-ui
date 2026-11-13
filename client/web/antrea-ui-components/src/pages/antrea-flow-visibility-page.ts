@@ -23,6 +23,7 @@ import {
 import type { ScopeSelectDetail } from '../antrea-namespace-picker.js';
 import { SessionAwarePage } from '../lib/session-aware-page.js';
 import { FlowStore, FlowEntry, entryBitRate } from '../lib/flow-store.js';
+import { SeenNames } from '../lib/seen-names.js';
 import {
     FlowType,
     NetworkPolicyRuleAction,
@@ -145,9 +146,17 @@ const UNKNOWN_NAMESPACES_NOTE =
 // wrong.
 const IDENTIFIED_ONLY_HINT = 'Matches identified endpoints only.';
 
-// Said in the Namespaces menu, which is built from the flows received so far rather than from a
-// cluster-wide list, so it fills in as they arrive.
-const NAMESPACES_HINT = 'Namespaces seen in current flows.';
+// Said in the Namespaces menu, which is built from the flows received since the scope was selected
+// rather than from a cluster-wide list, so it fills in as they arrive.
+const NAMESPACES_HINT = 'Namespaces seen in flows in this scope.';
+
+// Said in a filter menu that has nothing to offer because no name of its kind was seen in this
+// scope, rather than because the pending Endpoint narrows them away. The menus only offer names
+// seen in flows, and
+// the applied filters decide which flows arrive, so a menu can stay empty because of them: a scope
+// selected with filters applied starts with no names but those of the filtered flows.
+const NONE_SEEN_HINT = 'None seen in this scope yet.';
+const NONE_SEEN_FILTERED_HINT = 'None seen in this scope yet. The applied filters limit the flows received: Reset may show more.';
 
 // Said on the Endpoint group. The Flow Aggregator matches these filters against a single endpoint
 // of a flow, so a Namespace and a Pod name, for example, select one Pod rather than a flow between
@@ -956,8 +965,8 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
     @state() private _menuQuery = '';
     // The rows of the open filter menu, decided when it opens and when its search or the Endpoint
     // changes, so that they do not change under the keyboard focus or the pointer: ticking an
-    // option only changes its checkbox, and an option unticked or gone from the flows stays where
-    // it was. Options arriving with new flows are shown once the menu is reopened or searched.
+    // option only changes its checkbox, and an option unticked or no longer offered stays where it
+    // was. Options arriving with new flows are shown once the menu is reopened or searched.
     // Cleared in willUpdate, taken by the next render, with the options and the selection they
     // were taken from.
     private _menuRows: { items: string[], more: boolean, options: string[], selected: string[] } | null = null;
@@ -986,6 +995,11 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
 
     // Non-reactive refs
     private _store = new FlowStore();
+    // The names the filter menus offer. They outlive the stream, so that applying a filter does not
+    // take away the names the next filter needs, but not the scope: see _refreshStream.
+    private _seenNames = new SeenNames();
+    // The scope that _seenNames were seen in.
+    private _seenNamesKey = '';
     private _client: FlowStreamClient | null = null;
     private _simulation: d3.Simulation<D3Node, D3Link> | null = null;
     // The key of the request the open stream was built from, or '' when there is none. Compared
@@ -1122,7 +1136,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         if (clusterWide === this._clusterWide && observedNs === this._observedNs) return;
         this._clusterWide = clusterWide;
         this._observedNs = observedNs;
-        // The open filter menu lists what the old scope's flows showed, as after Apply.
+        // The open filter menu lists the old scope's names, which the new scope does not offer.
         this._nsOpen = false; this._podOpen = false; this._svcOpen = false;
     }
 
@@ -1192,7 +1206,8 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         this._client = null;
         // The stream is gone, so the key that says which request is open no longer holds. Left in
         // place, a reattached element would find the key unchanged in _refreshStream and never
-        // reopen its stream.
+        // reopen its stream. The names the filter menus offer stay: they belong to the scope,
+        // which a reattached element still has.
         this._filterKey = '';
         this._simulation?.stop();
         this._ro?.disconnect();
@@ -1285,6 +1300,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         this._client = new FlowStreamClient(this._filter, {
             onFlows: flows => {
                 this._store.upsertBatch(flows, !this._following);
+                this._seenNames.recordBatch(flows);
                 if (!this._following) this._snapshotCount += flows.length;
                 this._entries = this._store.getAll();
                 this._evictionWarning = this._store.hasEvicted();
@@ -1357,6 +1373,17 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         this._client?.stop();
         this._client = null;
         this._store.clear();
+        // The names the filter menus offer survive a new filter or a new mode, but are those of
+        // one scope: another scope starts with none, even if its stream is refused or never opens.
+        // No scope at all leaves them alone, though the menus do not offer them then: it mostly
+        // lasts while a mode switch decides its default scope, which is usually the same one again.
+        if (filter) {
+            const seenNamesKey = JSON.stringify([filter.observedNamespace ?? '', filter.clusterWide ?? false]);
+            if (seenNamesKey !== this._seenNamesKey) {
+                this._seenNames.reset();
+                this._seenNamesKey = seenNamesKey;
+            }
+        }
         this._entries = [];
         this._evictionWarning = false;
         this._droppedCount = 0;
@@ -1432,11 +1459,12 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         this._selectedEdgeKey = null;
     }
 
-    // ── Available filter options (derived from current entries) ───────────────
+    // ── Available filter options (derived from the names seen) ────────────────
 
     /**
-     * The Namespaces menu's options: the namespaces seen at either end of the flows this stream
-     * has delivered so far, which is why the menu fills in as they arrive. The observed namespace
+     * The Namespaces menu's options: the namespaces seen at either end of the flows received in
+     * the scope (for a destination without a Pod namespace, its Service's), which is why the menu
+     * fills in as they arrive. The observed namespace
      * is one of them: with the endpoint on the source or the destination, it selects the traffic
      * leaving or entering it.
      *
@@ -1447,52 +1475,34 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
      * could only wrongly hide a legitimate option.
      */
     private get _availableNs(): string[] {
-        const ns = new Set<string>();
-        for (const e of this._entries) {
-            const k8s = e.flow.k8s;
-            if (k8s.sourcePodNamespace) ns.add(k8s.sourcePodNamespace);
-            if (k8s.destinationPodNamespace) ns.add(k8s.destinationPodNamespace);
-            // The Flow Aggregator places a destination without a Pod namespace, such as the
-            // backend of default/kubernetes, in its Service's namespace.
-            else {
-                const service = destinationK8sServiceFilterKey(k8s.destinationServicePortName);
-                if (service) ns.add(service.split('/')[0]);
-            }
-        }
-        // A selection stays in the menu even once its traffic goes quiet, so that it does not
-        // vanish from under the user while still being applied.
+        // With no scope, the names kept are those of the last one (see _refreshStream).
+        const ns = new Set(this._scope ? this._seenNames.namespaces() : []);
+        // A selection stays in the menu even if no flow showed it, so that it does not vanish from
+        // under the user while still being applied.
         for (const selected of this._pendingNs) ns.add(selected);
         return Array.from(ns).sort();
     }
 
     /**
      * The Pods menu's options. The endpoint filters all describe one endpoint, so only the Pods
-     * that can be that endpoint are suggested: on the end the pending direction picks, and in one
-     * of the pending namespaces when any is selected. A selection is always offered, whether or
-     * not it fits: the flows received are filtered by what is applied, so they cannot show that a
-     * Pod does not fit. Under Destination, for example, a Pod is never seen as a source.
+     * that can be that endpoint are suggested: seen on the end the pending direction picks, and in
+     * one of the pending namespaces when any is selected. A selection is always offered, whether
+     * or not it fits: the flows received are filtered by what is applied, so they cannot show that
+     * a Pod does not fit. Under Destination, for example, a Pod is never seen as a source.
      */
     private get _availablePods(): string[] {
         const pods = new Set<string>();
-        const add = (namespace: string, pod: string) => {
-            if (pod && (this._pendingNs.length === 0 || this._pendingNs.includes(namespace))) pods.add(pod);
-        };
-        for (const e of this._entries) {
-            const k8s = e.flow.k8s;
-            if (this._pendingDirection !== 'to') add(k8s.sourcePodNamespace, k8s.sourcePodName);
-            if (this._pendingDirection !== 'from') add(k8s.destinationPodNamespace, k8s.destinationPodName);
+        for (const pod of this._scope ? this._seenNames.pods() : []) {
+            const onEnd = (this._pendingDirection !== 'to' && pod.source) || (this._pendingDirection !== 'from' && pod.destination);
+            if (onEnd && (this._pendingNs.length === 0 || this._pendingNs.includes(pod.namespace))) pods.add(pod.name);
         }
         for (const selected of this._pendingPods) pods.add(selected);
         return Array.from(pods).sort();
     }
 
     private get _availableServices(): string[] {
-        const svcs = new Set<string>();
-        for (const e of this._entries) {
-            const k = destinationK8sServiceFilterKey(e.flow.k8s.destinationServicePortName);
-            if (k) svcs.add(k);
-        }
-        // A selection stays in the menu even once its traffic goes quiet, or if it was typed.
+        const svcs = new Set(this._scope ? this._seenNames.services() : []);
+        // A selection stays in the menu even if no flow showed it, or if it was typed.
         for (const selected of this._pendingServices) svcs.add(selected);
         return Array.from(svcs).sort();
     }
@@ -1893,6 +1903,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         onToggle: (v: string) => void,
         hint?: string,
         resolveTyped?: (text: string) => TypedName,
+        noneSeen = false,
     ) {
         const displayText = selected.length === 0 ? 'All' : selected.length <= 2 ? selected.join(', ') : `${selected.slice(0, 2).join(', ')} +${selected.length - 2}`;
         if (open && !this._menuRows) {
@@ -1929,6 +1940,9 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
                         ${addable !== undefined ? html`
                             <button type="button" class="multiselect-add" @click=${() => add(addable)}>+ Add "${addable}"</button>
                         ` : typed.error && shown.items.every(i => shown.selected.includes(i)) ? html`<div class="multiselect-hint">${typed.error}</div>` : nothing}
+                        ${resolveTyped && noneSeen && shown.options.length === 0 && !text ? html`
+                            <div class="multiselect-hint">${Object.keys(this._peerFilter).length > 0 ? NONE_SEEN_FILTERED_HINT : NONE_SEEN_HINT}</div>
+                        ` : nothing}
                         ${shown.items.map(opt => html`
                             <label class="multiselect-option ${selected.includes(opt) ? 'selected' : ''}">
                                 <input type="checkbox" .checked=${selected.includes(opt)} @change=${() => onToggle(opt)} style="accent-color: var(--antrea-color-primary, #0079b8)" />
@@ -1940,6 +1954,11 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
                 ` : nothing}
             </div>
         `;
+    }
+
+    /** Whether a scope is selected and no name of a kind was seen in it. */
+    private _noneSeen(names: unknown[]): boolean {
+        return this._scope !== null && names.length === 0;
     }
 
     private _toggleSelection(current: string[], value: string): string[] {
@@ -2011,8 +2030,8 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
                                 <option value="to">Destination</option>
                             </select>
                         </div>
-                        ${this._renderMultiSelect('Namespaces', this._availableNs, this._pendingNs, this._nsOpen, () => { this._nsOpen = !this._nsOpen; this._podOpen = false; this._svcOpen = false; this._closeScopeMenu(); }, v => { this._pendingNs = this._toggleSelection(this._pendingNs, v); }, NAMESPACES_HINT, typedNamespace)}
-                        ${this._renderMultiSelect('Pods', this._availablePods, this._pendingPods, this._podOpen, () => { this._podOpen = !this._podOpen; this._nsOpen = false; this._svcOpen = false; this._closeScopeMenu(); }, v => { this._pendingPods = this._toggleSelection(this._pendingPods, v); }, IDENTIFIED_ONLY_HINT, typedPod)}
+                        ${this._renderMultiSelect('Namespaces', this._availableNs, this._pendingNs, this._nsOpen, () => { this._nsOpen = !this._nsOpen; this._podOpen = false; this._svcOpen = false; this._closeScopeMenu(); }, v => { this._pendingNs = this._toggleSelection(this._pendingNs, v); }, NAMESPACES_HINT, typedNamespace, this._noneSeen(this._seenNames.namespaces()))}
+                        ${this._renderMultiSelect('Pods', this._availablePods, this._pendingPods, this._podOpen, () => { this._podOpen = !this._podOpen; this._nsOpen = false; this._svcOpen = false; this._closeScopeMenu(); }, v => { this._pendingPods = this._toggleSelection(this._pendingPods, v); }, IDENTIFIED_ONLY_HINT, typedPod, this._noneSeen(this._seenNames.pods()))}
                         <div class="field-group" style="min-width:180px">
                             <label class="field-label" title=${IDENTIFIED_ONLY_HINT}>Pod labels</label>
                             <input class="field-input" type="text" .value=${this._pendingPodLabel} placeholder="app=frontend,version!=v2" @input=${(e: Event) => { this._pendingPodLabel = (e.target as HTMLInputElement).value; }} />
@@ -2023,7 +2042,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
                         </div>
                     </fieldset>
                     <div class="filter-group">
-                        ${this._renderMultiSelect('Services', this._pendingDirection === 'from' ? [] : this._availableServices, this._pendingServices, this._svcOpen, () => { this._svcOpen = !this._svcOpen; this._nsOpen = false; this._podOpen = false; this._closeScopeMenu(); }, v => { this._pendingServices = this._toggleSelection(this._pendingServices, v); }, this._pendingDirection === 'from' ? SERVICES_UNDER_SOURCE_HINT : undefined, this._pendingDirection === 'from' ? undefined : text => typedService(text, this._observedNs))}
+                        ${this._renderMultiSelect('Services', this._pendingDirection === 'from' ? [] : this._availableServices, this._pendingServices, this._svcOpen, () => { this._svcOpen = !this._svcOpen; this._nsOpen = false; this._podOpen = false; this._closeScopeMenu(); }, v => { this._pendingServices = this._toggleSelection(this._pendingServices, v); }, this._pendingDirection === 'from' ? SERVICES_UNDER_SOURCE_HINT : undefined, this._pendingDirection === 'from' ? undefined : text => typedService(text, this._observedNs), this._noneSeen(this._seenNames.services()))}
                         <div class="field-group" style="min-width:140px">
                             <label class="field-label">Flow Type</label>
                             <select class="field-select" .value=${this._pendingFlowType} @change=${(e: Event) => { this._pendingFlowType = (e.target as HTMLSelectElement).value as FlowTypeName | ''; }}>
