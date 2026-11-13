@@ -266,10 +266,11 @@ func (f *filter) match(r *flowpb.Flow) bool {
 		return false
 	}
 	if len(f.services) > 0 {
-		// The contract names a Service without its Namespace: "frontend", not "default/frontend".
-		_, svc, _ := strings.Cut(k.DestinationServicePortName, "/")
-		svc, _, _ = strings.Cut(svc, ":")
-		if svc == "" || !slices.Contains(f.services, svc) {
+		// An entry is either a plain name, matching a Service of that name in any Namespace, or
+		// namespace/name, matching that Service only.
+		nsName, _, _ := strings.Cut(k.DestinationServicePortName, ":")
+		_, svc, _ := strings.Cut(nsName, "/")
+		if svc == "" || !slices.ContainsFunc(f.services, func(s string) bool { return s == svc || s == nsName }) {
 			return false
 		}
 	}
