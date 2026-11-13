@@ -75,12 +75,21 @@ func runRun(ctx context.Context, args []string) error {
 	if o.noDeploy {
 		names, scales = []string{"as-deployed"}, scales[:1]
 	}
-	runDir := filepath.Join(o.resultsDir, time.Now().Format("20060102-150405"))
+	// Absolute, since the browser writes the trace from another working directory.
+	resultsDir, err := filepath.Abs(o.resultsDir)
+	if err != nil {
+		return err
+	}
+	runID := time.Now().Format("20060102-150405")
+	runDir := filepath.Join(resultsDir, runID)
 	var summaries []*summary
 	for i, name := range names {
 		if !o.noDeploy {
 			logf("Deploying scale %s", name)
 			o.scale = scales[i]
+			// Each measurement starts with a fresh backend and fakefa, even when the same scale
+			// was deployed already, by an earlier run or by deploy.
+			o.restartID = runID + "/" + name
 			if err := deploy(ctx, &o.deployOptions); err != nil {
 				return err
 			}

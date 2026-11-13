@@ -66,7 +66,8 @@ reachable from the machine running kind. To reach the UI from another machine, u
 `kubectl port-forward --address 0.0.0.0` command it prints.
 
 Run `deploy` again with another scale to change it: `fakefa` restarts with the new one, and
-antrea-ui reconnects to it. The page reconnects on its own too.
+antrea-ui, which keeps running, reconnects to it. The page reconnects on its own too. The first
+`deploy` after a `run` restarts antrea-ui, though, which ends its sessions: log in again.
 
 To watch the backend while you use the UI:
 
@@ -80,10 +81,11 @@ bin/flowbench monitor --context kind-flowbench
 bin/flowbench run --context kind-flowbench --scale small,medium,large
 ```
 
-For each scale, `run` deploys it, opens the Service Map (`--path /flows/list?namespace=_all` for
-the flow list) in a headless Chromium logged in as the benchmark's cluster-admin, waits for the
-first render, lets it warm up (`--warmup`, 30s), then samples for `--duration` (2m) every
-`--sample-interval` (2s). Use `--no-deploy` to measure whatever is deployed instead.
+For each scale, `run` deploys it, restarting antrea-ui and `fakefa` so that every measurement
+starts from fresh processes, opens the Service Map (`--path /flows/list?namespace=_all` for the
+flow list) in a headless Chromium logged in as the benchmark's cluster-admin, waits for the first
+render, lets it warm up (`--warmup`, 30s), then samples for `--duration` (2m) every
+`--sample-interval` (2s). Use `--no-deploy` to measure whatever is deployed instead, as it is.
 
 Results go to `test/benchmark/flowvisibility/results/<timestamp>/<scale>/`:
 
@@ -111,6 +113,10 @@ With several scales, `comparison.md` puts them side by side.
 | JS heap, DOM nodes | CDP `Performance.getMetrics` |
 | Browser CPU and RSS, by process type | `/proc`, for the Chromium processes `flowbench` started |
 | Backend CPU, RSS, Go heap, goroutines | The backend's own `/metrics` (`process_*`, `go_*`) |
+
+The mean of a rate (CPU, busy shares, frames and long tasks per second, flows streamed) is over
+the whole measurement: each sample counts for the interval it covers, as intervals stretch when the
+browser or the host is busy. Percentiles, minimums and maximums are those of the samples.
 
 ### Caveats
 

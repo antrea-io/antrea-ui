@@ -80,6 +80,13 @@ const (
 	syntheticLabel = "flowbench.antrea.io/synthetic"
 	partOfLabel    = "app.kubernetes.io/part-of"
 	partOfValue    = "antrea-ui-flowbench"
+
+	// scaleHashAnnotation, on fakefa's Pod template, restarts fakefa when the scale changes: it
+	// reads its scale at startup.
+	scaleHashAnnotation = "flowbench.antrea.io/scale-hash"
+	// restartAnnotation, on the Pod templates of fakefa and antrea-ui, restarts them both when it
+	// changes: run sets it for each scale it measures.
+	restartAnnotation = "flowbench.antrea.io/restart"
 )
 
 type deployOptions struct {
@@ -92,6 +99,9 @@ type deployOptions struct {
 	nodePort    int
 	helmSets    []string
 	scale       fakefa.Scale
+	// restartID, when set, goes into restartAnnotation. deploy leaves it empty, so that changing
+	// the scale keeps antrea-ui running, and the sessions of those logged in.
+	restartID string
 }
 
 func deploy(ctx context.Context, o *deployOptions) error {
@@ -102,7 +112,7 @@ func deploy(ctx context.Context, o *deployOptions) error {
 	}
 	sum := sha256.Sum256(scaleJSON)
 	scaleHash := hex.EncodeToString(sum[:8])
-	uiVals, err := uiValues(o, scaleHash)
+	uiVals, err := uiValues(o)
 	if err != nil {
 		return err
 	}
@@ -148,7 +158,7 @@ func deploy(ctx context.Context, o *deployOptions) error {
 	if err := apply(ctx, cs.CoreV1().Services(faNamespace), fakeFAService()); err != nil {
 		return err
 	}
-	if err := apply(ctx, cs.AppsV1().Deployments(faNamespace), fakeFADeployment(o.fakeFAImage, scaleHash)); err != nil {
+	if err := apply(ctx, cs.AppsV1().Deployments(faNamespace), fakeFADeployment(o.fakeFAImage, scaleHash, o.restartID)); err != nil {
 		return err
 	}
 	if err := syncSyntheticNamespaces(ctx, cs, o.scale.Namespaces); err != nil {
@@ -423,10 +433,14 @@ func fakeFAService() *corev1.Service {
 	}
 }
 
-// fakeFADeployment runs the fake Flow Aggregator. scaleHash goes into the Pod template, so that
-// a new scale rolls the Pod: the generator reads its scale once, at startup.
-func fakeFADeployment(image, scaleHash string) *appsv1.Deployment {
+// fakeFADeployment runs the fake Flow Aggregator. Its Pod template carries scaleHash, and restartID
+// when set: see scaleHashAnnotation and restartAnnotation.
+func fakeFADeployment(image, scaleHash, restartID string) *appsv1.Deployment {
 	labels := map[string]string{"app": faName}
+	annotations := map[string]string{scaleHashAnnotation: scaleHash}
+	if restartID != "" {
+		annotations[restartAnnotation] = restartID
+	}
 	return &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{Name: faName, Labels: map[string]string{partOfLabel: partOfValue}},
 		Spec: appsv1.DeploymentSpec{
@@ -436,7 +450,7 @@ func fakeFADeployment(image, scaleHash string) *appsv1.Deployment {
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels:      labels,
-					Annotations: map[string]string{"flowbench.antrea.io/scale-hash": scaleHash},
+					Annotations: annotations,
 				},
 				Spec: corev1.PodSpec{
 					Containers: []corev1.Container{{
@@ -473,15 +487,16 @@ func fakeFADeployment(image, scaleHash string) *appsv1.Deployment {
 }
 
 // uiValues returns the values antrea-ui is installed with: flowbench's own, then the --helm-set ones
-// over them. scaleHash goes into the Pod template, so that each scale of a run is measured with a
-// fresh backend rather than one that served the previous scale.
-func uiValues(o *deployOptions, scaleHash string) (map[string]any, error) {
+// over them. The Pod template carries o.restartID when set: see restartAnnotation.
+func uiValues(o *deployOptions) (map[string]any, error) {
 	vals := map[string]any{
-		"podAnnotations": map[string]any{"flowbench.antrea.io/scale-hash": scaleHash},
 		"flowAggregator": map[string]any{"enabled": true},
 		"frontend":       map[string]any{"image": map[string]any{"tag": o.uiImageTag}},
 		"backend":        map[string]any{"image": map[string]any{"tag": o.uiImageTag}},
 		"service":        map[string]any{"type": "NodePort", "nodePort": o.nodePort},
+	}
+	if o.restartID != "" {
+		vals["podAnnotations"] = map[string]any{restartAnnotation: o.restartID}
 	}
 	for _, s := range o.helmSets {
 		if err := strvals.ParseInto(s, vals); err != nil {

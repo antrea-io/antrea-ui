@@ -79,12 +79,32 @@ func TestUIReleaseOwnership(t *testing.T) {
 
 func TestUIValuesHelmSets(t *testing.T) {
 	o := &deployOptions{uiImageTag: "dev", nodePort: 31234, helmSets: []string{"service.nodePort=30000", "service.annotations.a=b"}}
-	vals, err := uiValues(o, "0123")
+	vals, err := uiValues(o)
 	require.NoError(t, err)
 	assert.Equal(t, map[string]any{"type": "NodePort", "nodePort": int64(30000), "annotations": map[string]any{"a": "b"}}, vals["service"])
-	assert.Equal(t, map[string]any{"flowbench.antrea.io/scale-hash": "0123"}, vals["podAnnotations"])
 
 	o.helmSets = []string{"service.nodePort"}
-	_, err = uiValues(o, "0123")
+	_, err = uiValues(o)
 	assert.ErrorContains(t, err, `--helm-set "service.nodePort"`)
+}
+
+// Only run restarts antrea-ui: deploy changing the scale keeps it, and the sessions of those
+// logged in.
+func TestUIValuesRestartID(t *testing.T) {
+	vals, err := uiValues(&deployOptions{})
+	require.NoError(t, err)
+	assert.NotContains(t, vals, "podAnnotations")
+
+	vals, err = uiValues(&deployOptions{restartID: "20261113-104232/small"})
+	require.NoError(t, err)
+	assert.Equal(t, map[string]any{restartAnnotation: "20261113-104232/small"}, vals["podAnnotations"])
+}
+
+// fakefa restarts when the scale changes, and for every scale run measures.
+func TestFakeFADeploymentAnnotations(t *testing.T) {
+	d := fakeFADeployment("fakefa", "0123", "")
+	assert.Equal(t, map[string]string{scaleHashAnnotation: "0123"}, d.Spec.Template.Annotations)
+
+	d = fakeFADeployment("fakefa", "0123", "20261113-104232/small")
+	assert.Equal(t, map[string]string{scaleHashAnnotation: "0123", restartAnnotation: "20261113-104232/small"}, d.Spec.Template.Annotations)
 }

@@ -35,18 +35,27 @@ type stat struct {
 	Max  float64 `json:"max"`
 }
 
-func newStat(values []float64) stat {
-	if len(values) == 0 {
+// series is a metric's samples over the measurement. A rate's samples are weighted by the interval
+// they cover, which stretches when the page or the host is busy, so that its mean is the rate over
+// the whole measurement. A gauge's samples all weigh the same. The percentiles, minimum and maximum
+// are those of the samples, unweighted.
+type series struct {
+	values, weights []float64
+}
+
+func newStat(s series) stat {
+	if len(s.values) == 0 {
 		return stat{Mean: math.NaN(), P50: math.NaN(), P95: math.NaN(), Min: math.NaN(), Max: math.NaN()}
 	}
-	v := slices.Clone(values)
-	slices.Sort(v)
-	sum := 0.0
-	for _, x := range v {
-		sum += x
+	sum, total := 0.0, 0.0
+	for i, x := range s.values {
+		sum += x * s.weights[i]
+		total += s.weights[i]
 	}
+	v := slices.Clone(s.values)
+	slices.Sort(v)
 	pct := func(p float64) float64 { return v[min(len(v)-1, int(math.Ceil(p*float64(len(v))))-1)] }
-	return stat{Mean: sum / float64(len(v)), P50: pct(0.5), P95: pct(0.95), Min: v[0], Max: v[len(v)-1]}
+	return stat{Mean: sum / total, P50: pct(0.5), P95: pct(0.95), Min: v[0], Max: v[len(v)-1]}
 }
 
 type summary struct {
@@ -98,6 +107,10 @@ var metricOrder = []metricDef{
 
 // pageSample is the subset of a browser/run.mjs sample the summary uses.
 type pageSample struct {
+	// DT is the interval, in seconds, the CDP rates (the *Busy fractions) cover, and PageDT the one
+	// the page's own rates (FPS, LongTasksPerSec) cover.
+	DT              float64  `json:"dt"`
+	PageDT          float64  `json:"pageDt"`
 	MainThreadBusy  float64  `json:"mainThreadBusy"`
 	ScriptBusy      float64  `json:"scriptBusy"`
 	LayoutBusy      float64  `json:"layoutBusy"`
@@ -116,22 +129,31 @@ type pageSample struct {
 }
 
 func (s *summary) compute(host []hostSample, pageLines []json.RawMessage) {
-	series := map[string][]float64{}
-	add := func(k string, v float64) { series[k] = append(series[k], v) }
+	all := map[string]*series{}
+	addWeighted := func(k string, v, w float64) {
+		s := all[k]
+		if s == nil {
+			s = &series{}
+			all[k] = s
+		}
+		s.values = append(s.values, v)
+		s.weights = append(s.weights, w)
+	}
+	add := func(k string, v float64) { addWeighted(k, v, 1) }
 
 	for _, line := range pageLines {
 		var p pageSample
 		if err := json.Unmarshal(line, &p); err != nil {
 			continue
 		}
-		add("mainThreadBusy", 100*p.MainThreadBusy)
-		add("scriptBusy", 100*p.ScriptBusy)
-		add("layoutBusy", 100*p.LayoutBusy)
-		add("styleBusy", 100*p.StyleBusy)
+		addWeighted("mainThreadBusy", 100*p.MainThreadBusy, p.DT)
+		addWeighted("scriptBusy", 100*p.ScriptBusy, p.DT)
+		addWeighted("layoutBusy", 100*p.LayoutBusy, p.DT)
+		addWeighted("styleBusy", 100*p.StyleBusy, p.DT)
 		add("jsHeapUsedMiB", p.JSHeapUsed/mib)
 		add("domNodes", p.DOMNodes)
-		add("fps", p.FPS)
-		add("longTasksPerSec", p.LongTasksPerSec)
+		addWeighted("fps", p.FPS, p.PageDT)
+		addWeighted("longTasksPerSec", p.LongTasksPerSec, p.PageDT)
 		add("longTaskMaxMs", p.LongTaskMaxMs)
 		add("maxFrameGapMs", p.MaxFrameGapMs)
 		add("maxLoopLagMs", p.MaxLoopLagMs)
@@ -153,7 +175,7 @@ func (s *summary) compute(host []hostSample, pageLines []json.RawMessage) {
 		// computed across it.
 		if prev.Backend != nil && cur.Backend != nil {
 			if cur.Backend.CPUSeconds >= prev.Backend.CPUSeconds {
-				add("backendCPU", 100*(cur.Backend.CPUSeconds-prev.Backend.CPUSeconds)/dt)
+				addWeighted("backendCPU", 100*(cur.Backend.CPUSeconds-prev.Backend.CPUSeconds)/dt, dt)
 			}
 			add("backendRSSMiB", cur.Backend.RSSBytes/mib)
 			add("backendHeapMiB", cur.Backend.HeapInuse/mib)
@@ -161,8 +183,8 @@ func (s *summary) compute(host []hostSample, pageLines []json.RawMessage) {
 		}
 		if prev.FakeFA != nil && cur.FakeFA != nil &&
 			cur.FakeFA.RecordsSent >= prev.FakeFA.RecordsSent && cur.FakeFA.BytesSent >= prev.FakeFA.BytesSent {
-			add("flowsPerSec", float64(cur.FakeFA.RecordsSent-prev.FakeFA.RecordsSent)/dt)
-			add("streamMBps", float64(cur.FakeFA.BytesSent-prev.FakeFA.BytesSent)/dt/1e6)
+			addWeighted("flowsPerSec", float64(cur.FakeFA.RecordsSent-prev.FakeFA.RecordsSent)/dt, dt)
+			addWeighted("streamMBps", float64(cur.FakeFA.BytesSent-prev.FakeFA.BytesSent)/dt/1e6, dt)
 		}
 		if prev.Browser != nil && cur.Browser != nil {
 			total, totalRSS := 0.0, 0.0
@@ -173,21 +195,21 @@ func (s *summary) compute(host []hostSample, pageLines []json.RawMessage) {
 				cpu = max(cpu, 0)
 				switch typ {
 				case "renderer":
-					add("rendererCPU", cpu)
+					addWeighted("rendererCPU", cpu, dt)
 				case "gpu-process":
-					add("gpuCPU", cpu)
+					addWeighted("gpuCPU", cpu, dt)
 				}
 				total += cpu
 				totalRSS += u.RSSBytes
 			}
-			add("browserCPU", total)
+			addWeighted("browserCPU", total, dt)
 			add("browserRSSMiB", totalRSS/mib)
 		}
 	}
 
 	s.Metrics = map[string]stat{}
-	for k, v := range series {
-		s.Metrics[k] = newStat(v)
+	for k, v := range all {
+		s.Metrics[k] = newStat(*v)
 	}
 }
 

@@ -105,15 +105,34 @@ func (s *Server) GetFlows(req *flowpb.GetFlowsRequest, stream flowpb.FlowStreamS
 	s.streamsOpen.Add(1)
 	defer s.streamsOpen.Add(-1)
 
-	if err := stream.Send(&flowpb.GetFlowsResponse{
-		ResumeToken: &flowpb.ResumeToken{StreamEpoch: s.epoch, SequenceNumber: from - 1},
-	}); err != nil {
+	var droppedTotal uint64
+	// lastToken is the sequence number of the last resume token sent.
+	lastToken := from - 1
+	send := func(flows []*flowpb.Flow) error {
+		resp := &flowpb.GetFlowsResponse{
+			Flows:        flows,
+			DroppedCount: droppedTotal,
+			ResumeToken:  &flowpb.ResumeToken{StreamEpoch: s.epoch, SequenceNumber: from - 1},
+		}
+		if err := stream.Send(resp); err != nil {
+			return err
+		}
+		lastToken = from - 1
+		s.recordsSent.Add(uint64(len(flows)))
+		s.bytesSent.Add(uint64(proto.Size(resp))) // #nosec G115: a size is never negative
+		return nil
+	}
+	if err := send(nil); err != nil {
 		return err
 	}
 
+	// When the filters remove every record of a batch, there is nothing to send, but the client's
+	// resume point falls behind, and resuming from it would report the records filtered out as
+	// dropped. Once it is behind by half the ring buffer, a response with no flows carries it
+	// forward, and a stream that is not followed ends with one carrying the final position.
+	tokenRefreshSpan := max(int64(s.gen.scale.RingBufferSize)/2, 1)
 	maxBatch := s.gen.scale.MaxBatchSize
 	maxCount := uint64(req.MaxCount)
-	var droppedTotal uint64
 	var sent uint64
 	for {
 		records, next, dropped, notify := ring.read(from, maxBatch)
@@ -133,24 +152,20 @@ func (s *Server) GetFlows(req *flowpb.GetFlowsRequest, stream flowpb.FlowStreamS
 				break
 			}
 		}
-		if len(out) > 0 || dropped > 0 {
-			resp := &flowpb.GetFlowsResponse{
-				Flows:        out,
-				DroppedCount: droppedTotal,
-				ResumeToken:  &flowpb.ResumeToken{StreamEpoch: s.epoch, SequenceNumber: from - 1},
-			}
-			if err := stream.Send(resp); err != nil {
+		if len(out) > 0 || dropped > 0 || from-1-lastToken >= tokenRefreshSpan {
+			if err := send(out); err != nil {
 				return err
 			}
 			sent += uint64(len(out))
-			s.recordsSent.Add(uint64(len(out)))
-			s.bytesSent.Add(uint64(proto.Size(resp))) // #nosec G115: a size is never negative
 		}
 		if maxCount > 0 && sent >= maxCount {
 			return nil
 		}
 		if len(records) < maxBatch {
 			if !req.Follow {
+				if from-1 > lastToken {
+					return send(nil)
+				}
 				return nil
 			}
 			select {

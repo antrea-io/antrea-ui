@@ -383,6 +383,32 @@ func TestGetFlowsMaxCount(t *testing.T) {
 	assert.Equal(t, ids(8, 14), got.ids, "resuming from it misses nothing")
 }
 
+func TestGetFlowsAdvancesResumeTokenPastFilteredRecords(t *testing.T) {
+	srv := newTestServer(t)
+	stream := &recordingStream{}
+	require.NoError(t, srv.GetFlows(&flowpb.GetFlowsRequest{
+		ClusterWide: true, Filters: []*flowpb.FlowFilter{{Namespaces: []string{"none"}}},
+	}, stream))
+	var tokens []int64
+	for _, r := range stream.responses {
+		assert.Empty(t, r.Flows)
+		tokens = append(tokens, r.ResumeToken.SequenceNumber)
+	}
+	// Batches end at 8, 12 and 14. The token is carried forward once 5 records (half the ring)
+	// behind, at 12, and the stream ends at the last record.
+	assert.Equal(t, []int64{4, 12, 14}, tokens)
+
+	// A ring's worth of new records evicts everything the stream examined.
+	for i := range testRingSize {
+		srv.gen.ring.append([]*flowpb.Flow{{Id: strconv.Itoa(testRecords + i), Ip: &flowpb.IP{}, K8S: &flowpb.Kubernetes{}}})
+	}
+	got, err := getFlows(t, srv, &flowpb.GetFlowsRequest{
+		ClusterWide: true, Resume: &flowpb.ResumeToken{StreamEpoch: srv.epoch, SequenceNumber: tokens[len(tokens)-1]},
+	})
+	require.NoError(t, err)
+	assert.Zero(t, got.dropped, "resuming from the last token reports nothing dropped")
+}
+
 func TestGetFlowsSince(t *testing.T) {
 	srv := newTestServer(t)
 	got, err := getFlows(t, srv, &flowpb.GetFlowsRequest{ClusterWide: true, Since: timestamppb.New(testStart.Add(12 * time.Second))})
