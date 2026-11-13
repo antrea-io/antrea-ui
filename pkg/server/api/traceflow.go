@@ -159,6 +159,9 @@ func (s *Server) AddTraceflowRoutes(r *gin.RouterGroup) {
 	r = r.Group("/traceflow")
 	r.Use(s.authenticate())
 	createTfHandlers := []gin.HandlerFunc{}
+	// The limit only covers this route. A user whose RBAC allows creating Traceflows can also
+	// create them through the K8s proxy, without the limit. That includes the admin password, as
+	// antrea-ui-admin-core grants it.
 	if s.config.MaxTraceflowsPerHour >= 0 {
 		burstSize := 0
 		if s.config.MaxTraceflowsPerHour > 0 {

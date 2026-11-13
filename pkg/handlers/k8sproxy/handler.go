@@ -100,10 +100,34 @@ func NewK8sProxyHandler(
 			transportFor: transportFor,
 		},
 		ModifyResponse: func(resp *http.Response) error {
+			// The proxy serves whatever the API server returns on the UI's own origin, and
+			// not all of it is the API server's own: pod logs, or the responses of an
+			// aggregated API server. The API route already refuses the proxy subresources
+			// of Services, Pods and Nodes, which relay arbitrary workload responses; this is
+			// defense in depth for the rest. A script in a page served here would run as the
+			// UI: its requests pass the CSRF gate as same-origin, so it could make any request
+			// the viewer's RBAC allows. The sandbox gives such a page an opaque origin with
+			// scripts disabled, and nosniff stops a browser from rendering a response as HTML
+			// that does not declare it. The UI itself only reads these responses with fetch,
+			// which neither affects.
+			resp.Header.Set("Content-Security-Policy", "sandbox")
+			resp.Header.Set("X-Content-Type-Options", "nosniff")
+			// A cookie set by such a response would also land on the UI's origin: whoever
+			// controls it could plant their own session cookie, and the viewer would then use
+			// the UI as them. The sandbox does not prevent this, as the browser stores
+			// cookies before the page runs, and the UI needs no cookie from the API server.
+			// Set-Cookie is singled out because it swaps the viewer's identity silently. Other
+			// headers that act on the whole origin, such as Clear-Site-Data, are not filtered
+			// one by one: with workload responses refused, the remaining headers come from the
+			// API server itself or from components cluster admins install or run (aggregated
+			// API servers, for one), which are trusted with such headers as they are with a 401.
+			resp.Header.Del("Set-Cookie")
 			// The API server answers 401 when it rejects the credential itself, and 403
 			// when the credential is fine but the user is not allowed to do this. Only the
 			// former means the session is dead; conflating the two would log a user out
-			// every time they hit an ordinary permissions error.
+			// every time they hit an ordinary permissions error. A 401 can also come from
+			// components cluster admins install or run, such as an admission webhook denying a
+			// write or an aggregated API server, so they are trusted not to answer 401 at random.
 			if resp.StatusCode == http.StatusUnauthorized && resp.Request != nil {
 				if ra, ok := session.RequestAuthFrom(resp.Request.Context()); ok {
 					ra.Invalidate()

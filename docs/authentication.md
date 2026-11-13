@@ -174,9 +174,19 @@ The reads from `list` onwards (from `pods` on) are what the Overview page
 counts, plus its Recent Events panel. They are read-only and deliberately
 enumerated rather than granted as a wildcard: Kubernetes RBAC has no deny
 rules, so "everything except Secrets" cannot be expressed, and the K8s proxy
-applies no path allowlist of its own (RBAC is its only guard). A wildcard
-here would therefore let anyone holding the admin password read every Secret
-in the cluster.
+applies no path or verb allowlist of its own (RBAC is its guard). A
+wildcard here would therefore let anyone holding the admin password read every
+Secret in the cluster, and a wildcard verb would let them change or delete
+anything the rule covers.
+
+The K8s proxy forwards writes (`POST`, `PUT`, `PATCH` and `DELETE`) as well as
+reads, so every verb granted here can be used through it, not only by the UI's
+own pages. The one path it refuses is the `proxy` subresource of Services, Pods
+and Nodes, which would serve a workload's own responses on the UI's origin. In
+particular, `create` on `traceflows` lets the holder create Traceflows through
+the proxy, where `limits.maxTraceflowsPerHour` does not apply: that limit only
+covers the Traceflow page's own endpoint. This holds for any user whose own
+RBAC allows creating Traceflows, too.
 
 Its rule list is static: it only ever changes when you upgrade the chart, and
 you can read exactly what it grants in
