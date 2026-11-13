@@ -299,6 +299,10 @@ func newCloseNotifyRecorder() *closeNotifyRecorder {
 	return &closeNotifyRecorder{ResponseRecorder: httptest.NewRecorder(), closec: make(chan bool)}
 }
 
+// SetWriteDeadline lets these in-memory tests exercise the stream's event handling. Actual
+// deadline enforcement is covered by TestStreamFlowsUnreadStream against net.Pipe.
+func (r *closeNotifyRecorder) SetWriteDeadline(time.Time) error { return nil }
+
 func (r *closeNotifyRecorder) CloseNotify() <-chan bool { return r.closec }
 
 // writeGate blocks the first Write to the underlying recorder until told to proceed, signaling
@@ -326,14 +330,6 @@ func (w *writeGate) Write(p []byte) (int, error) {
 	w.once.Do(func() { close(w.started) })
 	<-w.proceed
 	return w.closeNotifyRecorder.Write(p)
-}
-
-// WriteString must funnel through Write rather than httptest.ResponseRecorder's own WriteString
-// (which would otherwise be promoted as-is): gin's ResponseWriter writes SSE payloads with
-// io.WriteString, which prefers a io.StringWriter implementation over Write when the underlying
-// writer has one - bypassing the gate above entirely and writing the event before started fires.
-func (w *writeGate) WriteString(s string) (int, error) {
-	return w.Write([]byte(s))
 }
 
 // flowsChErrChRaceSubscriber sends one flow event and then, once told the caller is busy

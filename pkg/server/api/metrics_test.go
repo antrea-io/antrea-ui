@@ -568,10 +568,26 @@ func TestOpenMetricsTapErrors(t *testing.T) {
 			}
 			rr := doMetricsRequest(ts, "POST", "/api/v1/metrics/taps", tc.body)
 			assert.Equal(t, tc.expectedCode, rr.Code)
+			assert.Equal(t, "application/json; charset=utf-8", rr.Header().Get("Content-Type"))
 			assert.Equal(t, tc.expectedMessage, errorMessageOf(t, rr))
 			assert.Equal(t, tc.expectedReviews, fakeAPIServer.reviewedTargetGroups())
 		})
 	}
+
+	t.Run("write deadline unsupported", func(t *testing.T) {
+		ts, manager, fakeAPIServer := newTestServerForMetrics(t)
+		fakeAPIServer.allow("antrea-agent", "antrea-controller")
+		_, opened := expectOpen(manager, "antrea-agent", "antrea-controller")
+
+		// ResponseRecorder does not support write deadlines.
+		rr := doMetricsRequest(ts, "POST", "/api/v1/metrics/taps", testTapRequest)
+		assert.Equal(t, http.StatusInternalServerError, rr.Code)
+		assert.Equal(t, "application/json; charset=utf-8", rr.Header().Get("Content-Type"))
+		assert.Equal(t, "Internal Server Error", errorMessageOf(t, rr))
+		require.Len(t, opened, 1, "the tap must be opened before the deadline probe fails")
+		opening := <-opened
+		assert.ErrorIs(t, opening.ctx.Err(), context.Canceled, "the failed stream must cancel its tap")
+	})
 }
 
 // sseEvent is one event of an SSE stream, or one comment: comment is then set and the rest is

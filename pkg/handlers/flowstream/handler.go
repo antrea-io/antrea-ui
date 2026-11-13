@@ -108,6 +108,10 @@ type FlowStreamScope struct {
 // keepAliveInterval is how often the stream emits an SSE comment and re-checks its session.
 const keepAliveInterval = 5 * time.Second
 
+// flowWriteTimeout bounds each write and flush, including the initial response headers. A client
+// which stops reading must release its upstream subscription instead of holding it open forever.
+const flowWriteTimeout = 30 * time.Second
+
 // initialResponseTimeout bounds how long StreamFlows waits for Subscribe to confirm the stream is
 // live (or fail) before reporting a retryable timeout. See the comment where it is used: a
 // supported Flow Aggregator sends its first response as soon as the call clears authorization (see
@@ -388,6 +392,8 @@ func (h *SSEHandler) StreamFlows(c *gin.Context) {
 	// rather than guessed - the timeout below is a fallback for a flow source that accepts the
 	// call and then never responds, not the common path.
 	select {
+	case <-ctx.Done():
+		return
 	case streamErr, ok := <-errCh:
 		if ok {
 			h.logger.Error(streamErr, "Flow stream failed before the response was committed")
@@ -414,6 +420,35 @@ func (h *SSEHandler) StreamFlows(c *gin.Context) {
 		return
 	}
 
+	rc := http.NewResponseController(c.Writer)
+	// Like metrics taps, fail closed if a writer does not support deadlines. Gin exposes
+	// Unwrap, so ResponseController reaches the underlying net/http writer through it.
+	setWriteDeadline := func() bool {
+		if ctx.Err() != nil {
+			return false
+		}
+		if err := rc.SetWriteDeadline(time.Now().Add(flowWriteTimeout)); err != nil {
+			if ctx.Err() == nil {
+				h.logger.Error(err, "Closing flow stream: failed to set a write deadline")
+			}
+			return false
+		}
+		return true
+	}
+	// Probe for deadline support before committing to a 200: a writer that cannot take a
+	// deadline (e.g. a middleware wrapper without Unwrap) would otherwise get an empty, immediately
+	// closed event stream that the client reconnects to forever. Report a permanent error instead.
+	// The deadline set here also covers the header flush below.
+	if !setWriteDeadline() {
+		if ctx.Err() == nil {
+			c.JSON(http.StatusInternalServerError, apisv1.FlowStreamErrorEvent{
+				Message: "flow stream writes cannot be bounded by a deadline",
+				Code:    StreamErrorCodeInternal, Retryable: false,
+			})
+		}
+		return
+	}
+
 	// Set headers required for Server-Sent Events (SSE).
 	// Content-Type must be text/event-stream for browsers to process the stream.
 	// Cache-Control: no-cache prevents intermediary proxies from caching the stream data.
@@ -433,6 +468,11 @@ func (h *SSEHandler) StreamFlows(c *gin.Context) {
 	// (fetch, curl) would see a hang or "Disconnected" for that long even though TLS and auth
 	// succeeded, and a proxy honoring X-Accel-Buffering would hold the headers just as long.
 	c.Writer.Flush()
+	// Gin's Flush does not return errors. net/http cancels the request on a failed write,
+	// including a flush, so check that context before entering the loop (and after each step).
+	if ctx.Err() != nil {
+		return
+	}
 
 	// The gRPC client only forwards non-empty flow batches (and dropped-count changes). When
 	// filtered streams match nothing for a long time, nothing is sent on flowsCh and this
@@ -462,6 +502,17 @@ func (h *SSEHandler) StreamFlows(c *gin.Context) {
 		return ra.KeepAlive(ctx)
 	}
 
+	// writeEvent uses the same framing as c.SSEvent for JSON payloads, but checks the write
+	// error: the SSE encoder used by Gin discards errors when writing string data. JSON
+	// marshaling escapes embedded newlines, so each payload fits on one SSE data line.
+	writeEvent := func(name string, data []byte) bool {
+		if !setWriteDeadline() {
+			return false
+		}
+		_, err := fmt.Fprintf(c.Writer, "event:%s\ndata:%s\n\n", name, data)
+		return err == nil
+	}
+
 	// emitStreamError writes streamErr as an SSE "error" event and reports whether the caller
 	// should keep streaming (it never does: every caller treats an error as terminal).
 	emitStreamError := func(streamErr error) bool {
@@ -470,7 +521,7 @@ func (h *SSEHandler) StreamFlows(c *gin.Context) {
 			h.logger.Error(err, "Failed to marshal error event")
 			return false
 		}
-		c.SSEvent("error", string(data))
+		writeEvent("error", data)
 		h.logger.Error(streamErr, "Flow stream error")
 		return false
 	}
@@ -478,6 +529,10 @@ func (h *SSEHandler) StreamFlows(c *gin.Context) {
 	var received uint64
 	truncated := false
 	c.Stream(func(w io.Writer) bool {
+		// A flush failure cancels the request even if events and a keepalive are also ready.
+		if ctx.Err() != nil {
+			return false
+		}
 		select {
 		case <-ctx.Done():
 			return false
@@ -486,11 +541,11 @@ func (h *SSEHandler) StreamFlows(c *gin.Context) {
 				h.logger.V(2).Info("Closing flow stream: session is no longer valid")
 				return false
 			}
-			if _, err := w.Write([]byte(": keepalive\n\n")); err != nil {
+			if !setWriteDeadline() {
 				return false
 			}
-			if fl, ok := c.Writer.(http.Flusher); ok {
-				fl.Flush()
+			if _, err := w.Write([]byte(": keepalive\n\n")); err != nil {
+				return false
 			}
 			return true
 		case event, ok := <-flowsCh:
@@ -512,9 +567,14 @@ func (h *SSEHandler) StreamFlows(c *gin.Context) {
 				default:
 				}
 				if !filter.following() && ctx.Err() == nil {
-					c.SSEvent("complete", map[string]any{
+					data, err := json.Marshal(map[string]any{
 						"snapshotCount": received, "maxCount": filter.resultLimit(), "truncated": truncated,
 					})
+					if err != nil {
+						h.logger.Error(err, "Failed to marshal complete event")
+					} else {
+						writeEvent("complete", data)
+					}
 				}
 				return false
 			}
@@ -528,7 +588,9 @@ func (h *SSEHandler) StreamFlows(c *gin.Context) {
 					h.logger.Error(err, "Failed to marshal dropped event")
 					return true
 				}
-				c.SSEvent("dropped", string(data))
+				if !writeEvent("dropped", data) {
+					return false
+				}
 			}
 			if len(event.Flows) > 0 {
 				received += uint64(len(event.Flows))
@@ -538,7 +600,9 @@ func (h *SSEHandler) StreamFlows(c *gin.Context) {
 					h.logger.Error(err, "Failed to marshal flow event")
 					return true
 				}
-				c.SSEvent("flow", string(data))
+				if !writeEvent("flow", data) {
+					return false
+				}
 			}
 			return true
 		case streamErr, ok := <-errCh:
