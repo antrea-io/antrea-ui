@@ -25,7 +25,7 @@ import (
 
 // TransportKeyK8s is the cache key for the transport used to reach the kube-apiserver. It is
 // unversioned: unlike the Antrea Service, the API server's TLS settings do not change under a live
-// session. See Session.transportFor for the key format.
+// session. See keyedCache for the key format.
 const TransportKeyK8s = "k8s"
 
 // RequestAuth is the resolved identity for one in-flight request. The authentication middleware
