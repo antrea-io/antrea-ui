@@ -47,7 +47,7 @@ func (c *keyedCache[T]) get(key string) (T, bool) {
 
 // getOrBuild returns the value cached under key, or builds and caches one with build. Before
 // building a versioned key, it releases the older versions of the same upstream. Nothing is cached
-// if build fails.
+// if build fails, and the older versions stay released.
 func (c *keyedCache[T]) getOrBuild(key string, build func() (T, func(), error)) (T, error) {
 	if entry, ok := c.entries[key]; ok {
 		return entry.value, nil
