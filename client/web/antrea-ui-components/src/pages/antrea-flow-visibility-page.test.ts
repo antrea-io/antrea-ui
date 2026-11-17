@@ -4155,10 +4155,34 @@ describe('AntreaFlowVisibilityPage — incremental service map', () => {
         expect(other.fx == null).toBe(true);
         await vi.advanceTimersByTimeAsync(0);
         node.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+        // The layout is still running, so the release frees the node and nothing else.
+        expect(dragged.fx).toBeNull();
+        expect(other.fx == null).toBe(true);
+        expect(simulation.alpha()).toBe(1);
+        expect(simulation.force('center')).toBeDefined();
+        stop.mockRestore();
+    });
+
+    test('double click on a dragged node after the layout ended settles only that node', async () => {
+        const { page, state } = await mountMap();
+        await update(page, state, [makeFlow()]);
+        const simulation = state._simulation.stop().tick(300);
+        const [dragged, other] = simulation.nodes();
+        const node = page.shadowRoot!.querySelector('.nodes .node')!;
+        const mouse = (type: string) => {
+            const event = new MouseEvent(type, { bubbles: true, clientX: 40, clientY: 50 });
+            Object.defineProperty(event, 'view', { value: window });
+            return event;
+        };
+        node.dispatchEvent(mouse('mousedown'));
+        window.dispatchEvent(mouse('mouseup'));
+        await vi.advanceTimersByTimeAsync(0);
+        node.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
         expect(dragged.fx).toBeNull();
         expect(other.fx).toBe(other.x);
         expect(simulation.alpha()).toBe(0.3);
-        stop.mockRestore();
+        for (const force of ['center', 'anchorX', 'anchorY']) expect(simulation.force(force)).toBeUndefined();
+        simulation.stop();
     });
 
     test('dragging moves only the selected node and does not reheat the simulation', async () => {

@@ -1956,13 +1956,20 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         draw();
     }
 
-    /** Frees a node the user dragged, and lets it settle while the others stay where they are. */
+    /** Frees a node the user dragged. A layout that is running carries on with it. Otherwise
+     * the node settles on its own, while the others stay where they are.
+     */
     private _releaseMapNode(node: D3Node) {
         const simulation = this._simulation;
-        if (!simulation || this._settlePinned.has(node) || node.fx == null) return;
-        const others = simulation.nodes().filter(n => n !== node);
+        if (!simulation || node.fx == null) return;
         node.fx = null; node.fy = null;
-        for (const n of pinMapNodes(others)) this._settlePinned.add(n);
+        // d3-drag starts on both mousedowns of a double click, so this also runs mid-layout.
+        // Pinning the others then would freeze the map half settled.
+        if (this._mapLayoutPending && simulation.alpha() >= simulation.alphaMin()) return;
+        // forceCenter would be absorbed entirely by the one free node, and the anchors still
+        // hold the positions of an earlier settle.
+        simulation.force('center', null).force('anchorX', null).force('anchorY', null);
+        for (const n of pinMapNodes(simulation.nodes().filter(n => n !== node))) this._settlePinned.add(n);
         this._mapLayoutPending = true;
         this._mapLayoutFull = false;
         simulation.alpha(0.3).alphaTarget(0).restart();
