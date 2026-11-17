@@ -17,10 +17,10 @@ import type { SimulationNodeDatum } from 'd3';
 /** PositionedNode is the stable identity shared by the drawing and simulation. */
 export interface PositionedNode extends SimulationNodeDatum { id: string; }
 
-/** Reconciles graph metadata without losing positions, velocities or drag pins.
- * New nodes start near an already placed neighbour (or the map centre). Existing
- * nodes stay fixed while additions settle, so sparse topology churn cannot move
- * the entire map. The caller only needs to reheat when `added` is nonempty.
+/** Reconciles graph metadata without losing positions, velocities or pins.
+ * New nodes start near an already placed neighbour (or the map centre). Whether the
+ * retained nodes stay put while additions settle is up to the caller, see
+ * pinMapNodes. The caller only needs to reheat when `added` is nonempty.
  */
 export function reconcileMapNodes<N extends PositionedNode>(
     previous: N[], incoming: N[], edges: { source: string; target: string }[],
@@ -48,10 +48,6 @@ export function reconcileMapNodes<N extends PositionedNode>(
             neighbours.set(id, list);
         }
     }
-    for (const node of retained.values()) {
-        node.fx = node.x;
-        node.fy = node.y;
-    }
     for (const node of added) {
         const peers = neighbours.get(node.id) ?? [];
         const x = peers.length ? peers.reduce((sum, n) => sum + (n.x ?? center.x), 0) / peers.length : center.x;
@@ -66,6 +62,20 @@ export function reconcileMapNodes<N extends PositionedNode>(
         node.vy = 0;
     }
     return { nodes, added };
+}
+
+/** Fixes every node at its current position, except those already pinned.
+ * Returns the nodes it pinned, so that the caller can release exactly those later.
+ */
+export function pinMapNodes<N extends SimulationNodeDatum>(nodes: N[]): N[] {
+    const pinned: N[] = [];
+    for (const node of nodes) {
+        if (node.fx != null || node.fy != null) continue;
+        node.fx = node.x;
+        node.fy = node.y;
+        pinned.push(node);
+    }
+    return pinned;
 }
 
 /** Applies the same normalized centroid to every member of each namespace. */

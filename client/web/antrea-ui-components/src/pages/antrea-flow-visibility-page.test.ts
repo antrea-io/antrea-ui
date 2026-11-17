@@ -4083,7 +4083,85 @@ describe('AntreaFlowVisibilityPage — incremental service map', () => {
         expect(state._simulation.alpha()).toBe(1);
     });
 
-    test('dragging moves only the selected node and never reheats the simulation', async () => {
+    test('an addition during the first layout keeps it running unpinned and centred', async () => {
+        const { page, state } = await mountMap();
+        const original = makeFlow();
+        await update(page, state, [original]);
+        state._simulation.stop().tick(20);
+        const alpha = state._simulation.alpha();
+        expect(alpha).toBeGreaterThan(state._simulation.alphaMin());
+        await update(page, state, [original, makeFlow({ dstPod: 'new-xyz34', dstIP: '10.0.0.3' })]);
+        const nodes = state._simulation.nodes();
+        expect(nodes).toHaveLength(3);
+        expect(nodes.every(n => n.fx == null && n.fy == null)).toBe(true);
+        expect(state._simulation.force('center')).toBeDefined();
+        expect(state._simulation.force('anchorX')).toBeUndefined();
+        expect(state._simulation.alpha()).toBe(alpha);
+    });
+
+    test('pins from settling additions are released when the layout ends', async () => {
+        const { page, state } = await mountMap();
+        const original = makeFlow();
+        await update(page, state, [original]);
+        state._simulation.stop().tick(300);
+        await update(page, state, [original, makeFlow({ dstPod: 'new-xyz34', dstIP: '10.0.0.3' })]);
+        const [first, second] = state._simulation.nodes();
+        const dragged = state._simulation.nodes().find(n => (page.shadowRoot!.querySelector('.nodes .node') as unknown as { __data__: unknown }).__data__ === n)!;
+        expect([first.fx, second.fx].every(x => x != null)).toBe(true);
+        const down = new MouseEvent('mousedown', { bubbles: true, clientX: 1, clientY: 1 });
+        Object.defineProperty(down, 'view', { value: window });
+        page.shadowRoot!.querySelector('.nodes .node')!.dispatchEvent(down);
+        const up = new MouseEvent('mouseup', { bubbles: true, clientX: 1, clientY: 1 });
+        Object.defineProperty(up, 'view', { value: window });
+        window.dispatchEvent(up);
+        await vi.advanceTimersByTimeAsync(0);
+        state._simulation.on('end')!.call(state._simulation);
+        // Only the node the user dragged stays put.
+        expect(state._simulation.nodes().map(n => n.fx != null)).toEqual(
+            state._simulation.nodes().map(n => n === dragged));
+    });
+
+    test('a graph of only new nodes after an empty list view gets a full layout', async () => {
+        const { page, state } = await mountMap();
+        const original = makeFlow();
+        await update(page, state, [original]);
+        state._simulation.stop().tick(300);
+        page.viewMode = 'list';
+        await page.updateComplete;
+        await update(page, state, [makeFlow({ srcPod: 'other-xyz34', srcIP: '10.0.1.1', dstPod: 'another-xyz34', dstIP: '10.0.1.2' })]);
+        page.viewMode = 'map';
+        await page.updateComplete;
+        expect(state._simulation.alpha()).toBe(1);
+        expect(state._simulation.force('center')).toBeDefined();
+        expect(state._simulation.nodes().every(n => n.fx == null)).toBe(true);
+    });
+
+    test('dragging during the first layout leaves it running, and double click releases the node', async () => {
+        const { page, state } = await mountMap();
+        await update(page, state, [makeFlow()]);
+        const simulation = state._simulation.stop();
+        const [dragged, other] = simulation.nodes();
+        const node = page.shadowRoot!.querySelector('.nodes .node')!;
+        const mouse = (type: string, clientX: number, clientY: number) => {
+            const event = new MouseEvent(type, { bubbles: true, clientX, clientY });
+            Object.defineProperty(event, 'view', { value: window });
+            return event;
+        };
+        const stop = vi.spyOn(simulation, 'stop');
+        node.dispatchEvent(mouse('mousedown', 40, 50));
+        window.dispatchEvent(mouse('mouseup', 40, 50));
+        expect(stop).not.toHaveBeenCalled();
+        expect(dragged.fx).toBe(dragged.x);
+        expect(other.fx == null).toBe(true);
+        await vi.advanceTimersByTimeAsync(0);
+        node.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+        expect(dragged.fx).toBeNull();
+        expect(other.fx).toBe(other.x);
+        expect(simulation.alpha()).toBe(0.3);
+        stop.mockRestore();
+    });
+
+    test('dragging moves only the selected node and does not reheat the simulation', async () => {
         const { page, state } = await mountMap();
         await update(page, state, [makeFlow()]);
         const simulation = state._simulation.stop();
@@ -4110,7 +4188,9 @@ describe('AntreaFlowVisibilityPage — incremental service map', () => {
         await page.updateComplete;
         page.viewMode = 'map';
         await page.updateComplete;
-        expect(restart).not.toHaveBeenCalled();
+        // The unfinished layout resumes, and the dragged node stays where it was put.
+        expect(restart).toHaveBeenCalledTimes(1);
+        expect([dragged.fx, dragged.fy]).toEqual([dragged.x, dragged.y]);
         expect([other.x, other.y]).toEqual(otherPosition);
         restart.mockRestore();
         // D3 suppresses the click following a drag until its zero-delay timer fires.

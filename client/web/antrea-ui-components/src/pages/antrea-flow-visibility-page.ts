@@ -16,7 +16,7 @@ import { html, css, nothing, svg } from 'lit';
 import type { TemplateResult } from 'lit';
 import { state, query, property } from 'lit/decorators.js';
 import * as d3 from 'd3';
-import { reconcileMapNodes, clusterMapNodes } from '../lib/service-map-layout.js';
+import { reconcileMapNodes, clusterMapNodes, pinMapNodes } from '../lib/service-map-layout.js';
 import { pageStyles, pickerStyles } from '../lib/styles.js';
 import {
     SCOPE_ALL, parseScopeParam, dispatchScopeChosen, writeScopeToURL,
@@ -1019,15 +1019,22 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
     private _seenNamesKey = '';
     private _client: FlowStreamClient | null = null;
     private _simulation: d3.Simulation<D3Node, D3Link> | null = null;
-    // Automatic layout may be paused while the map is hidden; dragging cancels it.
+    // Automatic layout may be paused while the map is hidden.
     private _mapLayoutPending = false;
+    // Whether the unfinished layout is a full one (centred, nothing pinned) rather than
+    // additions settling around pinned nodes.
+    private _mapLayoutFull = false;
+    // Nodes pinned only to keep them still while additions settle. Unlike a node the user
+    // dragged, they are released when the layout ends.
+    private _settlePinned = new Set<D3Node>();
     // D3 stores active touch gestures on the behavior, so it must survive map updates.
     // Gesture callbacks use the latest draw function to include newly joined edges and labels.
     private _drawServiceMap: (() => void) | null = null;
     private _mapDrag = d3.drag<SVGGElement, D3Node>()
         .on('start', (_event, d) => {
-            this._simulation?.stop();
-            this._mapLayoutPending = false;
+            // A running layout carries on for the free nodes, so even a click does not
+            // leave it half done. Only the dragged node is pinned, and it stays so.
+            this._settlePinned.delete(d);
             d.fx = d.x; d.fy = d.y;
         })
         .on('drag', (event, d) => {
@@ -1781,6 +1788,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
             .data(d3Nodes, d => d.id).join('g').attr('class', 'node')
             .style('cursor', 'grab')
             .call(this._mapDrag)
+            .on('dblclick', (_event, d) => this._releaseMapNode(d))
             // Only the collapsed namespace has anything actionable to say. The anonymous peer
             // has no namespace to name a grant in, so it gets no tooltip at all - see
             // describeEndpoint - and a workload node is itself disclosed and needs none.
@@ -1896,8 +1904,13 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         };
         this._drawServiceMap = draw;
 
-        const initial = previousNodes.length === 0;
         const simulation = this._simulation ?? d3.forceSimulation<D3Node>();
+        // Without a node to keep still there is nothing to settle around, so the layout is a
+        // full one. So is an addition arriving while the previous full layout is still
+        // running: pinning half-settled nodes would leave the map that way.
+        const initial = d3Nodes.length === added.length;
+        const full = initial || (this._mapLayoutFull && simulation.alpha() >= simulation.alphaMin());
+        for (const n of this._settlePinned) if (!nodeById.has(n.id)) this._settlePinned.delete(n);
         // Remove old links before nodes: forceLink otherwise initializes stale endpoints.
         if (added.length) simulation.force('anchorX', null).force('anchorY', null);
         simulation.force('link', null).nodes(d3Nodes)
@@ -1908,8 +1921,13 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
                 d3Nodes, n => inNamespaceHull(n) ? n.namespace : undefined, alpha,
             ))
             .on('tick', draw)
-            .on('end', () => { this._mapLayoutPending = false; });
-        if (initial) {
+            .on('end', () => {
+                this._mapLayoutPending = false;
+                this._mapLayoutFull = false;
+                for (const n of this._settlePinned) { n.fx = null; n.fy = null; }
+                this._settlePinned.clear();
+            });
+        if (full) {
             simulation.force('center', d3.forceCenter<D3Node>(this._svgWidth / 2, HEIGHT / 2))
                 .force('anchorX', null).force('anchorY', null);
         } else if (added.length) {
@@ -1923,15 +1941,31 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         if (!d3Nodes.length) {
             simulation.stop();
             this._mapLayoutPending = false;
+            this._mapLayoutFull = false;
+            this._settlePinned.clear();
         } else if (added.length) {
             this._mapLayoutPending = true;
-            simulation.alpha(initial ? 1 : 0.15).alphaTarget(0).restart();
+            this._mapLayoutFull = full;
+            if (!full) for (const n of pinMapNodes(d3Nodes.filter(n => !added.includes(n)))) this._settlePinned.add(n);
+            simulation.alpha(initial ? 1 : full ? simulation.alpha() : 0.15).alphaTarget(0).restart();
         } else if (newViewport && this._mapLayoutPending && simulation.alpha() >= simulation.alphaMin()) {
             // Continue an interrupted layout at its existing alpha and node positions.
             simulation.restart();
         }
         this._simulation = simulation;
         draw();
+    }
+
+    /** Frees a node the user dragged, and lets it settle while the others stay where they are. */
+    private _releaseMapNode(node: D3Node) {
+        const simulation = this._simulation;
+        if (!simulation || this._settlePinned.has(node) || node.fx == null) return;
+        const others = simulation.nodes().filter(n => n !== node);
+        node.fx = null; node.fy = null;
+        for (const n of pinMapNodes(others)) this._settlePinned.add(n);
+        this._mapLayoutPending = true;
+        this._mapLayoutFull = false;
+        simulation.alpha(0.3).alphaTarget(0).restart();
     }
 
     private _showTooltip(event: MouseEvent, edge: WorkloadEdge) {

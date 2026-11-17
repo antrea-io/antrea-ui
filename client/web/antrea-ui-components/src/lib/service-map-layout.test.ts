@@ -13,7 +13,7 @@
 // limitations under the License.
 
 import { describe, expect, test } from 'vitest';
-import { clusterMapNodes, reconcileMapNodes } from './service-map-layout';
+import { clusterMapNodes, pinMapNodes, reconcileMapNodes } from './service-map-layout';
 import type { PositionedNode } from './service-map-layout';
 
 describe('incremental map layout', () => {
@@ -28,17 +28,25 @@ describe('incremental map layout', () => {
         expect(result.added).toEqual([]);
     });
 
-    test('seeds additions near existing neighbours and fixes existing positions', () => {
+    test('seeds additions near existing neighbours without pinning anything', () => {
         const old: PositionedNode = { id: 'a', x: 500, y: 400 };
         const result = reconcileMapNodes(
             [old], [{ id: 'a' }, { id: 'new' }, { id: 'isolated' }],
             [{ source: 'new', target: 'a' }], { x: 0, y: 0 },
         );
-        expect(old).toMatchObject({ fx: 500, fy: 400 });
+        expect(old.fx).toBeUndefined();
         const [neighbour, isolated] = result.added;
         expect(Math.hypot(neighbour.x! - old.x!, neighbour.y! - old.y!)).toBeCloseTo(80);
         expect(Math.hypot(isolated.x!, isolated.y!)).toBeCloseTo(80);
         expect(neighbour.fx).toBeUndefined();
+    });
+
+    test('pins only the nodes that are not pinned yet and reports them', () => {
+        const free = { id: 'free', x: 1, y: 2 };
+        const dragged = { id: 'dragged', x: 5, y: 6, fx: 3, fy: 4 };
+        expect(pinMapNodes([free, dragged])).toEqual([free]);
+        expect(free).toMatchObject({ fx: 1, fy: 2 });
+        expect(dragged).toMatchObject({ fx: 3, fy: 4 });
     });
 
     test('normalizes each namespace centroid once, independently of member order', () => {
