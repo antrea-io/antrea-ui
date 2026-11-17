@@ -21,12 +21,11 @@ import (
 	"net/http/httptest"
 	"net/http/httputil"
 	"net/url"
-	"strings"
 	"testing"
 	"time"
 
+	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/go-logr/logr"
-	"github.com/go-logr/logr/funcr"
 	"github.com/go-logr/logr/testr"
 	"github.com/oauth2-proxy/mockoidc"
 	"github.com/stretchr/testify/assert"
@@ -296,20 +295,11 @@ func TestOAuth2DiscoveryURL(t *testing.T) {
 	}
 
 	t.Run("issuer mismatch error", func(t *testing.T) {
-		// Init retries a failed discovery until its context is done, whatever the error.
-		// The test cancels the context as soon as the expected error has been logged,
-		// instead of waiting out the timeout.
-		ctx, cancel := context.WithCancel(t.Context())
-		defer cancel()
-		logger := funcr.New(func(_, args string) {
-			// So that a failure of the test shows what discovery reported.
-			t.Log(args)
-			if strings.Contains(args, "did not match the issuer URL returned by provider") {
-				cancel()
-			}
-		}, funcr.Options{})
-		// With any other discovery error, it is the timeout which ends Init.
-		require.ErrorIs(t, initProvider(ctx, logger, proxy.URL, ""), context.Canceled)
+		logger := testr.New(t)
+		var mismatchErr *oidc.IssuerMismatchError
+		require.ErrorAs(t, initProvider(t.Context(), logger, proxy.URL, ""), &mismatchErr)
+		assert.Equal(t, proxy.URL, mismatchErr.Provided)
+		assert.Equal(t, oidcConfig.Issuer, mismatchErr.Discovered)
 	})
 
 	t.Run("with discovery URL", func(t *testing.T) {
