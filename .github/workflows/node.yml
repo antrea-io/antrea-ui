@@ -26,6 +26,7 @@ jobs:
     - name: Enable Corepack
       run: corepack enable
     - run: yarn install --immutable
+    - run: yarn dedupe --check
     - run: yarn workspace @antrea/ui-components run build
     - run: yarn workspace @antrea/ui-plugin-sdk run build
     - run: yarn workspace antrea-ui run lint
