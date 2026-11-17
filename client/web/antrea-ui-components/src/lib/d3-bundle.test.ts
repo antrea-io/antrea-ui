@@ -19,8 +19,9 @@ import { build } from 'vite';
 import { expect, it } from 'vitest';
 
 it('initializes D3 zoom on the selection used by a production bundle', async () => {
-    const entry = resolve('src/lib/d3-bundle-probe.js');
+    const entry = resolve(import.meta.dirname, 'd3-bundle-probe.js');
     const result = await build({
+        root: import.meta.dirname,
         configFile: false,
         logLevel: 'silent',
         plugins: [{
