@@ -20,6 +20,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	stderrors "errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -147,6 +148,10 @@ func (p *OIDCProvider) Init(ctx context.Context) error {
 		var err error
 		provider, err = oidc.NewProvider(ctx, discoveryURL)
 		if err != nil {
+			// Both issuer URLs come from configuration: retrying cannot fix a mismatch.
+			if _, ok := stderrors.AsType[*oidc.IssuerMismatchError](err); ok {
+				return fmt.Errorf("failed to initialize OIDC provider with OIDC discovery: %w", err)
+			}
 			logger.Error(err, "OIDC discovery failed, retrying after backoff", "wait", wait.String())
 		} else {
 			logger.Info("OIDC discovery succeeded", "issuer", p.issuerURL)
