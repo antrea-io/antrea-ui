@@ -43,7 +43,8 @@ import (
 var flowStreamSourceID atomic.Uint64
 
 // newFlowStreamConnKeyPrefix allocates a session cache namespace for one source. It contains no
-// slash: connFor treats everything before the first slash as the upstream being superseded.
+// slash: the session cache treats everything before the first slash as the upstream being
+// superseded (see keyedCache in pkg/auth/session).
 func newFlowStreamConnKeyPrefix() string {
 	return fmt.Sprintf("flow-source-grpc-%d", flowStreamSourceID.Add(1))
 }
@@ -175,7 +176,7 @@ type GRPCConfig struct {
 	Address string
 	// TLSConfig is the TLS configuration used for the gRPC connection. Its Certificates field
 	// is left unset here: a KindCert session credential adds its own, on a separate
-	// per-session connection (see connFor).
+	// per-session connection (see session.RequestAuth.ConnFor).
 	TLSConfig *tls.Config
 	// AdminTokenSource mints the bearer token used for admin-password sessions. May be nil, in
 	// which case that login mode cannot use flow streaming.
@@ -186,8 +187,10 @@ type GRPCConfig struct {
 	ConnKeyPrefix string
 	// Generation identifies the CA bundle TLSConfig was built from. A subscriber replacing
 	// another one for a new bundle must use a larger generation: a session closes the connections
-	// it dialed for smaller generations (see connFor), and reuses the one for an equal one, so a
-	// connection dialed for the old bundle would otherwise stay open or be reused.
+	// it dialed for smaller generations (see keyedCache in pkg/auth/session), and reuses the one
+	// for an equal one, so a connection dialed for the old bundle would otherwise stay open or be
+	// reused. Closing it ends the streams running on it: the CA they trust is gone, so they would
+	// not survive their next reconnect anyway, and the client reconnects on the new connection.
 	Generation int
 }
 

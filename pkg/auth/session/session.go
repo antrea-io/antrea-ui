@@ -28,8 +28,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -193,16 +191,6 @@ func (s *Spec) Zero() {
 	s.RefreshToken = nil
 }
 
-type cachedTransport struct {
-	rt      http.RoundTripper
-	cleanup func()
-}
-
-type cachedConn struct {
-	conn    *grpc.ClientConn
-	cleanup func()
-}
-
 // Session is one logged-in user. It is safe for concurrent use.
 type Session struct {
 	id   string
@@ -223,11 +211,11 @@ type Session struct {
 	// expiresAt is min(createdAt+maxLifetime, credential expiry). It moves forward (up to the
 	// absolute cap) when the credential is refreshed.
 	expiresAt  time.Time
-	transports map[string]cachedTransport
+	transports keyedCache[http.RoundTripper]
 	// conns caches gRPC connections the same way transports does, for credentials whose
 	// upstream is dialed with grpc.NewClient rather than reached over http.RoundTripper (the
 	// flow source's FlowStreamService, for a KindCert credential).
-	conns map[string]cachedConn
+	conns keyedCache[*grpc.ClientConn]
 
 	// refreshMutex serializes credential refreshes for this session. The summary page fires
 	// three API requests in one Promise.all; without this they would each start a refresh,
@@ -273,163 +261,48 @@ func (s *Session) MarshalJSON() ([]byte, error) {
 
 // transportFor returns the RoundTripper cached under key for this session's current credential,
 // building it with build on first use. Caching matters most for KindCert, where each transport
-// owns a connection pool and a TLS handshake.
-//
-// key is either a bare name for an upstream whose transports never go stale on their own, or
-// "<upstream>/<version>" for one whose settings can change under a live session — the Antrea
-// Service, whose transports are rebuilt whenever the Antrea CA bundle rotates. Building a version
-// releases every other version under the same upstream, rather than leaving them to accumulate for
-// the rest of the session. This treats versions as opaque, unlike connFor, which only releases
-// older ones.
+// owns a connection pool and a TLS handshake. See keyedCache for the key format, and for which
+// versions building a key releases.
 func (s *Session) transportFor(key string, build TransportBuilder) (http.RoundTripper, error) {
-	s.mutex.RLock()
-	cached, ok := s.transports[key]
-	s.mutex.RUnlock()
-	if ok {
-		return cached.rt, nil
-	}
-
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
-	// Another goroutine may have built it while we were upgrading the lock.
-	if cached, ok := s.transports[key]; ok {
-		return cached.rt, nil
-	}
-	s.dropSupersededTransportsLocked(key)
-	rt, cleanup, err := build(&s.credential)
-	if err != nil {
-		return nil, err
-	}
-	if s.transports == nil {
-		s.transports = make(map[string]cachedTransport)
-	}
-	s.transports[key] = cachedTransport{rt: rt, cleanup: cleanup}
-	return rt, nil
+	return cachedFor(s, &s.transports, key, build)
 }
 
 // connFor returns the gRPC connection cached under key for this session's current credential,
-// building it with build on first use. It is the gRPC counterpart of transportFor: see that
-// method for why the per-key cache and the double-checked lock exist, and for the
-// "<upstream>/<version>" key form. Unlike transportFor, building a version closes only the older
-// versions of the upstream, ordered as integers (see dropSupersededConnsLocked), so a late request
-// for an older version cannot close a newer connection.
+// building it with build on first use. It is the gRPC counterpart of transportFor. See keyedCache
+// for the key format, and for which versions building a key releases.
 func (s *Session) connFor(key string, build ConnBuilder) (*grpc.ClientConn, error) {
+	return cachedFor(s, &s.conns, key, build)
+}
+
+// cachedFor returns the value cached in cache, one of s's caches, under key, building it with build
+// for the session's current credential on first use.
+func cachedFor[T any](
+	s *Session,
+	cache *keyedCache[T],
+	key string,
+	build func(cred *Credential) (T, func(), error),
+) (T, error) {
 	s.mutex.RLock()
-	cached, ok := s.conns[key]
+	value, ok := cache.get(key)
 	s.mutex.RUnlock()
 	if ok {
-		return cached.conn, nil
+		return value, nil
 	}
 
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
-	// Another goroutine may have built it while we were upgrading the lock.
-	if cached, ok := s.conns[key]; ok {
-		return cached.conn, nil
-	}
-	s.dropSupersededConnsLocked(key)
-	conn, cleanup, err := build(&s.credential)
-	if err != nil {
-		return nil, err
-	}
-	if s.conns == nil {
-		s.conns = make(map[string]cachedConn)
-	}
-	s.conns[key] = cachedConn{conn: conn, cleanup: cleanup}
-	return conn, nil
-}
-
-// transportUpstream is the part of a transport cache key before the first "/". A key with no "/"
-// names an upstream that never supersedes anything, and reports false.
-func transportUpstream(key string) (string, bool) {
-	upstream, _, versioned := strings.Cut(key, "/")
-	return upstream, versioned
-}
-
-// dropSupersededTransportsLocked releases every cached transport for the same upstream as key but
-// an older version of it. The caller must hold s.mutex.
-//
-// Without this, a session that outlives an Antrea CA rotation keeps the transport it built against
-// the previous bundle for the rest of its life: unusable, since the CA it trusts is gone, and for
-// a KindCert credential still holding an idle connection pool that only its cleanup closes.
-func (s *Session) dropSupersededTransportsLocked(key string) {
-	upstream, versioned := transportUpstream(key)
-	if !versioned {
-		return
-	}
-	for k, cached := range s.transports {
-		if k == key {
-			continue
-		}
-		if u, versioned := transportUpstream(k); !versioned || u != upstream {
-			continue
-		}
-		if cached.cleanup != nil {
-			cached.cleanup()
-		}
-		delete(s.transports, k)
-	}
-}
-
-// dropSupersededConnsLocked closes every cached gRPC connection for the same upstream as key but
-// an older version of it. The caller must hold s.mutex.
-//
-// A connection is superseded when the settings it was dialed with, such as the CA bundle it
-// verifies the server against, were replaced. It can still carry a live stream, which this ends:
-// the CA that stream trusts is gone, so it would not survive its next reconnect anyway, and the
-// client reconnects on the new connection.
-//
-// Versions are compared as integers (generations). A request that read an older generation just
-// before it was replaced can arrive after a newer connection is cached: it must not close that
-// connection. Versions that are not integers cannot be ordered, and every other version of the
-// upstream is then treated as older.
-func (s *Session) dropSupersededConnsLocked(key string) {
-	upstream, versioned := transportUpstream(key)
-	if !versioned {
-		return
-	}
-	for k, cached := range s.conns {
-		if k == key {
-			continue
-		}
-		if u, versioned := transportUpstream(k); !versioned || u != upstream {
-			continue
-		}
-		if isNewerVersion(k, key) {
-			continue
-		}
-		if cached.cleanup != nil {
-			cached.cleanup()
-		}
-		delete(s.conns, k)
-	}
-}
-
-// isNewerVersion reports whether the version of key a is a larger integer than that of key b.
-// It is false if either version is not an integer.
-func isNewerVersion(a, b string) bool {
-	_, va, _ := strings.Cut(a, "/")
-	_, vb, _ := strings.Cut(b, "/")
-	na, errA := strconv.Atoi(va)
-	nb, errB := strconv.Atoi(vb)
-	return errA == nil && errB == nil && na > nb
+	// Another goroutine may have built it while we were upgrading the lock: getOrBuild looks it up
+	// again.
+	return cache.getOrBuild(key, func() (T, func(), error) {
+		return build(&s.credential)
+	})
 }
 
 // dropTransportsLocked discards every cached transport and gRPC connection. The caller must hold
 // s.mutex.
 func (s *Session) dropTransportsLocked() {
-	for key, cached := range s.transports {
-		if cached.cleanup != nil {
-			cached.cleanup()
-		}
-		delete(s.transports, key)
-	}
-	for key, cached := range s.conns {
-		if cached.cleanup != nil {
-			cached.cleanup()
-		}
-		delete(s.conns, key)
-	}
+	s.transports.dropAll()
+	s.conns.dropAll()
 }
 
 // needsRefresh reports whether the credential is close enough to expiry that it should be
