@@ -31,6 +31,7 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/sync/singleflight"
 	"google.golang.org/grpc"
 )
 
@@ -217,10 +218,11 @@ type Session struct {
 	// flow source's FlowStreamService, for a KindCert credential).
 	conns keyedCache[*grpc.ClientConn]
 
-	// refreshMutex serializes credential refreshes for this session. The summary page fires
-	// three API requests in one Promise.all; without this they would each start a refresh,
-	// and with refresh-token rotation the later ones would invalidate the earlier ones.
-	refreshMutex sync.Mutex
+	// refreshGroup collapses concurrent credential refreshes for this session into one. The
+	// summary page fires three API requests in one Promise.all; without this they would each
+	// start a refresh, and with refresh-token rotation the later ones would invalidate the
+	// earlier ones.
+	refreshGroup singleflight.Group
 }
 
 func (s *Session) ID() string           { return s.id }
