@@ -182,9 +182,9 @@ flowAggregator:
   # system trust store, which will not verify the Flow Aggregator's self-signed certificate, and
   # the connection will fail. Use insecureSkipVerify below for that (dev/test only).
   # The backend watches the ConfigMap and reconnects to the Flow Aggregator whenever its CA bundle
-  # changes, which ends the flow streams on its shared connection (clients reconnect). A session
-  # logged in with a client certificate has its own connection, and moves to a new one on its next
-  # request. If the ConfigMap does not exist yet, the backend keeps running and Flow Visibility
+  # changes. This closes every connection verified against the previous bundle, including those of
+  # sessions logged in with a client certificate, which ends the flow streams on them (clients
+  # reconnect). If the ConfigMap does not exist yet, the backend keeps running and Flow Visibility
   # shows an error until it is created. A deleted ConfigMap or an invalid bundle keeps the last
   # good one.
   # Unless insecureSkipVerify is set, the chart grants antrea-ui get, list and watch on this
@@ -475,8 +475,9 @@ hostAliases: []
 # configuration example.
 # The backend watches each source's CA independently. A missing or invalid initial CA leaves only
 # that source unavailable; once loaded, a deleted or invalid bundle keeps the last good one.
-# CA changes replace that source's shared connection: live clients reconnect, while an interrupted
-# finite query fails and must be re-run. Client-certificate sessions pick up the new CA on their next request.
+# A CA change closes every connection to that source verified against the previous CA, including
+# those of client-certificate sessions: live clients reconnect, while an interrupted finite query
+# fails and must be re-run.
 # The UI in this chart only offers flows when a source has the `watch` capability. Without one,
 # the Flows page shows that flow visibility is not available. This UI ignores `list` sources and
 # uses only the first `watch` source. Other capabilities are for other UIs built on the same components.

@@ -82,9 +82,10 @@ with the CA under `ca.crt`. The chart grants `get`, `list` and `watch` on that
 ConfigMap. Each source watches its CA independently: a missing or invalid initial
 bundle leaves only that source unavailable, while the backend keeps running.
 After a valid bundle is loaded, a deleted ConfigMap or an invalid replacement
-keeps the last good bundle. A CA change replaces that source's shared connection:
-live clients reconnect, while an interrupted finite query fails and must be re-run.
-Client-certificate sessions pick up the new CA on their next request.
+keeps the last good bundle. A CA change closes every connection to that source
+verified against the previous bundle, including those of client-certificate
+sessions: live clients reconnect, while an interrupted finite query fails and
+must be re-run.
 With no CA ConfigMap, the backend uses the system trust store. With
 `insecureSkipVerify`, it does not watch the ConfigMap. Keep TLS verification enabled in production:
 `insecureSkipVerify: true` trusts any server at the configured address with every

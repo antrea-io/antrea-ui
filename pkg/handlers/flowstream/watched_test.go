@@ -33,7 +33,6 @@ import (
 
 	"github.com/go-logr/logr/funcr"
 	"github.com/go-logr/logr/testr"
-	"github.com/madflojo/testcerts"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
@@ -392,6 +391,52 @@ func testWatchedSubscriberRotationEndsStream(t *testing.T, filter *FlowStreamFil
 	}
 }
 
+// newCertSession creates a session logged in with a client certificate, and returns a context
+// carrying its credential.
+func newCertSession(t *testing.T) (context.Context, *session.RequestAuth) {
+	t.Helper()
+	store := newTestStore(t)
+	ctx, ra := ctxWithSessionAuth(t, store, &session.Spec{
+		Mode:       session.ModeKubeconfig,
+		Credential: newTestCertCredential(t),
+	})
+	t.Cleanup(func() { store.Delete(ra.SessionID()) })
+	return ctx, ra
+}
+
+// sessionConn has the current subscriber of w resolve a call for the session of ra, and returns the
+// connection the session cached for it.
+func sessionConn(t *testing.T, ctx context.Context, ra *session.RequestAuth, w *WatchedSubscriber) *grpc.ClientConn {
+	t.Helper()
+	sub, _ := w.currentForTest()
+	require.NotNil(t, sub)
+	_, _, err := sub.resolveCall(ctx)
+	require.NoError(t, err)
+	conn, err := ra.ConnFor(flowStreamConnKey(sub.connKeyPrefix, sub.generation),
+		func(*session.Credential) (*grpc.ClientConn, func(), error) {
+			return nil, nil, errors.New("resolveCall did not cache a connection")
+		})
+	require.NoError(t, err)
+	return conn
+}
+
+// A CA rotation closes the connection a client-certificate session dialed against the previous
+// bundle right away, not on the session's next flow request: until then, it would keep carrying
+// streams to a server only the previous CA verified.
+func TestWatchedSubscriberRotationClosesSessionConnections(t *testing.T) {
+	w, provider := newTestWatched(t)
+	provider.set(newTestCA(t))
+	w.Enqueue()
+
+	ctx, ra := newCertSession(t)
+	conn := sessionConn(t, ctx, ra, w)
+	require.NotEqual(t, connectivity.Shutdown, conn.GetState())
+
+	provider.set(newTestCA(t))
+	w.Enqueue()
+	assert.Equal(t, connectivity.Shutdown, conn.GetState(), "the rotation should close the session's connection")
+}
+
 // Two sources can have the same address and CA generation but still own independent connections.
 // Rotating either source must leave the other source's cached connection usable.
 func TestWatchedSubscriberIsolatesSessionConnectionsAcrossSources(t *testing.T) {
@@ -403,31 +448,10 @@ func TestWatchedSubscriberIsolatesSessionConnectionsAcrossSources(t *testing.T) 
 	secondProvider.set(ca)
 	secondSource.Enqueue()
 
-	clientCA := testcerts.NewCA()
-	clientKP, err := clientCA.NewKeyPair("flow-viewer-client")
-	require.NoError(t, err)
-	store := newTestStore(t)
-	ctx, ra := ctxWithSessionAuth(t, store, &session.Spec{
-		Mode: session.ModeKubeconfig,
-		Credential: session.Credential{
-			Kind:    session.KindCert,
-			CertPEM: clientKP.PublicKey(),
-			KeyPEM:  clientKP.PrivateKey(),
-		},
-	})
-	t.Cleanup(func() { store.Delete(ra.SessionID()) })
+	ctx, ra := newCertSession(t)
 	connection := func(w *WatchedSubscriber) *grpc.ClientConn {
 		t.Helper()
-		sub, _ := w.currentForTest()
-		require.NotNil(t, sub)
-		_, _, err := sub.resolveCall(ctx)
-		require.NoError(t, err)
-		conn, err := ra.ConnFor(flowStreamConnKey(sub.connKeyPrefix, sub.generation),
-			func(*session.Credential) (*grpc.ClientConn, func(), error) {
-				return nil, nil, errors.New("resolveCall did not cache a connection")
-			})
-		require.NoError(t, err)
-		return conn
+		return sessionConn(t, ctx, ra, w)
 	}
 
 	first := connection(firstSource)
