@@ -76,11 +76,19 @@ type caBundleProvider interface {
 
 // WatchedSubscriber is a FlowStreamSubscriber that follows one flow source's CA ConfigMap. It
 // builds a GRPCFlowStreamSubscriber for each CA bundle it sees, swaps it in and closes the one it
-// replaces, so a CA rotation takes effect without restarting antrea-ui. This closes the shared
-// connection for bearer and admin-password sessions: live clients reconnect through the new
-// subscriber, while interrupted finite queries fail. Client-certificate sessions keep their own
-// connections and ongoing streams; their next flow request to this source replaces the connection
-// using the new CA.
+// replaces, so a CA rotation takes effect without restarting antrea-ui. This closes every
+// connection verified against the previous bundle: the shared one of bearer and admin-password
+// sessions, and the per-session ones of client-certificate sessions. Live clients reconnect
+// through the new subscriber, while interrupted finite queries fail.
+//
+// Closing them is deliberate. TLS verifies the server once, at the handshake, and nothing bounds
+// how long a connection then stays open, so a connection that outlived the rotation would keep
+// carrying new streams, and on the shared one the bearer tokens they send, to a server only the
+// previous CA verified. A new bundle cannot be told apart from one that replaces a compromised CA,
+// so that server is no longer trusted. This type closes them whatever the new bundle holds: the
+// Flow Aggregator publishes only its new CA when it rotates it, so that bundle would not verify
+// the server behind any of them. Only for a bundle holding the previous CA alongside the new one
+// would keeping the connections whose server it still verifies be worth doing.
 //
 // Until the first bundle is loaded, Subscribe fails with a retryable error, which the UI shows as
 // a banner: a missing ConfigMap does not keep the rest of antrea-ui from running. Afterwards, the
@@ -101,13 +109,10 @@ type WatchedSubscriber struct {
 	// connKeyPrefix isolates this source's session connections and stays fixed across CA rotations.
 	connKeyPrefix string
 
-	// buildMu serializes rebuilds, so that generations are handed out in order.
-	buildMu sync.Mutex
 	// mu protects current, generation and closed.
 	mu      sync.RWMutex
 	current *GRPCFlowStreamSubscriber
-	// generation counts the subscribers built so far. It is part of the per-session connection
-	// cache key, see GRPCConfig.Generation.
+	// generation counts the subscribers swapped in so far, see GRPCFlowStreamSubscriber.generation.
 	generation int
 	closed     bool
 }
@@ -221,13 +226,10 @@ func (w *WatchedSubscriber) Enqueue() {
 	}
 }
 
-// rebuild builds a subscriber for caData, swaps it in and closes the previous one.
+// rebuild builds a subscriber for caData, swaps it in and closes the previous one. Rebuilds do not
+// run concurrently: the CA controller calls Enqueue from a single worker.
 func (w *WatchedSubscriber) rebuild(caData []byte) error {
-	w.buildMu.Lock()
-	defer w.buildMu.Unlock()
-
 	w.mu.RLock()
-	generation := w.generation + 1
 	closed := w.closed
 	w.mu.RUnlock()
 	if closed {
@@ -244,7 +246,6 @@ func (w *WatchedSubscriber) rebuild(caData []byte) error {
 		TLSConfig:        tlsCfg,
 		AdminTokenSource: w.cfg.AdminTokenSource,
 		ConnKeyPrefix:    w.connKeyPrefix,
-		Generation:       generation,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create gRPC flow stream handler: %w", err)
@@ -257,12 +258,15 @@ func (w *WatchedSubscriber) rebuild(caData []byte) error {
 		return nil
 	}
 	previous := w.current
+	w.generation++
+	generation := w.generation
+	// Set before sub is published: Subscribe reads it through w.current, under the same lock.
+	sub.generation = generation
 	w.current = sub
-	w.generation = generation
 	w.mu.Unlock()
 
 	if previous != nil {
-		w.logger.Info("The flow source CA bundle changed, replaced the connection", "generation", generation)
+		w.logger.Info("The flow source CA bundle changed, replaced the connections", "generation", generation)
 		previous.Close()
 	} else if caData != nil {
 		w.logger.Info("Loaded the flow source CA bundle, flow visibility is available")
@@ -280,8 +284,8 @@ func (w *WatchedSubscriber) available() bool {
 // closes flowsCh and errCh after sending one retryable error on errCh, and never closes the ready
 // channel.
 //
-// A Subscribe using the shared connection that reads the current subscriber just as a new bundle
-// replaces it fails or ends on the closed one like any stream on it; live clients reconnect.
+// A Subscribe that reads the current subscriber just as a new bundle replaces it fails or ends on
+// a closed connection, like any stream on it; live clients reconnect.
 func (w *WatchedSubscriber) Subscribe(ctx context.Context, scope *FlowStreamScope, filter *FlowStreamFilter) (<-chan apisv1.FlowStreamEvent, <-chan error, <-chan struct{}) {
 	w.mu.RLock()
 	current := w.current

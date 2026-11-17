@@ -22,6 +22,7 @@ import (
 	"io"
 	"net/netip"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -49,8 +50,8 @@ func newFlowStreamConnKeyPrefix() string {
 	return fmt.Sprintf("flow-source-grpc-%d", flowStreamSourceID.Add(1))
 }
 
-// flowStreamConnKey scopes a CA generation to its source, so rotating one source closes only that
-// source's older per-session connections.
+// flowStreamConnKey scopes a CA generation to its source, so a session building a newer generation
+// releases only that source's older per-session connections.
 func flowStreamConnKey(prefix string, generation int) string {
 	return fmt.Sprintf("%s/%d", prefix, generation)
 }
@@ -164,9 +165,21 @@ type GRPCFlowStreamSubscriber struct {
 	// adminTokenSource mints the bearer token used for admin-password (KindImpersonate)
 	// sessions. Nil disables flow streaming for that login mode.
 	adminTokenSource *k8s.AdminTokenSource
-	// connKeyPrefix and generation identify the source and its CA bundle in the session cache.
+	// connKeyPrefix identifies the source in the session cache.
 	connKeyPrefix string
-	generation    int
+	// generation numbers the CA bundle tlsConfig was built from; it is part of the session cache
+	// key. A WatchedSubscriber sets it before publishing the subscriber, larger for each new
+	// bundle: a session reuses the connection it cached for an equal generation, so it would keep
+	// handing out the one the replaced subscriber closed. A larger generation also releases the
+	// closed ones from the session (see keyedCache in pkg/auth/session).
+	generation int
+
+	// certConnsMu protects certConns and closed.
+	certConnsMu sync.Mutex
+	// certConns are the per-session connections buildCertConn dialed that their sessions have not
+	// released yet, so that Close can close them too.
+	certConns map[*grpc.ClientConn]struct{}
+	closed    bool
 }
 
 // GRPCConfig holds the connection parameters for a flow source's gRPC server.
@@ -185,13 +198,6 @@ type GRPCConfig struct {
 	// source must reuse it; other sources must use distinct prefixes. It must not contain "/".
 	// When empty, a new prefix is allocated for this subscriber.
 	ConnKeyPrefix string
-	// Generation identifies the CA bundle TLSConfig was built from. A subscriber replacing
-	// another one for a new bundle must use a larger generation: a session closes the connections
-	// it dialed for smaller generations (see keyedCache in pkg/auth/session), and reuses the one
-	// for an equal one, so a connection dialed for the old bundle would otherwise stay open or be
-	// reused. Closing it ends the streams running on it: the CA they trust is gone, so they would
-	// not survive their next reconnect anyway, and the client reconnects on the new connection.
-	Generation int
 }
 
 func NewGRPCFlowStreamSubscriber(logger logr.Logger, cfg GRPCConfig) (*GRPCFlowStreamSubscriber, error) {
@@ -227,15 +233,22 @@ func NewGRPCFlowStreamSubscriber(logger logr.Logger, cfg GRPCConfig) (*GRPCFlowS
 		conn:             conn,
 		adminTokenSource: cfg.AdminTokenSource,
 		connKeyPrefix:    cfg.ConnKeyPrefix,
-		generation:       cfg.Generation,
 	}, nil
 }
 
-// Close closes the connection shared by bearer-authenticated and admin-token calls, which ends the
-// streams running on it. It does not close the per-session connections of KindCert credentials,
-// which belong to their sessions: a session replaces one when it next asks for a connection under
-// a newer generation (see flowStreamConnKey), and closes it when it ends.
+// Close closes the connection shared by bearer-authenticated and admin-token calls, and the
+// per-session connections of KindCert credentials, which ends the streams running on them. A
+// WatchedSubscriber closes the subscriber it replaces for a new CA bundle: see there for why every
+// connection verified against the previous bundle is closed.
 func (h *GRPCFlowStreamSubscriber) Close() error {
+	h.certConnsMu.Lock()
+	h.closed = true
+	certConns := h.certConns
+	h.certConns = nil
+	h.certConnsMu.Unlock()
+	for conn := range certConns {
+		conn.Close()
+	}
 	if h.conn != nil {
 		return h.conn.Close()
 	}
@@ -264,7 +277,26 @@ func (h *GRPCFlowStreamSubscriber) buildCertConn(cred *session.Credential) (*grp
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create gRPC connection to %s: %w", h.address, err)
 	}
-	return conn, func() { conn.Close() }, nil
+	h.certConnsMu.Lock()
+	defer h.certConnsMu.Unlock()
+	if h.closed {
+		// A Subscribe that read this subscriber just before a WatchedSubscriber replaced it.
+		// Returning the connection closed makes the call fail or end like one on the closed
+		// shared connection (see WatchedSubscriber.Subscribe), and leaves no connection open to
+		// the replaced CA bundle.
+		conn.Close()
+	} else {
+		if h.certConns == nil {
+			h.certConns = make(map[*grpc.ClientConn]struct{})
+		}
+		h.certConns[conn] = struct{}{}
+	}
+	return conn, func() {
+		h.certConnsMu.Lock()
+		delete(h.certConns, conn)
+		h.certConnsMu.Unlock()
+		conn.Close()
+	}, nil
 }
 
 // resolveCall returns the client to call GetFlows on and the context to call it with (carrying

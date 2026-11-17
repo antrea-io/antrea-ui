@@ -717,28 +717,17 @@ func TestSubscribeUsesClientCertForKindCert(t *testing.T) {
 // makes the session dial a new connection and close the one dialed against the previous bundle,
 // instead of reusing it for the rest of the session.
 func TestResolveCallKeysTheKindCertConnectionByGeneration(t *testing.T) {
-	ca := testcerts.NewCA()
-	clientKP, err := ca.NewKeyPair("flow-viewer-client")
-	require.NoError(t, err)
-
 	connKeyPrefix := newFlowStreamConnKeyPrefix()
 	newSub := func(generation int) *GRPCFlowStreamSubscriber {
-		return &GRPCFlowStreamSubscriber{
-			logger:        testr.New(t),
-			address:       "127.0.0.1:0", // Dialing is lazy: nothing connects.
-			tlsConfig:     &tls.Config{RootCAs: ca.CertPool()},
-			connKeyPrefix: connKeyPrefix,
-			generation:    generation,
-		}
+		h := newCertConnTestSubscriber(t)
+		h.connKeyPrefix = connKeyPrefix
+		h.generation = generation
+		return h
 	}
 	store := newTestStore(t)
 	ctx, ra := ctxWithSessionAuth(t, store, &session.Spec{
-		Mode: session.ModeKubeconfig,
-		Credential: session.Credential{
-			Kind:    session.KindCert,
-			CertPEM: clientKP.PublicKey(),
-			KeyPEM:  clientKP.PrivateKey(),
-		},
+		Mode:       session.ModeKubeconfig,
+		Credential: newTestCertCredential(t),
 	})
 	t.Cleanup(func() { store.Delete(ra.SessionID()) })
 	// cached returns the connection the session has under a generation's key, without building one.
@@ -750,7 +739,7 @@ func TestResolveCallKeysTheKindCertConnectionByGeneration(t *testing.T) {
 		return conn
 	}
 
-	_, _, err = newSub(1).resolveCall(ctx)
+	_, _, err := newSub(1).resolveCall(ctx)
 	require.NoError(t, err)
 	first := cached(1)
 
@@ -815,6 +804,52 @@ func TestSubscribeStopsSilentlyWhenSessionEndsDuringKindCertStream(t *testing.T)
 	case <-time.After(2 * time.Second):
 		require.FailNow(t, "timed out waiting for the stream to stop")
 	}
+}
+
+// newCertConnTestSubscriber returns a GRPCFlowStreamSubscriber that can dial KindCert connections.
+// Dialing is lazy: nothing connects.
+func newCertConnTestSubscriber(t *testing.T) *GRPCFlowStreamSubscriber {
+	t.Helper()
+	return &GRPCFlowStreamSubscriber{
+		logger:    testr.New(t),
+		address:   "127.0.0.1:0",
+		tlsConfig: &tls.Config{RootCAs: testcerts.NewCA().CertPool()},
+	}
+}
+
+// newTestCertCredential returns a KindCert credential holding a client certificate.
+func newTestCertCredential(t *testing.T) session.Credential {
+	t.Helper()
+	clientKP, err := testcerts.NewCA().NewKeyPair("flow-viewer-client")
+	require.NoError(t, err)
+	return session.Credential{Kind: session.KindCert, CertPEM: clientKP.PublicKey(), KeyPEM: clientKP.PrivateKey()}
+}
+
+// A Subscribe can read a subscriber just before a WatchedSubscriber replaces and closes it. The
+// connection it then dials for a KindCert session must not stay open to the replaced CA bundle.
+func TestBuildCertConnAfterCloseReturnsAClosedConnection(t *testing.T) {
+	h := newCertConnTestSubscriber(t)
+	cred := newTestCertCredential(t)
+	require.NoError(t, h.Close())
+
+	conn, cleanup, err := h.buildCertConn(&cred)
+	require.NoError(t, err)
+	t.Cleanup(cleanup)
+	assert.Equal(t, connectivity.Shutdown, conn.GetState())
+}
+
+// A session releasing its connection must stop the subscriber from tracking it, or the subscriber
+// would hold every connection a KindCert session ever dialed until it is closed.
+func TestBuildCertConnCleanupForgetsTheConnection(t *testing.T) {
+	h := newCertConnTestSubscriber(t)
+	cred := newTestCertCredential(t)
+
+	conn, cleanup, err := h.buildCertConn(&cred)
+	require.NoError(t, err)
+	assert.Contains(t, h.certConns, conn)
+	cleanup()
+	assert.Empty(t, h.certConns)
+	assert.Equal(t, connectivity.Shutdown, conn.GetState())
 }
 
 // NewGRPCFlowStreamSubscriber must reject a nil TLSConfig rather than construct a subscriber that
