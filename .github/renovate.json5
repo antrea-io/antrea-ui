@@ -13,7 +13,7 @@
   prConcurrentLimit: 10,
   prHourlyLimit: 0,
 
-  postUpdateOptions: ["gomodTidy"],
+  postUpdateOptions: ["gomodTidy", "yarnDedupeHighest"],
 
   // Don't separate major, minor and patch in different PRs
   separateMajorMinor: false,
