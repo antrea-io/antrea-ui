@@ -27,6 +27,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/madflojo/testcerts"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"k8s.io/client-go/rest"
@@ -38,33 +39,16 @@ import (
 
 // recordingServer captures the last request it saw, so tests can assert on what reached the wire.
 type recordingServer struct {
-	*httptest.Server
 	header http.Header
 	peer   []*x509.Certificate
 }
 
-// newRecordingServer starts a TLS server on a loopback port when tlsEnabled is set: the client
-// then does its own TLS handshake, which the in-memory network of httptest.NewTestServer has no
-// documented entry point for. Otherwise the server uses that in-memory network: see
-// k8stesting.InMemoryServerConfig for how clients reach it.
-func newRecordingServer(t *testing.T, tlsEnabled bool) *recordingServer {
-	rs := &recordingServer{}
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		rs.header = r.Header.Clone()
-		if r.TLS != nil {
-			rs.peer = r.TLS.PeerCertificates
-		}
-		w.WriteHeader(http.StatusOK)
-	})
-	if tlsEnabled {
-		rs.Server = httptest.NewUnstartedServer(handler)
-		rs.TLS = &tls.Config{ClientAuth: tls.RequestClientCert, MinVersion: tls.VersionTLS12}
-		rs.StartTLS()
-		t.Cleanup(rs.Close)
-	} else {
-		rs.Server = httptest.NewTestServer(t, handler)
+func (rs *recordingServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	rs.header = r.Header.Clone()
+	if r.TLS != nil {
+		rs.peer = r.TLS.PeerCertificates
 	}
-	return rs
+	w.WriteHeader(http.StatusOK)
 }
 
 func generateClientCert(t *testing.T, commonName string) (certPEM []byte, keyPEM []byte) {
@@ -87,10 +71,10 @@ func generateClientCert(t *testing.T, commonName string) (certPEM []byte, keyPEM
 }
 
 func TestTransportForBearer(t *testing.T) {
-	ts := newRecordingServer(t, false)
+	rs := &recordingServer{}
 	// The SA transport would add antrea-ui's own token; the user's bearer token must be what
 	// reaches the API server, so the factory has to layer it on an anonymous base instead.
-	config, tsTransport := k8stesting.InMemoryServerConfig(t, ts.Server)
+	config, tsTransport := k8stesting.InMemoryServerConfig(t, httptest.NewTestServer(t, rs))
 	saTransport := transport.NewBearerAuthRoundTripper("antrea-ui-sa-token", tsTransport)
 	f, err := NewClientFactory(config, saTransport, session.TransportKeyK8s)
 	require.NoError(t, err)
@@ -103,13 +87,13 @@ func TestTransportForBearer(t *testing.T) {
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
-	assert.Equal(t, "Bearer user-token", ts.header.Get("Authorization"))
-	assert.Empty(t, ts.header.Get(transport.ImpersonateUserHeader))
+	assert.Equal(t, "Bearer user-token", rs.header.Get("Authorization"))
+	assert.Empty(t, rs.header.Get(transport.ImpersonateUserHeader))
 }
 
 func TestTransportForImpersonate(t *testing.T) {
-	ts := newRecordingServer(t, false)
-	config, tsTransport := k8stesting.InMemoryServerConfig(t, ts.Server)
+	rs := &recordingServer{}
+	config, tsTransport := k8stesting.InMemoryServerConfig(t, httptest.NewTestServer(t, rs))
 	saTransport := transport.NewBearerAuthRoundTripper("antrea-ui-sa-token", tsTransport)
 	f, err := NewClientFactory(config, saTransport, session.TransportKeyK8s)
 	require.NoError(t, err)
@@ -123,14 +107,24 @@ func TestTransportForImpersonate(t *testing.T) {
 	defer resp.Body.Close()
 
 	// Mode 4 still authenticates as antrea-ui's own SA and impersonates antrea-ui-admin.
-	assert.Equal(t, "Bearer antrea-ui-sa-token", ts.header.Get("Authorization"))
-	assert.Equal(t, userName, ts.header.Get(transport.ImpersonateUserHeader))
+	assert.Equal(t, "Bearer antrea-ui-sa-token", rs.header.Get("Authorization"))
+	assert.Equal(t, userName, rs.header.Get(transport.ImpersonateUserHeader))
 }
 
 func TestTransportForCert(t *testing.T) {
-	ts := newRecordingServer(t, true)
+	ca := testcerts.NewCA()
+	kp, err := ca.NewKeyPair()
+	require.NoError(t, err)
+	serverCert, err := tls.X509KeyPair(kp.PublicKey(), kp.PrivateKey())
+	require.NoError(t, err)
+	rs := &recordingServer{}
+	// client-go does its own TLS handshake, with the client certificate.
+	config := k8stesting.ServeInMemoryTLS(t, rs, &tls.Config{
+		Certificates: []tls.Certificate{serverCert},
+		ClientAuth:   tls.RequestClientCert,
+		MinVersion:   tls.VersionTLS12,
+	})
 	certPEM, keyPEM := generateClientCert(t, "alice")
-	config := &rest.Config{Host: ts.URL}
 	config.Insecure = true
 	f, err := NewClientFactory(config, http.DefaultTransport, session.TransportKeyK8s)
 	require.NoError(t, err)
@@ -139,13 +133,13 @@ func TestTransportForCert(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, cleanup, "a cert transport owns its own connection pool and must be closeable")
 
-	resp, err := f.HTTPClient(rt).Get(ts.URL)
+	resp, err := f.HTTPClient(rt).Get(config.Host)
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
-	require.Len(t, ts.peer, 1)
-	assert.Equal(t, "alice", ts.peer[0].Subject.CommonName)
-	assert.Empty(t, ts.header.Get("Authorization"))
+	require.Len(t, rs.peer, 1)
+	assert.Equal(t, "alice", rs.peer[0].Subject.CommonName)
+	assert.Empty(t, rs.header.Get("Authorization"))
 
 	// Should not panic or error.
 	cleanup()

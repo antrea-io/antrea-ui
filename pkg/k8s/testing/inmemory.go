@@ -12,17 +12,22 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package testing provides helpers for tests which need a fake K8s API server. It only depends on
-// client-go, so that the tests of pkg/k8s can use it too.
+// Package testing provides helpers for tests which need a fake K8s API server. It does not depend
+// on pkg/k8s, so that the tests of pkg/k8s can use it too.
 package testing
 
 import (
+	"context"
+	"crypto/tls"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/test/bufconn"
 	"k8s.io/client-go/rest"
 )
 
@@ -52,6 +57,42 @@ func InMemoryServerConfig(t testing.TB, ts *httptest.Server) (*rest.Config, http
 	return &rest.Config{
 		Host:  InMemoryServerURL,
 		Dial:  transport.DialContext,
-		Proxy: func(*http.Request) (*url.URL, error) { return nil, nil },
+		Proxy: noProxy,
 	}, transport
 }
+
+// InMemoryTLSServerURL is the URL to use for a server started with ServeInMemoryTLS. As with
+// InMemoryServerURL, the host is a name which never resolves.
+const InMemoryTLSServerURL = "https://fake-apiserver.invalid"
+
+// ServeInMemoryTLS serves handler over TLS on an in-memory listener until the end of the test, and
+// returns what client-go needs to reach it. tlsConfig must hold the server certificate.
+//
+// It is for clients which do their own TLS handshake, with the CAData, ServerName or client
+// certificate of the config. The in-memory network of httptest.NewTestServer has no documented
+// entry point for that: only the client of the server can reach it, and that client does the TLS
+// handshake itself. Like the transport returned by InMemoryServerConfig, the Dial of the returned
+// config ignores the address it is asked to dial. bufconn does no real network I/O, so tests using
+// this server can run under testing/synctest.
+func ServeInMemoryTLS(t testing.TB, handler http.Handler, tlsConfig *tls.Config) *rest.Config {
+	t.Helper()
+	lis := bufconn.Listen(1024 * 1024)
+	// ReadHeaderTimeout is for the linter (gosec G112): requests come from the test itself.
+	srv := &http.Server{Handler: handler, ReadHeaderTimeout: time.Minute}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = srv.Serve(tls.NewListener(lis, tlsConfig))
+	}()
+	t.Cleanup(func() {
+		_ = srv.Close()
+		<-done
+	})
+	return &rest.Config{
+		Host:  InMemoryTLSServerURL,
+		Dial:  func(ctx context.Context, _, _ string) (net.Conn, error) { return lis.DialContext(ctx) },
+		Proxy: noProxy,
+	}
+}
+
+func noProxy(*http.Request) (*url.URL, error) { return nil, nil }
