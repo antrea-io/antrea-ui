@@ -1749,10 +1749,14 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
             .style('stroke', d => EDGE_COLOR_VAR[d.role])
             .attr('stroke-width', d => Math.min(1.5 + Math.log2(d.connectionCount + 1), 6))
             .attr('stroke-opacity', 0.6)
-            .attr('marker-end', d => `url(#arrowhead-${d.role})`)
+            .attr('marker-end', d => `url(#arrowhead-${d.role})`);
+        const edgePathsByKey = new Map(linkPaths.nodes().map(path => [
+            d3.select<SVGPathElement, D3Link>(path).datum().edgeKey, path,
+        ]));
+        const bindEdgeEvents = <E extends SVGElement, P>(selection: d3.Selection<E, D3Link, SVGGElement, P>) => selection
             .style('cursor', 'pointer')
             .on('mouseenter', (event, d) => {
-                d3.select(event.currentTarget as Element)
+                d3.select(edgePathsByKey.get(d.edgeKey)!)
                     .attr('stroke-opacity', 1)
                     .attr('stroke-width', Math.min(1.5 + Math.log2(d.connectionCount + 1), 6) + 1.5);
                 const edge = this._graphRef.edgeMap.get(d.edgeKey);
@@ -1764,8 +1768,8 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
                     this._tooltipEl.style.top = `${event.pageY + 12}px`;
                 }
             })
-            .on('mouseleave', (event, d) => {
-                d3.select(event.currentTarget as Element)
+            .on('mouseleave', (_event, d) => {
+                d3.select(edgePathsByKey.get(d.edgeKey)!)
                     .attr('stroke-opacity', 0.6)
                     .attr('stroke-width', Math.min(1.5 + Math.log2(d.connectionCount + 1), 6));
                 this._hideTooltip();
@@ -1774,10 +1778,12 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
                 const edge = this._graphRef.edgeMap.get(d.edgeKey);
                 if (edge) this._selectedEdgeKey = d.edgeKey;
             });
+        bindEdgeEvents(linkPaths);
 
         // Edge labels
         const edgeLabelGroups = layer('edge-labels').selectAll<SVGGElement, D3Link>('g')
             .data(d3Links.filter(d => d.label), d => d.edgeKey).join('g');
+        bindEdgeEvents(edgeLabelGroups);
         edgeLabelGroups.selectAll('rect').data(d => [d]).join('rect')
             .attr('x', d => -textWidth(d.label, 9) / 2 - 3).attr('y', -6)
             .attr('width', d => textWidth(d.label, 9) + 6).attr('height', 12).attr('rx', 3).attr('ry', 3).style('fill', MAP_COLOR_VAR.edgeLabelBg).style('stroke', d => EDGE_COLOR_VAR[d.role]).attr('stroke-width', 0.5).attr('stroke-opacity', 0.5);

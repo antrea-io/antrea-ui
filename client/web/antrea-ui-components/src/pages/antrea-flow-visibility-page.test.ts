@@ -4001,6 +4001,56 @@ describe('AntreaFlowVisibilityPage — incremental service map', () => {
         restart.mockRestore();
     });
 
+    test.each(['.edges path', '.edge-labels g'])('%s supports edge hover and selection after data refresh', async selector => {
+        const { page, state } = await mountMap();
+        const other = makeFlow({ dstPod: 'other-xyz34', dstIP: '10.0.0.3' });
+        await update(page, state, [makeFlow({ dstPort: 8080 }), other]);
+        state._simulation.stop();
+        const root = page.shadowRoot!;
+        const target = root.querySelector<SVGElement>(selector)!;
+        const hit = target.querySelector('rect') ?? target;
+        const paths = root.querySelectorAll('.edges path');
+        const initialWidth = Number(paths[0].getAttribute('stroke-width'));
+        const tooltip = root.querySelector<HTMLElement>('#graph-tooltip')!;
+        const onSelected = vi.fn();
+        page.addEventListener('antrea-edge-selected', onSelected);
+        const transform = root.querySelector('.map-content')!.getAttribute('transform');
+
+        target.dispatchEvent(new MouseEvent('mouseenter', { clientX: 30, clientY: 40 }));
+        expect(paths[0].getAttribute('stroke-opacity')).toBe('1');
+        expect(Number(paths[0].getAttribute('stroke-width'))).toBe(initialWidth + 1.5);
+        expect(paths[1].getAttribute('stroke-opacity')).toBe('0.6');
+        expect(Number(paths[1].getAttribute('stroke-width'))).toBe(initialWidth);
+        expect(tooltip.style.opacity).toBe('1');
+        expect(tooltip.textContent).toContain('TCP(8080)');
+        hit.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: 60, clientY: 70 }));
+        expect([tooltip.style.left, tooltip.style.top]).toEqual(['72px', '82px']);
+        target.dispatchEvent(new MouseEvent('mouseleave'));
+        expect(paths[0].getAttribute('stroke-opacity')).toBe('0.6');
+        expect(Number(paths[0].getAttribute('stroke-width'))).toBe(initialWidth);
+        expect(tooltip.style.opacity).toBe('0');
+
+        await update(page, state, [
+            makeFlow({ dstPort: 443, ingressPolicy: 'deny', ingressAction: NetworkPolicyRuleAction.Drop }),
+            makeFlow({ dstPort: 443, srcIP: '10.0.0.9' }), other,
+        ]);
+        expect(root.querySelector(selector)).toBe(target);
+        target.dispatchEvent(new MouseEvent('mouseenter'));
+        expect(tooltip.textContent).toContain('2 connections');
+        expect(tooltip.textContent).toContain('TCP(443)');
+        expect(tooltip.textContent).toContain('deny');
+        hit.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        await page.updateComplete;
+        expect(root.querySelector('.edge-details')!.textContent).toContain('Connections: 2');
+        expect(root.querySelector('.edge-details')!.textContent).toContain('TCP(443)');
+        expect(onSelected).toHaveBeenCalledOnce();
+        expect(onSelected.mock.calls[0][0].detail).toMatchObject({
+            source: 'default/client', target: 'default/server', destPorts: 'TCP(443)',
+            ingressPolicyNames: ['deny'],
+        });
+        expect(root.querySelector('.map-content')!.getAttribute('transform')).toBe(transform);
+    });
+
     test('counter updates only write changed edge widths and retain the layout forces', async () => {
         const { page, state } = await mountMap();
         const forward = makeFlow();
