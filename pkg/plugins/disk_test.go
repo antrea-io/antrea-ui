@@ -291,16 +291,17 @@ func TestRunDirectoryWatchPicksUpNewAndUpdatedAndRemovedPlugins(t *testing.T) {
 	const liveChangeTimeout = 3 * requeueDelay
 
 	dir := t.TempDir()
+	// Loaded by the startup scan. Once it is in the index, the watch on dir has been added and the
+	// scan is done, so the changes below can only reach the registry through the watch. A plugin
+	// created right after startDirectoryWatch would usually be found by that scan instead, hence
+	// creation is tested last, after the removal.
+	writePluginDir(t, dir, "pod-counter", podCounterManifest("pod-counter", "0.1.0"), podCounterBundle())
 
 	r := NewRegistry(Options{Logger: testr.New(t), Clientset: nil, Namespace: "antrea-ui", LabelSelector: "ui.antrea.io/plugin=true", MaxConfigMapPlugins: 0, MaxDirectoryPlugins: 0, MaxBundleBytes: 0})
 	t.Cleanup(r.Close)
 	startDirectoryWatch(t, r, dir)
 
-	waitFor(t, time.Second, func() bool { return len(r.Index()) == 0 })
-
-	// A plugin subdirectory created after the watch started is picked up.
-	writePluginDir(t, dir, "pod-counter", podCounterManifest("pod-counter", "0.1.0"), podCounterBundle())
-	waitFor(t, liveChangeTimeout, func() bool { return len(r.Index()) == 1 })
+	waitFor(t, time.Second, func() bool { return len(r.Index()) == 1 })
 
 	// A file changed within an already-known plugin subdirectory reloads that plugin.
 	writePluginDir(t, dir, "pod-counter", podCounterManifest("pod-counter", "0.2.0"), podCounterBundle())
@@ -315,6 +316,12 @@ func TestRunDirectoryWatchPicksUpNewAndUpdatedAndRemovedPlugins(t *testing.T) {
 	// Removing the plugin subdirectory drops it.
 	require.NoError(t, os.RemoveAll(filepath.Join(dir, "pod-counter")))
 	waitFor(t, liveChangeTimeout, func() bool { return len(r.Index()) == 0 })
+
+	// A plugin subdirectory created after the watch started is picked up.
+	writePluginDir(t, dir, "pod-counter", podCounterManifest("pod-counter", "0.3.0"), podCounterBundle())
+	waitFor(t, liveChangeTimeout, func() bool {
+		return len(r.Index()) == 1 && r.Index()[0].Version == "0.3.0"
+	})
 }
 
 func TestRunDirectoryWatchRejectsNewPluginPastLimit(t *testing.T) {

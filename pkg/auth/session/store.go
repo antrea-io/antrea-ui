@@ -364,27 +364,33 @@ func (st *store) Delete(id string) {
 }
 
 // maybeRefresh renews the credential if it is within refreshWindow of expiring. It is
-// single-flight per session: concurrent requests for the same session wait for one refresh
-// rather than each starting their own (which, with refresh-token rotation, would invalidate
-// each other).
+// single-flight per session: concurrent requests for the same session wait for one refresh, and
+// share its result, rather than each starting their own (which, with refresh-token rotation,
+// would invalidate each other).
 func (st *store) maybeRefresh(ctx context.Context, s *Session, now time.Time) error {
 	if !s.needsRefresh(now, refreshWindow) {
 		return nil
 	}
-	s.refreshMutex.Lock()
-	defer s.refreshMutex.Unlock()
-	// Re-check: another goroutine may have refreshed while we waited for the lock.
+	_, err, _ := s.refreshGroup.Do("refresh", func() (any, error) {
+		return nil, st.refresh(ctx, s)
+	})
+	return err
+}
+
+// refresh renews the credential of s, from within the singleflight call of maybeRefresh. It
+// re-checks first: another call may have completed a refresh since maybeRefresh checked.
+func (st *store) refresh(ctx context.Context, s *Session) error {
 	if !s.needsRefresh(st.opts.Clock.Now(), refreshWindow) {
 		return nil
 	}
 	refreshToken := s.refreshTokenCopy()
 	defer zeroBytes(refreshToken)
 	// Detach from the request context. The refresh belongs to the session, not to whichever
-	// request happened to arrive inside the refresh window: if the user navigates away or hits
-	// Escape mid-refresh, the cancellation would surface here as a refresh failure and Get would
-	// destroy a perfectly good session. Worse, with refresh-token rotation the provider may
-	// already have burned the old token by then, so the cancelled attempt is not even a no-op.
-	// Cancellation control is replaced by an explicit timeout.
+	// request happened to start it: if the user navigates away or hits Escape mid-refresh, the
+	// cancellation would fail the refresh for every request waiting on it. Worse, with
+	// refresh-token rotation the provider may already have burned the old token by then, so the
+	// cancelled attempt is not even a no-op. Cancellation control is replaced by an explicit
+	// timeout.
 	refreshCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), refreshTimeout)
 	defer cancel()
 	cred, newRefreshToken, err := s.refresher.Refresh(refreshCtx, refreshToken)

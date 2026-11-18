@@ -21,6 +21,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/go-logr/logr/testr"
@@ -748,37 +749,72 @@ func TestGetDropsTheSessionOnceAFailedRefreshLetsTheCredentialExpire(t *testing.
 }
 
 func TestRefreshIsSingleFlight(t *testing.T) {
-	st, fakeClock := newTestStore(t)
-	// The refresher blocks until we release it, so every concurrent Get is in flight at once.
-	refresher := &fakeRefresher{expiresIn: 2 * time.Hour, delay: make(chan struct{})}
-	s, err := st.Create(&Spec{
-		Mode:         ModeOIDC,
-		Credential:   Credential{Kind: KindBearer, Token: []byte("id-token-0"), ExpiresAt: testStartTime.Add(10 * time.Second)},
-		RefreshToken: []byte("refresh-token-0"),
-		Refresher:    refresher,
-	})
-	require.NoError(t, err)
-	fakeClock.Step(1 * time.Second)
+	for _, tc := range []struct {
+		name       string
+		refreshErr error
+		// The credential which the session holds afterwards. After a failed refresh, the requests
+		// are still served with the old one, which has not expired yet.
+		wantToken string
+	}{
+		{name: "success", wantToken: "id-token-1"},
+		// The requests which waited for the failed refresh share its error, rather than each
+		// trying again in turn.
+		{name: "failure", refreshErr: fmt.Errorf("refresh token revoked"), wantToken: "id-token-0"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				st, fakeClock := newTestStore(t)
+				// The refresher blocks until we release it, so every concurrent Get is in flight at
+				// once.
+				refresher := &fakeRefresher{expiresIn: 2 * time.Hour, err: tc.refreshErr, delay: make(chan struct{})}
+				s, err := st.Create(oidcSpec(refresher, 10*time.Second))
+				require.NoError(t, err)
+				fakeClock.Step(1 * time.Second)
 
-	// This is the antrea-summary-page shape: three requests fired in one Promise.all. With
-	// refresh-token rotation, three concurrent refreshes would invalidate each other.
-	const concurrency = 3
-	var wg sync.WaitGroup
-	errs := make([]error, concurrency)
-	for i := range concurrency {
-		wg.Go(func() {
-			_, errs[i] = st.Get(t.Context(), s.ID())
+				// This is the antrea-summary-page shape: three requests fired in one Promise.all.
+				// With refresh-token rotation, three concurrent refreshes would invalidate each
+				// other.
+				const concurrency = 3
+				var wg sync.WaitGroup
+				errs := make([]error, concurrency)
+				for i := range concurrency {
+					wg.Go(func() {
+						_, errs[i] = st.Get(t.Context(), s.ID())
+					})
+				}
+				// Every Get is now either in the refresher or waiting on the singleflight call.
+				synctest.Wait()
+				assert.Equal(t, int32(1), refresher.calls.Load(), "only one Get should be in the refresher")
+				close(refresher.delay)
+				wg.Wait()
+
+				for _, err := range errs {
+					assert.NoError(t, err)
+				}
+				assert.Equal(t, int32(1), refresher.calls.Load(),
+					"concurrent Get calls should trigger exactly one refresh")
+				assert.Equal(t, []byte(tc.wantToken), s.Credential().Token)
+			})
 		})
 	}
-	// Give the goroutines a chance to pile up on the refresh mutex before releasing.
-	assert.Eventually(t, func() bool { return refresher.calls.Load() == 1 }, time.Second, time.Millisecond)
-	close(refresher.delay)
-	wg.Wait()
+}
 
-	for _, err := range errs {
-		assert.NoError(t, err)
-	}
-	assert.Equal(t, int32(1), refresher.calls.Load(), "concurrent Get calls should trigger exactly one refresh")
+// The check in maybeRefresh is outdated if another call completes a refresh before this one
+// starts its singleflight call. Nothing blocks in that window, so no interleaving of concurrent
+// Get calls can be forced into it: the re-check is tested directly.
+func TestRefreshSkipsACredentialRefreshedInTheMeantime(t *testing.T) {
+	st, fakeClock := newTestStore(t)
+	refresher := &fakeRefresher{expiresIn: 2 * time.Hour}
+	s, err := st.Create(oidcSpec(refresher, 10*time.Second))
+	require.NoError(t, err)
+	fakeClock.Step(1 * time.Second)
+	_, err = st.Get(t.Context(), s.ID())
+	require.NoError(t, err)
+	require.Equal(t, int32(1), refresher.calls.Load())
+
+	require.NoError(t, st.(*store).refresh(t.Context(), s))
+	assert.Equal(t, int32(1), refresher.calls.Load(),
+		"a credential which was just refreshed should not be refreshed again")
 	assert.Equal(t, []byte("id-token-1"), s.Credential().Token)
 }
 
