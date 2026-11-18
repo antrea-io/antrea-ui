@@ -1697,7 +1697,8 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
                 connectionCount: e.connectionCount,
                 role: edgeRole(e),
                 label: edgeLabel(e),
-                curveOffset: isBi ? (e.source < e.target ? CURVE_OFFSET : -CURVE_OFFSET) : 0,
+                // Reversing the endpoints already reverses the curve's normal direction.
+                curveOffset: isBi ? CURVE_OFFSET : 0,
             };
         });
 

@@ -3965,6 +3965,51 @@ describe('AntreaFlowVisibilityPage — incremental service map', () => {
         await page.updateComplete;
     }
 
+    const svgCoordinates = (value: string) => value.match(/[-+]?\d*\.?\d+(?:e[-+]?\d+)?/gi)!.map(Number);
+
+    test.each([
+        { dx: 400, dy: 0, reverseNames: false },
+        { dx: 400, dy: 0, reverseNames: true },
+        { dx: 0, dy: 400, reverseNames: false },
+        { dx: 0, dy: 400, reverseNames: true },
+        { dx: 360, dy: 240, reverseNames: false },
+        { dx: 360, dy: 240, reverseNames: true },
+    ])('opposite paths and labels occupy opposite sides at ($dx, $dy), reversed names: $reverseNames', async ({ dx, dy, reverseNames }) => {
+        const { page, state } = await mountMap();
+        const source = reverseNames ? 'server-xyz34' : 'client-abc12';
+        const target = reverseNames ? 'client-abc12' : 'server-xyz34';
+        await update(page, state, [
+            makeFlow({ srcPod: source, dstPod: target, dstPort: 8080 }),
+            makeFlow({ srcPod: target, dstPod: source, srcIP: '10.0.0.2', dstIP: '10.0.0.1', dstPort: 8080 }),
+        ]);
+        const simulation = state._simulation.stop().alpha(0);
+        const sourceId = reverseNames ? 'default/server' : 'default/client';
+        for (const node of simulation.nodes()) {
+            node.x = 200 + (node.id === sourceId ? 0 : dx);
+            node.y = 200 + (node.id === sourceId ? 0 : dy);
+        }
+        simulation.on('tick')!.call(simulation);
+        const root = page.shadowRoot!;
+        const paths = Array.from(root.querySelectorAll('.edges path'));
+        const labels = Array.from(root.querySelectorAll('.edge-labels g'));
+        expect(paths).toHaveLength(2);
+        expect(labels).toHaveLength(2);
+        const side = (x: number, y: number) => dx * (y - 200) - dy * (x - 200);
+        const curveSides = paths.map(path => {
+            const [, , cx, cy] = svgCoordinates(path.getAttribute('d')!);
+            return side(cx, cy);
+        });
+        const labelPositions = labels.map(label => svgCoordinates(label.getAttribute('transform')!));
+        const labelSides = labelPositions.map(([x, y]) => side(x, y));
+        expect(curveSides[0] * curveSides[1]).toBeLessThan(0);
+        expect(labelSides[0] * labelSides[1]).toBeLessThan(0);
+        curveSides.forEach((curveSide, i) => expect(curveSide * labelSides[i]).toBeGreaterThan(0));
+        const sizes = labels.map(label => label.querySelector('rect')!);
+        const separated = (axis: number, size: string) => Math.abs(labelPositions[0][axis] - labelPositions[1][axis])
+            >= sizes.reduce((total, rect) => total + Number(rect.getAttribute(size)), 0) / 2;
+        expect(separated(0, 'width') || separated(1, 'height')).toBe(true);
+    });
+
     test('edge churn and resize retain node positions, SVG identity and zoom without reheating', async () => {
         const { page, state } = await mountMap();
         const forward = makeFlow();
@@ -3975,7 +4020,13 @@ describe('AntreaFlowVisibilityPage — incremental service map', () => {
         const positions = nodes.map(n => [n.x, n.y]);
         const root = page.shadowRoot!;
         const nodeElements = Array.from(root.querySelectorAll('.nodes .node'));
-        const path = root.querySelector('.edges path');
+        const path = root.querySelector('.edges path')!;
+        const geometry = path.getAttribute('d');
+        const label = root.querySelector('.edge-labels g')!;
+        const labelPosition = label.getAttribute('transform');
+        const [sx, sy, cx, cy, tx, ty] = svgCoordinates(geometry!);
+        expect(cx).toBeCloseTo((sx + tx) / 2);
+        expect(cy).toBeCloseTo((sy + ty) / 2);
         const hull = root.querySelector('.ns-hulls path');
         const svg = root.querySelector('svg')!;
         const transform = d3.zoomIdentity.translate(42, 21).scale(1.5);
@@ -3984,7 +4035,11 @@ describe('AntreaFlowVisibilityPage — incremental service map', () => {
 
         await update(page, state, [forward, reverse]);
         expect(root.querySelectorAll('.edges path')).toHaveLength(2);
+        expect(path.getAttribute('d')).not.toBe(geometry);
+        expect(label.getAttribute('transform')).not.toBe(labelPosition);
         await update(page, state, [forward]);
+        expect(path.getAttribute('d')).toBe(geometry);
+        expect(label.getAttribute('transform')).toBe(labelPosition);
         state._svgWidth = 800;
         await page.updateComplete;
 
