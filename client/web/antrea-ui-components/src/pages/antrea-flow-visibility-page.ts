@@ -836,7 +836,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
             font-size: 0.875rem;
         }
 
-        .map-container { position: relative; width: 100%; min-width: 0; height: min(900px, 70dvh); }
+        .map-container { position: relative; width: 100%; min-width: 0; height: max(360px, 70dvh); }
         .map-svg { display: block; width: 100%; height: 100%; box-sizing: border-box; border: 1px solid var(--antrea-color-border, #314351); border-radius: 4px; background: var(--antrea-color-bg-dark, #17242b); }
         .map-tooltip {
             position: fixed; opacity: 0;
@@ -874,9 +874,12 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
             background: var(--antrea-color-bg, #1b2a32);
             border: 1px solid var(--antrea-color-border, #314351);
             border-radius: 4px; padding: 16px; min-width: 280px; max-width: 350px; z-index: 10;
+            /* Leave room for the zoom controls: 3 x 32px buttons + 2 x 4px gaps, their 10px bottom
+               offset, this card's 10px top offset and a 10px gap. */
+            box-sizing: border-box; max-height: calc(100% - 134px); overflow: auto;
         }
         .edge-details-close {
-            position: absolute; top: 8px; right: 8px;
+            position: sticky; top: 0; float: right;
             background: none; border: none; color: var(--antrea-color-text-muted, #adbbc4);
             cursor: pointer; font-size: 14px; line-height: 1; padding: 2px;
         }
@@ -1058,6 +1061,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
     private _filterKey = '';
     private _refreshTimer: ReturnType<typeof setInterval> | null = null;
     private _ro: ResizeObserver | null = null;
+    private _roHost: HTMLElement | null = null;
     private _graphRef: GraphData = { nodes: [], edges: [], edgeMap: new Map(), nodeMap: new Map() };
 
     private _handleDocClick = (e: PointerEvent) => {
@@ -1261,6 +1265,8 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         this._filterKey = '';
         this._simulation?.stop();
         this._ro?.disconnect();
+        this._ro = null;
+        this._roHost = null;
         if (this._refreshTimer) { clearInterval(this._refreshTimer); this._refreshTimer = null; }
         window.removeEventListener('pointerdown', this._handleDocClick);
         window.removeEventListener('popstate', this._onPopState);
@@ -1305,15 +1311,16 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         // The map DOM is created when either its view or its scope becomes available.
         const mapVisibilityChanged = changed.has('viewMode') || changed.has('_observedNs') || changed.has('_clusterWide');
         if (mapVisibilityChanged && this.viewMode === 'map' && this._scope) {
-            // Lit recreates the SVG; joins populate it from the retained node positions.
-            this._setupResizeObserver();
-            this._buildServiceMap();
+            // Lit recreates the SVG; joins populate it from the retained node positions. A scope
+            // switch keeps the same container, so only a newly created one needs binding.
+            if (this._setupResizeObserver()) this._buildServiceMap();
         }
         // Leaving the map or clearing its scope removes the SVG; stop work on the detached DOM.
         if (mapVisibilityChanged && (this.viewMode !== 'map' || !this._scope)) {
             this._simulation?.stop();
             this._ro?.disconnect();
             this._ro = null;
+            this._roHost = null;
         }
         // Rebuild map when entries or SVG dimensions change
         if ((changed.has('_entries') || changed.has('_svgWidth') || changed.has('_svgHeight')) && this.viewMode === 'map') {
@@ -1553,10 +1560,12 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
 
     // ── Service map ───────────────────────────────────────────────────────────
 
-    private _setupResizeObserver() {
-        this._ro?.disconnect();
+    // Returns true when the observer was bound to a container it was not already observing.
+    private _setupResizeObserver(): boolean {
         const host = this.shadowRoot?.querySelector<HTMLElement>('.map-container');
-        if (!host) return;
+        if (!host || (host === this._roHost && this._ro)) return false;
+        this._ro?.disconnect();
+        this._roHost = host;
         const resize = (width: number, height: number) => {
             if (width > 0) this._svgWidth = Math.floor(width);
             if (height > 0) this._svgHeight = Math.floor(height);
@@ -1567,6 +1576,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         });
         this._ro.observe(host);
         resize(host.clientWidth, host.clientHeight);
+        return true;
     }
 
     private _zoomMap(factor: number) {
