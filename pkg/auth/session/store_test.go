@@ -569,6 +569,9 @@ type fakeRefresher struct {
 	// honorCtx makes the refresher fail if its context is already done, the way a real HTTP
 	// call to the identity provider would.
 	honorCtx bool
+	// issuedToken and issuedRefreshToken are what the last successful Refresh returned, so that
+	// a test can check they were zeroed.
+	issuedToken, issuedRefreshToken []byte
 }
 
 func (f *fakeRefresher) Refresh(ctx context.Context, refreshToken []byte) (Credential, []byte, error) {
@@ -583,11 +586,13 @@ func (f *fakeRefresher) Refresh(ctx context.Context, refreshToken []byte) (Crede
 		return Credential{}, nil, f.err
 	}
 	n := f.nextToken.Add(1)
+	f.issuedToken = []byte(fmt.Sprintf("id-token-%d", n))
+	f.issuedRefreshToken = []byte(fmt.Sprintf("refresh-token-%d", n))
 	return Credential{
 		Kind:      KindBearer,
-		Token:     []byte(fmt.Sprintf("id-token-%d", n)),
+		Token:     f.issuedToken,
 		ExpiresAt: testStartTime.Add(f.expiresIn),
-	}, []byte(fmt.Sprintf("refresh-token-%d", n)), nil
+	}, f.issuedRefreshToken, nil
 }
 
 func TestRefreshOnGet(t *testing.T) {
@@ -872,4 +877,50 @@ func TestRefreshDropsCachedTransport(t *testing.T) {
 	_, err = s.transportFor(TransportKeyK8s, build)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"id-token-0", "id-token-1"}, tokens)
+}
+
+// A refresh which completes after its session was deleted, by a logout for example, must not store
+// its result in the session: the session is no longer in the store, so nothing would zero it. The
+// requests which waited on the refresh must not be served with the deleted session either.
+func TestRefreshCompletingAfterDeleteIsDiscarded(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		refreshErr error
+	}{
+		{name: "success"},
+		{name: "failure", refreshErr: fmt.Errorf("identity provider is unreachable")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				st, fakeClock := newTestStore(t)
+				refresher := &fakeRefresher{expiresIn: 2 * time.Hour, err: tc.refreshErr, delay: make(chan struct{})}
+				s, err := st.Create(oidcSpec(refresher, 10*time.Second))
+				require.NoError(t, err)
+				fakeClock.Step(1 * time.Second)
+
+				var getErr error
+				done := make(chan struct{})
+				go func() {
+					defer close(done)
+					_, getErr = st.Get(t.Context(), s.ID())
+				}()
+				// Get is now in the refresher.
+				synctest.Wait()
+				require.Equal(t, int32(1), refresher.calls.Load())
+				st.Delete(s.ID())
+				close(refresher.delay)
+				<-done
+
+				assert.ErrorIs(t, getErr, ErrNotFound)
+				assert.Nil(t, s.Credential().Token)
+				assert.Nil(t, s.refreshTokenCopy())
+				if tc.refreshErr == nil {
+					assert.Equal(t, make([]byte, len("id-token-1")), refresher.issuedToken,
+						"the new credential should have been zeroed")
+					assert.Equal(t, make([]byte, len("refresh-token-1")), refresher.issuedRefreshToken,
+						"the new refresh token should have been zeroed")
+				}
+			})
+		})
+	}
 }

@@ -209,6 +209,10 @@ type Session struct {
 	credential   Credential
 	refreshToken []byte
 	lastSeen     time.Time
+	// deleted is set by zero, once the session has been removed from the store. It is never
+	// cleared: a deleted session must stay zeroed (see applyRefresh) and is never served again (see
+	// store.Get).
+	deleted bool
 	// expiresAt is min(createdAt+maxLifetime, credential expiry). It moves forward (up to the
 	// absolute cap) when the credential is refreshed.
 	expiresAt  time.Time
@@ -333,9 +337,12 @@ func (s *Session) refreshTokenCopy() []byte {
 }
 
 // zero wipes every piece of credential material held by the session and releases its transports.
+// It also marks the session as deleted: a credential refresh which completes afterwards is
+// discarded instead of being stored in the session (see applyRefresh).
 func (s *Session) zero() {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
+	s.deleted = true
 	s.credential.Zero()
 	zeroBytes(s.refreshToken)
 	s.refreshToken = nil

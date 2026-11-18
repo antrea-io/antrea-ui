@@ -348,8 +348,13 @@ func (st *store) Get(ctx context.Context, id string) (*Session, error) {
 		return nil, ErrExpired
 	}
 	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	// The session may have been deleted since the lookup, for example while this Get was waiting
+	// on the refresh.
+	if s.deleted {
+		return nil, ErrNotFound
+	}
 	s.lastSeen = st.opts.Clock.Now()
-	s.mutex.Unlock()
 	return s, nil
 }
 
@@ -404,6 +409,13 @@ func (st *store) refresh(ctx context.Context, s *Session) error {
 func (st *store) applyRefresh(s *Session, cred Credential, newRefreshToken []byte) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
+	// The session was deleted while the refresh was in flight. Nothing would zero the new
+	// credential once stored: the session is no longer in the store.
+	if s.deleted {
+		cred.Zero()
+		zeroBytes(newRefreshToken)
+		return
+	}
 	s.credential.Zero()
 	s.credential = cred
 	if newRefreshToken != nil {
