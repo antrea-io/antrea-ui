@@ -1559,7 +1559,7 @@ describe('AntreaFlowVisibilityPage — service map zoom controls', () => {
         expect(labels).toEqual(['Zoom in', 'Zoom out', 'Fit to view']);
     });
 
-    test('observes the map when a scope is chosen and rebinds after the scope is cleared', async () => {
+    test('observes each new map container once across scope changes', async () => {
         const observers: TestResizeObserver[] = [];
         class TestResizeObserver {
             observe = vi.fn();
@@ -1595,6 +1595,14 @@ describe('AntreaFlowVisibilityPage — service map zoom controls', () => {
             expect(firstSvg.getAttribute('height')).toBe('360');
             expect(observers).toHaveLength(1);
             expect(observers[0].observe).toHaveBeenCalledTimes(1);
+
+            page.locationSearch = '?namespace=ns-b';
+            await page.updateComplete;
+            expect((page as unknown as { _observedNs: string })._observedNs).toBe('ns-b');
+            expect(page.shadowRoot!.querySelector('.map-container')).toBe(firstHost);
+            expect(observers).toHaveLength(1);
+            expect(observers[0].observe).toHaveBeenCalledTimes(1);
+            expect(observers[0].disconnect).not.toHaveBeenCalled();
 
             page.locationSearch = '';
             await page.updateComplete;
