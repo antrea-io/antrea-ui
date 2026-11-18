@@ -606,7 +606,6 @@ function inNamespaceHull(d: { kind: NodeKind; namespace: string }): boolean {
 }
 interface D3Link extends d3.SimulationLinkDatum<D3Node> { edgeKey: string; connectionCount: number; role: EdgeRole; label: string; curveOffset: number; }
 
-const HEIGHT = 900;
 /** The factor one click of the zoom in/out buttons scales the map by. */
 const MAP_ZOOM_STEP = 1.5;
 const NODE_RX = 8;
@@ -837,8 +836,8 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
             font-size: 0.875rem;
         }
 
-        .map-container { position: relative; width: 100%; }
-        .map-svg { display: block; border: 1px solid var(--antrea-color-border, #314351); border-radius: 4px; background: var(--antrea-color-bg-dark, #17242b); }
+        .map-container { position: relative; width: 100%; min-width: 0; height: min(900px, 70dvh); }
+        .map-svg { display: block; width: 100%; height: 100%; box-sizing: border-box; border: 1px solid var(--antrea-color-border, #314351); border-radius: 4px; background: var(--antrea-color-bg-dark, #17242b); }
         .map-tooltip {
             position: fixed; opacity: 0;
             background: var(--antrea-color-map-tooltip-bg, rgba(20,32,40,0.95));
@@ -1000,6 +999,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
 
     // Service map
     @state() private _svgWidth = 1100;
+    @state() private _svgHeight = 900;
     @state() private _selectedEdgeKey: string | null = null;
 
     @query('#graph-svg') private _svgEl?: SVGSVGElement;
@@ -1302,22 +1302,21 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
                 bubbles: true, composed: true,
             }));
         }
-        // Setup ResizeObserver once the DOM is ready
-        if (changed.has('viewMode') && this.viewMode === 'map') {
+        // The map DOM is created when either its view or its scope becomes available.
+        const mapVisibilityChanged = changed.has('viewMode') || changed.has('_observedNs') || changed.has('_clusterWide');
+        if (mapVisibilityChanged && this.viewMode === 'map' && this._scope) {
             // Lit recreates the SVG; joins populate it from the retained node positions.
             this._setupResizeObserver();
             this._buildServiceMap();
         }
-        // The <svg>/simulation only exist while in map view — leaving it tears down the DOM
-        // Lit-side, but the simulation would otherwise keep ticking against detached nodes and
-        // the ResizeObserver would keep observing until disconnectedCallback.
-        if (changed.has('viewMode') && this.viewMode !== 'map') {
+        // Leaving the map or clearing its scope removes the SVG; stop work on the detached DOM.
+        if (mapVisibilityChanged && (this.viewMode !== 'map' || !this._scope)) {
             this._simulation?.stop();
             this._ro?.disconnect();
             this._ro = null;
         }
-        // Rebuild map when entries or SVG width change
-        if ((changed.has('_entries') || changed.has('_svgWidth')) && this.viewMode === 'map') {
+        // Rebuild map when entries or SVG dimensions change
+        if ((changed.has('_entries') || changed.has('_svgWidth') || changed.has('_svgHeight')) && this.viewMode === 'map') {
             this._buildServiceMap();
         }
         if (changed.has('_selectedEdgeKey')) {
@@ -1556,14 +1555,18 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
 
     private _setupResizeObserver() {
         this._ro?.disconnect();
-        const host = this.shadowRoot?.querySelector('.map-container')?.parentElement ?? this;
+        const host = this.shadowRoot?.querySelector<HTMLElement>('.map-container');
+        if (!host) return;
+        const resize = (width: number, height: number) => {
+            if (width > 0) this._svgWidth = Math.floor(width);
+            if (height > 0) this._svgHeight = Math.floor(height);
+        };
         this._ro = new ResizeObserver(entries => {
-            const w = entries[0]?.contentRect?.width ?? (host as HTMLElement).clientWidth;
-            if (w && w > 0) this._svgWidth = Math.floor(w);
+            const { width, height } = entries[0]?.contentRect ?? host.getBoundingClientRect();
+            resize(width, height);
         });
-        this._ro.observe(host as Element);
-        const w = (host as HTMLElement).clientWidth;
-        if (w && w > 0) this._svgWidth = Math.floor(w);
+        this._ro.observe(host);
+        resize(host.clientWidth, host.clientHeight);
     }
 
     private _zoomMap(factor: number) {
@@ -1580,18 +1583,18 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         // group's own coordinates, so it excludes the group's zoom transform.
         const { x, y, width, height } = content.getBBox();
         if (![x, y, width, height].every(Number.isFinite) || (!width && !height)) return;
-        const padding = Math.min(40, this._svgWidth / 4, HEIGHT / 4);
+        const padding = Math.min(40, this._svgWidth / 4, this._svgHeight / 4);
         // Never enlarge a small map above its natural size.
         const scale = Math.min(1,
             (this._svgWidth - padding * 2) / Math.max(width, 1),
-            (HEIGHT - padding * 2) / Math.max(height, 1));
+            (this._svgHeight - padding * 2) / Math.max(height, 1));
         if (!Number.isFinite(scale) || scale <= 0) return;
         // A large map may need less than the normal minimum. Widen the limit so that the next
         // wheel zoom does not jump back to it.
         const [minimum, maximum] = zoom.scaleExtent();
         zoom.scaleExtent([Math.min(minimum, scale), maximum]);
         d3.select(svgEl).call(zoom.transform, d3.zoomIdentity
-            .translate(this._svgWidth / 2, HEIGHT / 2)
+            .translate(this._svgWidth / 2, this._svgHeight / 2)
             .scale(scale)
             .translate(-x - width / 2, -y - height / 2));
     }
@@ -1661,14 +1664,14 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
                     node.shortName === old.shortName && node.detail === old.detail && node.serviceOnly === old.serviceOnly;
             }) && graph.edges.every(edge => previousGraph.edgeMap.has(`${edge.source}|${edge.target}`))) {
             this._updateMapEdgeData(svg, graph);
-            this._mapZoom?.extent([[0, 0], [this._svgWidth, HEIGHT]]);
+            this._mapZoom?.extent([[0, 0], [this._svgWidth, this._svgHeight]]);
             return;
         }
 
         const d3svg = d3.select(svg);
         const previousNodes = this._simulation?.nodes() ?? [];
         const { nodes: d3Nodes, added } = reconcileMapNodes<D3Node>(
-            previousNodes, graph.nodes, graph.edges, { x: this._svgWidth / 2, y: HEIGHT / 2 },
+            previousNodes, graph.nodes, graph.edges, { x: this._svgWidth / 2, y: this._svgHeight / 2 },
         );
         const nodeById = new Map(d3Nodes.map(n => [n.id, n]));
 
@@ -1706,7 +1709,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         const container = d3svg.selectAll<SVGGElement, null>('g.map-content').data([null]).join('g')
             .attr('class', 'map-content').attr('transform', transform.toString());
         const zoom = this._mapZoom ?? d3.zoom<SVGSVGElement, unknown>().scaleExtent([0.3, 3]);
-        zoom.extent([[0, 0], [this._svgWidth, HEIGHT]])
+        zoom.extent([[0, 0], [this._svgWidth, this._svgHeight]])
             .on('zoom', event => {
                 this._mapTransform = event.transform;
                 container.attr('transform', event.transform);
@@ -1928,7 +1931,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
                 this._settlePinned.clear();
             });
         if (full) {
-            simulation.force('center', d3.forceCenter<D3Node>(this._svgWidth / 2, HEIGHT / 2))
+            simulation.force('center', d3.forceCenter<D3Node>(this._svgWidth / 2, this._svgHeight / 2))
                 .force('anchorX', null).force('anchorY', null);
         } else if (added.length) {
             // Fixed nodes cannot absorb forceCenter's correction. Anchor only the free nodes
@@ -2343,7 +2346,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
     private _renderServiceMap() {
         return html`
             <div class="map-container">
-                <svg id="graph-svg" class="map-svg" part="map-svg" width=${this._svgWidth} height=${HEIGHT}></svg>
+                <svg id="graph-svg" class="map-svg" part="map-svg" width=${this._svgWidth} height=${this._svgHeight}></svg>
                 <div id="graph-tooltip" class="map-tooltip" part="map-tooltip"></div>
                 <div class="map-legend" part="map-legend">
                     <div class="map-legend-title">Legend</div>

@@ -1559,6 +1559,66 @@ describe('AntreaFlowVisibilityPage — service map zoom controls', () => {
         expect(labels).toEqual(['Zoom in', 'Zoom out', 'Fit to view']);
     });
 
+    test('observes the map when a scope is chosen and rebinds after the scope is cleared', async () => {
+        const observers: TestResizeObserver[] = [];
+        class TestResizeObserver {
+            observe = vi.fn();
+            unobserve = vi.fn();
+            disconnect = vi.fn();
+            constructor(private callback: ResizeObserverCallback) { observers.push(this); }
+            resize(width: number, height: number) {
+                this.callback([{
+                    target: this.observe.mock.calls[0][0], contentRect: { width, height },
+                } as ResizeObserverEntry], this);
+            }
+        }
+        const originalResizeObserver = globalThis.ResizeObserver;
+        globalThis.ResizeObserver = TestResizeObserver;
+        try {
+            const page = await mount(async () => sseResponse([]), {
+                search: '/', flowAccess: () => flowAccessFixture({ namespaces: [] }),
+            });
+            page.viewMode = 'map';
+            await page.updateComplete;
+            expect(page.shadowRoot!.querySelector('.map-container')).toBeNull();
+            expect(observers).toHaveLength(0);
+
+            page.locationSearch = '?namespace=ns-a';
+            await page.updateComplete;
+            const firstHost = page.shadowRoot!.querySelector('.map-container')!;
+            expect(observers).toHaveLength(1);
+            expect(observers[0].observe).toHaveBeenCalledWith(firstHost);
+            observers[0].resize(800, 360);
+            await page.updateComplete;
+            const firstSvg = page.shadowRoot!.querySelector('#graph-svg')!;
+            expect(firstSvg.getAttribute('width')).toBe('800');
+            expect(firstSvg.getAttribute('height')).toBe('360');
+            expect(observers).toHaveLength(1);
+            expect(observers[0].observe).toHaveBeenCalledTimes(1);
+
+            page.locationSearch = '';
+            await page.updateComplete;
+            expect(page.shadowRoot!.querySelector('.map-container')).toBeNull();
+            expect(observers[0].disconnect).toHaveBeenCalledTimes(1);
+
+            page.locationSearch = '?namespace=ns-b';
+            await page.updateComplete;
+            const secondHost = page.shadowRoot!.querySelector('.map-container')!;
+            expect(secondHost).not.toBe(firstHost);
+            expect(observers).toHaveLength(2);
+            expect(observers[1].observe).toHaveBeenCalledWith(secondHost);
+            observers[1].resize(640, 280);
+            await page.updateComplete;
+            const secondSvg = page.shadowRoot!.querySelector<SVGSVGElement>('#graph-svg')!;
+            expect(secondSvg.getAttribute('width')).toBe('640');
+            expect(secondSvg.getAttribute('height')).toBe('280');
+            const zoom = (page as unknown as { _mapZoom: d3.ZoomBehavior<SVGSVGElement, unknown> })._mapZoom;
+            expect(zoom.extent().call(secondSvg, undefined, 0, [secondSvg])).toEqual([[0, 0], [640, 280]]);
+        } finally {
+            globalThis.ResizeObserver = originalResizeObserver;
+        }
+    });
+
     test('zoom in and zoom out scale the map and undo each other', async () => {
         const page = await mountMap([makeFlow()]);
         button(page, 'Zoom in').click();
@@ -1638,8 +1698,10 @@ describe('AntreaFlowVisibilityPage — service map zoom controls', () => {
         expect(atLimit(page, 'Zoom out')).toBe(false);
     });
 
-    test('fit to view centres the content, shrinking it to fit with padding', async () => {
+    test.each([900, 360])('fit to view centres the content with padding at viewport height %i', async height => {
         const page = await mountMap([makeFlow()]);
+        (page as unknown as { _svgHeight: number })._svgHeight = height;
+        await page.updateComplete;
         const bounds = { x: 100, y: 50, width: 2000, height: 1000 };
         (SVGGraphicsElement.prototype as unknown as { getBBox: () => unknown }).getBBox = () => bounds;
         button(page, 'Fit to view').click();
@@ -1648,7 +1710,7 @@ describe('AntreaFlowVisibilityPage — service map zoom controls', () => {
         const [tx, ty, k] = [Number(m[1]), Number(m[2]), Number(m[3])];
         const svg = page.shadowRoot!.querySelector('#graph-svg')!;
         const width = Number(svg.getAttribute('width'));
-        const height = Number(svg.getAttribute('height'));
+        expect(Number(svg.getAttribute('height'))).toBe(height);
         expect(k).toBeCloseTo(Math.min((width - 80) / bounds.width, (height - 80) / bounds.height));
         // The centre of the content lands on the centre of the viewport.
         expect(tx + k * (bounds.x + bounds.width / 2)).toBeCloseTo(width / 2);
@@ -3945,6 +4007,7 @@ describe('AntreaFlowVisibilityPage — incremental service map', () => {
     interface MapState {
         _entries: FlowEntry[];
         _svgWidth: number;
+        _svgHeight: number;
         _simulation: d3.Simulation<PositionedNode, undefined>;
         _mapZoom: d3.ZoomBehavior<SVGSVGElement, unknown>;
         _buildServiceMap(): void;
@@ -3987,6 +4050,9 @@ describe('AntreaFlowVisibilityPage — incremental service map', () => {
         await update(page, state, [forward]);
         state._svgWidth = 800;
         await page.updateComplete;
+        state._svgHeight = 450;
+        await page.updateComplete;
+        expect(state._mapZoom.extent().call(svg, undefined, 0, [svg])).toEqual([[0, 0], [800, 450]]);
 
         expect(state._simulation).toBe(simulation);
         expect(simulation.nodes()[0]).toBe(nodes[0]);
