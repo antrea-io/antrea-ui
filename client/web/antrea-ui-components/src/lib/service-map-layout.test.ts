@@ -13,7 +13,7 @@
 // limitations under the License.
 
 import { describe, expect, test } from 'vitest';
-import { clusterMapNodes, pinMapNodes, reconcileMapNodes } from './service-map-layout';
+import { clusterMapNodes, pinMapNodes, reconcileMapNodes, seedNamespaceTransition } from './service-map-layout';
 import type { PositionedNode } from './service-map-layout';
 
 describe('incremental map layout', () => {
@@ -65,4 +65,29 @@ describe('incremental map layout', () => {
         expect(nodes[3]).toMatchObject({ vx: 0, vy: 0 });
         expect(reversed.reverse()).toEqual(nodes);
     });
+});
+
+
+test('expansion seeds around the old namespace, displaces only nearby unpinned nodes, and collapses at centroid', () => {
+    const parent = { id: 'namespace:a', namespace: 'a', kind: 'namespace', x: 500, y: 400 };
+    const near = { id: 'namespace:b', namespace: 'b', kind: 'namespace', x: 510, y: 400 };
+    const pinned = { id: 'namespace:c', namespace: 'c', kind: 'namespace', x: 510, y: 410, userPinned: true };
+    const far = { id: 'namespace:d', namespace: 'd', kind: 'namespace', x: 1000, y: 900 };
+    const result = reconcileMapNodes([parent, near, pinned, far], [
+        { id: 'a/one', namespace: 'a', kind: 'workload' },
+        { id: 'a/two', namespace: 'a', kind: 'workload' }, near, pinned, far,
+    ], [], { x: 0, y: 0 });
+    seedNamespaceTransition([parent, near, pinned, far], result.nodes, result.added);
+    const children = result.added;
+    expect(children[0].x! - 500).toBeCloseTo(80);
+    expect(children[1].x! - 500).toBeCloseTo(-80);
+    expect(near.x).toBe(680);
+    expect((near as PositionedNode).fx).toBeUndefined();
+    expect((near as PositionedNode).fy).toBeUndefined();
+    expect(pinned).toMatchObject({ x: 510, y: 410 });
+    expect(far).toMatchObject({ x: 1000, y: 900 });
+    const collapsed = { id: 'namespace:a', namespace: 'a', kind: 'namespace', x: 0, y: 0 };
+    seedNamespaceTransition(result.nodes, [collapsed, far], [collapsed]);
+    expect(collapsed.x).toBeCloseTo(500);
+    expect(collapsed.y).toBeCloseTo(400);
 });

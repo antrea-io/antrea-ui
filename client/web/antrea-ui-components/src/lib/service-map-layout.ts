@@ -101,3 +101,50 @@ export function clusterMapNodes<N extends SimulationNodeDatum>(
         node.vy = (node.vy ?? 0) + (c.y - (node.y ?? 0)) * 0.15 * alpha;
     }
 }
+
+interface NamespaceNode extends PositionedNode {
+    namespace: string;
+    kind: string;
+    userPinned?: boolean;
+}
+
+/** Seeds namespace expansion around the former aggregate and collapse at its centroid.
+ * Only nearby unpinned nodes are displaced; distant coordinates and user drag pins survive.
+ */
+export function seedNamespaceTransition<N extends NamespaceNode>(previous: N[], nodes: N[], added: N[]): void {
+    const old = new Map(previous.map(n => [n.id, n]));
+    const regions = new Map<string, { x: number; y: number; radius: number }>();
+    for (const node of added) {
+        if (node.kind === 'workload') {
+            const parent = old.get(`namespace:${node.namespace}`);
+            if (!parent) continue;
+            const siblings = added.filter(n => n.kind === 'workload' && n.namespace === node.namespace);
+            const radius = siblings.length === 1 ? 0 : Math.max(80, Math.sqrt(siblings.length) * 50);
+            const angle = siblings.indexOf(node) * Math.PI * 2 / siblings.length;
+            node.x = (parent.x ?? 0) + radius * Math.cos(angle);
+            node.y = (parent.y ?? 0) + radius * Math.sin(angle);
+            regions.set(node.namespace, { x: parent.x ?? 0, y: parent.y ?? 0, radius: radius + 100 });
+        } else if (node.kind === 'namespace') {
+            const children = previous.filter(n => n.kind === 'workload' && n.namespace === node.namespace);
+            if (!children.length) continue;
+            node.x = children.reduce((sum, n) => sum + (n.x ?? 0), 0) / children.length;
+            node.y = children.reduce((sum, n) => sum + (n.y ?? 0), 0) / children.length;
+        }
+    }
+    for (const node of nodes) {
+        if (added.includes(node) || node.userPinned) continue;
+        for (const [namespace, region] of regions) {
+            if (node.namespace === namespace && node.kind === 'workload') continue;
+            const dx = (node.x ?? 0) - region.x, dy = (node.y ?? 0) - region.y;
+            const distance = Math.hypot(dx, dy);
+            if (distance >= region.radius) continue;
+            node.x = region.x + (distance ? dx / distance : 1) * region.radius;
+            node.y = region.y + (distance ? dy / distance : 0) * region.radius;
+            node.vx = 0; node.vy = 0;
+            // The caller tracks temporary pins and releases them after settling. Move an
+            // existing pin with its node, but let the caller create and track any new one.
+            if (node.fx != null) node.fx = node.x;
+            if (node.fy != null) node.fy = node.y;
+        }
+    }
+}
