@@ -81,7 +81,7 @@ function instrument() {
             frames: s.frames,
             maxFrameGapMs: s.maxFrameGap,
             maxLoopLagMs: s.maxLoopLag,
-            mapNodes: svg ? svg.querySelectorAll('g[style*="grab"]').length : 0,
+            mapNodes: svg ? svg.querySelectorAll('g.nodes > g.node').length : 0,
             mapEdges: svg ? svg.querySelectorAll('path[fill="none"]').length : 0,
             svgElements: svg ? svg.getElementsByTagName('*').length : 0,
             pageElements: p?.shadowRoot ? p.shadowRoot.querySelectorAll('*').length : 0,

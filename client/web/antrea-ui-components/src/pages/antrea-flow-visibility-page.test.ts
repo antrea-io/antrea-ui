@@ -22,7 +22,7 @@ import type { PositionedNode } from '../lib/service-map-layout';
 import { SCOPE_CHANGE_EVENT, SCOPE_CHOSEN_EVENT } from '../lib/namespace-scope';
 import type { ScopeChangeDetail, ScopeChosenDetail } from '../lib/namespace-scope';
 import type { AntreaFlowVisibilityPage, D3Node } from './antrea-flow-visibility-page';
-import { edgeLabelPosition, edgePinPosition, nodeBoundary, searchFilterOptions, typedNamespace, typedPod, typedService } from './antrea-flow-visibility-page';
+import { edgeLabelPosition, edgePinPosition, NodeIndex, nodeBoundary, searchFilterOptions, typedNamespace, typedPod, typedService } from './antrea-flow-visibility-page';
 import { FLOW_QUERY_STATE_EVENT } from '../lib/flow-stream';
 import type { FlowQuery, FlowQueryStateDetail, FlowStreamFilter } from '../lib/flow-stream';
 import { resetAccessSummary } from '../lib/access-api';
@@ -1560,7 +1560,7 @@ describe('AntreaFlowVisibilityPage — service map zoom controls', () => {
         const page = await mountMap([makeFlow()]);
         const labels = Array.from(page.shadowRoot!.querySelectorAll('.map-controls button'))
             .map(b => b.getAttribute('aria-label'));
-        expect(labels).toEqual(['Zoom in', 'Zoom out', 'Fit to view']);
+        expect(labels).toEqual(['Release dragged nodes', 'Zoom in', 'Zoom out', 'Fit to view']);
     });
 
     test('observes each new map container once across scope changes', async () => {
@@ -4036,6 +4036,15 @@ describe('edgeLabelPosition', () => {
         expect(Math.abs(x - 300)).toBeLessThan(hw + WIDTH / 2 + 4);
     });
 
+    test('finds the same spot through an index of the nodes as through the nodes themselves', () => {
+        const nodes = [a, b, at('c', 300, 0), at('d', 340, 5), at('e', 5000, 5000), at('f', -2000, 40)];
+        const index = new NodeIndex(nodes);
+        for (const offset of [0, 30, -30]) {
+            expect(edgeLabelPosition(a, b, offset, WIDTH, index)).toEqual(edgeLabelPosition(a, b, offset, WIDTH, nodes));
+        }
+        expect(edgeLabelPosition(a, b, 0, WIDTH, index)[0]).not.toBe(300);
+    });
+
     test('stays at the midpoint when no spot on the edge is free', () => {
         const blocker = at('c', 300, 0);
         const wide = { ...blocker, shortName: 'x'.repeat(200) };
@@ -4671,7 +4680,7 @@ describe('AntreaFlowVisibilityPage — namespace aggregation', () => {
         const root = page.shadowRoot!;
         const button = (label: string) => root.querySelector<HTMLButtonElement>(`.map-controls button[aria-label="${label}"]`)!;
         expect(Array.from(root.querySelectorAll('.map-controls button')).map(button => button.getAttribute('aria-label')))
-            .toEqual(['Collapse all namespaces', 'Zoom in', 'Zoom out', 'Fit to view']);
+            .toEqual(['Collapse all namespaces', 'Release dragged nodes', 'Zoom in', 'Zoom out', 'Fit to view']);
         expect(root.querySelector('.map-toolbar')!.textContent).not.toContain('Collapse all namespaces');
         expect(button('Collapse all namespaces').disabled).toBe(true);
 
@@ -5136,6 +5145,174 @@ describe('AntreaFlowVisibilityPage — namespace aggregation', () => {
         expect(state._graphRef.nodes[0].internal!.bytes).toBe(3072);
         node.dispatchEvent(new MouseEvent('mouseenter'));
         expect(root.querySelector('#graph-tooltip')!.textContent).toContain('1 internal connections, 0 denied, 3.0 KB');
+    });
+
+    test('a counter-only update changes a folded namespace in place', async () => {
+        const flow = makeFlow({ srcNs: 'a', dstNs: 'a' });
+        const { page, state } = await aggregate([flow]);
+        state._simulation.stop();
+        const root = page.shadowRoot!;
+        const node = root.querySelector<SVGGElement>('.nodes .node')!;
+        const children = Array.from(node.children);
+        const store = new FlowStore();
+        store.upsertBatch([flow, makeFlow({ srcNs: 'a', dstNs: 'a', srcIP: '10.0.0.3' })]);
+        state._entries = store.getAll();
+        await page.updateComplete;
+        expect(root.querySelector('.nodes .node')).toBe(node);
+        expect(Array.from(node.children)).toEqual(children);
+        expect(node.textContent).toContain('2 internal · 0 denied');
+        expect(node.getAttribute('aria-label')).toContain('2 internal · 0 denied');
+    });
+
+    test.each([NetworkPolicyRuleAction.Drop, NetworkPolicyRuleAction.Reject])('refreshes internal denial colors in place for action %s', async action => {
+        const allowed = makeFlow({ srcNs: 'a', dstNs: 'a' });
+        const denied = makeFlow({ srcNs: 'a', dstNs: 'a', srcIP: '10.0.0.3', ingressAction: action });
+        const { page, state } = await aggregate([allowed]);
+        const simulation = state._simulation.stop().tick(300);
+        simulation.on('end')!.call(simulation);
+        const root = page.shadowRoot!;
+        const node = root.querySelector<SVGGElement>('.nodes .node')!;
+        const children = Array.from(node.children);
+        const border = node.querySelector('rect')!.style.stroke;
+        const detail = node.querySelector<SVGTextElement>('text.node-detail')!;
+        const textColor = detail.style.fill;
+        const pin = node.querySelector<SVGTextElement>('.edge-pin')!;
+        pin.focus();
+        expect(root.activeElement).toBe(pin);
+
+        for (const hasDenials of [true, false]) {
+            const store = new FlowStore();
+            store.upsertBatch(hasDenials ? [allowed, denied] : [allowed]);
+            state._entries = store.getAll();
+            await page.updateComplete;
+            expect(detail.textContent).toContain(`${hasDenials ? 1 : 0} denied`);
+            expect(node.querySelector('rect')!.style.stroke).toContain(hasDenials ? '--antrea-color-edge-drop' : border);
+            expect(detail.style.fill).toContain(hasDenials ? '--antrea-color-edge-drop' : textColor);
+            expect(Array.from(node.children)).toEqual(children);
+            expect(root.activeElement).toBe(pin);
+        }
+    });
+
+    describe('dragging', () => {
+        const mouse = (type: string, clientX: number, clientY: number) => {
+            const event = new MouseEvent(type, { bubbles: true, composed: true, cancelable: true, clientX, clientY });
+            Object.defineProperty(event, 'view', { value: window });
+            return event;
+        };
+        const press = (target: Element, to: [number, number]) => {
+            target.dispatchEvent(mouse('mousedown', 40, 50));
+            window.dispatchEvent(mouse('mousemove', ...to));
+            window.dispatchEvent(mouse('mouseup', ...to));
+            target.dispatchEvent(mouse('click', ...to));
+        };
+
+        test.each([
+            { scale: 0.5, distance: 2, drag: false }, { scale: 2, distance: 4, drag: true },
+        ])('uses client-pixel slop at zoom $scale for a $distance-pixel gesture', async ({ scale, distance, drag }) => {
+            const { page, state } = await aggregate([makeFlow({ srcNs: 'a', dstNs: 'b' })]);
+            const simulation = state._simulation.stop().tick(300);
+            simulation.on('end')!.call(simulation);
+            const root = page.shadowRoot!;
+            const svg = root.querySelector<SVGSVGElement>('#graph-svg')!;
+            const zoom = (page as unknown as { _mapZoom: d3.ZoomBehavior<SVGSVGElement, unknown> })._mapZoom;
+            d3.select(svg).call(zoom.transform, d3.zoomIdentity.scale(scale));
+            // jsdom lacks SVG coordinate conversion; provide the zoomed container's matrix so
+            // D3 delivers local drag coordinates while its click suppression uses client pixels.
+            Object.defineProperty(svg, 'createSVGPoint', { value: () => ({
+                x: 0, y: 0,
+                matrixTransform(matrix: { a: number; d: number }) { return { x: this.x * matrix.a, y: this.y * matrix.d }; },
+            }) });
+            const node = root.querySelector<SVGGElement>('.nodes .node')!;
+            Object.defineProperty(node.parentNode, 'getScreenCTM', { value: () => ({
+                inverse: () => ({ a: 1 / scale, d: 1 / scale }),
+            }) });
+            const datum = d3.select(node).datum() as D3Node;
+            const position = [datum.x!, datum.y!];
+            try {
+                press(node, [40 + distance, 50]);
+                expect(!!datum.userPinned).toBe(drag);
+                expect([datum.x, datum.y]).toEqual([position[0] + (drag ? distance / scale : 0), position[1]]);
+                expect(state._expandedNamespaces.has(datum.namespace)).toBe(!drag);
+            } finally {
+                await vi.advanceTimersByTimeAsync(0);
+            }
+        });
+
+        test('a press that moves a pixel or two still expands a folded namespace without pinning it', async () => {
+            const { page, state } = await aggregate([makeFlow({ srcNs: 'a', dstNs: 'b' })]);
+            const simulation = state._simulation.stop();
+            const node = page.shadowRoot!.querySelector('.nodes .node')!;
+            const pinned = () => (simulation.nodes() as D3Node[]).filter(n => n.userPinned || n.fx != null);
+            press(node, [42, 51]);
+            expect(pinned()).toEqual([]);
+            expect(state._expandedNamespaces.size).toBe(1);
+        });
+
+        test('moving past the click distance pins the node and does not expand it', async () => {
+            const { page, state } = await aggregate([makeFlow({ srcNs: 'a', dstNs: 'b' })]);
+            const simulation = state._simulation.stop();
+            const node = page.shadowRoot!.querySelector('.nodes .node')!;
+            press(node, [70, 80]);
+            expect((simulation.nodes() as D3Node[]).filter(n => n.userPinned)).toHaveLength(1);
+            expect(state._expandedNamespaces.size).toBe(0);
+        });
+
+        test('a press that moves a pixel or two on a namespace boundary pins no workload', async () => {
+            const { page, state } = await aggregate([makeFlow({ srcNs: 'a', dstNs: 'b' })]);
+            const simulation = state._simulation.stop().tick(300);
+            simulation.on('end')!.call(simulation);
+            state._toggleNamespace('a');
+            await page.updateComplete;
+            simulation.stop().tick(300);
+            simulation.on('end')!.call(simulation);
+            await page.updateComplete;
+            const boundary = page.shadowRoot!.querySelector('.ns-hulls g.namespace rect')!;
+            boundary.dispatchEvent(mouse('mousedown', 40, 50));
+            window.dispatchEvent(mouse('mousemove', 42, 51));
+            window.dispatchEvent(mouse('mouseup', 42, 51));
+            expect((simulation.nodes() as D3Node[]).filter(n => n.userPinned || n.fx != null)).toEqual([]);
+        });
+
+        test('the release control frees dragged nodes and is disabled without any', async () => {
+            const { page, state } = await aggregate([makeFlow({ srcNs: 'a', dstNs: 'b' })]);
+            const simulation = state._simulation.stop().tick(300);
+            simulation.on('end')!.call(simulation);
+            await page.updateComplete;
+            const root = page.shadowRoot!;
+            const release = () => root.querySelector<HTMLButtonElement>('.map-controls button[aria-label="Release dragged nodes"]')!;
+            expect(release().disabled).toBe(true);
+            press(root.querySelector('.nodes .node')!, [70, 80]);
+            // D3 swallows clicks anywhere on the window until its end-of-drag timer has run.
+            await vi.advanceTimersByTimeAsync(0);
+            await page.updateComplete;
+            expect(release().disabled).toBe(false);
+            const restart = vi.spyOn(simulation, 'restart');
+            const positions = (simulation.nodes() as D3Node[]).map(n => [n.x, n.y]);
+            release().click();
+            await page.updateComplete;
+            expect((simulation.nodes() as D3Node[]).filter(n => n.userPinned || n.fx != null || n.fy != null)).toEqual([]);
+            // Releasing frees the pin without setting the map in motion.
+            expect(restart).not.toHaveBeenCalled();
+            expect((simulation.nodes() as D3Node[]).map(n => [n.x, n.y])).toEqual(positions);
+            restart.mockRestore();
+            expect(release().disabled).toBe(true);
+            simulation.stop();
+        });
+    });
+
+    test('hovering a node does not build the graph again and restyles the drawn edges', async () => {
+        const { page, state } = await aggregate([makeFlow({ srcNs: 'a', dstNs: 'b' })]);
+        state._simulation.stop();
+        const root = page.shadowRoot!;
+        const graph = state._graphRef;
+        const nodes = Array.from(root.querySelectorAll<SVGGElement>('.nodes .node'));
+        const path = root.querySelector('.edges path')!;
+        nodes[0].dispatchEvent(new MouseEvent('mouseenter'));
+        expect(state._graphRef).toBe(graph);
+        expect(path.getAttribute('opacity')).toBe('1');
+        nodes[0].dispatchEvent(new MouseEvent('mouseleave'));
+        expect(state._graphRef).toBe(graph);
+        expect(root.querySelector('.edges path')).toBe(path);
     });
 
     test('keeps redacted and external endpoints distinct and never expands them', async () => {

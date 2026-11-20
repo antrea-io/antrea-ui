@@ -649,11 +649,72 @@ const LOCK_SIZE = 11;
 const EDGE_PIN_SIZE = 12;
 const EDGE_PIN_GAP = 4;
 
+// Pointer travel below this distance is a click, as far as D3 suppressing the click is concerned
+// and as far as pinning a node is concerned.
+const DRAG_CLICK_DISTANCE = 3;
+
+interface DragSlop {
+    start(event: d3.D3DragEvent<Element, unknown, unknown>): void;
+    end(event: d3.D3DragEvent<Element, unknown, unknown>): void;
+    /** The movement to apply for a drag event, or null while the gesture is still a click. Once
+     * the pointer has left the click distance, the first movement includes the distance spent. */
+    travel(event: d3.D3DragEvent<Element, unknown, unknown>): { dx: number; dy: number } | null;
+}
+
+function newDragSlop(): DragSlop {
+    // D3's clickDistance uses client pixels, while its drag coordinates already account for
+    // the map zoom. Track the same screen distance, including the matching touch in a gesture.
+    const clientPoint = (event: d3.D3DragEvent<Element, unknown, unknown>) => {
+        const source = event.sourceEvent as MouseEvent | TouchEvent;
+        return 'changedTouches' in source
+            ? Array.from(source.changedTouches).find(touch => touch.identifier === event.identifier)!
+            : source;
+    };
+    // One entry per active gesture, since touches can drag several nodes at once.
+    const gestures = new Map<unknown, { clientX: number; clientY: number; lastX: number; lastY: number; moved: boolean }>();
+    return {
+        start(event) {
+            const { clientX, clientY } = clientPoint(event);
+            gestures.set(event.identifier, { clientX, clientY, lastX: event.x, lastY: event.y, moved: false });
+        },
+        end(event) { gestures.delete(event.identifier); },
+        travel(event) {
+            const g = gestures.get(event.identifier);
+            if (!g) return null;
+            if (!g.moved) {
+                const { clientX, clientY } = clientPoint(event);
+                if (Math.hypot(clientX - g.clientX, clientY - g.clientY) <= DRAG_CLICK_DISTANCE) return null;
+                g.moved = true;
+            }
+            const delta = { dx: event.x - g.lastX, dy: event.y - g.lastY };
+            g.lastX = event.x; g.lastY = event.y;
+            return delta.dx || delta.dy ? delta : null;
+        },
+    };
+}
+
 function textWidth(text: string, size: number): number { return text.length * size * 0.6; }
+
+/** Updates a folded namespace's counters and denial colors in place. Recreating the node's
+ * children would drop the keyboard focus on its edge pin. Its size does not depend on them. */
+function syncNamespaceCounts(svg: SVGSVGElement, graph: GraphData) {
+    d3.select(svg).selectAll<SVGGElement, D3Node>('g.node').filter(d => d.kind === 'namespace').each(function (d) {
+        const node = graph.nodeMap.get(d.id);
+        if (!node) return;
+        d.detail = node.detail;
+        d.internal = node.internal;
+        const g = d3.select(this);
+        const hasInternalDenials = (d.internal?.denied ?? 0) > 0;
+        g.select('rect').style('stroke', hasInternalDenials ? EDGE_COLOR_VAR.drop : MAP_COLOR_VAR.nsHullStroke);
+        g.select('text.node-detail').text(d.detail)
+            .style('fill', hasInternalDenials ? EDGE_COLOR_VAR.drop : MAP_COLOR_VAR.nodeNamespaceText);
+        g.attr('aria-label', `Expand namespace ${d.namespace}. ${d.detail}`);
+    });
+}
 
 function nodeHalfSize(d: D3Node): { hw: number; hh: number } {
     if (isDiamond(d)) return { hw: EXTERNAL_SIZE, hh: EXTERNAL_SIZE };
-    const w = Math.max(textWidth(d.shortName, 12), d.hideNamespace ? 0 : textWidth(d.detail, 9)) + NODE_PADDING_X * 2 + (d.kind === 'undisclosedNamespace' ? LOCK_SIZE + 6 : 0);
+    const w = Math.max(textWidth(d.shortName, 12), d.hideNamespace || d.kind === 'namespace' ? 0 : textWidth(d.detail, 9)) + NODE_PADDING_X * 2 + (d.kind === 'undisclosedNamespace' ? LOCK_SIZE + 6 : 0);
     if (d.kind === 'undisclosedNamespace' || d.kind === 'namespace') {
         return { hw: Math.max(w, COLLAPSED_NS_MIN_WIDTH) / 2, hh: (COLLAPSED_NS_HEIGHT + NODE_PADDING_Y) / 2 };
     }
@@ -707,18 +768,55 @@ function quadMidpoint(sx: number, sy: number, tx: number, ty: number, offset: nu
 
 const EDGE_LABEL_HEIGHT = 12;
 
+const NODE_INDEX_CELL = 128;
+
+/** A grid over node centres, so that asking whether a label box overlaps a node looks at the few
+ * nodes near it instead of every node. Built once per draw, as the nodes do not move within one. */
+export class NodeIndex {
+    private _cells = new Map<string, { node: D3Node; hw: number; hh: number }[]>();
+    private _maxHalfWidth = 0;
+    private _maxHalfHeight = 0;
+
+    constructor(nodes: readonly D3Node[]) {
+        for (const node of nodes) {
+            const { hw, hh } = nodeHalfSize(node);
+            this._maxHalfWidth = Math.max(this._maxHalfWidth, hw);
+            this._maxHalfHeight = Math.max(this._maxHalfHeight, hh);
+            const key = `${Math.floor(node.x! / NODE_INDEX_CELL)},${Math.floor(node.y! / NODE_INDEX_CELL)}`;
+            const cell = this._cells.get(key);
+            if (cell) cell.push({ node, hw, hh }); else this._cells.set(key, [{ node, hw, hh }]);
+        }
+    }
+
+    /** Whether a width by height box centred at (px, py) overlaps any node. */
+    covers(px: number, py: number, width: number, height: number): boolean {
+        const reachX = this._maxHalfWidth + width / 2;
+        const reachY = this._maxHalfHeight + height / 2;
+        const x1 = Math.floor((px + reachX) / NODE_INDEX_CELL);
+        const y1 = Math.floor((py + reachY) / NODE_INDEX_CELL);
+        for (let cx = Math.floor((px - reachX) / NODE_INDEX_CELL); cx <= x1; cx++) {
+            for (let cy = Math.floor((py - reachY) / NODE_INDEX_CELL); cy <= y1; cy++) {
+                const cell = this._cells.get(`${cx},${cy}`);
+                if (!cell) continue;
+                for (const { node, hw, hh } of cell) {
+                    if (Math.abs(px - node.x!) < hw + width / 2 && Math.abs(py - node.y!) < hh + height / 2) return true;
+                }
+            }
+        }
+        return false;
+    }
+}
+
 /** Where an edge's label is centred. It starts at quadMidpoint and, where a node covers that
  * spot (an edge can pass behind a node that is not one of its ends), slides along the edge to the
  * nearest spot that no node covers. With no such spot it stays at the midpoint. */
 export function edgeLabelPosition(
     s: D3Node, t: D3Node, offset: number, width: number,
-    nodes: readonly D3Node[],
+    nodes: readonly D3Node[] | NodeIndex,
 ): [number, number] {
+    const index = nodes instanceof NodeIndex ? nodes : new NodeIndex(nodes);
     const [mx, my] = quadMidpoint(s.x!, s.y!, t.x!, t.y!, offset);
-    const covered = (px: number, py: number) => nodes.some(n => {
-        const { hw, hh } = nodeHalfSize(n);
-        return Math.abs(px - n.x!) < hw + width / 2 && Math.abs(py - n.y!) < hh + EDGE_LABEL_HEIGHT / 2;
-    });
+    const covered = (px: number, py: number) => index.covers(px, py, width, EDGE_LABEL_HEIGHT);
     if (!covered(mx, my)) return [mx, my];
     const dx = t.x! - s.x!; const dy = t.y! - s.y!; const len = Math.sqrt(dx * dx + dy * dy) || 1;
     const ux = dx / len; const uy = dy / len;
@@ -1082,6 +1180,10 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
     private _pinnedNodes = new Set<string>();
     private _hoveredNode: string | null = null;
     private _mapViewKey = '';
+    // The part of the view key that does not depend on the hovered node, and the function that
+    // restyles the drawn map for a different one.
+    private _mapShapeKey = '';
+    private _applyMapHighlight: ((highlighted: Set<string>, edges: WorkloadEdge[]) => void) | null = null;
 
     @query('#graph-svg') private _svgEl?: SVGSVGElement;
     @query('#graph-tooltip') private _tooltipEl?: HTMLDivElement;
@@ -1114,29 +1216,43 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
     // D3 stores active touch gestures on the behavior, so it must survive map updates.
     // Gesture callbacks use the latest draw function to include newly joined edges and labels.
     private _drawServiceMap: (() => void) | null = null;
+    private _dragSlop = newDragSlop();
+    private _namespaceSlop = newDragSlop();
+    // Whether any node is held in place by a drag, so the control that releases them knows when
+    // it has something to do.
+    @state() private _hasDraggedNodes = false;
     private _mapDrag = d3.drag<SVGGElement, D3Node>()
+        .clickDistance(DRAG_CLICK_DISTANCE)
+        .on('start', event => this._dragSlop.start(event))
+        .on('end', event => this._dragSlop.end(event))
         .on('drag', (event, d) => {
-            // Presses and touch taps must not create drag pins or retain temporary layout pins.
-            if (!event.dx && !event.dy) return;
+            // Presses, touch taps and pointer jitter must not create drag pins or retain
+            // temporary layout pins. The same distance decides whether D3 suppresses the click.
+            if (!this._dragSlop.travel(event)) return;
             this._settlePinned.delete(d);
             d.userPinned = true;
+            this._hasDraggedNodes = true;
             d.x = d.fx = event.x; d.y = d.fy = event.y;
             d.vx = 0; d.vy = 0;
             this._drawServiceMap?.();
         });
     private _namespaceDrag = d3.drag<SVGGElement, [string, D3Node[]]>()
         .subject(event => ({ x: event.x, y: event.y }))
-        .clickDistance(3)
+        .clickDistance(DRAG_CLICK_DISTANCE)
+        .on('start', event => this._namespaceSlop.start(event))
+        .on('end', event => this._namespaceSlop.end(event))
         .on('drag', (event, [namespace]) => {
-            if (!event.dx && !event.dy) return;
+            const travel = this._namespaceSlop.travel(event);
+            if (!travel) return;
+            this._hasDraggedNodes = true;
             // Read current members so a stream update during the gesture does not leave a
             // newly joined workload behind. D3's deltas already account for the map zoom.
             for (const node of this._simulation?.nodes() ?? []) {
                 if (!inNamespaceHull(node) || node.namespace !== namespace) continue;
                 this._settlePinned.delete(node);
                 node.userPinned = true;
-                node.x = node.fx = (node.x ?? 0) + event.dx;
-                node.y = node.fy = (node.y ?? 0) + event.dy;
+                node.x = node.fx = (node.x ?? 0) + travel.dx;
+                node.y = node.fy = (node.y ?? 0) + travel.dy;
                 node.vx = 0; node.vy = 0;
             }
             this._drawServiceMap?.();
@@ -1759,17 +1875,30 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         this._expandedNamespaces = expanded;
     }
 
+    /** Lets the nodes that were dragged move with the layout again. Nothing moves now: the layout
+     * is not reheated, so releasing does not set the rest of the map in motion. */
+    private _releaseDraggedNodes() {
+        for (const node of this._simulation?.nodes() ?? []) {
+            if (!node.userPinned) continue;
+            node.userPinned = false;
+            node.fx = null; node.fy = null;
+        }
+        this._hasDraggedNodes = false;
+    }
+
     private _collapseAllNamespaces() {
         this._hoveredNode = null;
         this._hideTooltip();
         this._expandedNamespaces = new Set();
     }
 
-    private _buildServiceMap() {
+    /** Redraws the map. With reuseGraph, the flows are taken to be unchanged since the last call,
+     * as when only the hovered node differs, and the graph is not built again. */
+    private _buildServiceMap(reuseGraph = false) {
         const svg = this._svgEl;
         if (!svg) return;
 
-        const graph = buildGraph(this._entries, this._clusterWide, this._expandedNamespaces);
+        const graph = reuseGraph ? this._graphRef : buildGraph(this._entries, this._clusterWide, this._expandedNamespaces);
         const previousGraph = this._graphRef;
         if (this._hoveredNode && !graph.nodeMap.has(this._hoveredNode)) this._hoveredNode = null;
         const previousPinCount = this._pinnedNodes.size;
@@ -1803,9 +1932,18 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
 
         // Which edges are drawn, and the hover and pin state they are drawn with, are part of
         // what the joins below render. Unchanged, the shortcut is safe; changed, it is not.
-        const viewKey = JSON.stringify([shownEdges.map(e => `${e.source}|${e.target}`),
-            [...structuralKeys], this._hoveredNode, [...this._pinnedNodes],
+        const shapeKey = JSON.stringify([shownEdges.map(e => `${e.source}|${e.target}`),
+            [...structuralKeys], [...this._pinnedNodes],
             this._clusterWide, [...this._expandedNamespaces].sort()]);
+        const viewKey = `${shapeKey}|${this._hoveredNode}`;
+        const sameShape = shapeKey === this._mapShapeKey;
+        this._mapShapeKey = shapeKey;
+        // Hover that leaves the same edges drawn only changes which of them are emphasised.
+        if (reuseGraph && sameShape && this._applyMapHighlight && this._mapContent?.ownerSVGElement === svg) {
+            this._mapViewKey = viewKey;
+            this._applyMapHighlight(highlightedNodes, shownEdges);
+            return;
+        }
         const sameView = viewKey === this._mapViewKey;
         this._mapViewKey = viewKey;
 
@@ -1819,9 +1957,12 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
             graph.nodes.every(node => {
                 const old = previousGraph.nodeMap.get(node.id);
                 return old && node.kind === old.kind && node.namespace === old.namespace &&
-                    node.shortName === old.shortName && node.detail === old.detail && node.serviceOnly === old.serviceOnly;
+                    node.shortName === old.shortName && node.serviceOnly === old.serviceOnly &&
+                    // A folded namespace's counters change with traffic and are updated in place.
+                    (node.kind === 'namespace' || node.detail === old.detail);
             }) && graph.edges.every(edge => previousGraph.edgeMap.has(`${edge.source}|${edge.target}`))) {
             this._updateMapEdgeData(svg, graph);
+            syncNamespaceCounts(svg, graph);
             this._mapZoom?.extent([[0, 0], [this._svgWidth, this._svgHeight]]);
             return;
         }
@@ -1924,8 +2065,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         const nsHulls = layer('ns-hulls');
         const hullGroups = nsHulls.selectAll<SVGGElement, [string, D3Node[]]>('g.namespace')
             .data(Array.from(nsMap), d => d[0]).join('g').attr('class', 'namespace')
-            .style('cursor', 'grab').call(this._namespaceDrag)
-            .on('dblclick', event => event.stopPropagation());
+            .style('cursor', 'grab').call(this._namespaceDrag);
         hullGroups.selectAll('rect').data(d => [d]).join('rect').attr('rx', 12).attr('ry', 12)
             .style('fill', MAP_COLOR_VAR.nsHullFill).style('stroke', MAP_COLOR_VAR.nsHullStroke)
             .attr('stroke-width', 1).attr('stroke-dasharray', '4,2');
@@ -1997,7 +2137,6 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
             .data(d3Nodes, d => d.id).join('g').attr('class', 'node')
             .style('cursor', 'grab')
             .call(this._mapDrag)
-            .on('dblclick', event => event.stopPropagation())
             // Identified namespaces expand; withheld namespaces only explain their access
             // requirements. Hover reveals edges for every node without changing the layout.
             .on('click', (_event, d) => { if (d.kind === 'namespace') this._toggleNamespace(d.namespace); })
@@ -2008,7 +2147,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
             })
             .on('mouseenter', (event, d) => {
                 this._hoveredNode = d.id;
-                this._buildServiceMap();
+                this._buildServiceMap(true);
                 if (d.kind === 'namespace') {
                     const internal = this._graphRef.nodeMap.get(d.id)!.internal!;
                     this._showNodeTooltip(event, d.shortName,
@@ -2024,7 +2163,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
             })
             .on('mouseleave', () => {
                 this._hoveredNode = null;
-                this._buildServiceMap();
+                this._buildServiceMap(true);
                 this._hideTooltip();
             });
 
@@ -2033,13 +2172,13 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
             // Metadata changes update the glyph, but preserve its group, handlers and position.
             // serviceOnly picks the shape, and a flow can turn a Service node into a workload one
             // with neither the node nor any edge changing.
-            const appearance = JSON.stringify([d.kind, d.shortName, d.detail, d.serviceOnly, d.hideNamespace]);
+            const appearance = JSON.stringify([d.kind, d.shortName, d.kind === 'namespace' ? null : d.detail,
+                d.serviceOnly, d.hideNamespace]);
             if (g.attr('data-appearance') === appearance) return;
             g.attr('data-appearance', appearance);
             g.selectAll('*').remove();
             g.attr('role', d.kind === 'namespace' ? 'button' : null)
-                .attr('tabindex', d.kind === 'namespace' ? 0 : null)
-                .attr('aria-label', d.kind === 'namespace' ? `Expand namespace ${d.namespace}. ${d.detail}` : null);
+                .attr('tabindex', d.kind === 'namespace' ? 0 : null);
             if (d.kind === 'external' || d.kind === 'undisclosed') {
                 const s = EXTERNAL_SIZE;
                 const stroke = d.kind === 'external' ? MAP_COLOR_VAR.externalStroke : MAP_COLOR_VAR.undisclosedStroke;
@@ -2062,18 +2201,18 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
             if (d.kind === 'undisclosedNamespace' || d.kind === 'namespace') {
                 // Both folded and withheld namespaces use the hull style. The lock marks
                 // withheld contents; identified namespaces can expand into a real hull.
-                const hasInternalDenials = d.kind === 'namespace' && (d.internal?.denied ?? 0) > 0;
                 g.append('rect').attr('x', -hw).attr('y', -hh).attr('width', hw * 2).attr('height', hh * 2)
                     .attr('rx', NODE_RX).attr('ry', NODE_RX)
                     .style('fill', MAP_COLOR_VAR.nsHullFill)
-                    .style('stroke', hasInternalDenials ? EDGE_COLOR_VAR.drop : MAP_COLOR_VAR.nsHullStroke)
+                    .style('stroke', MAP_COLOR_VAR.nsHullStroke)
                     .attr('stroke-width', 1).attr('stroke-dasharray', '4,2');
                 g.append('text').text(d.shortName).attr('dy', -3).attr('x', d.kind === 'undisclosedNamespace' ? LOCK_SIZE / 2 + 3 : 0).attr('text-anchor', 'middle')
                     .style('fill', d.kind === 'namespace' ? MAP_COLOR_VAR.nodeText : MAP_COLOR_VAR.nsLabel)
                     .attr('font-size', '11px').attr('font-weight', '600');
                 if (d.kind === 'undisclosedNamespace') appendLock(g, -textWidth(d.shortName, 11) / 2 - LOCK_SIZE / 2 + 3, -13, MAP_COLOR_VAR.nsLabel);
-                g.append('text').text(d.detail).attr('dy', 15).attr('text-anchor', 'middle')
-                    .style('fill', hasInternalDenials ? EDGE_COLOR_VAR.drop : MAP_COLOR_VAR.nodeNamespaceText).attr('font-size', '9px');
+                g.append('text').attr('class', d.kind === 'namespace' ? 'node-detail' : null).text(d.detail)
+                    .attr('dy', 15).attr('text-anchor', 'middle')
+                    .style('fill', MAP_COLOR_VAR.nodeNamespaceText).attr('font-size', '9px');
                 // Worth a tooltip because it is actionable: it can name the grant that would
                 // disclose this namespace. aria-label rather than an SVG <title> - the hover
                 // handler below draws the visible one in the same panel the edge tooltip uses,
@@ -2092,6 +2231,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
             if (!d.hideNamespace) g.append('text').text(d.detail).attr('dy', 13).attr('text-anchor', 'middle').style('fill', MAP_COLOR_VAR.nodeNamespaceText).attr('font-size', '9px');
         });
 
+        syncNamespaceCounts(svg, graph);
         nodeGroup.each((d, index, groups) => {
             const group = d3.select(groups[index]);
             group.selectAll<SVGTextElement, D3Node>('text.edge-pin')
@@ -2119,17 +2259,21 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
             this._buildServiceMap();
             this.requestUpdate();
         };
-        const connected = new Set(highlightedNodes);
-        for (const e of shownEdges) {
-            if (highlightedNodes.has(e.source) || highlightedNodes.has(e.target)) {
-                connected.add(e.source); connected.add(e.target);
+        const applyHighlight = (highlighted: Set<string>, edges: WorkloadEdge[]) => {
+            const connected = new Set(highlighted);
+            for (const e of edges) {
+                if (highlighted.has(e.source) || highlighted.has(e.target)) {
+                    connected.add(e.source); connected.add(e.target);
+                }
             }
-        }
-        nodeGroup.attr('opacity', d => !highlightedNodes.size || connected.has(d.id) ? 1 : 0.2);
-        linkPaths.attr('opacity', d => !highlightedNodes.size || highlightedNodes.has((d.source as D3Node).id)
-            || highlightedNodes.has((d.target as D3Node).id) ? 1 : 0.1);
-        edgeLabelGroups.attr('opacity', d => !highlightedNodes.size || highlightedNodes.has((d.source as D3Node).id)
-            || highlightedNodes.has((d.target as D3Node).id) ? 1 : 0.1);
+            nodeGroup.attr('opacity', d => !highlighted.size || connected.has(d.id) ? 1 : 0.2);
+            linkPaths.attr('opacity', d => !highlighted.size || highlighted.has((d.source as D3Node).id)
+                || highlighted.has((d.target as D3Node).id) ? 1 : 0.1);
+            edgeLabelGroups.attr('opacity', d => !highlighted.size || highlighted.has((d.source as D3Node).id)
+                || highlighted.has((d.target as D3Node).id) ? 1 : 0.1);
+        };
+        this._applyMapHighlight = applyHighlight;
+        applyHighlight(highlightedNodes, shownEdges);
 
         const NAMESPACE_PADDING = 24;
         function updateHulls() {
@@ -2152,6 +2296,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         }
 
         const draw = () => {
+            const nodeIndex = new NodeIndex(d3Nodes);
             linkPaths.attr('d', d => {
                 const s = d.source as D3Node; const t = d.target as D3Node;
                 const [sx, sy] = nodeBoundary(s, t.x!, t.y!, 1);
@@ -2160,7 +2305,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
             });
             edgeLabelGroups.attr('transform', d => {
                 const s = d.source as D3Node; const t = d.target as D3Node;
-                const [mx, my] = edgeLabelPosition(s, t, d.curveOffset, textWidth(d.label, 9) + 6, d3Nodes);
+                const [mx, my] = edgeLabelPosition(s, t, d.curveOffset, textWidth(d.label, 9) + 6, nodeIndex);
                 return `translate(${mx},${my})`;
             });
             nodeGroup.attr('transform', d => `translate(${d.x},${d.y})`);
@@ -2238,6 +2383,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
             simulation.restart();
         }
         this._simulation = simulation;
+        this._hasDraggedNodes = d3Nodes.some(n => n.userPinned);
         container.attr('visibility', this._mapLayoutStatic ? 'hidden' : null);
         draw();
     }
@@ -2644,6 +2790,8 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
                         ${this._renderMapControl('Collapse all namespaces', () => this._collapseAllNamespaces(), svg`
                             <path d="M3 3l6 6M9 4v5H4M21 3l-6 6M15 4v5h5M3 21l6-6M4 15h5v5M21 21l-6-6M15 20v-5h5"/>`, false, !this._canCollapseNamespaces)}
                     ` : nothing}
+                    ${this._renderMapControl('Release dragged nodes', () => this._releaseDraggedNodes(), svg`
+                        <rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 7.5-2"/>`, false, !this._hasDraggedNodes)}
                     ${this._renderMapControl('Zoom in', () => this._zoomMap(MAP_ZOOM_STEP), svg`
                         <circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.5" y2="16.5"/>
                         <line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/>`, !this._canZoomIn)}
