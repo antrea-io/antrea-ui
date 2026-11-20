@@ -1560,7 +1560,7 @@ describe('AntreaFlowVisibilityPage — service map zoom controls', () => {
         const page = await mountMap([makeFlow()]);
         const labels = Array.from(page.shadowRoot!.querySelectorAll('.map-controls button'))
             .map(b => b.getAttribute('aria-label'));
-        expect(labels).toEqual(['Release dragged nodes', 'Zoom in', 'Zoom out', 'Fit to view']);
+        expect(labels).toEqual(['Reset map', 'Zoom in', 'Zoom out', 'Fit to view']);
     });
 
     test('observes each new map container once across scope changes', async () => {
@@ -1735,6 +1735,63 @@ describe('AntreaFlowVisibilityPage — service map zoom controls', () => {
             () => ({ x: 0, y: 0, width: 100, height: 100 });
         button(page, 'Fit to view').click();
         expect(scaleOf(content(page))).toBeCloseTo(1);
+    });
+
+    test('resetting a selection twice preserves node positions and the fitted viewport', async () => {
+        const page = await mountMap([makeFlow()]);
+        const root = page.shadowRoot!;
+        const coordinates = () => Array.from(root.querySelectorAll('.nodes .node'), el => el.getAttribute('transform'));
+        const positions = coordinates();
+        const svg = root.querySelector<SVGSVGElement>('#graph-svg')!;
+        const simulation = (page as unknown as { _simulation: d3.Simulation<D3Node, undefined> })._simulation;
+        const restart = vi.spyOn(simulation, 'restart');
+        Object.defineProperty(content(page), 'getBBox', { value: () => ({ x: 0, y: 0, width: 2000, height: 2000 }) });
+        root.querySelector('.edges path')!.dispatchEvent(new MouseEvent('click'));
+        await page.updateComplete;
+        expect(root.querySelector('.edge-details')).not.toBeNull();
+        button(page, 'Reset map').click();
+        await page.updateComplete;
+        expect(root.querySelector('.edge-details')).toBeNull();
+        expect(coordinates()).toEqual(positions);
+        const viewport = d3.zoomTransform(svg);
+        button(page, 'Reset map').click();
+        await page.updateComplete;
+        expect(coordinates()).toEqual(positions);
+        expect(d3.zoomTransform(svg)).toEqual(viewport);
+        expect(restart).not.toHaveBeenCalled();
+    });
+
+    test.each(['Zoom in', 'Fit to view'])('reset fits during live additions and respects a later %s', async action => {
+        const first = makeFlow();
+        const page = await mountMap([first]);
+        const state = page as unknown as { _entries: FlowEntry[]; _simulation: d3.Simulation<D3Node, undefined>; _mapLayoutPending: boolean };
+        const store = new FlowStore();
+        store.upsertBatch([first]);
+        const addPeer = async (i: number) => {
+            store.upsertBatch([makeFlow({ dstPod: `peer${i}-abc12`, dstIP: `10.0.1.${i}` })]);
+            state._entries = store.getAll();
+            await page.updateComplete;
+            expect(state._mapLayoutPending).toBe(true);
+        };
+        await addPeer(1);
+        const bounds = vi.fn(() => ({ x: 0, y: 0, width: 2000, height: 2000 }));
+        Object.defineProperty(content(page), 'getBBox', { value: bounds });
+        button(page, 'Reset map').click();
+        expect(bounds).toHaveBeenCalledTimes(1);
+        expect(scaleOf(content(page))).toBeLessThan(1);
+
+        const resetViewport = content(page).getAttribute('transform');
+        await addPeer(2);
+        bounds.mockReturnValue({ x: 500, y: 500, width: 3000, height: 3000 });
+        button(page, action).click();
+        const viewport = content(page).getAttribute('transform');
+        expect(viewport).not.toBe(resetViewport);
+        bounds.mockClear();
+        await addPeer(3);
+        const simulation = state._simulation.stop().tick(300);
+        simulation.on('end')!.call(simulation);
+        expect(bounds).not.toHaveBeenCalled();
+        expect(content(page).getAttribute('transform')).toBe(viewport);
     });
 
     test('after fitting a large map, zooming out is not stopped at the usual minimum', async () => {
@@ -4692,7 +4749,7 @@ describe('AntreaFlowVisibilityPage — namespace aggregation', () => {
         const root = page.shadowRoot!;
         const button = (label: string) => root.querySelector<HTMLButtonElement>(`.map-controls button[aria-label="${label}"]`)!;
         expect(Array.from(root.querySelectorAll('.map-controls button')).map(button => button.getAttribute('aria-label')))
-            .toEqual(['Collapse all namespaces', 'Release dragged nodes', 'Zoom in', 'Zoom out', 'Fit to view']);
+            .toEqual(['Collapse all namespaces', 'Reset map', 'Zoom in', 'Zoom out', 'Fit to view']);
         expect(root.querySelector('.map-toolbar')!.textContent).not.toContain('Collapse all namespaces');
         expect(button('Collapse all namespaces').disabled).toBe(true);
 
@@ -5366,30 +5423,177 @@ describe('AntreaFlowVisibilityPage — namespace aggregation', () => {
             expect((simulation.nodes() as D3Node[]).filter(n => n.userPinned || n.fx != null)).toEqual([]);
         });
 
-        test('the release control frees dragged nodes and is disabled without any', async () => {
+        test.each(['filter', 'clear'])('a %s in list view drops drag positions from the old data', async action => {
+            const flow = makeFlow();
+            const page = await mount(async () => sseResponse([flowEventChunk([flow])]));
+            await vi.advanceTimersByTimeAsync(1000);
+            page.viewMode = 'map';
+            await page.updateComplete;
+            const state = page as unknown as AggregateState;
+            const settle = () => {
+                const sim = state._simulation.stop().tick(300);
+                sim.on('end')!.call(sim);
+            };
+            settle();
+            const root = page.shadowRoot!;
+            const node = root.querySelector('.nodes .node')!;
+            const old = d3.select(node).datum() as D3Node;
+            press(node, [2040, 2050]);
+            await vi.advanceTimersByTimeAsync(0);
+            expect(old.userPinned).toBe(true);
+            page.viewMode = 'list';
+            await page.updateComplete;
+            const buttons = root.querySelectorAll<HTMLElement>('.filter-actions antrea-button');
+            if (action === 'filter') {
+                root.querySelector<HTMLButtonElement>('.multiselect-btn')!.click();
+                await page.updateComplete;
+                toggleOption(page, 'default');
+                await page.updateComplete;
+                buttons[0].click();
+                await vi.advanceTimersByTimeAsync(1000);
+            } else {
+                buttons[3].click();
+                await page.updateComplete;
+                const store = new FlowStore();
+                store.upsertBatch([flow]);
+                state._entries = store.getAll();
+            }
+
+            page.viewMode = 'map';
+            await page.updateComplete;
+            settle();
+            const current = state._simulation.nodes().find(n => n.id === old.id) as D3Node;
+            expect(current).toBeDefined();
+            expect(current.userPinned).toBeFalsy();
+            expect(current.fx == null && current.fy == null).toBe(true);
+            expect([current.x, current.y]).not.toEqual([old.x, old.y]);
+        });
+
+        test('reset remembers a folded position across eviction and a drag of returning members', async () => {
+            const flow = makeFlow({ srcNs: 'a', dstNs: 'b' });
+            const { page, state } = await aggregate([flow]);
+            const settle = async () => {
+                const sim = state._simulation.stop().tick(300);
+                sim.on('end')!.call(sim);
+                await page.updateComplete;
+            };
+            await settle();
+            const find = (id: string) => state._simulation.nodes().find(n => n.id === id)!;
+            Object.assign(find('namespace:a'), { x: -1000, y: 0 });
+            state._toggleNamespace('a');
+            await page.updateComplete;
+            await settle();
+            state._entries = [];
+            await page.updateComplete;
+            const store = new FlowStore();
+            store.upsertBatch([flow]);
+            state._entries = store.getAll();
+            await page.updateComplete;
+            await settle();
+            const root = page.shadowRoot!;
+            const hull = root.querySelector('.ns-hulls g.namespace rect')!;
+            press(hull, [440, 450]);
+            await vi.advanceTimersByTimeAsync(0);
+            expect((state._simulation.nodes() as D3Node[]).some(n => n.namespace === 'a' && n.userPinned)).toBe(true);
+            Object.defineProperty(root.querySelector('.map-content'), 'getBBox', { value: () => ({ x: 0, y: 0, width: 100, height: 100 }) });
+            root.querySelector<HTMLButtonElement>('[aria-label="Reset map"]')!.click();
+            expect(find('namespace:a')).toMatchObject({ x: -1000, y: 0 });
+        });
+
+        test.each([-1, 1])('reset keeps the edge pin clear with a neighbour on side %i', async side => {
             const { page, state } = await aggregate([makeFlow({ srcNs: 'a', dstNs: 'b' })]);
-            const simulation = state._simulation.stop().tick(300);
-            simulation.on('end')!.call(simulation);
+            const sim = state._simulation.stop().tick(300);
+            sim.on('end')!.call(sim);
             await page.updateComplete;
             const root = page.shadowRoot!;
-            const release = () => root.querySelector<HTMLButtonElement>('.map-controls button[aria-label="Release dragged nodes"]')!;
-            expect(release().disabled).toBe(true);
-            press(root.querySelector('.nodes .node')!, [70, 80]);
-            // D3 swallows clicks anywhere on the window until its end-of-drag timer has run.
+            const group = root.querySelector('.nodes [aria-label^="Expand namespace a."]')!;
+            const node = d3.select(group).datum() as D3Node;
+            const peer = sim.nodes().find(n => n.id === 'namespace:b') as D3Node;
+            Object.assign(node, { x: 0, y: 0 });
+            const width = Number(group.querySelector('rect')!.getAttribute('width'));
+            // The bodies clear each other, but one edge pin is inside the other body.
+            const peerX = side * (width + 5);
+            Object.assign(peer, { x: peerX, y: 0 });
+            press(group, [240, 250]);
             await vi.advanceTimersByTimeAsync(0);
+            Object.defineProperty(root.querySelector('.map-content'), 'getBBox', { value: () => ({ x: 0, y: 0, width: 100, height: 100 }) });
+            root.querySelector<HTMLButtonElement>('[aria-label="Reset map"]')!.click();
+            expect(peer).toMatchObject({ x: peerX, y: 0 });
+            expect(node.y).toBe(0);
+            const [left, right] = side > 0 ? [node, peer] : [peer, node];
+            expect(left.x! + edgePinPosition(left)[0] + 6).toBeLessThan(right.x! - width / 2);
+        });
+
+        test('reset restores the aggregate and its displaced neighbour, keeping new arrivals in place', async () => {
+            const flow = makeFlow({ srcNs: 'a', dstNs: 'b' });
+            const { page, state } = await aggregate([flow]);
+            const settle = async () => {
+                const simulation = state._simulation.stop().tick(300);
+                simulation.on('end')!.call(simulation);
+                await page.updateComplete;
+            };
+            await settle();
+            const find = (id: string) => state._simulation.nodes().find(n => n.id === id)!;
+            Object.assign(find('namespace:a'), { x: 0, y: 0 });
+            Object.assign(find('namespace:b'), { x: 400, y: 0 });
+            state._toggleNamespace('a');
+            state._edgeLimit = 0;
             await page.updateComplete;
-            expect(release().disabled).toBe(false);
-            const restart = vi.spyOn(simulation, 'restart');
-            const positions = (simulation.nodes() as D3Node[]).map(n => [n.x, n.y]);
-            release().click();
+            const expanding = state._simulation.stop();
+            const child = (expanding.nodes() as D3Node[]).find(n => n.namespace === 'a')!;
+            child.x = 400; child.y = 0;
+            expanding.on('end')!.call(expanding);
+            expect([find('namespace:b').x, find('namespace:b').y]).not.toEqual([400, 0]);
+
+            const store = new FlowStore();
+            store.upsertBatch([flow, makeFlow({ srcNs: 'b', dstNs: 'c', srcIP: '10.9.1.1', dstIP: '10.9.1.2' })]);
+            state._entries = store.getAll();
             await page.updateComplete;
-            expect((simulation.nodes() as D3Node[]).filter(n => n.userPinned || n.fx != null || n.fy != null)).toEqual([]);
-            // Releasing frees the pin without setting the map in motion.
-            expect(restart).not.toHaveBeenCalled();
-            expect((simulation.nodes() as D3Node[]).map(n => [n.x, n.y])).toEqual(positions);
-            restart.mockRestore();
-            expect(release().disabled).toBe(true);
-            simulation.stop();
+            await settle();
+            // The live arrival has found a position clear of both original namespaces.
+            Object.assign(find('namespace:c'), { x: 850, y: 60 });
+            const entries = state._entries;
+            const root = page.shadowRoot!;
+            const peer = root.querySelector<SVGGElement>('.nodes [aria-label^="Expand namespace b."]')!;
+            press(peer, [70, 80]);
+            await vi.advanceTimersByTimeAsync(0);
+            expect((d3.select(peer).datum() as D3Node).userPinned).toBe(true);
+            const pin = peer.querySelector('.edge-pin')!;
+            pin.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+            expect(pin.getAttribute('aria-pressed')).toBe('true');
+            const edge = root.querySelector('.edges path')!;
+            edge.dispatchEvent(new MouseEvent('mouseenter'));
+            edge.dispatchEvent(new MouseEvent('click'));
+            await page.updateComplete;
+            expect(root.querySelector('.edge-details')).not.toBeNull();
+
+            const svg = root.querySelector<SVGSVGElement>('#graph-svg')!;
+            root.querySelector<HTMLButtonElement>('[aria-label="Zoom in"]')!.click();
+            const getBBox = vi.fn(() => ({ x: 0, y: 0, width: 4000, height: 4000 }));
+            Object.defineProperty(root.querySelector('.map-content'), 'getBBox', { value: getBBox });
+            root.querySelector<HTMLButtonElement>('[aria-label="Reset map"]')!.click();
+            await page.updateComplete;
+            expect(state._mapLayoutPending).toBe(false);
+            expect(find('namespace:a')).toMatchObject({ x: 0, y: 0 });
+            expect(find('namespace:b')).toMatchObject({ x: 400, y: 0 });
+            expect(find('namespace:c')).toMatchObject({ x: 850, y: 60 });
+            expect(state._entries).toBe(entries);
+            expect(state._expandedNamespaces.size).toBe(0);
+            expect(root.querySelector('.ns-hulls rect')).toBeNull();
+            expect(root.querySelectorAll('.nodes .node')).toHaveLength(3);
+            expect((state._simulation.nodes() as D3Node[]).every(n => !n.userPinned && n.fx == null && n.fy == null)).toBe(true);
+            expect(root.querySelector('.edge-pin[aria-pressed="true"]')).toBeNull();
+            expect(root.querySelector('.edge-details')).toBeNull();
+            expect(state._hoveredEdgeKey).toBeNull();
+            expect(root.querySelector<HTMLElement>('.map-tooltip')!.style.opacity).toBe('0');
+            expect(root.querySelector<HTMLSelectElement>('#map-edge-limit')!.value).toBe('50');
+            expect(d3.zoomTransform(svg).k).toBeLessThan(1);
+            expect(getBBox).toHaveBeenCalledTimes(1);
+
+            state._toggleNamespace('a');
+            await page.updateComplete;
+            await settle();
+            expect(getBBox).toHaveBeenCalledTimes(1);
         });
     });
 

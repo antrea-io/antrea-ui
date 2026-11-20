@@ -140,6 +140,7 @@ export interface NamespaceSeparation<N> {
     padding: { side: number; top: number; bottom: number };
     /** A namespace title can make the boundary wider than its members. */
     minBoundaryWidth?(namespace: string): number;
+    beforeMove?(node: N): void;
     /** The clear space to leave around a namespace that has just expanded. */
     gap: number;
 }
@@ -163,6 +164,56 @@ export function nodeBounds<N extends SimulationNodeDatum>(
     rect.top -= padding.top; rect.bottom += padding.bottom;
     rect.right = Math.max(rect.right, rect.left + minimumWidth);
     return rect;
+}
+
+// Find the nearest free coordinate along one axis. Touching edges are allowed.
+function nearestFree(value: number, blocked: [number, number][]): number {
+    let lower = -Infinity, upper = -Infinity;
+    for (const [start, end] of blocked.sort((a, b) => a[0] - b[0])) {
+        if (start >= upper) {
+            if (value < upper) break;
+            lower = start;
+        }
+        upper = Math.max(upper, end);
+    }
+    if (value <= lower || value >= upper) return value;
+    return value - lower < upper - value ? lower : upper;
+}
+
+/** Keep current nodes in place while restoring positions changed by the user. Reserve
+ * available original positions first, so one displaced node cannot take another's place.
+ */
+export function restoreMapPositions<N extends PositionedNode>(
+    nodes: N[], positions: ReadonlyMap<string, { x: number; y: number }>,
+    bounds: (node: N) => Rect,
+): void {
+    if (!positions.size) return;
+    const occupied = nodes.filter(n => !positions.has(n.id)).map(bounds);
+    const displaced: N[] = [];
+    for (const n of nodes) {
+        const original = positions.get(n.id);
+        if (!original) continue;
+        n.x = original.x; n.y = original.y;
+        n.vx = 0; n.vy = 0;
+        const box = bounds(n);
+        if (occupied.some(r => r.left < box.right && r.right > box.left && r.top < box.bottom && r.bottom > box.top)) {
+            displaced.push(n);
+        } else {
+            occupied.push(box);
+        }
+    }
+    for (const n of displaced) {
+        const box = bounds(n);
+        const horizontal: [number, number][] = [], vertical: [number, number][] = [];
+        for (const r of occupied) {
+            if (r.top < box.bottom && r.bottom > box.top) horizontal.push([r.left - box.right - 1, r.right - box.left + 1]);
+            if (r.left < box.right && r.right > box.left) vertical.push([r.top - box.bottom - 1, r.bottom - box.top + 1]);
+        }
+        const dx = nearestFree(0, horizontal), dy = nearestFree(0, vertical);
+        if (Math.abs(dx) < Math.abs(dy)) n.x = n.x! + dx;
+        else n.y = n.y! + dy;
+        occupied.push(bounds(n));
+    }
 }
 
 /** Moves what an expanded namespace's boundary now covers out of its way. Whatever is not a member
@@ -196,6 +247,7 @@ export function separateFromNamespaces<N extends NamespaceNode>(
     const shift = (key: string, members: N[], dx: number, dy: number) => {
         rects.delete(key);
         for (const n of members) {
+            options.beforeMove?.(n);
             n.x = (n.x ?? 0) + dx; n.y = (n.y ?? 0) + dy;
             n.vx = 0; n.vy = 0;
             if (n.fx != null) n.fx += dx;

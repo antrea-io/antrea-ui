@@ -13,7 +13,7 @@
 // limitations under the License.
 
 import { describe, expect, test } from 'vitest';
-import { clusterMapNodes, pinMapNodes, reconcileMapNodes, seedNamespaceTransition, separateFromNamespaces } from './service-map-layout';
+import { clusterMapNodes, pinMapNodes, reconcileMapNodes, seedNamespaceTransition, separateFromNamespaces, restoreMapPositions, nodeBounds } from './service-map-layout';
 import type { PositionedNode } from './service-map-layout';
 
 describe('incremental map layout', () => {
@@ -90,6 +90,19 @@ test('expansion seeds around the old namespace without moving existing nodes and
     seedNamespaceTransition(result.nodes, [collapsed]);
     expect(collapsed.x).toBeCloseTo(500);
     expect(collapsed.y).toBeCloseTo(400);
+});
+
+test('restoring a node whose place was taken keeps the new occupant and nearby nodes fixed', () => {
+    const restored = { id: 'dragged', x: 300, y: 200 };
+    const neighbours = [
+        { id: 'new', x: 0, y: 0 }, { id: 'above', x: 0, y: -40 }, { id: 'below', x: 0, y: 40 },
+    ];
+    const positions = neighbours.map(n => [n.x, n.y]);
+    restoreMapPositions([restored, ...neighbours], new Map([['dragged', { x: 0, y: 0 }]]),
+        n => nodeBounds([n], () => ({ hw: 20, hh: 20 })));
+    expect(neighbours.map(n => [n.x, n.y])).toEqual(positions);
+    expect(restored.y).toBe(0);
+    expect(Math.abs(restored.x)).toBeCloseTo(41);
 });
 
 describe('separateFromNamespaces', () => {

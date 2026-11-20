@@ -17,7 +17,7 @@ import type { TemplateResult } from 'lit';
 import { state, query, property } from 'lit/decorators.js';
 import * as d3 from 'd3';
 import { busiestMapEdges } from '../lib/service-map-edges.js';
-import { reconcileMapNodes, clusterMapNodes, pinMapNodes, seedNamespaceTransition, separateFromNamespaces, nodeBounds } from '../lib/service-map-layout.js';
+import { reconcileMapNodes, clusterMapNodes, pinMapNodes, seedNamespaceTransition, separateFromNamespaces, nodeBounds, restoreMapPositions } from '../lib/service-map-layout.js';
 import { pageStyles, pickerStyles } from '../lib/styles.js';
 import {
     SCOPE_ALL, parseScopeParam, dispatchScopeChosen, writeScopeToURL,
@@ -640,6 +640,7 @@ const NAMESPACE_GAP = 40;
 
 const EDGE_STROKE_WIDTH = 2;
 const EDGE_HIT_WIDTH = 8;
+const DEFAULT_EDGE_LIMIT = 50;
 /** The factor one click of the zoom in/out buttons scales the map by. */
 const MAP_ZOOM_STEP = 1.5;
 const NODE_RX = 8;
@@ -1185,7 +1186,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
     @state() private _svgWidth = 1100;
     @state() private _svgHeight = 900;
     @state() private _selectedEdgeKey: string | null = null;
-    @state() private _edgeLimit = 50;
+    @state() private _edgeLimit = DEFAULT_EDGE_LIMIT;
     @state() private _shownEdgeCount = 0;
     @state() private _totalEdgeCount = 0;
     @state() private _expandedNamespaces = new Set<string>();
@@ -1240,9 +1241,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
     private _drawServiceMap: (() => void) | null = null;
     private _dragSlop = newDragSlop();
     private _namespaceSlop = newDragSlop();
-    // Whether any node is held in place by a drag, so the control that releases them knows when
-    // it has something to do.
-    @state() private _hasDraggedNodes = false;
+    private _originalPositions = new Map<string, { x: number; y: number }>();
     private _mapDrag = d3.drag<SVGGElement, D3Node>()
         .clickDistance(DRAG_CLICK_DISTANCE)
         .on('start', event => this._dragSlop.start(event))
@@ -1251,9 +1250,9 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
             // Presses, touch taps and pointer jitter must not create drag pins or retain
             // temporary layout pins. The same distance decides whether D3 suppresses the click.
             if (!this._dragSlop.travel(event)) return;
+            this._rememberPosition(d);
             this._settlePinned.delete(d);
             d.userPinned = true;
-            this._hasDraggedNodes = true;
             d.x = d.fx = event.x; d.y = d.fy = event.y;
             d.vx = 0; d.vy = 0;
             this._drawServiceMap?.();
@@ -1266,11 +1265,11 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         .on('drag', (event, [namespace]) => {
             const travel = this._namespaceSlop.travel(event);
             if (!travel) return;
-            this._hasDraggedNodes = true;
             // Read current members so a stream update during the gesture does not leave a
             // newly joined workload behind. D3's deltas already account for the map zoom.
             for (const node of this._simulation?.nodes() ?? []) {
                 if (!inNamespaceHull(node) || node.namespace !== namespace) continue;
+                this._rememberPosition(node);
                 this._settlePinned.delete(node);
                 node.userPinned = true;
                 node.x = node.fx = (node.x ?? 0) + travel.dx;
@@ -1296,7 +1295,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
     private _refreshTimer: ReturnType<typeof setInterval> | null = null;
     private _ro: ResizeObserver | null = null;
     private _roHost: HTMLElement | null = null;
-    private _graphRef: GraphData = { nodes: [], edges: [], edgeMap: new Map(), nodeMap: new Map() };
+    private _graphRef = buildGraph([]);
 
     private _handleDocClick = (e: PointerEvent) => {
         const path = e.composedPath();
@@ -1662,8 +1661,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         // there under the new scope.
         this._client?.stop();
         this._client = null;
-        this._resetMapChoices();
-        this._store.clear();
+        this._clearFlows();
         // The names the filter menus offer survive a new filter or a new mode, but are those of
         // one scope: another scope starts with none, even if its stream is refused or never opens.
         // No scope at all leaves them alone, though the menus do not offer them then: it mostly
@@ -1675,15 +1673,11 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
                 this._seenNamesKey = seenNamesKey;
             }
         }
-        this._entries = [];
-        this._evictionWarning = false;
-        this._droppedCount = 0;
         this._snapshotCount = 0;
         this._resultLimit = 0;
         this._truncated = false;
         this._queryState = 'idle';
         this._connected = false;
-        this._selectedEdgeKey = null;
         // The banner went with the stream, which is what it described: a refusal of the old
         // scope says nothing about the new one.
         this._error = null;
@@ -1742,13 +1736,28 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         else this._startStream();
     }
 
-    private _onClear() {
+    private _clearFlows() {
         this._resetMapChoices();
+        // The list can receive the next batch before the map is mounted again. Discard the
+        // old layout here so matching IDs in the new data cannot inherit a drag or a pin.
+        this._simulation?.stop();
+        this._simulation = null;
+        this._settlePinned.clear();
+        this._mapLayoutPending = false;
+        this._mapLayoutFull = false;
+        this._mapLayoutStatic = false;
+        this._mapLayoutSnapshot?.remove();
+        this._mapLayoutSnapshot = null;
+        this._mapContent = null;
+        this._drawServiceMap = null;
+        this._updateEdgeLabels = null;
+        this._applyMapHighlight = null;
+        this._graphRef = buildGraph([]);
+
         this._store.clear();
         this._entries = [];
         this._evictionWarning = false;
         this._droppedCount = 0;
-        this._selectedEdgeKey = null;
     }
 
     // ── Available filter options (derived from the names seen) ────────────────
@@ -1881,10 +1890,23 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
             });
     }
 
+    private _rememberPosition(node: D3Node) {
+        // Expanded workloads fold back into their namespace when the user resets the map.
+        if (this._clusterWide && inNamespaceHull(node)) return;
+        if (node.x != null && node.y != null && !this._originalPositions.has(node.id)) {
+            this._originalPositions.set(node.id, { x: node.x, y: node.y });
+        }
+    }
+
     private _resetMapChoices() {
+        this._originalPositions = new Map();
         this._busiestEdges.clear();
         this._pinnedNodes.clear();
         this._hoveredNode = null;
+        this._hoveredEdgeKey = null;
+        this._selectedEdgeKey = null;
+        this._hideTooltip();
+        this._expandingNamespaces.clear();
         this._expandedNamespaces = new Set();
     }
 
@@ -1893,19 +1915,21 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         this._hideTooltip();
         const expanded = new Set(this._expandedNamespaces);
         if (expanded.has(namespace)) expanded.delete(namespace);
-        else expanded.add(namespace);
+        else {
+            const parent = this._simulation?.nodes().find(n => n.id === `namespace:${namespace}`);
+            if (parent) this._rememberPosition(parent);
+            expanded.add(namespace);
+        }
         this._expandedNamespaces = expanded;
     }
 
-    /** Lets the nodes that were dragged move with the layout again. Nothing moves now: the layout
-     * is not reheated, so releasing does not set the rest of the map in motion. */
-    private _releaseDraggedNodes() {
-        for (const node of this._simulation?.nodes() ?? []) {
-            if (!node.userPinned) continue;
-            node.userPinned = false;
-            node.fx = null; node.fy = null;
-        }
-        this._hasDraggedNodes = false;
+    private _resetMap() {
+        const positions = this._originalPositions;
+        this._resetMapChoices();
+        this._edgeLimit = DEFAULT_EDGE_LIMIT;
+        this._buildServiceMap(false, positions);
+        // Fit the restored positions once, even if live arrivals keep the layout running.
+        if (this._graphRef.nodes.length) this._fitServiceMap();
     }
 
     private _collapseAllNamespaces() {
@@ -1916,7 +1940,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
 
     /** Redraws the map. With reuseGraph, the flows are taken to be unchanged since the last call,
      * as when only the hovered node differs, and the graph is not built again. */
-    private _buildServiceMap(reuseGraph = false) {
+    private _buildServiceMap(reuseGraph = false, resetPositions?: Map<string, { x: number; y: number }>) {
         const svg = this._svgEl;
         if (!svg) return;
 
@@ -1981,7 +2005,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         // edge metadata: the same endpoints can acquire a new port, verdict or connection count.
         // Node appearance changes take the full path because they can change edge boundaries and
         // collision radii. A recreated SVG must also be populated, even with identical data.
-        if (sameView && this._mapContent?.ownerSVGElement === svg &&
+        if (!resetPositions && sameView && this._mapContent?.ownerSVGElement === svg &&
             graph.nodes.length === previousGraph.nodes.length &&
             graph.edges.length === previousGraph.edges.length &&
             graph.nodes.every(node => {
@@ -2005,7 +2029,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
             structural, { x: this._svgWidth / 2, y: this._svgHeight / 2 },
         );
         const previousWorkloadNamespaces = new Set(previousNodes.filter(n => n.kind === 'workload').map(n => n.namespace));
-        const namespaceTransition = added.some(n =>
+        const namespaceTransition = !resetPositions && added.some(n =>
             (n.kind === 'workload' && previousGraph.nodeMap.has(`namespace:${n.namespace}`)) ||
             (n.kind === 'namespace' && previousWorkloadNamespaces.has(n.namespace)));
         for (const node of added) {
@@ -2033,6 +2057,38 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         }
         seedNamespaceTransition(previousNodes, added);
         const nodeById = new Map(d3Nodes.map(n => [n.id, n]));
+
+        if (resetPositions) {
+            // A new aggregate without a saved position starts at its children's centroid.
+            for (const n of added) {
+                if (!resetPositions.has(n.id) && n.x != null && n.y != null) {
+                    resetPositions.set(n.id, { x: n.x, y: n.y });
+                }
+            }
+            for (const n of d3Nodes) {
+                if (n.userPinned) { n.userPinned = false; n.fx = null; n.fy = null; }
+            }
+            restoreMapPositions(d3Nodes, resetPositions, node => {
+                const box = nodeBounds([node], nodeHalfSize);
+                box.right += EDGE_PIN_GAP + EDGE_PIN_SIZE;
+                return box;
+            });
+            // A batch of new flows may already be settling when Reset is clicked.
+            if (this._mapLayoutPending) {
+                for (const n of d3Nodes) {
+                    if (!resetPositions.has(n.id)) continue;
+                    n.fx = n.x; n.fy = n.y;
+                    this._settlePinned.add(n);
+                }
+            }
+        } else if (this._originalPositions.size) {
+            const active = new Set(nodeById.keys());
+            // Keep the folded position while expanded, even if the last member is evicted.
+            for (const ns of this._expandedNamespaces) active.add(`namespace:${ns}`);
+            for (const id of this._originalPositions.keys()) {
+                if (!active.has(id)) this._originalPositions.delete(id);
+            }
+        }
 
         const bidirectionalPairs = new Set<string>();
         const edgeKeys = new Set(graph.edges.map(e => `${e.source}|${e.target}`));
@@ -2412,6 +2468,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
                 separateFromNamespaces<D3Node>(d3Nodes, this._expandingNamespaces, {
                     inBoundary: inNamespaceHull, halfSize: nodeHalfSize, gap: NAMESPACE_GAP,
                     padding: namespacePadding, minBoundaryWidth: namespaceMinWidth,
+                    beforeMove: node => this._rememberPosition(node),
                 });
                 this._expandingNamespaces.clear();
             }
@@ -2431,7 +2488,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         // full one. So is an addition arriving while the previous full layout is still
         // running: pinning half-settled nodes would leave the map that way.
         const initial = d3Nodes.length === added.length;
-        const full = !namespaceTransition && (initial || (this._mapLayoutFull && simulation.alpha() >= simulation.alphaMin()));
+        const full = !resetPositions && !namespaceTransition && (initial || (this._mapLayoutFull && simulation.alpha() >= simulation.alphaMin()));
         const continuingLayout = this._mapLayoutPending && simulation.alpha() >= simulation.alphaMin();
         for (const n of this._settlePinned) if (!nodeById.has(n.id)) this._settlePinned.delete(n);
         // Remove old links before nodes: forceLink otherwise initializes stale endpoints.
@@ -2470,7 +2527,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         if (!d3Nodes.length) {
             simulation.stop();
             finishLayout();
-        } else if (added.length) {
+        } else if (added.length && !resetPositions) {
             this._mapLayoutPending = true;
             this._mapLayoutFull = full;
             this._mapLayoutStatic = this._mapLayoutStatic || full || namespaceTransition;
@@ -2486,7 +2543,6 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         }
         this._simulation = simulation;
         updateLabels();
-        this._hasDraggedNodes = d3Nodes.some(n => n.userPinned);
         container.attr('visibility', this._mapLayoutStatic ? 'hidden' : null);
         draw();
     }
@@ -2735,7 +2791,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
                         <antrea-button type="button" @click=${this._onApplyFilters}>Apply Filters</antrea-button>
                         <antrea-button type="button" action="outline" @click=${this._onResetFilters}>Reset</antrea-button>
                         ${this._following ? html`<antrea-button type="button" action="outline" @click=${this._onPauseToggle}>${this._paused ? 'Resume' : 'Pause'}</antrea-button>` : nothing}
-                        ${this._following ? html`<antrea-button type="button" action="outline" @click=${this._onClear}>Clear</antrea-button>` : nothing}
+                        ${this._following ? html`<antrea-button type="button" action="outline" @click=${this._clearFlows}>Clear</antrea-button>` : nothing}
                     </div>
                 </div>
                 <div class="status-row">
@@ -2893,8 +2949,8 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
                         ${this._renderMapControl('Collapse all namespaces', () => this._collapseAllNamespaces(), svg`
                             <path d="M3 3l6 6M9 4v5H4M21 3l-6 6M15 4v5h5M3 21l6-6M4 15h5v5M21 21l-6-6M15 20v-5h5"/>`, false, !this._canCollapseNamespaces)}
                     ` : nothing}
-                    ${this._renderMapControl('Release dragged nodes', () => this._releaseDraggedNodes(), svg`
-                        <rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 7.5-2"/>`, false, !this._hasDraggedNodes)}
+                    ${this._renderMapControl('Reset map', () => this._resetMap(), svg`
+                        <path d="M3 10a9 9 0 1 1 2 8M3 4v6h6"/>`)}
                     ${this._renderMapControl('Zoom in', () => this._zoomMap(MAP_ZOOM_STEP), svg`
                         <circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.5" y2="16.5"/>
                         <line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/>`, !this._canZoomIn)}
