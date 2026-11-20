@@ -1192,6 +1192,11 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
     // Namespaces that expanded since the last layout finished. Their boundaries are only as large
     // as the settled layout makes them, so what they cover is moved aside once it has settled.
     private _expandingNamespaces = new Set<string>();
+    // The edge under the pointer, and the nodes whose edges are emphasised, as of the last build.
+    // An edge's port label is drawn only for these and for the selected edge.
+    private _hoveredEdgeKey: string | null = null;
+    private _lastHighlighted = new Set<string>();
+    private _updateEdgeLabels: (() => void) | null = null;
     private _applyMapHighlight: ((highlighted: Set<string>, edges: WorkloadEdge[]) => void) | null = null;
 
     @query('#graph-svg') private _svgEl?: SVGSVGElement;
@@ -1923,9 +1928,16 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         const structuralKeys = new Set(structural.map(e => `${e.source}|${e.target}`));
         const highlightedNodes = new Set(this._pinnedNodes);
         if (this._hoveredNode) highlightedNodes.add(this._hoveredNode);
+        this._lastHighlighted = highlightedNodes;
         const shownEdges = graph.edges.filter(e => structuralKeys.has(`${e.source}|${e.target}`)
             || highlightedNodes.has(e.source) || highlightedNodes.has(e.target)
             || `${e.source}|${e.target}` === this._selectedEdgeKey);
+        // Streaming counts can replace a hovered edge in the visible top edges. Removing its
+        // path/label does not send mouseleave, so clear the hover before updating labels.
+        if (this._hoveredEdgeKey && !shownEdges.some(e => `${e.source}|${e.target}` === this._hoveredEdgeKey)) {
+            this._hoveredEdgeKey = null;
+            this._hideTooltip();
+        }
         this._shownEdgeCount = shownEdges.length;
         this._totalEdgeCount = graph.edges.length;
         this._graphRef = graph;
@@ -1951,6 +1963,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         if (reuseGraph && sameShape && this._applyMapHighlight && this._mapContent?.ownerSVGElement === svg) {
             this._mapViewKey = viewKey;
             this._applyMapHighlight(highlightedNodes, shownEdges);
+            this._updateEdgeLabels?.();
             return;
         }
         const sameView = viewKey === this._mapViewKey;
@@ -1972,6 +1985,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
             }) && graph.edges.every(edge => previousGraph.edgeMap.has(`${edge.source}|${edge.target}`))) {
             this._updateMapEdgeData(svg, graph);
             syncNamespaceCounts(svg, graph);
+            this._updateEdgeLabels?.();
             this._mapZoom?.extent([[0, 0], [this._svgWidth, this._svgHeight]]);
             return;
         }
@@ -2113,9 +2127,12 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         const edgePathsByKey = new Map(linkPaths.nodes().map(path => [
             d3.select<SVGPathElement, D3Link>(path).datum().edgeKey, path,
         ]));
+        const edgeLabelByKey = new Map<string, SVGGElement>();
         const bindEdgeEvents = <E extends SVGElement, P>(selection: d3.Selection<E, D3Link, SVGGElement, P>) => selection
             .style('cursor', 'pointer')
             .on('mouseenter', (event, d) => {
+                this._hoveredEdgeKey = d.edgeKey;
+                this._updateEdgeLabels?.();
                 d3.select(edgePathsByKey.get(d.edgeKey)!)
                     .attr('stroke-opacity', 1)
                     .attr('stroke-width', EDGE_STROKE_WIDTH + 0.5);
@@ -2128,7 +2145,12 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
                     this._tooltipEl.style.top = `${event.clientY + 12}px`;
                 }
             })
-            .on('mouseleave', (_event, d) => {
+            .on('mouseleave', (event: MouseEvent, d) => {
+                // Moving between an edge and its label is still hovering the edge.
+                const to = event.relatedTarget;
+                if (to instanceof Node && (to === edgePathsByKey.get(d.edgeKey) || edgeLabelByKey.get(d.edgeKey)?.contains(to))) return;
+                this._hoveredEdgeKey = null;
+                this._updateEdgeLabels?.();
                 d3.select(edgePathsByKey.get(d.edgeKey)!)
                     .attr('stroke-opacity', 0.6)
                     .attr('stroke-width', EDGE_STROKE_WIDTH);
@@ -2144,6 +2166,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         const edgeLabelGroups = layer('edge-labels').selectAll<SVGGElement, D3Link>('g')
             .data(d3Links.filter(d => d.label), d => d.edgeKey).join('g');
         bindEdgeEvents(edgeLabelGroups);
+        for (const group of edgeLabelGroups.nodes()) edgeLabelByKey.set(d3.select<SVGGElement, D3Link>(group).datum().edgeKey, group);
         edgeLabelGroups.selectAll('rect').data(d => [d]).join('rect')
             .attr('x', d => -textWidth(d.label, 9) / 2 - 3).attr('y', -6)
             .attr('width', d => textWidth(d.label, 9) + 6).attr('height', 12).attr('rx', 3).attr('ry', 3).style('fill', MAP_COLOR_VAR.edgeLabelBg).style('stroke', d => EDGE_COLOR_VAR[d.role]).attr('stroke-width', 0.5).attr('stroke-opacity', 0.5);
@@ -2301,6 +2324,32 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
             }
         }
 
+        const shownLabels = () => edgeLabelGroups.filter(function () { return this.getAttribute('display') !== 'none'; });
+        const placeLabels = (groups: d3.Selection<SVGGElement, D3Link, SVGGElement, null>, nodeIndex: NodeIndex) => {
+            groups.attr('transform', d => {
+                const s = d.source as D3Node; const t = d.target as D3Node;
+                const [mx, my] = edgeLabelPosition(s, t, d.curveOffset, textWidth(d.label, 9) + 6, nodeIndex);
+                return `translate(${mx},${my})`;
+            });
+        };
+        // A label is a detail of its edge: drawn while the edge is hovered or selected, or while
+        // either end is highlighted. Hidden ones are not placed, which also keeps them out of the
+        // per-tick cost of a large map.
+        // eslint-disable-next-line @typescript-eslint/no-this-alias
+        const self = this;
+        const updateLabels = () => {
+            const highlighted = this._lastHighlighted;
+            const revealed: SVGGElement[] = [];
+            edgeLabelGroups.each(function (d) {
+                const shown = highlighted.has((d.source as D3Node).id) || highlighted.has((d.target as D3Node).id)
+                    || d.edgeKey === self._selectedEdgeKey || d.edgeKey === self._hoveredEdgeKey;
+                const hidden = this.getAttribute('display') === 'none';
+                if (shown === !hidden) return;
+                if (shown) { this.removeAttribute('display'); revealed.push(this); } else this.setAttribute('display', 'none');
+            });
+            if (revealed.length) placeLabels(edgeLabelGroups.filter(function () { return revealed.includes(this); }), new NodeIndex(d3Nodes));
+        };
+        this._updateEdgeLabels = updateLabels;
         const draw = () => {
             const nodeIndex = new NodeIndex(d3Nodes);
             linkPaths.attr('d', d => {
@@ -2309,11 +2358,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
                 const [tx, ty] = nodeBoundary(t, s.x!, s.y!, 3);
                 return curvedPath(sx, sy, tx, ty, d.curveOffset);
             });
-            edgeLabelGroups.attr('transform', d => {
-                const s = d.source as D3Node; const t = d.target as D3Node;
-                const [mx, my] = edgeLabelPosition(s, t, d.curveOffset, textWidth(d.label, 9) + 6, nodeIndex);
-                return `translate(${mx},${my})`;
-            });
+            placeLabels(shownLabels(), nodeIndex);
             nodeGroup.attr('transform', d => `translate(${d.x},${d.y})`);
             updateHulls();
         };
@@ -2396,6 +2441,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
             simulation.restart();
         }
         this._simulation = simulation;
+        updateLabels();
         this._hasDraggedNodes = d3Nodes.some(n => n.userPinned);
         container.attr('visibility', this._mapLayoutStatic ? 'hidden' : null);
         draw();
@@ -2778,7 +2824,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
                         ${[25, 50, 100, 200, 0].map(n => html`<option value=${n} .selected=${n === this._edgeLimit}>${n || 'All'}</option>`)}
                     </select>
                     <span class="map-edge-count" role="status">${this._shownEdgeCount} of ${this._totalEdgeCount} edges</span>
-                    <span>Hover to highlight all of a node's edges. Click ↔ to keep the highlight; click again to release it.
+                    <span>Hover to highlight all of a node's edges and show their ports. Click ↔ to keep the highlight; click again to release it.
                         ${this._edgeLimit > 0 ? html`Expanded namespaces, highlighted nodes, and selected edges can show more than ${this._edgeLimit} edges.` : nothing}
                     </span>
                 </div>

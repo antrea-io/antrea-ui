@@ -4015,6 +4015,14 @@ describe('nodeBoundary', () => {
     });
 });
 
+/** Edge labels are drawn only for highlighted, hovered and selected edges. Hovering a node
+ * highlights its edges, which reveals them. */
+function showEdgeLabels(root: ParentNode, nodeId?: string) {
+    const nodes = Array.from(root.querySelectorAll<SVGGElement>('.nodes .node'));
+    const node = nodeId ? nodes.find(element => (d3.select(element).datum() as D3Node).id === nodeId) : nodes[0];
+    node!.dispatchEvent(new MouseEvent('mouseenter'));
+}
+
 describe('edgeLabelPosition', () => {
     const at = (id: string, x: number, y: number): D3Node =>
         ({ id, shortName: id, namespace: 'ns', kind: 'workload', detail: 'ns', serviceOnly: false, x, y });
@@ -4119,6 +4127,7 @@ describe('AntreaFlowVisibilityPage — incremental service map', () => {
         simulation.on('end')!.call(simulation);
         const root = page.shadowRoot!;
         const paths = Array.from(root.querySelectorAll('.edges path'));
+        showEdgeLabels(root);
         const labels = Array.from(root.querySelectorAll('.edge-labels g'));
         expect(paths).toHaveLength(2);
         expect(labels).toHaveLength(2);
@@ -4179,6 +4188,7 @@ describe('AntreaFlowVisibilityPage — incremental service map', () => {
         const nodeElements = Array.from(root.querySelectorAll('.nodes .node'));
         const path = root.querySelector('.edges path')!;
         const geometry = path.getAttribute('d');
+        showEdgeLabels(root);
         const label = root.querySelector('.edge-labels g')!;
         const labelPosition = label.getAttribute('transform');
         const [sx, sy, cx, cy, tx, ty] = svgCoordinates(geometry!);
@@ -4558,6 +4568,7 @@ describe('AntreaFlowVisibilityPage — incremental service map', () => {
         await update(page, state, [forward, incoming]);
         expect(root.querySelector('.nodes .node')).toBe(node);
         const paths = Array.from(root.querySelectorAll('.edges path'));
+        showEdgeLabels(root);
         const labels = Array.from(root.querySelectorAll('.edge-labels g'));
         expect(paths).toHaveLength(change === 'edge additions' ? 2 : 1);
         const previousPaths = paths.map(path => path.getAttribute('d'));
@@ -4646,6 +4657,7 @@ describe('AntreaFlowVisibilityPage — namespace aggregation', () => {
         _edgeLimit: number;
         _busiestEdges: Set<string>;
         _selectedEdgeKey: string | null;
+        _hoveredEdgeKey: string | null;
         _expandedNamespaces: Set<string>;
         _mapLayoutPending: boolean;
         _simulation: d3.Simulation<PositionedNode, undefined>;
@@ -5083,6 +5095,7 @@ describe('AntreaFlowVisibilityPage — namespace aggregation', () => {
         const left = Number(boundary.getAttribute('x')), top = Number(boundary.getAttribute('y'));
         const paths = Array.from(root.querySelectorAll('.edges path'));
         const geometry = paths.map(path => path.getAttribute('d'));
+        showEdgeLabels(root, 'namespace:b');
         const labels = Array.from(root.querySelectorAll('.edge-labels g'));
         const labelPositions = labels.map(label => label.getAttribute('transform'));
         const svg = root.querySelector<SVGSVGElement>('#graph-svg')!;
@@ -5376,6 +5389,139 @@ describe('AntreaFlowVisibilityPage — namespace aggregation', () => {
             restart.mockRestore();
             expect(release().disabled).toBe(true);
             simulation.stop();
+        });
+    });
+
+    describe('edge labels', () => {
+        const setup = async () => {
+            const { page, state } = await aggregate([
+                makeFlow({ srcNs: 'a', dstNs: 'b' }),
+                makeFlow({ srcNs: 'c', dstNs: 'd', srcIP: '10.0.1.1', dstIP: '10.0.1.2' }),
+            ]);
+            const simulation = state._simulation.stop().tick(300);
+            simulation.on('end')!.call(simulation);
+            await page.updateComplete;
+            const root = page.shadowRoot!;
+            const shown = () => Array.from(root.querySelectorAll('.edge-labels g'))
+                .filter(label => label.getAttribute('display') !== 'none').length;
+            const path = (source: string) => Array.from(root.querySelectorAll('.edges path'))
+                .find(element => (d3.select(element).datum() as { edgeKey: string }).edgeKey.startsWith(source))!;
+            return { page, state, root, shown, path };
+        };
+
+        test('are hidden until an edge is highlighted, hovered or selected', async () => {
+            const { page, root, shown, path } = await setup();
+            expect(root.querySelectorAll('.edge-labels g')).toHaveLength(2);
+            expect(shown()).toBe(0);
+            showEdgeLabels(root, 'namespace:a');
+            expect(shown()).toBe(1);
+            const node = Array.from(root.querySelectorAll('.nodes .node'))
+                .find(element => (d3.select(element).datum() as D3Node).id === 'namespace:a')!;
+            node.dispatchEvent(new MouseEvent('mouseleave'));
+            expect(shown()).toBe(0);
+            path('namespace:c').dispatchEvent(new MouseEvent('mouseenter'));
+            expect(shown()).toBe(1);
+            path('namespace:c').dispatchEvent(new MouseEvent('mouseleave'));
+            expect(shown()).toBe(0);
+            path('namespace:c').dispatchEvent(new MouseEvent('click'));
+            await page.updateComplete;
+            expect(shown()).toBe(1);
+        });
+
+        test('stay while a node is pinned and are placed on the edge when revealed', async () => {
+            const { page, root, shown } = await setup();
+            const pin = Array.from(root.querySelectorAll('.nodes .node'))
+                .find(element => (d3.select(element).datum() as D3Node).id === 'namespace:a')!
+                .querySelector('.edge-pin')!;
+            pin.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+            await page.updateComplete;
+            expect(shown()).toBe(1);
+            const label = Array.from(root.querySelectorAll('.edge-labels g')).find(l => l.getAttribute('display') !== 'none')!;
+            expect(label.getAttribute('transform')).toMatch(/^translate\(/);
+        });
+
+        test('stay visible when the pointer moves from an edge onto its label', async () => {
+            const { root, shown, path } = await setup();
+            const edge = path('namespace:c');
+            const label = Array.from(root.querySelectorAll('.edge-labels g'))
+                .find(l => (d3.select(l).datum() as { edgeKey: string }).edgeKey.startsWith('namespace:c'))!;
+            edge.dispatchEvent(new MouseEvent('mouseenter'));
+            edge.dispatchEvent(new MouseEvent('mouseleave', { relatedTarget: label }));
+            expect(shown()).toBe(1);
+            label.dispatchEvent(new MouseEvent('mouseleave'));
+            expect(shown()).toBe(0);
+        });
+
+        test.each(['.edges path'])('preserves hover when moving between %s and the label background', async selector => {
+            const { state, root, shown } = await setup();
+            const key = 'namespace:c|namespace:d';
+            const findEdge = (selector: string) => Array.from(root.querySelectorAll(selector))
+                .find(element => (d3.select(element).datum() as { edgeKey: string }).edgeKey === key)!;
+            const edge = findEdge(selector);
+            const label = findEdge('.edge-labels g');
+            const background = label.querySelector('rect')!;
+            const tooltip = root.querySelector<HTMLElement>('.map-tooltip')!;
+            const assertHovered = () => {
+                expect(state._hoveredEdgeKey).toBe(key);
+                expect(shown()).toBe(1);
+                expect(tooltip.style.opacity).toBe('1');
+            };
+            edge.dispatchEvent(new MouseEvent('mouseenter'));
+            // The browser reports the hit rect, not its parent group, as relatedTarget.
+            edge.dispatchEvent(new MouseEvent('mouseleave', { relatedTarget: background }));
+            assertHovered();
+            label.dispatchEvent(new MouseEvent('mouseenter', { relatedTarget: edge }));
+            label.dispatchEvent(new MouseEvent('mouseleave', { relatedTarget: edge }));
+            assertHovered();
+            edge.dispatchEvent(new MouseEvent('mouseenter', { relatedTarget: background }));
+            edge.dispatchEvent(new MouseEvent('mouseleave', { relatedTarget: root.querySelector('.nodes .node') }));
+            expect(state._hoveredEdgeKey).toBeNull();
+            expect(shown()).toBe(0);
+            expect(tooltip.style.opacity).toBe('0');
+        });
+
+        test.each(['path', 'label'])('clears hover when a hovered %s is replaced by busier traffic', async target => {
+            const original = makeFlow({ srcNs: 'a', dstNs: 'b' });
+            const peer = { srcNs: 'c', dstNs: 'd', srcIP: '10.0.1.1', dstIP: '10.0.1.2' };
+            const competing = makeFlow(peer);
+            const { page, state } = await aggregate([original, competing]);
+            state._edgeLimit = 1;
+            await page.updateComplete;
+            const simulation = state._simulation.stop().tick(300);
+            simulation.on('end')!.call(simulation);
+            await page.updateComplete;
+            const root = page.shadowRoot!;
+            const edge = root.querySelector('.edges path')!;
+            const label = root.querySelector('.edge-labels g')!;
+            const tooltip = root.querySelector<HTMLElement>('.map-tooltip')!;
+            edge.dispatchEvent(new MouseEvent('mouseenter'));
+            if (target !== 'path') {
+                const next = label;
+                edge.dispatchEvent(new MouseEvent('mouseleave', { relatedTarget: next }));
+                next.dispatchEvent(new MouseEvent('mouseenter'));
+            }
+            expect(state._hoveredEdgeKey).toBe('namespace:a|namespace:b');
+            expect(tooltip.style.opacity).toBe('1');
+
+            // The edge remains in the graph, but streaming counts replace it in the visible top
+            // edges. Removing its DOM elements does not send a mouseleave event.
+            const store = new FlowStore();
+            store.upsertBatch([original, competing,
+                makeFlow({ ...peer, dstPort: 81 }), makeFlow({ ...peer, dstPort: 82 })]);
+            state._entries = store.getAll();
+            await page.updateComplete;
+            expect(edge.isConnected).toBe(false);
+            expect(label.isConnected).toBe(false);
+            expect(state._graphRef.edges.some(e => e.source === 'namespace:a' && e.target === 'namespace:b')).toBe(true);
+            expect(state._hoveredEdgeKey).toBeNull();
+            expect(Array.from(root.querySelectorAll('.nodes .node, .edges path')).every(n => n.getAttribute('opacity') === '1')).toBe(true);
+            expect(tooltip.style.opacity).toBe('0');
+
+            // Bringing the old edge back must not revive its stale hover or port label.
+            state._edgeLimit = 0;
+            await page.updateComplete;
+            expect(root.querySelectorAll('.edges path')).toHaveLength(2);
+            expect(Array.from(root.querySelectorAll('.edge-labels g')).every(g => g.getAttribute('display') === 'none')).toBe(true);
         });
     });
 
