@@ -36,6 +36,8 @@
     {
       matchManagers: ["dockerfile"],
       matchPackageNames: ["nginx/nginx-unprivileged"],
+      // NGINX stable releases use even minor versions; odd minors are mainline.
+      allowedVersions: "/^1\\.\\d*[02468]\\./",
       enabled: true,
     },
 
