@@ -4227,7 +4227,7 @@ describe('AntreaFlowVisibilityPage — incremental service map', () => {
         restart.mockRestore();
     });
 
-    test.each(['.edges path', '.edge-labels g'])('%s supports edge hover and selection after data refresh', async selector => {
+    test.each(['.edges path', '.edge-hit-targets path', '.edge-labels g'])('%s supports edge hover and selection after data refresh', async selector => {
         const { page, state } = await mountMap();
         const other = makeFlow({ dstPod: 'other-xyz34', dstIP: '10.0.0.3' });
         await update(page, state, [makeFlow({ dstPort: 8080 }), other]);
@@ -4831,6 +4831,7 @@ describe('AntreaFlowVisibilityPage — namespace aggregation', () => {
             expect(preview).not.toBeNull();
             expect(preview.getAttribute('aria-hidden')).toBe('true');
             expect(preview.querySelector('[tabindex], [role], .node')).toBeNull();
+            expect(preview.querySelector('[pointer-events]:not([pointer-events="none"])')).toBeNull();
             const svg = root.querySelector<SVGSVGElement>('#graph-svg')!;
             const zoom = (page as unknown as { _mapZoom: d3.ZoomBehavior<SVGSVGElement, unknown> })._mapZoom;
             const transform = d3.zoomTransform(svg).translate(5, -3).scale(1.1);
@@ -5421,8 +5422,13 @@ describe('AntreaFlowVisibilityPage — namespace aggregation', () => {
             expect(shown()).toBe(0);
             path('namespace:c').dispatchEvent(new MouseEvent('mouseenter'));
             expect(shown()).toBe(1);
+            expect(path('namespace:c').getAttribute('opacity')).toBe('1');
+            expect(path('namespace:a').getAttribute('opacity')).toBe('0.1');
+            expect(Array.from(root.querySelectorAll('.nodes .node')).filter(n => n.getAttribute('opacity') === '1')
+                .map(n => (d3.select(n).datum() as D3Node).id).sort()).toEqual(['namespace:c', 'namespace:d']);
             path('namespace:c').dispatchEvent(new MouseEvent('mouseleave'));
             expect(shown()).toBe(0);
+            expect(Array.from(root.querySelectorAll('.nodes .node, .edges path')).every(n => n.getAttribute('opacity') === '1')).toBe(true);
             path('namespace:c').dispatchEvent(new MouseEvent('click'));
             await page.updateComplete;
             expect(shown()).toBe(1);
@@ -5440,20 +5446,20 @@ describe('AntreaFlowVisibilityPage — namespace aggregation', () => {
             expect(label.getAttribute('transform')).toMatch(/^translate\(/);
         });
 
-        test('stay visible when the pointer moves from an edge onto its label', async () => {
+        test.each(['.edge-labels g', '.edge-hit-targets path'])('stay visible when the pointer moves from an edge onto %s', async selector => {
             const { root, shown, path } = await setup();
             const edge = path('namespace:c');
-            const label = Array.from(root.querySelectorAll('.edge-labels g'))
+            const target = Array.from(root.querySelectorAll(selector))
                 .find(l => (d3.select(l).datum() as { edgeKey: string }).edgeKey.startsWith('namespace:c'))!;
             edge.dispatchEvent(new MouseEvent('mouseenter'));
-            edge.dispatchEvent(new MouseEvent('mouseleave', { relatedTarget: label }));
+            edge.dispatchEvent(new MouseEvent('mouseleave', { relatedTarget: target }));
             expect(shown()).toBe(1);
-            label.dispatchEvent(new MouseEvent('mouseleave'));
+            target.dispatchEvent(new MouseEvent('mouseleave'));
             expect(shown()).toBe(0);
         });
 
-        test.each(['.edges path'])('preserves hover when moving between %s and the label background', async selector => {
-            const { state, root, shown } = await setup();
+        test.each(['.edges path', '.edge-hit-targets path'])('preserves hover when moving between %s and the label background', async selector => {
+            const { state, root, shown, path } = await setup();
             const key = 'namespace:c|namespace:d';
             const findEdge = (selector: string) => Array.from(root.querySelectorAll(selector))
                 .find(element => (d3.select(element).datum() as { edgeKey: string }).edgeKey === key)!;
@@ -5465,6 +5471,8 @@ describe('AntreaFlowVisibilityPage — namespace aggregation', () => {
                 expect(state._hoveredEdgeKey).toBe(key);
                 expect(shown()).toBe(1);
                 expect(tooltip.style.opacity).toBe('1');
+                expect(path('namespace:c').getAttribute('opacity')).toBe('1');
+                expect(path('namespace:a').getAttribute('opacity')).toBe('0.1');
             };
             edge.dispatchEvent(new MouseEvent('mouseenter'));
             // The browser reports the hit rect, not its parent group, as relatedTarget.
@@ -5480,7 +5488,7 @@ describe('AntreaFlowVisibilityPage — namespace aggregation', () => {
             expect(tooltip.style.opacity).toBe('0');
         });
 
-        test.each(['path', 'label'])('clears hover when a hovered %s is replaced by busier traffic', async target => {
+        test.each(['path', 'label', 'hit target'])('clears hover and restores namespace backing when a hovered %s is replaced by busier traffic', async target => {
             const original = makeFlow({ srcNs: 'a', dstNs: 'b' });
             const peer = { srcNs: 'c', dstNs: 'd', srcIP: '10.0.1.1', dstIP: '10.0.1.2' };
             const competing = makeFlow(peer);
@@ -5493,14 +5501,17 @@ describe('AntreaFlowVisibilityPage — namespace aggregation', () => {
             const root = page.shadowRoot!;
             const edge = root.querySelector('.edges path')!;
             const label = root.querySelector('.edge-labels g')!;
+            const hitTarget = root.querySelector('.edge-hit-targets path')!;
+            const backings = () => Array.from(root.querySelectorAll('.namespace-backings rect'));
             const tooltip = root.querySelector<HTMLElement>('.map-tooltip')!;
             edge.dispatchEvent(new MouseEvent('mouseenter'));
             if (target !== 'path') {
-                const next = label;
+                const next = target === 'label' ? label : hitTarget;
                 edge.dispatchEvent(new MouseEvent('mouseleave', { relatedTarget: next }));
                 next.dispatchEvent(new MouseEvent('mouseenter'));
             }
             expect(state._hoveredEdgeKey).toBe('namespace:a|namespace:b');
+            expect(backings().filter(b => b.getAttribute('opacity') === '0')).toHaveLength(2);
             expect(tooltip.style.opacity).toBe('1');
 
             // The edge remains in the graph, but streaming counts replace it in the visible top
@@ -5512,8 +5523,10 @@ describe('AntreaFlowVisibilityPage — namespace aggregation', () => {
             await page.updateComplete;
             expect(edge.isConnected).toBe(false);
             expect(label.isConnected).toBe(false);
+            expect(hitTarget.isConnected).toBe(false);
             expect(state._graphRef.edges.some(e => e.source === 'namespace:a' && e.target === 'namespace:b')).toBe(true);
             expect(state._hoveredEdgeKey).toBeNull();
+            expect(backings().every(b => b.getAttribute('opacity') === '1')).toBe(true);
             expect(Array.from(root.querySelectorAll('.nodes .node, .edges path')).every(n => n.getAttribute('opacity') === '1')).toBe(true);
             expect(tooltip.style.opacity).toBe('0');
 
@@ -5522,6 +5535,7 @@ describe('AntreaFlowVisibilityPage — namespace aggregation', () => {
             await page.updateComplete;
             expect(root.querySelectorAll('.edges path')).toHaveLength(2);
             expect(Array.from(root.querySelectorAll('.edge-labels g')).every(g => g.getAttribute('display') === 'none')).toBe(true);
+            expect(backings().every(b => b.getAttribute('opacity') === '1')).toBe(true);
         });
     });
 

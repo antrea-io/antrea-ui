@@ -566,6 +566,7 @@ const EDGE_COLOR_VAR: Record<EdgeRole, string> = {
 };
 // Same rationale as EDGE_COLOR_VAR above: set via .style() so var() resolves.
 const MAP_COLOR_VAR = {
+    background: 'var(--antrea-color-bg-dark, #17242b)',
     nsHullFill: 'var(--antrea-color-map-ns-hull-fill, rgba(106,159,181,0.08))',
     nsHullStroke: 'var(--antrea-color-map-ns-hull-stroke, rgba(106,159,181,0.25))',
     nsLabel: 'var(--antrea-color-map-ns-label, rgba(106,159,181,0.5))',
@@ -638,9 +639,11 @@ const NAMESPACE_HEADER = 18;
 const NAMESPACE_GAP = 40;
 
 const EDGE_STROKE_WIDTH = 2;
+const EDGE_HIT_WIDTH = 8;
 /** The factor one click of the zoom in/out buttons scales the map by. */
 const MAP_ZOOM_STEP = 1.5;
 const NODE_RX = 8;
+const NAMESPACE_NODE_CLEARANCE = 2;
 const NODE_PADDING_X = 14;
 const NODE_PADDING_Y = 8;
 const EXTERNAL_SIZE = 20;
@@ -741,7 +744,12 @@ export function nodeBoundary(d: D3Node, tx: number, ty: number, gap: number): [n
     const dx = tx - cx; const dy = ty - cy;
     const len = Math.sqrt(dx * dx + dy * dy) || 1;
     const ux = dx / len; const uy = dy / len;
-    const { hw, hh } = nodeHalfSize(d);
+    let { hw, hh } = nodeHalfSize(d);
+    // Keep incident edges and their arrowheads outside the namespace's opaque backing.
+    if (d.kind === 'namespace' || d.kind === 'undisclosedNamespace') {
+        hw += NAMESPACE_NODE_CLEARANCE;
+        hh += NAMESPACE_NODE_CLEARANCE;
+    }
     let scale: number;
     if (isDiamond(d)) scale = hw / (Math.abs(ux) + Math.abs(uy));
     else if (Math.abs(ux) * hh > Math.abs(uy) * hw) scale = hw / Math.abs(ux);
@@ -1933,7 +1941,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
             || highlightedNodes.has(e.source) || highlightedNodes.has(e.target)
             || `${e.source}|${e.target}` === this._selectedEdgeKey);
         // Streaming counts can replace a hovered edge in the visible top edges. Removing its
-        // path/label does not send mouseleave, so clear the hover before updating labels.
+        // path/label does not send mouseleave, so clear the hover before applying node backing.
         if (this._hoveredEdgeKey && !shownEdges.some(e => `${e.source}|${e.target}` === this._hoveredEdgeKey)) {
             this._hoveredEdgeKey = null;
             this._hideTooltip();
@@ -2015,6 +2023,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
                 element.removeAttribute('id');
                 element.removeAttribute('tabindex');
                 element.removeAttribute('role');
+                element.removeAttribute('pointer-events');
             }
             snapshot.setAttribute('class', 'map-layout-snapshot');
             snapshot.setAttribute('aria-hidden', 'true');
@@ -2117,6 +2126,12 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         });
 
         // Edge paths
+        // A wider invisible stroke makes thin edges selectable, including when zoomed out.
+        // Draw it behind the visible paths so nearby targets cannot obscure the actual lines.
+        const edgeHitPaths = layer('edge-hit-targets').selectAll<SVGPathElement, D3Link>('path')
+            .data(d3Links, d => d.edgeKey).join('path')
+            .attr('fill', 'none').attr('stroke', 'transparent').attr('stroke-width', EDGE_HIT_WIDTH)
+            .attr('vector-effect', 'non-scaling-stroke').attr('pointer-events', 'visibleStroke');
         const linkPaths = layer('edges').selectAll<SVGPathElement, D3Link>('path')
             .data(d3Links, d => d.edgeKey).join('path')
             .attr('fill', 'none')
@@ -2127,11 +2142,15 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         const edgePathsByKey = new Map(linkPaths.nodes().map(path => [
             d3.select<SVGPathElement, D3Link>(path).datum().edgeKey, path,
         ]));
+        const edgeHitPathsByKey = new Map(edgeHitPaths.nodes().map(path => [
+            d3.select<SVGPathElement, D3Link>(path).datum().edgeKey, path,
+        ]));
         const edgeLabelByKey = new Map<string, SVGGElement>();
         const bindEdgeEvents = <E extends SVGElement, P>(selection: d3.Selection<E, D3Link, SVGGElement, P>) => selection
             .style('cursor', 'pointer')
             .on('mouseenter', (event, d) => {
                 this._hoveredEdgeKey = d.edgeKey;
+                this._applyMapHighlight?.(this._lastHighlighted, shownEdges);
                 this._updateEdgeLabels?.();
                 d3.select(edgePathsByKey.get(d.edgeKey)!)
                     .attr('stroke-opacity', 1)
@@ -2146,10 +2165,12 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
                 }
             })
             .on('mouseleave', (event: MouseEvent, d) => {
-                // Moving between an edge and its label is still hovering the edge.
+                // Moving between an edge, its wider target and its label keeps the same hover.
                 const to = event.relatedTarget;
-                if (to instanceof Node && (to === edgePathsByKey.get(d.edgeKey) || edgeLabelByKey.get(d.edgeKey)?.contains(to))) return;
+                if (to instanceof Node && (to === edgePathsByKey.get(d.edgeKey) || to === edgeHitPathsByKey.get(d.edgeKey)
+                    || edgeLabelByKey.get(d.edgeKey)?.contains(to))) return;
                 this._hoveredEdgeKey = null;
+                this._applyMapHighlight?.(this._lastHighlighted, shownEdges);
                 this._updateEdgeLabels?.();
                 d3.select(edgePathsByKey.get(d.edgeKey)!)
                     .attr('stroke-opacity', 0.6)
@@ -2161,6 +2182,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
                 if (edge) this._selectedEdgeKey = d.edgeKey;
             });
         bindEdgeEvents(linkPaths);
+        bindEdgeEvents(edgeHitPaths);
 
         // Edge labels
         const edgeLabelGroups = layer('edge-labels').selectAll<SVGGElement, D3Link>('g')
@@ -2171,6 +2193,19 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
             .attr('x', d => -textWidth(d.label, 9) / 2 - 3).attr('y', -6)
             .attr('width', d => textWidth(d.label, 9) + 6).attr('height', 12).attr('rx', 3).attr('ry', 3).style('fill', MAP_COLOR_VAR.edgeLabelBg).style('stroke', d => EDGE_COLOR_VAR[d.role]).attr('stroke-width', 0.5).attr('stroke-opacity', 0.5);
         edgeLabelGroups.selectAll('text').data(d => [d]).join('text').text(d => d.label).attr('text-anchor', 'middle').attr('dominant-baseline', 'central').style('fill', MAP_COLOR_VAR.edgeLabelText).attr('font-size', '9px').attr('pointer-events', 'none');
+
+        // Opaque backing hides passing edges through folded namespace bodies and leaves a
+        // narrow gap around their borders. Highlighting hides unrelated backings to reveal the
+        // full edge paths through those nodes. Expanded hulls stay translucent.
+        const namespaceBackings = layer('namespace-backings').attr('pointer-events', 'none')
+            .selectAll<SVGRectElement, D3Node>('rect')
+            .data(d3Nodes.filter(d => d.kind === 'namespace' || d.kind === 'undisclosedNamespace'), d => d.id)
+            .join('rect')
+            .attr('x', d => -nodeHalfSize(d).hw).attr('y', d => -nodeHalfSize(d).hh)
+            .attr('width', d => nodeHalfSize(d).hw * 2).attr('height', d => nodeHalfSize(d).hh * 2)
+            .attr('rx', NODE_RX).attr('ry', NODE_RX)
+            .style('fill', MAP_COLOR_VAR.background).style('stroke', MAP_COLOR_VAR.background)
+            .attr('stroke-width', NAMESPACE_NODE_CLEARANCE * 2);
 
         // Nodes
         const nodeGroup = layer('nodes').selectAll<SVGGElement, D3Node>('g.node')
@@ -2306,11 +2341,17 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
                     connected.add(e.source); connected.add(e.target);
                 }
             }
-            nodeGroup.attr('opacity', d => !highlighted.size || connected.has(d.id) ? 1 : 0.2);
-            linkPaths.attr('opacity', d => !highlighted.size || highlighted.has((d.source as D3Node).id)
-                || highlighted.has((d.target as D3Node).id) ? 1 : 0.1);
-            edgeLabelGroups.attr('opacity', d => !highlighted.size || highlighted.has((d.source as D3Node).id)
-                || highlighted.has((d.target as D3Node).id) ? 1 : 0.1);
+            const hoveredEdge = this._hoveredEdgeKey ? this._graphRef.edgeMap.get(this._hoveredEdgeKey) : undefined;
+            if (hoveredEdge) {
+                connected.add(hoveredEdge.source); connected.add(hoveredEdge.target);
+            }
+            const hasHighlight = highlighted.size > 0 || !!hoveredEdge;
+            nodeGroup.attr('opacity', d => !hasHighlight || connected.has(d.id) ? 1 : 0.2);
+            namespaceBackings.attr('opacity', d => !hasHighlight || connected.has(d.id) ? 1 : 0);
+            const edgeOpacity = (d: D3Link) => !hasHighlight || d.edgeKey === this._hoveredEdgeKey
+                || highlighted.has((d.source as D3Node).id) || highlighted.has((d.target as D3Node).id) ? 1 : 0.1;
+            linkPaths.attr('opacity', edgeOpacity);
+            edgeLabelGroups.attr('opacity', edgeOpacity);
         };
         this._applyMapHighlight = applyHighlight;
         applyHighlight(highlightedNodes, shownEdges);
@@ -2352,13 +2393,16 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         this._updateEdgeLabels = updateLabels;
         const draw = () => {
             const nodeIndex = new NodeIndex(d3Nodes);
-            linkPaths.attr('d', d => {
+            const edgePath = (d: D3Link) => {
                 const s = d.source as D3Node; const t = d.target as D3Node;
                 const [sx, sy] = nodeBoundary(s, t.x!, t.y!, 1);
                 const [tx, ty] = nodeBoundary(t, s.x!, s.y!, 3);
                 return curvedPath(sx, sy, tx, ty, d.curveOffset);
-            });
+            };
+            linkPaths.attr('d', edgePath);
+            edgeHitPaths.attr('d', edgePath);
             placeLabels(shownLabels(), nodeIndex);
+            namespaceBackings.attr('transform', d => `translate(${d.x},${d.y})`);
             nodeGroup.attr('transform', d => `translate(${d.x},${d.y})`);
             updateHulls();
         };
