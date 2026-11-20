@@ -6,7 +6,7 @@
   ],
 
   // Allow only certain package managers and implicitly disable all others
-  enabledManagers: ["gomod", "github-actions", "npm"],
+  enabledManagers: ["gomod", "github-actions", "npm", "dockerfile"],
 
   // Monitored branches
   baseBranches: ["main"],
@@ -27,6 +27,18 @@
   },
 
   packageRules: [
+    // Only manage the nginx runtime image among Dockerfile dependencies.
+    {
+      matchManagers: ["dockerfile"],
+      enabled: false,
+    },
+
+    {
+      matchManagers: ["dockerfile"],
+      matchPackageNames: ["nginx/nginx-unprivileged"],
+      enabled: true,
+    },
+
     {
       matchManagers: ["npm"],
       addLabels: ["javascript"],
