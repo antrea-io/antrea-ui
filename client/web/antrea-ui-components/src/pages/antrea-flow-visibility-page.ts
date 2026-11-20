@@ -17,7 +17,7 @@ import type { TemplateResult } from 'lit';
 import { state, query, property } from 'lit/decorators.js';
 import * as d3 from 'd3';
 import { busiestMapEdges } from '../lib/service-map-edges.js';
-import { reconcileMapNodes, clusterMapNodes, pinMapNodes, seedNamespaceTransition } from '../lib/service-map-layout.js';
+import { reconcileMapNodes, clusterMapNodes, pinMapNodes, seedNamespaceTransition, separateFromNamespaces, nodeBounds } from '../lib/service-map-layout.js';
 import { pageStyles, pickerStyles } from '../lib/styles.js';
 import {
     SCOPE_ALL, parseScopeParam, dispatchScopeChosen, writeScopeToURL,
@@ -631,6 +631,12 @@ function inNamespaceHull(d: { kind: NodeKind; namespace: string }): boolean {
 }
 interface D3Link extends d3.SimulationLinkDatum<D3Node> { edgeKey: string; role: EdgeRole; label: string; curveOffset: number; }
 
+// A namespace boundary extends this far past its members, and has a header above them.
+const NAMESPACE_PADDING = 24;
+const NAMESPACE_HEADER = 18;
+// The clear space left between a namespace that has just expanded and what is moved aside.
+const NAMESPACE_GAP = 40;
+
 const EDGE_STROKE_WIDTH = 2;
 /** The factor one click of the zoom in/out buttons scales the map by. */
 const MAP_ZOOM_STEP = 1.5;
@@ -1183,6 +1189,9 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
     // The part of the view key that does not depend on the hovered node, and the function that
     // restyles the drawn map for a different one.
     private _mapShapeKey = '';
+    // Namespaces that expanded since the last layout finished. Their boundaries are only as large
+    // as the settled layout makes them, so what they cover is moved aside once it has settled.
+    private _expandingNamespaces = new Set<string>();
     private _applyMapHighlight: ((highlighted: Set<string>, edges: WorkloadEdge[]) => void) | null = null;
 
     @query('#graph-svg') private _svgEl?: SVGSVGElement;
@@ -1977,6 +1986,11 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         const namespaceTransition = added.some(n =>
             (n.kind === 'workload' && previousGraph.nodeMap.has(`namespace:${n.namespace}`)) ||
             (n.kind === 'namespace' && previousWorkloadNamespaces.has(n.namespace)));
+        for (const node of added) {
+            if (node.kind === 'workload' && previousGraph.nodeMap.has(`namespace:${node.namespace}`)) {
+                this._expandingNamespaces.add(node.namespace);
+            }
+        }
         if (namespaceTransition && !this._mapLayoutSnapshot && this._mapContent?.ownerSVGElement === svg &&
             this._mapContent.getAttribute('visibility') !== 'hidden') {
             // Keep the last painted view while the replacement settles. This inert snapshot
@@ -1994,7 +2008,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
             svg.append(snapshot);
             this._mapLayoutSnapshot = snapshot;
         }
-        seedNamespaceTransition(previousNodes, d3Nodes, added);
+        seedNamespaceTransition(previousNodes, added);
         const nodeById = new Map(d3Nodes.map(n => [n.id, n]));
 
         const bidirectionalPairs = new Set<string>();
@@ -2053,6 +2067,9 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         if (newViewport) d3svg.call(zoom.transform, transform);
 
         // Namespace boundaries
+        const namespaceLabel = (namespace: string) => this._clusterWide ? `${namespace} ⊖ collapse` : namespace;
+        const namespaceMinWidth = (namespace: string) => textWidth(namespaceLabel(namespace), 10) + 24;
+        const namespacePadding = { side: NAMESPACE_PADDING, top: NAMESPACE_PADDING + NAMESPACE_HEADER, bottom: NAMESPACE_PADDING };
         const nsMap = new Map<string, D3Node[]>();
         for (const n of d3Nodes) {
             if (!inNamespaceHull(n)) continue;
@@ -2070,7 +2087,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
             .style('fill', MAP_COLOR_VAR.nsHullFill).style('stroke', MAP_COLOR_VAR.nsHullStroke)
             .attr('stroke-width', 1).attr('stroke-dasharray', '4,2');
         hullGroups.selectAll('text').data(d => [d]).join('text')
-            .text(d => this._clusterWide ? `${d[0]} ⊖ collapse` : d[0])
+            .text(d => namespaceLabel(d[0]))
             .style('cursor', () => this._clusterWide ? 'pointer' : null)
             .attr('role', this._clusterWide ? 'button' : null).attr('tabindex', this._clusterWide ? 0 : null)
             .on('click', (_event, d) => { if (this._clusterWide) this._toggleNamespace(d[0]); })
@@ -2082,7 +2099,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
             .style('fill', MAP_COLOR_VAR.nsLabel).attr('font-size', '10px').attr('font-weight', '600');
         const nsGroups = hullGroups.nodes().map(element => {
             const group = d3.select<SVGGElement, [string, D3Node[]]>(element);
-            return { nodes: group.datum()[1], boundary: group.select('rect'), label: group.select('text') };
+            return { namespace: group.datum()[0], nodes: group.datum()[1], boundary: group.select('rect'), label: group.select('text') };
         });
 
         // Edge paths
@@ -2275,22 +2292,11 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         this._applyMapHighlight = applyHighlight;
         applyHighlight(highlightedNodes, shownEdges);
 
-        const NAMESPACE_PADDING = 24;
         function updateHulls() {
-            for (const { nodes, boundary, label } of nsGroups) {
-                let left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity;
-                for (const n of nodes) {
-                    const { hw, hh } = nodeHalfSize(n);
-                    left = Math.min(left, n.x! - hw);
-                    top = Math.min(top, n.y! - hh);
-                    right = Math.max(right, n.x! + hw);
-                    bottom = Math.max(bottom, n.y! + hh);
-                }
-                left -= NAMESPACE_PADDING;
-                top -= NAMESPACE_PADDING + 18; // Reserve a header above the workloads.
+            for (const { namespace, nodes, boundary, label } of nsGroups) {
+                const { left, top, right, bottom } = nodeBounds(nodes, nodeHalfSize, namespacePadding, namespaceMinWidth(namespace));
                 boundary.attr('x', left).attr('y', top)
-                    .attr('width', Math.max(right + NAMESPACE_PADDING - left, textWidth(label.text(), 10) + 24))
-                    .attr('height', bottom + NAMESPACE_PADDING - top);
+                    .attr('width', right - left).attr('height', bottom - top);
                 label.attr('x', left + 12).attr('y', top + 18);
             }
         }
@@ -2313,6 +2319,13 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         };
         this._drawServiceMap = draw;
         const finishLayout = () => {
+            if (this._expandingNamespaces.size) {
+                separateFromNamespaces<D3Node>(d3Nodes, this._expandingNamespaces, {
+                    inBoundary: inNamespaceHull, halfSize: nodeHalfSize, gap: NAMESPACE_GAP,
+                    padding: namespacePadding, minBoundaryWidth: namespaceMinWidth,
+                });
+                this._expandingNamespaces.clear();
+            }
             this._mapLayoutPending = false;
             this._mapLayoutFull = false;
             this._mapLayoutStatic = false;

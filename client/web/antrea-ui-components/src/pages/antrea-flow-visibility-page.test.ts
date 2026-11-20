@@ -4759,6 +4759,44 @@ describe('AntreaFlowVisibilityPage — namespace aggregation', () => {
         expect(legend.querySelector('rect')!.getAttribute('stroke-dasharray')).toBe(boundary.getAttribute('stroke-dasharray'));
     });
 
+    test.each(['new', 'existing'])('separation includes the %s namespace boundary widened by its title', async mode => {
+        const namespace = 'a'.repeat(63);
+        const { page, state } = await aggregate([
+            makeFlow({ srcNs: namespace, dstNs: 'b', srcPod: 'api-abc12', dstPod: 'web-abc12' }),
+        ]);
+        const simulation = state._simulation.stop().tick(300);
+        simulation.on('end')!.call(simulation);
+        state._toggleNamespace(namespace);
+        await page.updateComplete;
+        if (mode === 'existing') {
+            simulation.stop().tick(300);
+            simulation.on('end')!.call(simulation);
+            state._toggleNamespace('b');
+            await page.updateComplete;
+        }
+        simulation.stop();
+        const nodes = simulation.nodes() as D3Node[];
+        const member = nodes.find(n => n.namespace === namespace)!;
+        const peer = nodes.find(n => n.namespace === 'b')!;
+        member.x = 0; member.y = 0;
+        peer.x = 250; peer.y = 0;
+        const anchor = mode === 'new' ? member : peer;
+        const anchorPosition = [anchor.x, anchor.y];
+        simulation.on('end')!.call(simulation);
+
+        const root = page.shadowRoot!;
+        const hull = Array.from(root.querySelectorAll<SVGGElement>('.ns-hulls g.namespace'))
+            .find(element => (d3.select(element).datum() as [string, D3Node[]])[0] === namespace)!
+            .querySelector('rect')!;
+        const [x, y, width, height] = ['x', 'y', 'width', 'height'].map(name => Number(hull.getAttribute(name)));
+        const peerBox = Array.from(root.querySelectorAll<SVGGElement>('.nodes .node'))
+            .find(element => d3.select(element).datum() === peer)!.querySelector('rect')!;
+        const pw = Number(peerBox.getAttribute('width')), ph = Number(peerBox.getAttribute('height'));
+        expect(peer.x! + pw / 2 <= x || peer.x! - pw / 2 >= x + width ||
+            peer.y! + ph / 2 <= y || peer.y! - ph / 2 >= y + height).toBe(true);
+        expect([anchor.x, anchor.y]).toEqual(anchorPosition);
+    });
+
     test('expansion, collapse and collapse-all keep the old view until settled positions are ready', async () => {
         const { page, state } = await aggregate([
             makeFlow({ srcNs: 'a', dstNs: 'b' }),
@@ -4816,6 +4854,38 @@ describe('AntreaFlowVisibilityPage — namespace aggregation', () => {
         await page.updateComplete;
         expect(state._expandedNamespaces.size).toBe(0);
         await assertSettled();
+    });
+
+    test('expanding beside another expanded namespace preserves its workload offsets', async () => {
+        const { page, state } = await aggregate([
+            makeFlow({ srcNs: 'a', dstNs: 'c' }),
+            makeFlow({ srcNs: 'a', dstNs: 'c', srcPod: 'second-abc12', srcIP: '10.0.0.3' }),
+            makeFlow({ srcNs: 'b', dstNs: 'c', srcIP: '10.0.0.4' }),
+            makeFlow({ srcNs: 'b', dstNs: 'c', srcPod: 'second-abc12', srcIP: '10.0.0.5' }),
+        ]);
+        const simulation = state._simulation.stop().tick(300);
+        simulation.on('end')!.call(simulation);
+        state._toggleNamespace('b');
+        await page.updateComplete;
+        simulation.stop().tick(300);
+        simulation.on('end')!.call(simulation);
+
+        const other = (simulation.nodes() as D3Node[]).filter(n => n.namespace === 'b');
+        expect(other).toHaveLength(2);
+        other.forEach((n, i) => { n.x = 130 + i * 100; n.y = 0; });
+        const parent = simulation.nodes().find(n => n.id === 'namespace:a')!;
+        parent.x = 0; parent.y = 0;
+        const far = simulation.nodes().find(n => n.id === 'namespace:c')!;
+        far.x = 2000; far.y = 2000;
+        const offsets = () => other.map(n => [n.x! - other[0].x!, n.y! - other[0].y!]);
+        const before = offsets();
+
+        state._toggleNamespace('a');
+        await page.updateComplete;
+        simulation.stop().tick(300);
+        simulation.on('end')!.call(simulation);
+        expect(offsets()).toEqual(before);
+        expect(other.every(n => n.fx == null && n.fy == null)).toBe(true);
     });
 
     test.each(['workload', 'namespace'])('a new %s during expansion lets unfinished workloads keep settling', async kind => {
@@ -4876,7 +4946,16 @@ describe('AntreaFlowVisibilityPage — namespace aggregation', () => {
         await page.updateComplete;
         expect(children.map(n => [n.x, n.y])).not.toEqual(originalPositions);
         expect(overlaps()).toBe(0);
-        expect([peer.x, peer.y]).toEqual(peerPosition);
+        // The expanded namespace's boundary has grown over where the peer was, so the peer has
+        // moved clear of it, without being left where it started.
+        const boundary = root.querySelector('.ns-hulls g.namespace rect')!;
+        const [bx, by, bw, bh] = ['x', 'y', 'width', 'height'].map(name => Number(boundary.getAttribute(name)));
+        const peerBox = root.querySelectorAll<SVGGElement>('.nodes .node');
+        const peerRect = Array.from(peerBox).find(element => d3.select(element).datum() === peer)!.querySelector('rect')!;
+        const [pw, ph] = [Number(peerRect.getAttribute('width')), Number(peerRect.getAttribute('height'))];
+        const clear = peer.x! + pw / 2 <= bx || peer.x! - pw / 2 >= bx + bw ||
+            peer.y! + ph / 2 <= by || peer.y! - ph / 2 >= by + bh;
+        expect(clear).toBe(true);
         expect([pinned.x, pinned.y, pinned.fx, pinned.fy]).toEqual([1500, 1000, 1500, 1000]);
         expect(simulation.nodes().filter(n => n !== pinned).every(n => n.fx == null && n.fy == null)).toBe(true);
         expect(d3.zoomTransform(root.querySelector<SVGSVGElement>('#graph-svg')!)).toEqual(zoom);
