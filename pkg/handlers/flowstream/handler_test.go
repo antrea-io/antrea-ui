@@ -33,6 +33,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	apisv1 "antrea.io/antrea-ui/apis/v1"
+	"antrea.io/antrea-ui/pkg/flowpb"
 )
 
 func init() {
@@ -84,6 +85,15 @@ func TestParseFlowStreamFilter(t *testing.T) {
 			name:        "invalid flowType returns error",
 			query:       "flowTypes=unknown-type",
 			expectError: true,
+		},
+		{
+			name:  "network policy outcomes parsed from string names",
+			query: "networkPolicyOutcomes=Allowed,%20DENIED&networkPolicyOutcomes=unprotected",
+			expected: &FlowStreamFilter{NetworkPolicyOutcomes: []flowpb.NetworkPolicyOutcome{
+				flowpb.NetworkPolicyOutcome_NETWORK_POLICY_OUTCOME_ALLOWED,
+				flowpb.NetworkPolicyOutcome_NETWORK_POLICY_OUTCOME_DENIED,
+				flowpb.NetworkPolicyOutcome_NETWORK_POLICY_OUTCOME_UNPROTECTED,
+			}},
 		},
 	}
 
@@ -447,6 +457,7 @@ func TestStreamFlowsInvalidRequest(t *testing.T) {
 		message string
 	}{
 		{name: "invalid flow type", query: "flowTypes=abc&clusterWide=true", message: "flowType"},
+		{name: "invalid network policy outcome", query: "networkPolicyOutcomes=allowed,drop&clusterWide=true", message: "networkPolicyOutcomes"},
 		{name: "maxCount out of range", query: "follow=false&maxCount=1000001&clusterWide=true", message: "maxCount must be between"},
 		{name: "maxCount on a live stream", query: "follow=true&maxCount=1&clusterWide=true", message: "maxCount requires follow=false"},
 		{name: "invalid since", query: "follow=false&since=yesterday&clusterWide=true", message: "since must be an RFC3339 timestamp"},

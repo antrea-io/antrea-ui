@@ -30,6 +30,7 @@ import (
 
 	apisv1 "antrea.io/antrea-ui/apis/v1"
 	"antrea.io/antrea-ui/pkg/auth/session"
+	"antrea.io/antrea-ui/pkg/flowpb"
 )
 
 // FlowFilterDirection controls which endpoint of a flow the directional filters are matched against.
@@ -58,16 +59,17 @@ type FlowStreamFilter struct {
 	// the capability the request needs.
 	Source string
 	// Follow is nil for clients predating finite queries, which means a live stream.
-	Follow           *bool
-	Since            time.Time
-	MaxCount         uint32
-	Namespaces       []string
-	PodNames         []string
-	PodLabelSelector string
-	ServiceNames     []string
-	FlowTypes        []apisv1.FlowType
-	IPs              []string
-	Direction        FlowFilterDirection
+	Follow                *bool
+	Since                 time.Time
+	MaxCount              uint32
+	Namespaces            []string
+	PodNames              []string
+	PodLabelSelector      string
+	ServiceNames          []string
+	FlowTypes             []apisv1.FlowType
+	NetworkPolicyOutcomes []flowpb.NetworkPolicyOutcome
+	IPs                   []string
+	Direction             FlowFilterDirection
 }
 
 func (f *FlowStreamFilter) following() bool { return f.Follow == nil || *f.Follow }
@@ -238,6 +240,12 @@ var flowTypeByName = map[string]apisv1.FlowType{
 	"from-external": apisv1.FlowTypeFromExternal,
 }
 
+var networkPolicyOutcomeByName = map[string]flowpb.NetworkPolicyOutcome{
+	"allowed":     flowpb.NetworkPolicyOutcome_NETWORK_POLICY_OUTCOME_ALLOWED,
+	"denied":      flowpb.NetworkPolicyOutcome_NETWORK_POLICY_OUTCOME_DENIED,
+	"unprotected": flowpb.NetworkPolicyOutcome_NETWORK_POLICY_OUTCOME_UNPROTECTED,
+}
+
 func parseFlowType(s string) (apisv1.FlowType, error) {
 	if v, ok := flowTypeByName[strings.ToLower(s)]; ok {
 		return v, nil
@@ -302,6 +310,15 @@ func parseFlowStreamFilter(c *gin.Context) (*FlowStreamFilter, error) {
 				return nil, err
 			}
 			filter.FlowTypes = append(filter.FlowTypes, v)
+		}
+	}
+	for _, values := range c.QueryArray("networkPolicyOutcomes") {
+		for _, name := range splitTrimmed(values) {
+			outcome, ok := networkPolicyOutcomeByName[strings.ToLower(name)]
+			if !ok {
+				return nil, fmt.Errorf("invalid networkPolicyOutcomes value %q: expected allowed, denied, or unprotected", name)
+			}
+			filter.NetworkPolicyOutcomes = append(filter.NetworkPolicyOutcomes, outcome)
 		}
 	}
 	if ips := c.Query("ips"); ips != "" {

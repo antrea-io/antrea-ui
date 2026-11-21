@@ -407,6 +407,69 @@ func TestSubscribeForwardsFlowsAfterStreamEpoch(t *testing.T) {
 	})
 }
 
+// An older source accepts the request but ignores network_policy_outcomes, including
+// when counting records toward max_count. Exercise both the initial and subsequent response.
+func TestSubscribeFiltersLegacyPolicyOutcomes(t *testing.T) {
+	const denied = flowpb.NetworkPolicyOutcome_NETWORK_POLICY_OUTCOME_DENIED
+	for _, tc := range []struct {
+		name      string
+		follow    bool
+		limit     uint32
+		wantError bool
+	}{
+		{name: "live", follow: true},
+		{name: "finite source exhausted", limit: 3},
+		{name: "finite source hit the lookahead limit", limit: 2, wantError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &fakeFlowStreamServer{handle: func(int, string) error { return nil }}
+			fake.send = func(stream grpc.ServerStreamingServer[flowpb.GetFlowsResponse]) error {
+				if err := stream.Send(&flowpb.GetFlowsResponse{
+					ResumeToken: firstResponse.ResumeToken, DroppedCount: 1,
+					Flows: []*flowpb.Flow{{Id: "no-rule"}},
+				}); err != nil {
+					return err
+				}
+				return stream.Send(&flowpb.GetFlowsResponse{Flows: []*flowpb.Flow{
+					{Id: "allow", K8S: &flowpb.Kubernetes{IngressNetworkPolicyRuleAction: flowpb.NetworkPolicyRuleAction_NETWORK_POLICY_RULE_ACTION_ALLOW}},
+					{Id: "deny", K8S: &flowpb.Kubernetes{
+						IngressNetworkPolicyRuleAction: flowpb.NetworkPolicyRuleAction_NETWORK_POLICY_RULE_ACTION_ALLOW,
+						EgressNetworkPolicyRuleAction:  flowpb.NetworkPolicyRuleAction_NETWORK_POLICY_RULE_ACTION_REJECT,
+					}},
+				}})
+			}
+			h := newTestSubscriber(t, fake)
+			ctx, _ := ctxWithSessionAuth(t, newTestStore(t), &session.Spec{
+				Mode: session.ModeToken, Credential: session.Credential{Kind: session.KindBearer, Token: []byte("tok")},
+			})
+			flows, errs, _ := h.Subscribe(ctx, &FlowStreamScope{ObservedNamespace: "test"}, &FlowStreamFilter{
+				Follow: &tc.follow, MaxCount: tc.limit, NetworkPolicyOutcomes: []flowpb.NetworkPolicyOutcome{denied},
+			})
+			var ids []string
+			var dropped uint64
+			for event := range flows {
+				dropped = max(dropped, event.DroppedCount)
+				for _, f := range event.Flows {
+					ids = append(ids, f.ID)
+				}
+			}
+			assert.EqualValues(t, 1, dropped)
+			assert.NotContains(t, ids, "no-rule")
+			assert.NotContains(t, ids, "allow")
+			err := <-errs
+			if tc.wantError {
+				var streamErr *StreamError
+				require.ErrorAs(t, err, &streamErr)
+				assert.Equal(t, StreamErrorCodeSourceUnsupported, streamErr.Code)
+				assert.False(t, streamErr.Retryable)
+			} else {
+				require.NoError(t, err)
+				assert.Equal(t, []string{"deny"}, ids)
+			}
+		})
+	}
+}
+
 // A Flow Aggregator that predates per-user flow authorization ignores the stream's scope and
 // cannot produce a stream epoch, so a first response without one must be read as "too old" and
 // the stream refused rather than passed on: forwarding it would show the caller cluster-wide,

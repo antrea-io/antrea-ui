@@ -1,6 +1,6 @@
 # pkg/flowpb
 
-These files are **copied by hand** from the upstream Antrea repository, not
+The three generated Go files are **copied by hand** from the upstream Antrea repository, not
 generated here. There is no `.proto` source in this repository and no
 generation target in `Makefile` or `hack/`.
 
@@ -27,7 +27,7 @@ for f in flow.pb.go service.pb.go service_grpc.pb.go; do
 done
 ```
 
-The current copies are from antrea-io/antrea@eb44118 (antrea-io/antrea#8564).
+The current copies are from antrea-io/antrea@6022589 (antrea-io/antrea#8623).
 They carry antrea-io/antrea#8276, which added `GetFlowsRequest.cluster_wide`,
 `GetFlowsRequest.namespaces`, `FlowKubernetes.source_disclosure`,
 `FlowKubernetes.destination_disclosure` and the `EndpointDisclosure` enum,
@@ -44,6 +44,8 @@ antrea-io/antrea#8569 changed when a stream that does not follow closes, and so 
 `GetFlowsRequest.follow` comment. antrea-io/antrea#8564 added
 `FlowKubernetes.destination_service_disclosure`: the destination Service is disclosed at the tier
 of its own Namespace, and `destination_disclosure` no longer covers it.
+antrea-io/antrea#8623 added `FlowFilter.network_policy_outcomes` to select
+flows by the combined outcome of their recorded ingress and egress rules.
 
 ## Flow source contract
 

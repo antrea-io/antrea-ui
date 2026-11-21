@@ -1856,6 +1856,40 @@ describe('AntreaFlowVisibilityPage — filters, sort, text filter, pause/resume,
         expect(streamCalls(fetchMock)[1][0]).toContain('namespaces=default');
     });
 
+    test('policy outcomes are applied together and Reset includes every outcome again', async () => {
+        const { page, fetchMock } = await mountWithTwoFlows();
+        const boxes = Array.from(page.shadowRoot!.querySelectorAll<HTMLInputElement>('.outcome-group input'));
+        expect(boxes.map(box => box.value)).toEqual(['allowed', 'denied', 'unprotected']);
+        expect(boxes.every(box => !box.checked)).toBe(true);
+        const [apply, reset] = page.shadowRoot!.querySelectorAll<HTMLElement>('.filter-actions antrea-button');
+
+        boxes[0].click();
+        boxes[2].click();
+        await page.updateComplete;
+        expect(streamCalls(fetchMock)).toHaveLength(1);
+        apply.click();
+        await vi.advanceTimersByTimeAsync(0);
+        const requests = () => streamCalls(fetchMock).map(([url]) =>
+            new URL(String(url), 'http://test').searchParams.get('networkPolicyOutcomes'));
+        expect(requests()).toEqual([null, 'allowed,unprotected']);
+
+        boxes[0].click();
+        boxes[0].click();
+        apply.click();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(requests()).toHaveLength(2);
+
+        boxes[1].click();
+        apply.click();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(requests()).toEqual([null, 'allowed,unprotected', null]);
+
+        reset.click();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(requests()).toEqual([null, 'allowed,unprotected', null]);
+        expect(boxes.every(box => !box.checked)).toBe(true);
+    });
+
     test('resetting filters restarts the stream with no filter', async () => {
         const { page, fetchMock } = await mountWithTwoFlows();
 
@@ -3914,6 +3948,7 @@ describe('flow query state event', () => {
         ]));
         await setQuery(page, { follow: false });
         expect(seen.at(-1)).toMatchObject({ state: 'complete', truncated: false, evicted: false, droppedCount: 5 });
+        expect(page.shadowRoot!.querySelector('.status-row .warn')?.textContent).toBe('5 flow records dropped by the source');
     });
 
     test('reports and warns when the store evicted connections during a finite query', async () => {

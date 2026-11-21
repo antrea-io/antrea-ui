@@ -17,6 +17,7 @@ package fakefa
 import (
 	"context"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -25,6 +26,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	flowpb "antrea.io/antrea-ui/pkg/flowpb"
@@ -221,6 +223,83 @@ func TestMatcher(t *testing.T) {
 	}
 }
 
+func TestMatcherNetworkPolicyOutcomes(t *testing.T) {
+	const (
+		none        = flowpb.NetworkPolicyRuleAction_NETWORK_POLICY_RULE_ACTION_NO_ACTION
+		allow       = flowpb.NetworkPolicyRuleAction_NETWORK_POLICY_RULE_ACTION_ALLOW
+		drop        = flowpb.NetworkPolicyRuleAction_NETWORK_POLICY_RULE_ACTION_DROP
+		reject      = flowpb.NetworkPolicyRuleAction_NETWORK_POLICY_RULE_ACTION_REJECT
+		allowed     = flowpb.NetworkPolicyOutcome_NETWORK_POLICY_OUTCOME_ALLOWED
+		denied      = flowpb.NetworkPolicyOutcome_NETWORK_POLICY_OUTCOME_DENIED
+		unprotected = flowpb.NetworkPolicyOutcome_NETWORK_POLICY_OUTCOME_UNPROTECTED
+	)
+	for _, tc := range []struct {
+		name            string
+		ingress, egress flowpb.NetworkPolicyRuleAction
+		outcomes        []flowpb.NetworkPolicyOutcome
+		want            bool
+	}{
+		{"no recorded rule", none, none, []flowpb.NetworkPolicyOutcome{allowed, unprotected}, true},
+		{"egress allow", none, allow, []flowpb.NetworkPolicyOutcome{allowed, unprotected}, true},
+		{"ingress drop overrides egress allow", drop, allow, []flowpb.NetworkPolicyOutcome{allowed, unprotected}, false},
+		{"egress reject overrides ingress allow", allow, reject, []flowpb.NetworkPolicyOutcome{denied}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m, err := newMatcher(&flowpb.GetFlowsRequest{ClusterWide: true, Filters: []*flowpb.FlowFilter{{
+				NetworkPolicyOutcomes: tc.outcomes, Direction: flowpb.FlowFilterDirection_FLOW_FILTER_DIRECTION_FROM,
+			}}})
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, m.match(&flowpb.Flow{K8S: &flowpb.Kubernetes{
+				IngressNetworkPolicyRuleAction: tc.ingress, EgressNetworkPolicyRuleAction: tc.egress,
+			}}))
+		})
+	}
+	for _, invalid := range []flowpb.NetworkPolicyOutcome{flowpb.NetworkPolicyOutcome_NETWORK_POLICY_OUTCOME_UNSPECIFIED, 99} {
+		_, err := newMatcher(&flowpb.GetFlowsRequest{Filters: []*flowpb.FlowFilter{{NetworkPolicyOutcomes: []flowpb.NetworkPolicyOutcome{invalid}}}})
+		assert.Error(t, err)
+	}
+}
+
+func TestDeniedFlowDestinationScope(t *testing.T) {
+	const (
+		none   = flowpb.NetworkPolicyRuleAction_NETWORK_POLICY_RULE_ACTION_NO_ACTION
+		drop   = flowpb.NetworkPolicyRuleAction_NETWORK_POLICY_RULE_ACTION_DROP
+		reject = flowpb.NetworkPolicyRuleAction_NETWORK_POLICY_RULE_ACTION_REJECT
+		k8s    = flowpb.NetworkPolicyType_NETWORK_POLICY_TYPE_K8S
+		anp    = flowpb.NetworkPolicyType_NETWORK_POLICY_TYPE_ANP
+		acnp   = flowpb.NetworkPolicyType_NETWORK_POLICY_TYPE_ACNP
+	)
+	for _, tc := range []struct {
+		name            string
+		ingress, egress flowpb.NetworkPolicyRuleAction
+		policyType      flowpb.NetworkPolicyType
+		policyNamespace string
+		wantDst         bool
+	}{
+		{"egress only", none, drop, 0, "", false},
+		{"ingress and egress denied", drop, reject, anp, "dst", false},
+		{"implicit Kubernetes ingress isolation", drop, none, k8s, "", true},
+		{"destination policy", reject, none, anp, "dst", true},
+		{"other namespace policy", reject, none, anp, "other", false},
+		{"cluster policy", drop, none, acnp, "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			record := &flowpb.Flow{K8S: &flowpb.Kubernetes{
+				SourcePodNamespace: "src", DestinationPodNamespace: "dst",
+				IngressNetworkPolicyRuleAction: tc.ingress, EgressNetworkPolicyRuleAction: tc.egress,
+				IngressNetworkPolicyType: tc.policyType, IngressNetworkPolicyNamespace: tc.policyNamespace,
+			}}
+			for scope, want := range map[string]bool{"src": true, "dst": tc.wantDst} {
+				m, err := newMatcher(&flowpb.GetFlowsRequest{Namespaces: []string{scope}, Filters: []*flowpb.FlowFilter{{
+					NetworkPolicyOutcomes: []flowpb.NetworkPolicyOutcome{flowpb.NetworkPolicyOutcome_NETWORK_POLICY_OUTCOME_DENIED},
+				}}})
+				require.NoError(t, err)
+				assert.Equal(t, want, m.match(record), "scope %s", scope)
+			}
+		})
+	}
+}
+
 func TestMatcherRejectsFromWithServiceNames(t *testing.T) {
 	_, err := newMatcher(&flowpb.GetFlowsRequest{ClusterWide: true, Filters: []*flowpb.FlowFilter{{
 		ServiceNames: []string{"db"}, Direction: flowpb.FlowFilterDirection_FLOW_FILTER_DIRECTION_FROM,
@@ -382,6 +461,45 @@ func TestGetFlowsMaxCount(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Equal(t, ids(8, 14), got.ids, "resuming from it misses nothing")
+}
+
+func TestGetFlowsResponseSizeAndResume(t *testing.T) {
+	srv := newTestServer(t)
+	// Use large record payloads to force a byte split before the batch's record limit.
+	record := func(id string, size int) *flowpb.Flow {
+		return &flowpb.Flow{Id: id, K8S: &flowpb.Kubernetes{SourcePodLabels: &flowpb.Labels{
+			Labels: map[string]string{"payload": strings.Repeat("x", size)},
+		}}}
+	}
+	srv.gen.ring.append([]*flowpb.Flow{
+		record("oversized", 4<<20), record("large-a", 2<<20), record("large-b", 2<<20), record("tail", 1),
+	})
+	req := &flowpb.GetFlowsRequest{ClusterWide: true, MaxCount: 2,
+		Resume: &flowpb.ResumeToken{StreamEpoch: srv.epoch, SequenceNumber: testRecords - 1}}
+	stream := &recordingStream{}
+	require.NoError(t, srv.GetFlows(req, stream))
+	require.Len(t, stream.responses, 3)
+	for i, r := range stream.responses[1:] {
+		assert.LessOrEqual(t, proto.Size(r), 4<<20)
+		require.Len(t, r.Flows, 1)
+		assert.Equal(t, []string{"large-a", "large-b"}[i], r.Flows[0].Id)
+		assert.EqualValues(t, 1, r.DroppedCount)
+		assert.EqualValues(t, testRecords+i+1, r.ResumeToken.SequenceNumber)
+	}
+	req.Resume = stream.responses[1].ResumeToken
+	got, err := getFlows(t, srv, req)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"large-b", "tail"}, got.ids)
+	assert.Zero(t, got.dropped)
+
+	// Report the drop and advance the token even when it is the only record.
+	req.Resume.SequenceNumber = testRecords + 3
+	srv.gen.ring.append([]*flowpb.Flow{record("last-oversized", 4<<20)})
+	got, err = getFlows(t, srv, req)
+	require.NoError(t, err)
+	assert.Empty(t, got.ids)
+	assert.EqualValues(t, 1, got.dropped)
+	assert.EqualValues(t, testRecords+4, got.last)
 }
 
 func TestGetFlowsAdvancesResumeTokenPastFilteredRecords(t *testing.T) {
