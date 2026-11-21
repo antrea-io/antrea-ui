@@ -27,6 +27,7 @@
 // npm dependency — a registry living in a normally-imported package would not be the same
 // object your plugin and the host both see.
 //
+// EdgeSelection includes optional sourceKind/targetKind for namespace aggregates.
 // EdgeSelection/FlowEntry-derived and access types are re-exported from @antrea/ui-components
 // (a peer dependency, types-only — nothing from it ends up in your plugin's bundle) so you don't
 // hand-roll the shape the host expects.
