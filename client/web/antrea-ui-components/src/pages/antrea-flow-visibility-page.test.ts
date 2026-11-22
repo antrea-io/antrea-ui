@@ -1737,7 +1737,7 @@ describe('AntreaFlowVisibilityPage — service map zoom controls', () => {
         expect(scaleOf(content(page))).toBeCloseTo(1);
     });
 
-    test('resetting a selection twice preserves node positions and the fitted viewport', async () => {
+    test('resetting a selection twice preserves node positions and the current pan and zoom', async () => {
         const page = await mountMap([makeFlow()]);
         const root = page.shadowRoot!;
         const coordinates = () => Array.from(root.querySelectorAll('.nodes .node'), el => el.getAttribute('transform'));
@@ -1745,7 +1745,9 @@ describe('AntreaFlowVisibilityPage — service map zoom controls', () => {
         const svg = root.querySelector<SVGSVGElement>('#graph-svg')!;
         const simulation = (page as unknown as { _simulation: d3.Simulation<D3Node, undefined> })._simulation;
         const restart = vi.spyOn(simulation, 'restart');
-        Object.defineProperty(content(page), 'getBBox', { value: () => ({ x: 0, y: 0, width: 2000, height: 2000 }) });
+        const viewport = d3.zoomIdentity.translate(-185, 72).scale(1.8);
+        const zoom = (page as unknown as { _mapZoom: d3.ZoomBehavior<SVGSVGElement, unknown> })._mapZoom;
+        d3.select(svg).call(zoom.transform, viewport);
         root.querySelector('.edges path')!.dispatchEvent(new MouseEvent('click'));
         await page.updateComplete;
         expect(root.querySelector('.edge-details')).not.toBeNull();
@@ -1753,7 +1755,7 @@ describe('AntreaFlowVisibilityPage — service map zoom controls', () => {
         await page.updateComplete;
         expect(root.querySelector('.edge-details')).toBeNull();
         expect(coordinates()).toEqual(positions);
-        const viewport = d3.zoomTransform(svg);
+        expect(d3.zoomTransform(svg)).toEqual(viewport);
         button(page, 'Reset map').click();
         await page.updateComplete;
         expect(coordinates()).toEqual(positions);
@@ -1761,7 +1763,7 @@ describe('AntreaFlowVisibilityPage — service map zoom controls', () => {
         expect(restart).not.toHaveBeenCalled();
     });
 
-    test.each(['Zoom in', 'Fit to view'])('reset fits during live additions and respects a later %s', async action => {
+    test.each(['Zoom in', 'Fit to view'])('reset preserves the viewport during live additions and respects a later %s', async action => {
         const first = makeFlow();
         const page = await mountMap([first]);
         const state = page as unknown as { _entries: FlowEntry[]; _simulation: d3.Simulation<D3Node, undefined>; _mapLayoutPending: boolean };
@@ -1776,16 +1778,17 @@ describe('AntreaFlowVisibilityPage — service map zoom controls', () => {
         await addPeer(1);
         const bounds = vi.fn(() => ({ x: 0, y: 0, width: 2000, height: 2000 }));
         Object.defineProperty(content(page), 'getBBox', { value: bounds });
+        button(page, 'Zoom in').click();
+        const beforeReset = content(page).getAttribute('transform');
         button(page, 'Reset map').click();
-        expect(bounds).toHaveBeenCalledTimes(1);
-        expect(scaleOf(content(page))).toBeLessThan(1);
+        await page.updateComplete;
+        expect(content(page).getAttribute('transform')).toBe(beforeReset);
+        expect(bounds).not.toHaveBeenCalled();
 
-        const resetViewport = content(page).getAttribute('transform');
         await addPeer(2);
-        bounds.mockReturnValue({ x: 500, y: 500, width: 3000, height: 3000 });
         button(page, action).click();
         const viewport = content(page).getAttribute('transform');
-        expect(viewport).not.toBe(resetViewport);
+        expect(viewport).not.toBe(beforeReset);
         bounds.mockClear();
         await addPeer(3);
         const simulation = state._simulation.stop().tick(300);
@@ -5495,7 +5498,6 @@ describe('AntreaFlowVisibilityPage — namespace aggregation', () => {
             press(hull, [440, 450]);
             await vi.advanceTimersByTimeAsync(0);
             expect((state._simulation.nodes() as D3Node[]).some(n => n.namespace === 'a' && n.userPinned)).toBe(true);
-            Object.defineProperty(root.querySelector('.map-content'), 'getBBox', { value: () => ({ x: 0, y: 0, width: 100, height: 100 }) });
             root.querySelector<HTMLButtonElement>('[aria-label="Reset map"]')!.click();
             expect(find('namespace:a')).toMatchObject({ x: -1000, y: 0 });
         });
@@ -5516,7 +5518,6 @@ describe('AntreaFlowVisibilityPage — namespace aggregation', () => {
             Object.assign(peer, { x: peerX, y: 0 });
             press(group, [240, 250]);
             await vi.advanceTimersByTimeAsync(0);
-            Object.defineProperty(root.querySelector('.map-content'), 'getBBox', { value: () => ({ x: 0, y: 0, width: 100, height: 100 }) });
             root.querySelector<HTMLButtonElement>('[aria-label="Reset map"]')!.click();
             expect(peer).toMatchObject({ x: peerX, y: 0 });
             expect(node.y).toBe(0);
@@ -5569,8 +5570,7 @@ describe('AntreaFlowVisibilityPage — namespace aggregation', () => {
 
             const svg = root.querySelector<SVGSVGElement>('#graph-svg')!;
             root.querySelector<HTMLButtonElement>('[aria-label="Zoom in"]')!.click();
-            const getBBox = vi.fn(() => ({ x: 0, y: 0, width: 4000, height: 4000 }));
-            Object.defineProperty(root.querySelector('.map-content'), 'getBBox', { value: getBBox });
+            const viewport = d3.zoomTransform(svg);
             root.querySelector<HTMLButtonElement>('[aria-label="Reset map"]')!.click();
             await page.updateComplete;
             expect(state._mapLayoutPending).toBe(false);
@@ -5587,13 +5587,12 @@ describe('AntreaFlowVisibilityPage — namespace aggregation', () => {
             expect(state._hoveredEdgeKey).toBeNull();
             expect(root.querySelector<HTMLElement>('.map-tooltip')!.style.opacity).toBe('0');
             expect(root.querySelector<HTMLSelectElement>('#map-edge-limit')!.value).toBe('50');
-            expect(d3.zoomTransform(svg).k).toBeLessThan(1);
-            expect(getBBox).toHaveBeenCalledTimes(1);
+            expect(d3.zoomTransform(svg)).toEqual(viewport);
 
             state._toggleNamespace('a');
             await page.updateComplete;
             await settle();
-            expect(getBBox).toHaveBeenCalledTimes(1);
+            expect(d3.zoomTransform(svg)).toEqual(viewport);
         });
     });
 

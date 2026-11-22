@@ -1928,8 +1928,6 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         this._resetMapChoices();
         this._edgeLimit = DEFAULT_EDGE_LIMIT;
         this._buildServiceMap(false, positions);
-        // Fit the restored positions once, even if live arrivals keep the layout running.
-        if (this._graphRef.nodes.length) this._fitServiceMap();
     }
 
     private _collapseAllNamespaces() {
