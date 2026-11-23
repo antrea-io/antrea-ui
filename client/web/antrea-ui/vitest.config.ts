@@ -20,6 +20,9 @@ import path from 'node:path'
 export default defineConfig({
     resolve: {
         preserveSymlinks: true,
+        // Exercise the standalone example's source with this test host's dependencies, even
+        // when the example's own npm dependencies have not been installed.
+        dedupe: ['lit'],
         // Run against workspace sources so tests also work before either package is built.
         alias: [
             { find: /^@antrea\/ui-components$/, replacement: path.resolve(__dirname, '../antrea-ui-components/src/index.ts') },

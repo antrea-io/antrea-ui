@@ -12,46 +12,85 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { LitElement, html } from 'lit';
-import { state } from 'lit/decorators.js';
-import { registerRoute, registerSidebarEntry } from '@antrea/ui-plugin-sdk';
+import { LitElement, html, nothing } from 'lit';
+import { property, state } from 'lit/decorators.js';
+import { namespaceScope, namespaceScopeSupported, registerRoute, registerSidebarEntry } from '@antrea/ui-plugin-sdk';
+import type { NamespaceScope, NamespaceScopeState } from '@antrea/ui-plugin-sdk';
 
-// Minimal example plugin: shows the total number of pods in the cluster.
-//
-// There is no credential to receive from the host: requests to the Antrea UI backend
-// authenticate with the session cookie the browser already holds, so `credentials: 'include'`
-// is all that is needed. Note that the backend now calls Kubernetes as the *end user*, so this
-// request can legitimately come back 403 if the viewing user has no RBAC for listing pods -
-// unlike before, when every UI user had the same access.
+const PODS = [{ group: '', resource: 'pods', verb: 'list' }];
+
+// The host owns the Namespace picker and its rules. This plugin owns its requests: it reloads
+// only when the effective scope changes, cancels obsolete work, and handles the API's refusal.
 class AntreaPluginPodCounter extends LitElement {
+    @property({ attribute: false }) locationSearch?: string;
+    @state() private _scope: NamespaceScope | null = null;
     @state() private _count: number | null = null;
     @state() private _error: string | null = null;
+    private _requestScope?: string;
+    private _request?: AbortController;
 
-    connectedCallback() {
-        super.connectedCallback();
-        fetch('/api/v1/k8s/api/v1/pods', { credentials: 'include' })
-            .then((res) => {
-                if (res.status === 403) throw new Error('you do not have permission to list Pods');
-                if (!res.ok) throw new Error(`request failed: ${res.status}`);
-                return res.json();
-            })
-            .then((data) => {
-                this._count = data.items?.length ?? 0;
-            })
-            .catch((e) => {
-                this._error = e instanceof Error ? e.message : String(e);
-            });
+    override disconnectedCallback() {
+        super.disconnectedCallback();
+        this._request?.abort();
+        this._requestScope = undefined;
     }
 
-    render() {
-        if (this._error) return html`<p>Failed to load pod count: ${this._error}</p>`;
-        return html`<h1>Pods in cluster: ${this._count ?? '...'}</h1>`;
+    private _onScopeState(event: CustomEvent<NamespaceScopeState>) {
+        if (!this.isConnected) return;
+        const scope = event.detail.scope;
+        this._scope = scope;
+        // Access and notes also produce state events; neither should repeat the data request.
+        const key = namespaceScope().search(scope);
+        if (key === this._requestScope) return;
+        this._requestScope = key;
+        void this._load(scope);
+    }
+
+    private async _load(scope: NamespaceScope | null) {
+        this._request?.abort();
+        this._count = null;
+        this._error = null;
+        if (!scope) return;
+        const request = new AbortController();
+        this._request = request;
+        const path = scope.kind === 'all' ? 'pods' : `namespaces/${encodeURIComponent(scope.namespace)}/pods`;
+        try {
+            const response = await fetch(`/api/v1/k8s/api/v1/${path}`, {
+                credentials: 'include', signal: request.signal,
+            });
+            if (request.signal.aborted) return;
+            if (response.status === 401) {
+                this.dispatchEvent(new CustomEvent('antrea-session-expired', { bubbles: true, composed: true }));
+                return;
+            }
+            if (response.status === 403) throw new Error('You do not have permission to list Pods in this scope.');
+            if (!response.ok) throw new Error(`Request failed: ${response.status}`);
+            const data = await response.json();
+            if (!request.signal.aborted) this._count = data.items?.length ?? 0;
+        } catch (error) {
+            if (!request.signal.aborted) this._error = error instanceof Error ? error.message : String(error);
+        }
+    }
+
+    override render() {
+        if (!namespaceScopeSupported()) return html`<p>This page needs a newer Antrea UI.</p>`;
+        const label = this._scope?.kind === 'all' ? 'cluster' : this._scope?.namespace;
+        return html`
+            <h1>Pod Counter</h1>
+            <antrea-namespace-scope .locationSearch=${this.locationSearch} .resources=${PODS}
+                @antrea-namespace-scope-state=${this._onScopeState}></antrea-namespace-scope>
+            ${this._error ? html`<p role="alert">${this._error}</p>
+                <button @click=${() => this._load(this._scope)}>Retry</button>` : nothing}
+            ${!this._scope ? html`<p>Select a Namespace to count its Pods.</p>`
+                : !this._error ? html`<p>Pods in ${label}: ${this._count ?? '...'}</p>` : nothing}
+        `;
     }
 }
 
 customElements.define('antrea-plugin-pod-counter', AntreaPluginPodCounter);
 
-registerRoute({ path: '/plugin/pod-counter', tag: 'antrea-plugin-pod-counter' });
+registerRoute({ path: '/plugin/pod-counter', tag: 'antrea-plugin-pod-counter',
+    requires: { namespaceScope: true, resources: PODS } });
 registerSidebarEntry({
     label: 'Pod Counter',
     path: '/plugin/pod-counter',

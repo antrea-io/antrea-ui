@@ -887,38 +887,20 @@ defined. A plugin bundles its own copy of that module, so its `apiFetch`
 always makes same-origin requests and does not pick up the host's API base.
 Never send an `Authorization` header of your own.
 
-`plugins/examples/pod-counter/src/index.ts`:
+The complete [Pod Counter example](../plugins/examples/pod-counter/src/index.ts)
+uses the host's Namespace picker and counts Pods in the selected Namespace or
+across the cluster. It follows the URL, cancels obsolete requests, handles 401
+and 403 responses, and keeps the picker available after a refused request.
+Its route and sidebar registration are:
 
 ```ts
-import { LitElement, html } from 'lit';
-import { state } from 'lit/decorators.js';
 import { registerRoute, registerSidebarEntry } from '@antrea/ui-plugin-sdk';
 
-class AntreaPluginPodCounter extends LitElement {
-    @state() private _count: number | null = null;
-    @state() private _error: string | null = null;
-
-    connectedCallback() {
-        super.connectedCallback();
-        fetch('/api/v1/k8s/api/v1/pods', { credentials: 'include' })
-            .then((res) => {
-                if (res.status === 403) throw new Error('you do not have permission to list Pods');
-                if (!res.ok) throw new Error(`request failed: ${res.status}`);
-                return res.json();
-            })
-            .then((data) => { this._count = data.items?.length ?? 0; })
-            .catch((e) => { this._error = e instanceof Error ? e.message : String(e); });
-    }
-
-    render() {
-        if (this._error) return html`<p>Failed to load pod count: ${this._error}</p>`;
-        return html`<h1>Pods in cluster: ${this._count ?? '...'}</h1>`;
-    }
-}
-
-customElements.define('antrea-plugin-pod-counter', AntreaPluginPodCounter);
-
-registerRoute({ path: '/plugin/pod-counter', tag: 'antrea-plugin-pod-counter' });
+const PODS = [{ group: '', resource: 'pods', verb: 'list' }];
+registerRoute({
+    path: '/plugin/pod-counter', tag: 'antrea-plugin-pod-counter',
+    requires: { namespaceScope: true, resources: PODS },
+});
 registerSidebarEntry({ label: 'Pod Counter', path: '/plugin/pod-counter' });
 ```
 
@@ -1139,7 +1121,8 @@ shows itself. Authorization is still the API's: the picker is a hint, so handle 
 State events also report changes to access, validation errors and the scope
 note: they are not a request to reload data. Compare the effective scope before
 fetching, abort obsolete requests, and ignore late responses after the scope
-changes or the page disconnects.
+changes or the page disconnects; the [Pod Counter example](../plugins/examples/pod-counter/src/index.ts)
+shows the complete lifecycle, including reconnect and retry handling.
 
 For a picker of your own, or a page that uses no Lit, `namespaceScope().create({
 target, resources })` from the SDK gives the same logic without the element: call
