@@ -713,15 +713,14 @@ function newDragSlop(): DragSlop {
 
 function textWidth(text: string, size: number): number { return text.length * size * 0.6; }
 
-/** Updates a folded namespace's counters and denial colors in place. Recreating the node's
- * children would drop the keyboard focus on its edge pin. Its size does not depend on them. */
+/** Updates a folded namespace's counters and denial colors without changing its geometry. */
 function syncNamespaceCounts(svg: SVGSVGElement, graph: GraphData) {
     d3.select(svg).selectAll<SVGGElement, D3Node>('g.node').filter(d => d.kind === 'namespace').each(function (d) {
         const node = graph.nodeMap.get(d.id);
         if (!node) return;
         d.detail = node.detail;
         d.internal = node.internal;
-        const g = d3.select(this);
+        const g = d3.select(this).select('g.node-body');
         const hasInternalDenials = (d.internal?.denied ?? 0) > 0;
         g.select('rect').style('stroke', hasInternalDenials ? EDGE_COLOR_VAR.drop : MAP_COLOR_VAR.nsHullStroke);
         g.select('text.node-detail').text(d.detail)
@@ -2285,14 +2284,6 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
             .data(d3Nodes, d => d.id).join('g').attr('class', 'node')
             .style('cursor', 'grab')
             .call(this._mapDrag)
-            // Identified namespaces expand; withheld namespaces only explain their access
-            // requirements. Hover reveals edges for every node without changing the layout.
-            .on('click', (_event, d) => { if (d.kind === 'namespace') this._toggleNamespace(d.namespace); })
-            .on('keydown', (event, d) => {
-                if (d.kind === 'namespace' && (event.key === 'Enter' || event.key === ' ')) {
-                    event.preventDefault(); this._toggleNamespace(d.namespace);
-                }
-            })
             .on('mouseenter', (event, d) => {
                 this._hoveredNode = d.id;
                 this._buildServiceMap(true);
@@ -2315,7 +2306,18 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
                 this._hideTooltip();
             });
 
-        nodeGroup.each(function (this: SVGGElement, d: D3Node) {
+        // Keep the pin beside the body in the same translated group. This preserves their tab
+        // order and exposes the pin independently of the namespace's button or image role.
+        const nodeBodies = nodeGroup.selectAll<SVGGElement, D3Node>('g.node-body')
+            .data(d => [d]).join('g').attr('class', 'node-body');
+        nodeBodies.filter(d => d.kind === 'namespace')
+            .on('click', (_event, d) => this._toggleNamespace(d.namespace))
+            .on('keydown', (event, d) => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault(); this._toggleNamespace(d.namespace);
+                }
+            });
+        nodeBodies.each(function (this: SVGGElement, d: D3Node) {
             const g = d3.select(this);
             // Metadata changes update the glyph, but preserve its group, handlers and position.
             // serviceOnly picks the shape, and a flow can turn a Service node into a workload one

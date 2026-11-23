@@ -5353,7 +5353,7 @@ describe('AntreaFlowVisibilityPage — namespace aggregation', () => {
         expect(root.querySelector('.nodes .node')).toBe(node);
         expect(Array.from(node.children)).toEqual(children);
         expect(node.textContent).toContain('2 internal · 0 denied');
-        expect(node.getAttribute('aria-label')).toContain('2 internal · 0 denied');
+        expect(node.querySelector('[role="button"]')!.getAttribute('aria-label')).toContain('2 internal · 0 denied');
     });
 
     test.each([NetworkPolicyRuleAction.Drop, NetworkPolicyRuleAction.Reject])('refreshes internal denial colors in place for action %s', async action => {
@@ -5446,7 +5446,7 @@ describe('AntreaFlowVisibilityPage — namespace aggregation', () => {
             const datum = d3.select(node).datum() as D3Node;
             const position = [datum.x!, datum.y!];
             try {
-                press(node, [40 + distance, 50]);
+                press(node.querySelector('[role="button"]')!, [40 + distance, 50]);
                 expect(!!datum.userPinned).toBe(drag);
                 expect([datum.x, datum.y]).toEqual([position[0] + (drag ? distance / scale : 0), position[1]]);
                 expect(state._expandedNamespaces.has(datum.namespace)).toBe(!drag);
@@ -5460,7 +5460,7 @@ describe('AntreaFlowVisibilityPage — namespace aggregation', () => {
             const simulation = state._simulation.stop();
             const node = page.shadowRoot!.querySelector('.nodes .node')!;
             const pinned = () => (simulation.nodes() as D3Node[]).filter(n => n.userPinned || n.fx != null);
-            press(node, [42, 51]);
+            press(node.querySelector('[role="button"]')!, [42, 51]);
             expect(pinned()).toEqual([]);
             expect(state._expandedNamespaces.size).toBe(1);
         });
@@ -5623,7 +5623,7 @@ describe('AntreaFlowVisibilityPage — namespace aggregation', () => {
             press(peer, [70, 80]);
             await vi.advanceTimersByTimeAsync(0);
             expect((d3.select(peer).datum() as D3Node).userPinned).toBe(true);
-            const pin = peer.querySelector('.edge-pin')!;
+            const pin = root.querySelector('[aria-label="Keep edges highlighted for b"]')!;
             pin.dispatchEvent(new MouseEvent('click', { bubbles: true }));
             expect(pin.getAttribute('aria-pressed')).toBe('true');
             const edge = root.querySelector('.edges path')!;
@@ -5819,6 +5819,26 @@ describe('AntreaFlowVisibilityPage — namespace aggregation', () => {
         nodes[0].dispatchEvent(new MouseEvent('mouseleave'));
         expect(state._graphRef).toBe(graph);
         expect(root.querySelector('.edges path')).toBe(path);
+    });
+
+    test('folded and withheld namespaces expose separate keyboard-accessible edge pins', async () => {
+        const { page, state } = await aggregate([makeFlow({
+            srcNs: 'a', dstNs: 'b', dstDisclosure: EndpointDisclosure.Flow,
+        })]);
+        const root = page.shadowRoot!;
+        for (const [name, role] of [['a', 'button'], ['b', 'img']]) {
+            const pin = root.querySelector<SVGTextElement>(`[aria-label="Keep edges highlighted for ${name}"]`)!;
+            const node = pin.closest('.node')!;
+            expect(node.querySelector(`.node-body[role="${role}"]`)).not.toBeNull();
+            expect(pin.parentElement!.closest('[role="button"], [role="img"]')).toBeNull();
+            pin.focus();
+            expect(root.activeElement).toBe(pin);
+            for (const [key, pressed] of [['Enter', 'true'], [' ', 'false']]) {
+                pin.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
+                expect(pin.getAttribute('aria-pressed')).toBe(pressed);
+                expect(state._expandedNamespaces.size).toBe(0);
+            }
+        }
     });
 
     test('keeps redacted and external endpoints distinct and never expands them', async () => {
