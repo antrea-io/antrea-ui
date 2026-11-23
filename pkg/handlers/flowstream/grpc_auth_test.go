@@ -460,7 +460,7 @@ func TestSubscribeFiltersLegacyPolicyOutcomes(t *testing.T) {
 			if tc.wantError {
 				var streamErr *StreamError
 				require.ErrorAs(t, err, &streamErr)
-				assert.Equal(t, StreamErrorCodeSourceUnsupported, streamErr.Code)
+				assert.Equal(t, StreamErrorCodeQueryIncomplete, streamErr.Code)
 				assert.False(t, streamErr.Retryable)
 			} else {
 				require.NoError(t, err)

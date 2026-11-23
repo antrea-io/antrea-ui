@@ -312,7 +312,7 @@ func parseFlowStreamFilter(c *gin.Context) (*FlowStreamFilter, error) {
 			filter.FlowTypes = append(filter.FlowTypes, v)
 		}
 	}
-	for _, values := range c.QueryArray("networkPolicyOutcomes") {
+	if values := c.Query("networkPolicyOutcomes"); values != "" {
 		for _, name := range splitTrimmed(values) {
 			outcome, ok := networkPolicyOutcomeByName[strings.ToLower(name)]
 			if !ok {

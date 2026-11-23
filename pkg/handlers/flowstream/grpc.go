@@ -90,6 +90,9 @@ const (
 	// maxCount fail this way. Not a permission problem. Not retryable: the same request will be
 	// rejected again.
 	StreamErrorCodeInvalidRequest = "invalid_request"
+	// StreamErrorCodeQueryIncomplete means a finite source counted records outside the
+	// requested policy outcomes toward max_count. More matching records may remain unread.
+	StreamErrorCodeQueryIncomplete = "flow_query_incomplete"
 	// StreamErrorCodeFlowAggregatorTooOld means the flow source predates per-user flow
 	// authorization, so it would ignore the stream's scope and stream every flow it has,
 	// unredacted. The value predates flow sources and is kept because it is part of the SSE
@@ -424,7 +427,7 @@ func (h *GRPCFlowStreamSubscriber) Subscribe(ctx context.Context, scope *FlowStr
 					// A source that counted nonmatches can stop at max_count with more
 					// matches still unread. EOF would report that result as complete.
 					if skipped && received >= uint64(req.MaxCount) {
-						errCh <- &StreamError{Code: StreamErrorCodeSourceUnsupported, msg: fmt.Sprintf(
+						errCh <- &StreamError{Code: StreamErrorCodeQueryIncomplete, msg: fmt.Sprintf(
 							"flow source %q reached the query limit before filtering by network policy outcome; use a source that supports network_policy_outcomes or narrow the time window", h.name)}
 						return
 					}

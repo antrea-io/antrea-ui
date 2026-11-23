@@ -88,11 +88,18 @@ func TestParseFlowStreamFilter(t *testing.T) {
 		},
 		{
 			name:  "network policy outcomes parsed from string names",
-			query: "networkPolicyOutcomes=Allowed,%20DENIED&networkPolicyOutcomes=unprotected",
+			query: "networkPolicyOutcomes=Allowed,%20DENIED,unprotected",
 			expected: &FlowStreamFilter{NetworkPolicyOutcomes: []flowpb.NetworkPolicyOutcome{
 				flowpb.NetworkPolicyOutcome_NETWORK_POLICY_OUTCOME_ALLOWED,
 				flowpb.NetworkPolicyOutcome_NETWORK_POLICY_OUTCOME_DENIED,
 				flowpb.NetworkPolicyOutcome_NETWORK_POLICY_OUTCOME_UNPROTECTED,
+			}},
+		},
+		{
+			name:  "network policy outcomes use the first query value",
+			query: "networkPolicyOutcomes=denied&networkPolicyOutcomes=allowed",
+			expected: &FlowStreamFilter{NetworkPolicyOutcomes: []flowpb.NetworkPolicyOutcome{
+				flowpb.NetworkPolicyOutcome_NETWORK_POLICY_OUTCOME_DENIED,
 			}},
 		},
 	}

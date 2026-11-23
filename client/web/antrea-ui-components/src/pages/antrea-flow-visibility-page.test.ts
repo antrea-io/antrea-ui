@@ -3604,12 +3604,13 @@ describe('AntreaFlowVisibilityPage — collapsed peers in the service map', () =
         expect(rx).toBe(height / 2);
     });
 
-    test('the legend names the node shapes', async () => {
+    test('the legend names the policy verdicts and node shapes', async () => {
         const { page } = await graphFor([makeFlow()]);
 
         const rows = Array.from(page.shadowRoot!.querySelectorAll('.map-legend .legend-row'))
             .map(r => r.textContent?.trim());
-        expect(rows).toEqual(expect.arrayContaining(['Service (destination only)', 'Workload', 'External', 'Undisclosed (in cluster)']));
+        expect(page.shadowRoot!.querySelector('.outcome-group legend')?.textContent).toBe('Policy verdict');
+        expect(rows).toEqual(expect.arrayContaining(['Allowed', 'Denied', 'Unprotected', 'Service (destination only)', 'Workload', 'External', 'Undisclosed (in cluster)']));
     });
 
     // The node and the edge are the same before and after: the second flow reaches the same node

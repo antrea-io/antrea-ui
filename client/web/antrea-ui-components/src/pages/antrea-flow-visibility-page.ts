@@ -167,10 +167,10 @@ const NONE_SEEN_FILTERED_HINT = 'None seen in this scope yet. The applied filter
 // which is also a Namespace but says whose traffic is shown.
 const ENDPOINT_HINT = 'These filters all match the same endpoint of a flow: its source, its destination, or either one.';
 
-const POLICY_OUTCOMES: { value: NetworkPolicyOutcome; label: string; hint: string }[] = [
-    { value: 'allowed', label: 'Allowed', hint: 'A rule allowed the flow and neither side recorded a Drop or Reject.' },
-    { value: 'denied', label: 'Denied', hint: 'An ingress or egress rule dropped or rejected the flow.' },
-    { value: 'unprotected', label: 'Unprotected', hint: 'Neither ingress nor egress recorded a rule for this flow.' },
+const POLICY_OUTCOMES: { value: NetworkPolicyOutcome; label: string; edgeRole: EdgeRole; hint: string }[] = [
+    { value: 'allowed', label: 'Allowed', edgeRole: 'allow', hint: 'A rule allowed the flow and neither side recorded a Drop or Reject.' },
+    { value: 'denied', label: 'Denied', edgeRole: 'drop', hint: 'An ingress or egress rule dropped or rejected the flow.' },
+    { value: 'unprotected', label: 'Unprotected', edgeRole: 'default', hint: 'Neither ingress nor egress recorded a rule for this flow.' },
 ];
 
 // Said on whichever of the two controls is held back: a Service is only ever the destination of a
@@ -2253,7 +2253,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
                     </div>
 
                     <fieldset class="outcome-group">
-                        <legend class="field-label" title="Leave all unchecked to include every outcome.">Network policy outcome</legend>
+                        <legend class="field-label" title="Leave all unchecked to include every verdict.">Policy verdict</legend>
                         ${POLICY_OUTCOMES.map(({ value, label, hint }) => html`
                             <label title=${hint}>
                                 <input type="checkbox" .value=${value} .checked=${this._pendingOutcomes.includes(value)}
@@ -2395,9 +2395,9 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
                 <div id="graph-tooltip" class="map-tooltip" part="map-tooltip"></div>
                 <div class="map-legend" part="map-legend">
                     <div class="map-legend-title">Legend</div>
-                    <div class="legend-row"><svg width="24" height="6"><line x1="0" y1="3" x2="24" y2="3" style="stroke:${EDGE_COLOR_VAR.allow}" stroke-width="2"/></svg><span>Allow</span></div>
-                    <div class="legend-row"><svg width="24" height="6"><line x1="0" y1="3" x2="24" y2="3" style="stroke:${EDGE_COLOR_VAR.drop}" stroke-width="2"/></svg><span>Drop / Reject</span></div>
-                    <div class="legend-row"><svg width="24" height="6"><line x1="0" y1="3" x2="24" y2="3" style="stroke:${EDGE_COLOR_VAR.default}" stroke-width="2"/></svg><span>No policy</span></div>
+                    ${POLICY_OUTCOMES.map(({ edgeRole, label }) => html`
+                        <div class="legend-row"><svg width="24" height="6"><line x1="0" y1="3" x2="24" y2="3" style="stroke:${EDGE_COLOR_VAR[edgeRole]}" stroke-width="2"/></svg><span>${label}</span></div>
+                    `)}
                     <div class="legend-row"><svg width="24" height="14"><rect x="1" y="1" width="22" height="12" rx="6" ry="6" style="fill:${MAP_COLOR_VAR.nodeFill};stroke:${MAP_COLOR_VAR.nodeStroke}" stroke-width="1.5"/></svg><span>Service (destination only)</span></div>
                     <div class="legend-row"><svg width="24" height="14"><rect x="1" y="1" width="22" height="12" rx="3" ry="3" style="fill:${MAP_COLOR_VAR.nodeFill};stroke:${MAP_COLOR_VAR.nodeStroke}" stroke-width="1.5"/></svg><span>Workload</span></div>
                     <div class="legend-row"><svg width="24" height="14"><polygon points="12,1 23,7 12,13 1,7" style="fill:${MAP_COLOR_VAR.externalFill};stroke:${MAP_COLOR_VAR.externalStroke}" stroke-width="1.5"/></svg><span>External</span></div>
