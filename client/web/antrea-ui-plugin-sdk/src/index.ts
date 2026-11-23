@@ -34,9 +34,13 @@
 export type { EdgeSelection, EdgeExtraRenderer, FlowEntry, FlowTableColumn, FlowTableColumnsProcessor } from '@antrea/ui-components';
 export type {
     AccessSummary, NamespaceAccessSummary, ResourceQuery, Verdict, PluginAccessRequirement,
-    PluginResourceRequirement, PluginHostAccess,
+    PluginResourceRequirement, PluginHostAccess, NamespaceScope, NamespaceScopeState, NamespaceScopeOptions,
+    NamespaceScopeHandle, NamespaceScopeResources, NamespaceAccess, ScopeNote, ScopeSelectDetail, PluginNamespaceScope,
 } from '@antrea/ui-components';
-import type { EdgeExtraRenderer, FlowTableColumnsProcessor, PluginAccessRequirement, PluginHostAccess } from '@antrea/ui-components';
+import type {
+    AntreaNamespaceScope, EdgeExtraRenderer, FlowTableColumnsProcessor, PluginAccessRequirement,
+    PluginHostAccess, PluginNamespaceScope,
+} from '@antrea/ui-components';
 
 // `requires` (below, on PluginRoute, PluginSidebarEntry and LandingPageTab) hides an item from
 // users who don't meet it, evaluated by the host against the user's access summary:
@@ -136,10 +140,14 @@ export interface AntreaPluginHost {
     registerLandingPageTab(tab: LandingPageTab): void;
     // Optional so a plugin can still tell a host predating it apart (see access() below).
     access?: PluginHostAccess;
+    // Optional for the same reason (see namespaceScope() below).
+    namespaceScope?: PluginNamespaceScope;
 }
 
 declare global {
     interface Window { __antreaPluginHost?: AntreaPluginHost; }
+    // So that lit-plugin and tsc check <antrea-namespace-scope> in a plugin's templates.
+    interface HTMLElementTagNameMap { 'antrea-namespace-scope': AntreaNamespaceScope }
 }
 
 function host(): AntreaPluginHost {
@@ -192,4 +200,24 @@ export function access(): PluginHostAccess {
         throw new Error('@antrea/ui-plugin-sdk: this Antrea UI host does not provide access(); upgrade Antrea UI.');
     }
     return a;
+}
+
+/** The Namespace scope API, for a page that declares `requires.namespaceScope`: `create()` runs
+ * the host's copy of the scope rules (follow the URL, the default order, typed names, the note on
+ * a Namespace that is not listed) for a picker of your own, and `search()` builds the query
+ * string that carries a scope to another Namespace-aware page. Most pages use the
+ * `<antrea-namespace-scope>` element instead. Throws on a host too old to provide it. */
+export function namespaceScope(): PluginNamespaceScope {
+    const n = host().namespaceScope;
+    if (!n) {
+        throw new Error('@antrea/ui-plugin-sdk: this Antrea UI host does not provide namespaceScope(); upgrade Antrea UI.');
+    }
+    return n;
+}
+
+/** Whether this host provides namespaceScope() and the `<antrea-namespace-scope>` element, so
+ * that a page can fall back to a plain one on an older host, where the tag stays an unknown
+ * element and renders nothing. */
+export function namespaceScopeSupported(): boolean {
+    return !!window.__antreaPluginHost?.namespaceScope && !!customElements.get('antrea-namespace-scope');
 }

@@ -887,38 +887,20 @@ defined. A plugin bundles its own copy of that module, so its `apiFetch`
 always makes same-origin requests and does not pick up the host's API base.
 Never send an `Authorization` header of your own.
 
-`plugins/examples/pod-counter/src/index.ts`:
+The complete [Pod Counter example](../plugins/examples/pod-counter/src/index.ts)
+uses the host's Namespace picker and counts Pods in the selected Namespace or
+across the cluster. It follows the URL, cancels obsolete requests, handles 401
+and 403 responses, and keeps the picker available after a refused request.
+Its route and sidebar registration are:
 
 ```ts
-import { LitElement, html } from 'lit';
-import { state } from 'lit/decorators.js';
 import { registerRoute, registerSidebarEntry } from '@antrea/ui-plugin-sdk';
 
-class AntreaPluginPodCounter extends LitElement {
-    @state() private _count: number | null = null;
-    @state() private _error: string | null = null;
-
-    connectedCallback() {
-        super.connectedCallback();
-        fetch('/api/v1/k8s/api/v1/pods', { credentials: 'include' })
-            .then((res) => {
-                if (res.status === 403) throw new Error('you do not have permission to list Pods');
-                if (!res.ok) throw new Error(`request failed: ${res.status}`);
-                return res.json();
-            })
-            .then((data) => { this._count = data.items?.length ?? 0; })
-            .catch((e) => { this._error = e instanceof Error ? e.message : String(e); });
-    }
-
-    render() {
-        if (this._error) return html`<p>Failed to load pod count: ${this._error}</p>`;
-        return html`<h1>Pods in cluster: ${this._count ?? '...'}</h1>`;
-    }
-}
-
-customElements.define('antrea-plugin-pod-counter', AntreaPluginPodCounter);
-
-registerRoute({ path: '/plugin/pod-counter', tag: 'antrea-plugin-pod-counter' });
+const PODS = [{ group: '', resource: 'pods', verb: 'list' }];
+registerRoute({
+    path: '/plugin/pod-counter', tag: 'antrea-plugin-pod-counter',
+    requires: { namespaceScope: true, resources: PODS },
+});
 registerSidebarEntry({ label: 'Pod Counter', path: '/plugin/pod-counter' });
 ```
 
@@ -1085,8 +1067,92 @@ counts; the entry's own `requires` only gates it. A custom-element route, and an
 Overview tab, are handed the query string as a `locationSearch` property. A
 federated Angular route reads `namespace` from the router itself.
 
-A custom-element page does its part with two events and one property, as the
-built-in pages do. The host records the last scope chosen only from
+**Using the Namespace picker.** The easiest way to do all of this is to render
+`<antrea-namespace-scope>`, which wraps the same picker and scope controller as
+Overview and Flow Visibility, with the same default order, URL handling and
+last-scope bookkeeping. It renders into its own shadow root, so it needs none
+of your styles, and handles communication with the host itself. Pass it the
+`locationSearch` the host gave your element and the same `resources` as the
+route's `requires` (an array or `{ anyOf: [...] }`), and listen for
+`antrea-namespace-scope-state`, whose `detail` is the state (`scope`, `source`,
+`access`, `error`, `note`, `offerAll`). It bubbles but is not composed, so it
+stays inside your shadow root:
+
+```ts
+import { LitElement, html } from 'lit';
+import { property, state } from 'lit/decorators.js';
+import { registerRoute, namespaceScope, namespaceScopeSupported } from '@antrea/ui-plugin-sdk';
+import type { NamespaceScopeState } from '@antrea/ui-plugin-sdk';
+
+const PODS = [{ group: '', resource: 'pods', verb: 'list' }];
+
+class PodsPage extends LitElement {
+    @property({ attribute: false }) locationSearch?: string;
+    @state() private scope: NamespaceScopeState | null = null;
+    private requestScope?: string;
+
+    render() {
+        if (!namespaceScopeSupported()) return html`<p>This page needs a newer Antrea UI.</p>`;
+        return html`
+            <antrea-namespace-scope .locationSearch=${this.locationSearch} .resources=${PODS}
+                @antrea-namespace-scope-state=${(e: CustomEvent<NamespaceScopeState>) => {
+                    this.scope = e.detail;
+                    const key = namespaceScope().search(e.detail.scope);
+                    if (key !== this.requestScope) {
+                        this.requestScope = key;
+                        // Cancel the previous request; load only when scope is non-null.
+                        void this.load(e.detail.scope);
+                    }
+                }}></antrea-namespace-scope>`;
+    }
+}
+customElements.define('pods-page', PodsPage);
+registerRoute({ path: '/plugin/pods', tag: 'pods-page',
+    requires: { namespaceScope: true, resources: PODS } });
+```
+
+`state.scope` is `{ kind: 'all' }`, `{ kind: 'namespace', namespace }` or `null`
+(still loading, an invalid URL, or nothing to pick). Only `source: 'url'` and
+`'picker'` are choices; a `'default'` is never reported or written. The state also
+carries `error` for an invalid `?namespace=` or typed name, which the element
+shows itself. Authorization is still the API's: the picker is a hint, so handle a
+403.
+
+State events also report changes to access, validation errors and the scope
+note: they are not a request to reload data. Compare the effective scope before
+fetching, abort obsolete requests, and ignore late responses after the scope
+changes or the page disconnects; the [Pod Counter example](../plugins/examples/pod-counter/src/index.ts)
+shows the complete lifecycle, including reconnect and retry handling.
+
+For a picker of your own, or a page that uses no Lit, `namespaceScope().create({
+target, resources })` from the SDK gives the same logic without the element: call
+`setLocationSearch()` with each `locationSearch`, `subscribe()` for the state,
+`select()` for a choice and `dispose()` when the page goes away. Call
+`setResources()` when the permissions change, for example when switching
+between watching and listing: a default is cleared until the new verdict is
+ready, while an explicit URL or picker choice remains selected. When both the
+query string and permissions change together, pass them in one call to
+`setLocationSearch(search, { resources })` so subscribers see them together. Equivalent
+resource arrays from a re-render do not reset the scope. Its
+`state().access` holds what a picker offers (`candidates`, `cut`, `mayList`).
+`namespaceScope().search(scope)` builds the query string that carries a scope to
+another Namespace-aware page; it rejects invalid Namespace names instead of
+interpreting them as All Namespaces. Do not bundle your own copy of the Namespace list
+code: each plugin bundle has its own module state, which the host cannot reset when
+the user signs out.
+
+Both the element and the headless API use the host's adapter for navigation,
+last-scope storage and session expiry; neither requires forwarding scope
+events. A host that loads federated routes must publish an adapter before mounting
+plugins, and a federated page must pass its router's query as `locationSearch`.
+
+`namespaceScope()` and the element need a host that ships them. Raise
+`compatibleAntreaUI` to that release and check `namespaceScopeSupported()`, as
+above: on an older host the tag is an unknown element and renders nothing.
+
+Without either the element or the headless API, a custom-element page does its
+part with two events and one property, as the built-in pages do. For this
+manual integration, the host records the last scope chosen only from
 `antrea-namespace-scope-chosen`, so a page that merely reads `locationSearch`
 leaves the Overview and Flow Visibility entries carrying a stale scope. The page
 must:

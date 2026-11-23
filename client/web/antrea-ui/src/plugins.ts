@@ -45,6 +45,7 @@ import valid from 'semver/functions/valid';
 import validRange from 'semver/ranges/valid';
 import { parsePath } from 'react-router';
 import config from './config';
+import { pluginNamespaceScope } from './pluginScope';
 import { createPluginHostAccess, isNamespaceAware, meetsAccessRequirements, parseAccessRequirements } from '@antrea/ui-components';
 import type { AccessSummary, EdgeExtraRenderer, FlowTableColumnsProcessor, PluginAccessRequirement } from '@antrea/ui-components';
 // The host and the SDK must agree on AntreaPluginHost's shape (it's the contract every plugin's
@@ -108,6 +109,7 @@ window.__antreaPluginHost = {
     registerFlowTableColumnsProcessor: fn => flowTableColumnsProcessors.push(fn),
     registerLandingPageTab: tab => pluginLandingPageTabs.push(gated(tab, `landing page tab "${tab.id}"`)),
     access: pluginAccess.access,
+    namespaceScope: pluginNamespaceScope,
 };
 
 // Top-level pages owned by Antrea UI itself, and the only paths a plugin sidebar entry's

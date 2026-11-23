@@ -3817,6 +3817,24 @@ describe('flowQuery', () => {
         expect(window.location.search).toBe(`?namespace=${namespace}`);
     });
 
+    test('uses only the final scope when the host changes mode and URL together', async () => {
+        const fetchMock = vi.fn(async (url: string) => streamParams([url]).get('follow') === 'false'
+            ? finiteResponse([FINITE_COMPLETE]) : sseResponse([]));
+        const page = await mount(fetchMock, {
+            search: '/?namespace=_all',
+            flowAccess: () => flowAccessFixture({ namespaces: ['ns-a'], clusterWide: 'allowed', verb: 'watch' }),
+        });
+        page.locationSearch = '';
+        page.flowQuery = { follow: false };
+        await page.updateComplete;
+        await vi.advanceTimersByTimeAsync(0);
+        const calls = streamCalls(fetchMock);
+        expect(calls).toHaveLength(2);
+        expect(streamParams(calls[1]).get('follow')).toBe('false');
+        expect(streamParams(calls[1]).get('observedNamespace')).toBe('ns-a');
+        expect(streamParams(calls[1]).has('clusterWide')).toBe(false);
+    });
+
     test('a refused finite query says which verb it needs, and does not retry', async () => {
         const fetchMock = vi.fn(async () => jsonResponse({ message: 'forbidden', retryable: false }, 403));
         const page = await mount(fetchMock, { flowQuery: { follow: false } });
