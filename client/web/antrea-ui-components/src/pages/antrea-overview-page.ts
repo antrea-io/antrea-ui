@@ -17,16 +17,18 @@ import { state, property } from 'lit/decorators.js';
 import { pageStyles, pickerStyles } from '../lib/styles.js';
 import { apiFetchJSON, APIError } from '../lib/api.js';
 import {
-    accessSummary, fetchAccessSummary, namespaceAccessSummaries, can, pageVerdict,
+    accessSummary, fetchAccessSummary, namespaceAccessSummaries, can,
     GATE_NAMESPACES_LIST, GATE_PODS_LIST, GATE_SERVICES_LIST,
     GATE_DEPLOYMENTS_LIST, GATE_STATEFULSETS_LIST, GATE_DAEMONSETS_LIST,
     GATE_K8S_NETWORKPOLICIES_LIST, GATE_ANTREA_CLUSTERNETWORKPOLICIES_LIST, GATE_ANTREA_NETWORKPOLICIES_LIST,
     GATE_EVENTS_LIST,
 } from '../lib/access-api.js';
 import type { HasRules, ResourceQuery } from '../lib/access-api.js';
-import { namespaceAccess, mayNameNamespace, scopeNote, isValidNamespaceName } from '../lib/namespace-access.js';
+import { mayNameNamespace } from '../lib/namespace-access.js';
 import type { NamespaceAccess, ScopeNote } from '../lib/namespace-access.js';
-import { SCOPE_ALL, parseScopeParam, dispatchScopeChosen, writeScopeToURL } from '../lib/namespace-scope.js';
+import { SCOPE_ALL, scopeToValue, valueToScope } from '../lib/namespace-scope.js';
+import { createNamespaceScope } from '../lib/namespace-scope-controller.js';
+import type { NamespaceScopeHandle, NamespaceScopeState } from '../lib/namespace-scope-controller.js';
 import type { ScopeSelectDetail } from '../antrea-namespace-picker.js';
 import { SessionAwarePage } from '../lib/session-aware-page.js';
 import '../antrea-card';
@@ -230,7 +232,6 @@ export class AntreaOverviewPage extends SessionAwarePage {
     @state() private _scopeError: string | null = null;
     // A note on the selected namespace: that it is not in a complete list.
     @state() private _scopeNote: ScopeNote | null = null;
-    private _scopeNoteToken = 0;
 
     /** The page URL's query string, passed by a host whose router owns the location, so the page
      * follows it when it changes (Back, Forward, or switching between the page's own views). A
@@ -241,9 +242,9 @@ export class AntreaOverviewPage extends SessionAwarePage {
     // it resolves; a fetch that fails resolves to an answer with no candidates, so the page is
     // never left without a way to choose a scope.
     @state() private _access: NamespaceAccess | null = null;
-    // The query string of the URL as the page last took it, whether it wrote it or read it, so
-    // that the host handing back what the page wrote is not mistaken for a navigation.
-    private _appliedSearch = '';
+    // The scope rules: the URL, the default, typed names, the note (see namespace-scope-controller.ts).
+    private _scopeHandle?: NamespaceScopeHandle;
+    private _unsubscribeScope?: () => void;
     private _sessionStarted = false;
     // The scope the page last loaded, so that taking the same one again (the Namespace list
     // arriving after a scope from the URL was already loaded) does not load it twice.
@@ -304,29 +305,26 @@ export class AntreaOverviewPage extends SessionAwarePage {
         } else if (!this._sessionExpired) {
             if (!this._sessionStarted) this.onSessionReady();
             else {
-                if (!this._access) void this._loadAccess();
+                this._scopeHandle?.refreshAccess();
                 this._refresh();
                 this._startRefresh();
             }
         }
     };
 
-    private _onPopState = () => {
-        if (this.locationSearch === undefined) this._onLocationChange();
-    };
-
     override connectedCallback() {
         super.connectedCallback();
-        window.addEventListener('popstate', this._onPopState);
         document.addEventListener('visibilitychange', this._onVisibilityChange);
     }
 
     override disconnectedCallback() {
         super.disconnectedCallback();
-        window.removeEventListener('popstate', this._onPopState);
         document.removeEventListener('visibilitychange', this._onVisibilityChange);
         this._stopRefresh();
         this._cancelLoad();
+        this._unsubscribeScope?.();
+        this._scopeHandle?.dispose();
+        this._scopeHandle = undefined;
         this._loadedScope = '';
         this._sessionStarted = false;
         this._sessionExpired = false;
@@ -334,17 +332,7 @@ export class AntreaOverviewPage extends SessionAwarePage {
 
     override willUpdate(changed: Map<string, unknown>) {
         super.willUpdate(changed);
-        if (changed.has('locationSearch')) this._onLocationChange();
-    }
-
-    override firstUpdated(changed: Map<string, unknown>) {
-        super.firstUpdated(changed);
-        // The scope taken from the URL at mount was dispatched before the host could listen: the
-        // element is connected before its listeners are attached. Say it again once mounted.
-        if (this._sessionStarted) {
-            const parsed = parseScopeParam(this._appliedSearch);
-            if (parsed.kind === 'scope') dispatchScopeChosen(this, parsed.value);
-        }
+        if (changed.has('locationSearch')) this._scopeHandle?.setLocationSearch(this.locationSearch);
     }
 
     protected override onSessionReady() {
@@ -352,80 +340,24 @@ export class AntreaOverviewPage extends SessionAwarePage {
         this._startRefresh();
         // A scope the URL carries is used as it is, so its content loads at once while the
         // namespace list loads for the picker. Only a default, when the URL has none, has to wait
-        // for the list and the verdict: it is applied when they arrive (see _loadAccess).
-        this._appliedSearch = this._search;
+        // for the list and the verdict: the controller applies it when they arrive.
         this._sessionStarted = true;
-        this._applyScopeFromURL();
-        void this._loadAccess();
-    }
-
-    /** Loads the picker's options, then settles on a default scope if the URL named none. */
-    private async _loadAccess() {
-        // A dead session shows here first when nothing else is fetched (no scope to load yet).
-        const summary = await accessSummary().catch(err => {
-            if (this.isSessionExpiredError(err)) this._expireSession();
-            return null;
+        const handle = createNamespaceScope({
+            target: this,
+            resources: PAGE_GATES,
+            onSessionExpired: () => this._expireSession(),
+            isActive: () => this.isConnected && !document.hidden && !this._sessionExpired,
         });
-        if (!this.isConnected || document.hidden || this._sessionExpired) return;
-        const access = await namespaceAccess(summary, s => pageVerdict(s, PAGE_GATES));
-        // The page may have been left while this loaded: going on would load content nothing
-        // will show.
-        if (!this.isConnected || document.hidden || this._sessionExpired) return;
-        this._access = access;
-        // The URL the page last took or wrote, not the location prop: a scope picked while the
-        // list loaded is in the former, and the router may not have delivered it to the latter.
-        this._applyScopeFromURL(this._appliedSearch);
+        this._scopeHandle = handle;
+        this._unsubscribeScope = handle.subscribe(state => this._onScopeState(state));
+        handle.setLocationSearch(this.locationSearch);
     }
 
-    /** The query string the page's scope is read from. */
-    private get _search(): string {
-        return this.locationSearch ?? window.location.search;
-    }
-
-    /** Takes the scope from the URL again when the URL has changed: Back or Forward, or a switch
-     * between this page's own views. The page's own writes do not count (see _appliedSearch). */
-    private _onLocationChange() {
-        const search = this._search;
-        if (!this._sessionStarted || search === this._appliedSearch) return;
-        this._appliedSearch = search;
-        this._applyScopeFromURL(search);
-    }
-
-    /**
-     * Decides the scope from the URL, or else from the default order, and loads it. Runs when the
-     * page opens, when its URL changes, and when the namespace list arrives.
-     *
-     * A scope in the URL is used as given, with no fallback: not checked against the list, and
-     * not replaced by a default even when it is All Namespaces and the page's verdict is denied.
-     * An invalid one is reported and nothing is selected.
-     */
-    private _applyScopeFromURL(search: string = this._search) {
-        const parsed = parseScopeParam(search);
-        if (parsed.kind === 'invalid') {
-            this._scopeError = parsed.message;
-            this._setScope('');
-        } else if (parsed.kind === 'scope') {
-            this._scopeError = null;
-            this._setScope(parsed.value);
-            dispatchScopeChosen(this, parsed.value);
-        } else {
-            this._scopeError = null;
-            // The default needs the list and the verdict, so it waits for them. Nothing is
-            // selected until then, and nothing is written to the URL: a default is not a choice.
-            this._setScope(this._access ? this._defaultScope() : '');
-        }
-        void this._refreshScopeNote();
-    }
-
-    /**
-     * The scope the page opens with when the URL names none, or '' for none: All Namespaces only
-     * where the page's verdict is allowed (an unknown verdict never makes it the default);
-     * otherwise the first namespace of the list, without checking it. A namespace's access is
-     * only looked at once it is selected, and decides which tiles are shown.
-     */
-    private _defaultScope(): string {
-        if (this._access?.clusterWide === 'allowed') return SCOPE_ALL;
-        return this._access?.candidates?.[0] ?? '';
+    private _onScopeState(state: NamespaceScopeState) {
+        this._access = state.access;
+        this._scopeError = state.error;
+        this._scopeNote = state.note;
+        this._setScope(scopeToValue(state.scope));
     }
 
     /** Sets the scope and loads its content, unless it is the one already loaded. */
@@ -455,15 +387,6 @@ export class AntreaOverviewPage extends SessionAwarePage {
         if (!document.hidden && !this._sessionExpired) void this._loadCounts();
     }
 
-    /** Notes that the selected namespace is not in the list (see scopeNote). */
-    private async _refreshScopeNote() {
-        const token = ++this._scopeNoteToken;
-        this._scopeNote = null;
-        const ns = this._scope === SCOPE_ALL ? '' : this._scope;
-        const note = await scopeNote(this._access, ns, () => token === this._scopeNoteToken && this.isConnected);
-        if (token === this._scopeNoteToken) this._scopeNote = note;
-    }
-
     /** What to gate on for a scope. For All Namespaces, the cluster-scoped summary. For a
      * namespace, a summary for it: it is needed to see grants that come from a RoleBinding in it,
      * and it is the per-namespace summary rather than a memoized one for good, so that a grant
@@ -481,24 +404,6 @@ export class AntreaOverviewPage extends SessionAwarePage {
             if (this.isSessionExpiredError(err)) throw err;
             return null;
         }
-    }
-
-    /** The user chose a scope: a pick, or a name they typed. A name that is not a valid Namespace
-     * name is rejected and the scope stays as it was. */
-    private _onScopeSelect(value: string, typed: boolean) {
-        // A typed value is a name even when it is SCOPE_ALL, which is not a valid one.
-        if ((typed || value !== SCOPE_ALL) && !isValidNamespaceName(value)) {
-            this._scopeError = `"${value}" is not a valid namespace name.`;
-            return;
-        }
-        this._scopeError = null;
-        dispatchScopeChosen(this, value);
-        // Chosen again, or chosen where the page was defaulted: the choice is still written, so
-        // that a reload keeps it as one.
-        this._appliedSearch = writeScopeToURL(this, value);
-        if (value === this._scope) return;
-        this._setScope(value);
-        void this._refreshScopeNote();
     }
 
     private async _loadCounts(background = false) {
@@ -706,6 +611,12 @@ export class AntreaOverviewPage extends SessionAwarePage {
                 </table>
             </antrea-card>
         `;
+    }
+
+    /** The user chose a scope: a pick, or a name they typed. */
+    private _onScopeSelect(value: string, typed: boolean) {
+        const scope = valueToScope(value);
+        if (scope) this._scopeHandle?.select(scope, typed);
     }
 
     private _renderScopeSelect() {
