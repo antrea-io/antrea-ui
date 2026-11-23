@@ -20,9 +20,10 @@ import { Provider } from 'react-redux';
 import { navigateTo, resetAccessSummary, SCOPE_CHANGE_EVENT, SCOPE_CHOSEN_EVENT } from '@antrea/ui-components';
 import type { AccessSummary } from '@antrea/ui-components';
 import { setAuthenticated, setupStore } from './store';
-import { MemoryRouter, Route, Routes, useLocation, useNavigate } from 'react-router';
+import { Link, MemoryRouter, Route, Routes, useLocation, useNavigate } from 'react-router';
 import { FlowsRedirect, FlowVisibilityPage, OverviewPage, PluginPage, SummaryPage, SupportBundlePage } from './pages';
 import { getLastScope } from './lastScope';
+import { pluginNamespaceScope } from './pluginScope';
 import type { LandingPageTab } from './plugins';
 import { AccessProvider } from './access';
 
@@ -584,6 +585,52 @@ describe('PluginPage', () => {
     class AwarePageElement extends HTMLElement { locationSearch: string | undefined = undefined; }
     customElements.define('antrea-test-aware-page', AwarePageElement);
 
+    class HeadlessPageElement extends HTMLElement {
+        readonly scope = pluginNamespaceScope.create({ target: this });
+        set locationSearch(search: string) { this.scope.setLocationSearch(search); }
+        disconnectedCallback() { this.scope.dispose(); }
+    }
+    customElements.define('antrea-test-headless-page', HeadlessPageElement);
+
+    test('remembers synchronous headless scope reports during navigation and Back/Forward', async () => {
+        sessionStorage.clear();
+        const access = { ...summary(false), namespaces: ['ns-a', 'ns-b'] };
+        vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(access), { status: 200 })));
+        function Navigation() {
+            const navigate = useNavigate();
+            return <>
+                <Link to="/plugin/headless?namespace=ns-b&x=2">Next namespace</Link>
+                <button onClick={() => navigate(-1)}>Back</button>
+                <button onClick={() => navigate(1)}>Forward</button>
+            </>;
+        }
+        const view = render(
+            <Provider store={setupStore({ session: 'authenticated' })}>
+                <AccessProvider>
+                    <MemoryRouter initialEntries={['/plugin/headless?namespace=ns-a&x=1']}>
+                        <Navigation />
+                        <PluginPage tag="antrea-test-headless-page" access={[{ namespaceScope: true }]} />
+                    </MemoryRouter>
+                </AccessProvider>
+            </Provider>,
+        );
+        await waitFor(() => expect(getLastScope('alice')).toBe('ns-a'));
+        const page = document.querySelector('antrea-test-headless-page') as HeadlessPageElement;
+
+        await act(async () => { view.getByText('Next namespace').click(); });
+        expect(page.scope.state().scope).toEqual({ kind: 'namespace', namespace: 'ns-b' });
+        expect(getLastScope('alice')).toBe('ns-b');
+
+        await act(async () => { view.getByText('Back').click(); });
+        expect(page.scope.state().scope).toEqual({ kind: 'namespace', namespace: 'ns-a' });
+        expect(getLastScope('alice')).toBe('ns-a');
+
+        await act(async () => { view.getByText('Forward').click(); });
+        expect(page.scope.state().scope).toEqual({ kind: 'namespace', namespace: 'ns-b' });
+        expect(getLastScope('alice')).toBe('ns-b');
+        expect(document.querySelector('antrea-test-headless-page')).toBe(page);
+    });
+
     test.each([false, true])('a Namespace-aware page receives the query and reports scope with clusterAdmin: %s', async (clusterAdmin) => {
         sessionStorage.clear();
         resetAccessSummary();
@@ -620,6 +667,82 @@ describe('PluginPage', () => {
             }));
         });
         expect(getLastScope('alice')).toBe('ns-b');
+    });
+
+    // A plugin page that renders the host's Namespace picker in its own shadow root.
+    class PickerPageElement extends HTMLElement {
+        private readonly scope = document.createElement('antrea-namespace-scope');
+        constructor() {
+            super();
+            this.attachShadow({ mode: 'open' }).appendChild(this.scope);
+        }
+        set locationSearch(search: string) { this.scope.locationSearch = search; }
+        get picker() { return this.scope; }
+    }
+    customElements.define('antrea-test-picker-page', PickerPageElement);
+
+    test('only a Namespace-aware plugin page can change the route and last scope through the picker', async () => {
+        sessionStorage.clear();
+        resetAccessSummary();
+        const summaryWithNamespaces = { ...summary(false), namespaces: ['ns-a', 'ns-b'] };
+        vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify(summaryWithNamespaces), { status: 200 })));
+        function LocationProbe() {
+            const { pathname, search } = useLocation();
+            return <div data-testid="location">{pathname + search}</div>;
+        }
+        render(
+            <Provider store={setupStore({ session: 'authenticated' })}>
+                <AccessProvider>
+                    <MemoryRouter initialEntries={['/plugin/picker?namespace=ns-a&x=1']}>
+                        <LocationProbe />
+                        <Routes>
+                            <Route path="/plugin/picker" element={<>
+                                <Link to="/plugin/plain?x=2">Plain plugin</Link>
+                                <PluginPage tag="antrea-test-picker-page" access={[{ namespaceScope: true, clusterAdmin: false }]} />
+                            </>} />
+                            <Route path="/plugin/plain" element={<PluginPage tag="antrea-test-picker-page" />} />
+                        </Routes>
+                    </MemoryRouter>
+                </AccessProvider>
+            </Provider>,
+        );
+        await waitFor(() => expect(document.querySelector('antrea-test-picker-page')).not.toBeNull());
+        const page = document.querySelector('antrea-test-picker-page') as PickerPageElement;
+        // The scope the URL carries is remembered, without the plugin forwarding anything.
+        await waitFor(() => expect(getLastScope('alice')).toBe('ns-a'));
+        await waitFor(() => expect(page.picker.scope?.access).not.toBeNull());
+
+        // A pick moves the router (and so the sidebar's links), keeping the rest of the query.
+        await act(async () => {
+            page.picker.shadowRoot!.querySelector('antrea-namespace-picker')!.dispatchEvent(
+                new CustomEvent('antrea-scope-select', { detail: { value: 'ns-b', typed: false } }));
+        });
+        expect(document.querySelector('[data-testid="location"]')!.textContent).toBe('/plugin/picker?namespace=ns-b&x=1');
+        expect(getLastScope('alice')).toBe('ns-b');
+        expect(page.picker.scope?.scope).toEqual({ kind: 'namespace', namespace: 'ns-b' });
+
+        await act(async () => { document.querySelector<HTMLAnchorElement>('a[href="/plugin/plain?x=2"]')!.click(); });
+        const plain = document.querySelector('antrea-test-picker-page') as PickerPageElement;
+        await waitFor(() => expect(plain.picker.scope?.access?.candidates).toEqual(['ns-a', 'ns-b']));
+        await act(async () => {
+            plain.picker.shadowRoot!.querySelector('antrea-namespace-picker')!.dispatchEvent(
+                new CustomEvent('antrea-scope-select', { detail: { value: 'ns-a', typed: false } }));
+        });
+        expect(document.querySelector('[data-testid="location"]')!.textContent).toBe('/plugin/plain?x=2');
+        expect(getLastScope('alice')).toBe('ns-b');
+    });
+
+    test('a picker on a plain plugin route can still report an expired session', async () => {
+        vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { status: 401 })));
+        const store = setupStore({ session: 'authenticated' });
+        render(
+            <Provider store={store}>
+                <AccessProvider>
+                    <MemoryRouter><PluginPage tag="antrea-test-picker-page" /></MemoryRouter>
+                </AccessProvider>
+            </Provider>,
+        );
+        await waitFor(() => expect(store.getState().session).toBe('anonymous'));
     });
 
     test('renders the permission panel instead of a gated page for a user who does not meet it', async () => {

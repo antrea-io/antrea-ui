@@ -18,12 +18,16 @@ import { APIError } from './api.js';
 import { isValidNamespaceName, namespaceAccess, scopeNote } from './namespace-access.js';
 import type { NamespaceAccess, ScopeNote } from './namespace-access.js';
 import {
-    SCOPE_ALL, parseScopeParam, dispatchScopeChosen, writeScopeToURL,
-    scopeToValue, valueToScope,
+    SCOPE_ALL, ALL_NAMESPACES_PARAM_VALUE, parseScopeParam, dispatchScopeChosen, writeScopeToURL,
+    searchWithScope, scopeToValue, valueToScope,
 } from './namespace-scope.js';
 import type { NamespaceScope } from './namespace-scope.js';
 
-// Shared Namespace selection and URL handling for Overview and Flow Visibility.
+// The page side of the Namespace scope rules, in one place: follow the
+// URL, settle on a default, validate what the user types, say what was chosen, note a Namespace
+// that is not listed. It is framework-agnostic, so a Lit page, a React page and a plugin written
+// in neither can all drive it. The built-in pages and the plugin-facing <antrea-namespace-scope>
+// element use this same implementation.
 
 /** What a page knows about its scope. A new object on every change. */
 export interface NamespaceScopeState {
@@ -44,18 +48,40 @@ export interface NamespaceScopeState {
     offerAll: boolean;
 }
 
+/** What a host supplies to have the controller call it, instead of dispatching the scope events
+ * from the page's element: for a host whose router must be told directly (see
+ * createPluginNamespaceScope). */
+export interface NamespaceScopeHostAdapter {
+    /** Puts `namespace` (a Namespace name, '_all', or null to remove it) in the current route's
+     * query, replacing the history entry. */
+    writeScope(namespace: string | null): void;
+    /** Records the last scope chosen for the signed-in user. */
+    rememberScope(scope: string): void;
+    /** Says that the session is dead (the API answered 401). */
+    sessionExpired(): void;
+}
+
+/** The permissions of a Namespace-aware page, any-of in either form. */
+export type NamespaceScopeResources = ResourceQuery[] | { anyOf: ResourceQuery[] };
+
 export interface NamespaceScopeOptions {
     /** Where the scope events are dispatched from: the page's own element, or any node inside it
-     * (the events bubble and are composed). */
+     * (the events bubble and are composed). A host adapter may handle them directly. */
     target: EventTarget;
-    /** The page's permissions, any-of. They decide the cluster-wide
+    /** The page's permissions, any-of, as in `requires.resources`. They decide the cluster-wide
      * verdict. Absent: allowed for a cluster admin, unknown for anyone else. */
-    resources?: ResourceQuery[];
+    resources?: NamespaceScopeResources;
+}
+
+/** Host-only options; plugin handles always use the host's navigation and session handling. */
+export interface NamespaceScopeControllerOptions extends NamespaceScopeOptions {
+    /** Calls the host directly instead of dispatching the events. */
+    adapter?: NamespaceScopeHostAdapter;
     /** Called instead of dispatching `antrea-session-expired` from `target`, for a page that has
-     * more to do when the session dies. */
+     * more to do when the session dies. Not for plugins. */
     onSessionExpired?: () => void;
     /** Whether the page is worth loading for right now. A load that finishes while it says no is
-     * dropped, and refreshAccess() runs it again. Absent: always. */
+     * dropped, and refreshAccess() runs it again. Absent: always. Not for plugins. */
     isActive?: () => boolean;
 }
 
@@ -64,13 +90,14 @@ export interface NamespaceScopeHandle {
     /** Calls `listener` with the new state on every change. Returns an unsubscribe function. */
     subscribe(listener: (state: NamespaceScopeState) => void): () => void;
     /** Feeds it the location's query string, on the first call and each time it changes.
-     * undefined: read window.location.search, and follow popstate. */
-    setLocationSearch(search: string | undefined): void;
+     * undefined: read window.location.search, and follow popstate. Pass new permissions with a
+     * navigation to publish the new location and permissions together. */
+    setLocationSearch(search: string | undefined, options?: { resources: NamespaceScopeResources | undefined }): void;
     /** The user chose a scope. `typed`: a typed value is checked as a Namespace name. Writes the
      * URL and reports the choice. */
     select(scope: NamespaceScope, typed?: boolean): void;
     /** Replaces the permissions the cluster-wide verdict is about. */
-    setResources(resources: ResourceQuery[] | undefined): void;
+    setResources(resources: NamespaceScopeResources | undefined): void;
     /** Loads what the picker offers again, if it has not loaded. */
     refreshAccess(): void;
     /** Stops listening and drops pending work. Call it when the page goes away. */
@@ -89,15 +116,19 @@ function isUnauthorized(err: unknown): boolean {
     return err instanceof APIError && err.code === 401;
 }
 
+function queriesOf(resources: NamespaceScopeResources): ResourceQuery[] {
+    return Array.isArray(resources) ? resources : resources.anyOf;
+}
+
 // Equivalent permissions from a fresh render must not clear the scope or restart its requests.
-function resourcesKey(resources: ResourceQuery[] | undefined): string | undefined {
-    return resources === undefined ? undefined : JSON.stringify(resources
+function resourcesKey(resources: NamespaceScopeResources | undefined): string | undefined {
+    return resources === undefined ? undefined : JSON.stringify(queriesOf(resources)
         .map(q => JSON.stringify([q.group, q.resource, q.verb, q.name])).sort());
 }
 
 /** Creates the scope controller of one page. */
-export function createNamespaceScope(options: NamespaceScopeOptions): NamespaceScopeHandle {
-    const { target } = options;
+export function createNamespaceScope(options: NamespaceScopeControllerOptions): NamespaceScopeHandle {
+    const { target, adapter } = options;
     let resources = options.resources;
     let resourceKey = resourcesKey(resources);
     let disposed = false;
@@ -138,12 +169,24 @@ export function createNamespaceScope(options: NamespaceScopeOptions): NamespaceS
     }
 
     function clusterWide(s: AccessSummary | null): Verdict {
-        if (resources) return pageVerdict(s, resources);
+        if (resources) return pageVerdict(s, queriesOf(resources));
         return s?.clusterAdmin ? 'allowed' : 'unknown';
+    }
+
+    function report(v: string) {
+        if (adapter) adapter.rememberScope(v === SCOPE_ALL ? ALL_NAMESPACES_PARAM_VALUE : v);
+        else dispatchScopeChosen(target, v);
+    }
+
+    function write(v: string): string {
+        if (!adapter) return writeScopeToURL(target, v);
+        adapter.writeScope(v === SCOPE_ALL ? ALL_NAMESPACES_PARAM_VALUE : (v || null));
+        return searchWithScope(appliedSearch, v);
     }
 
     function expireSession() {
         if (options.onSessionExpired) options.onSessionExpired();
+        else if (adapter) adapter.sessionExpired();
         else target.dispatchEvent(new CustomEvent('antrea-session-expired', { bubbles: true, composed: true }));
     }
 
@@ -185,7 +228,7 @@ export function createNamespaceScope(options: NamespaceScopeOptions): NamespaceS
             error = null;
             value = parsed.value;
             source = 'url';
-            dispatchScopeChosen(target, parsed.value);
+            report(parsed.value);
         } else {
             error = null;
             setDefault();
@@ -229,7 +272,7 @@ export function createNamespaceScope(options: NamespaceScopeOptions): NamespaceS
         }
     }
 
-    function replaceResources(next: ResourceQuery[] | undefined): boolean {
+    function replaceResources(next: NamespaceScopeResources | undefined): boolean {
         const nextKey = resourcesKey(next);
         if (nextKey === resourceKey) return false;
         resources = next;
@@ -246,7 +289,7 @@ export function createNamespaceScope(options: NamespaceScopeOptions): NamespaceS
             listeners.add(listener);
             return () => { listeners.delete(listener); };
         },
-        setLocationSearch(search) {
+        setLocationSearch(search, options) {
             if (disposed) return;
             if (search === undefined && !followPopState) {
                 window.addEventListener('popstate', onPopState);
@@ -256,19 +299,23 @@ export function createNamespaceScope(options: NamespaceScopeOptions): NamespaceS
                 followPopState = false;
             }
             const next = search ?? window.location.search;
+            const resourcesChanged = options !== undefined && replaceResources(options.resources);
             const first = !started;
-            if (!first && canonicalSearch(next) === canonicalSearch(appliedSearch)) return;
-            started = true;
-            appliedSearch = next;
-            applyFromURL(next);
+            if (first || canonicalSearch(next) !== canonicalSearch(appliedSearch)) {
+                started = true;
+                appliedSearch = next;
+                applyFromURL(next);
+            } else if (resourcesChanged) {
+                publishAccess();
+            }
             // Hosts may bind their listeners after connection. Replay only the initial URL
             // choice, and only if neither the location nor the user's choice has changed.
             if (first && source === 'url') {
                 queueMicrotask(() => {
-                    if (!disposed && source === 'url' && appliedSearch === next) dispatchScopeChosen(target, value);
+                    if (!disposed && source === 'url' && appliedSearch === next) report(value);
                 });
             }
-            if (first) void loadAccess();
+            if (first || resourcesChanged) void loadAccess();
         },
         select(scope, typed = false) {
             if (disposed) return;
@@ -280,10 +327,10 @@ export function createNamespaceScope(options: NamespaceScopeOptions): NamespaceS
                 return;
             }
             error = null;
-            dispatchScopeChosen(target, v);
+            report(v);
             // Chosen again, or chosen where the page was defaulted: the choice is still written,
             // so that a reload keeps it as one.
-            appliedSearch = writeScopeToURL(target, v);
+            appliedSearch = write(v);
             const changed = v !== value;
             value = v;
             source = 'picker';
