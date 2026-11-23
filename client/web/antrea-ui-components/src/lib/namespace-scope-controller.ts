@@ -147,9 +147,10 @@ export function createNamespaceScope(options: NamespaceScopeOptions): NamespaceS
         else target.dispatchEvent(new CustomEvent('antrea-session-expired', { bubbles: true, composed: true }));
     }
 
-    // The default needs the list and the verdict, so it waits for them. All Namespaces only where
-    // the verdict is allowed (an unknown verdict never makes it the default); otherwise the first
-    // Namespace of the list, unchecked.
+    // Without an explicit scope, Flow Visibility waits for a default before opening a stream.
+    // All Namespaces preserves the unredacted flow view for users with confirmed cluster-wide
+    // access. Otherwise, use the first candidate if one exists. Keep defaults out of the URL
+    // so a reload picks up changes to permissions and the Namespace list.
     function setDefault() {
         value = access?.clusterWide === 'allowed' ? SCOPE_ALL : (access?.candidates?.[0] ?? '');
         source = value ? 'default' : null;

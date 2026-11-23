@@ -626,7 +626,7 @@ export class AntreaOverviewPage extends SessionAwarePage {
                     label="Namespace" inputId="ns-picker"
                     .access=${this._access}
                     .scope=${this._scope}
-                    .offerAll=${(this._access?.clusterWide ?? 'unknown') !== 'denied'}
+                    .offerAll=${this._scopeHandle?.state().offerAll ?? true}
                     .note=${this._scopeNote?.text ?? ''}
                     @antrea-scope-select=${(e: CustomEvent<ScopeSelectDetail>) => this._onScopeSelect(e.detail.value, e.detail.typed)}>
                 </antrea-namespace-picker>

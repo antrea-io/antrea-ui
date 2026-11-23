@@ -967,7 +967,7 @@ describe('AntreaFlowVisibilityPage — the scope in the URL', () => {
 
     // Only a default needs the list and the verdict. A scope in the URL is used as given, so the
     // stream opens on it while the list is still loading for the picker.
-    test('a scope in the URL does not wait for the access summary', async () => {
+    test('a scope in the URL opens the stream on connect and reconnect while the access summary is pending', async () => {
         const fetchMock = vi.fn(async () => sseResponse([]));
         let release!: () => void;
         const gate = new Promise<void>(r => { release = r; });
@@ -988,10 +988,17 @@ describe('AntreaFlowVisibilityPage — the scope in the URL', () => {
         expect(streamCalls(fetchMock)).toHaveLength(1);
         expect(streamParams(fetchMock).get('observedNamespace')).toBe('ns-a');
 
+        el.remove();
+        await el.updateComplete;
+        document.body.appendChild(el);
+        await el.updateComplete;
+        expect(streamCalls(fetchMock)).toHaveLength(2);
+        expect(streamParams(fetchMock, 1).get('observedNamespace')).toBe('ns-a');
+
         release();
         await vi.advanceTimersByTimeAsync(0);
         await el.updateComplete;
-        expect(streamCalls(fetchMock)).toHaveLength(1);
+        expect(streamCalls(fetchMock)).toHaveLength(2);
         expect(scopeValue(el)).toBe('ns-a');
     });
 

@@ -1086,6 +1086,8 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         this._scopeHandle = handle;
         this._unsubscribeScope = handle.subscribe(state => this._onScopeState(state));
         handle.setLocationSearch(this.locationSearch);
+        // Detaching stops the stream. Reopen it on reattach even when the scope is unchanged.
+        this.requestUpdate();
     }
 
     private _onScopeState(state: NamespaceScopeState) {
@@ -1106,13 +1108,6 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         this._observedNs = observedNs;
         // The open filter menu lists the old scope's names, which the new scope does not offer.
         this._nsOpen = false; this._podOpen = false; this._svcOpen = false;
-    }
-
-    /** Whether the cluster scope is worth offering: unless the user is known not to hold it. A
-     * grant that cannot be seen in the rules, as with a webhook authorizer, is 'unknown' and not
-     * a denial. Only 'allowed' makes it the default. */
-    private get _mayHoldClusterWide(): boolean {
-        return (this._flowAccess?.clusterWide ?? 'unknown') !== 'denied';
     }
 
     /** The selected scope, or null when none is: the state in which this page deliberately opens
@@ -2023,19 +2018,15 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         this.renderRoot.querySelector('antrea-namespace-picker')?.close();
     }
 
-    /** The observed-namespace selector: required, single-select, and the same control in both
-     * views so the two cannot disagree about what is being observed. It is the picker every
-     * Namespace-aware page shares (antrea-namespace-picker). All Namespaces is offered unless the
-     * user is known not to hold it (see _mayHoldClusterWide). The placeholder is not where the
-     * page starts; it shows because no scope remains a state the page can
-     * hold. */
+    /** Both flow views share the observed Namespace picker. It shows a placeholder while the
+     * page has no scope. */
     private _renderScopeSelect() {
         return html`
             <antrea-namespace-picker
                 label="Show flows of" inputId="observed-ns"
                 .access=${this._flowAccess}
                 .scope=${this._clusterWide ? SCOPE_ALL : this._observedNs}
-                .offerAll=${this._mayHoldClusterWide}
+                .offerAll=${this._scopeHandle?.state().offerAll ?? true}
                 .note=${this._scopeNote?.text ?? ''}
                 @antrea-scope-select=${(e: CustomEvent<ScopeSelectDetail>) => this._onScopeChange(e.detail.value, e.detail.typed)}>
             </antrea-namespace-picker>
