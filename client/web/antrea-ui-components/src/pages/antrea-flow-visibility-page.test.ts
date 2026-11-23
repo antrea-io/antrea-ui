@@ -5000,6 +5000,8 @@ describe('AntreaFlowVisibilityPage — namespace aggregation', () => {
         expect(overlaps()).toBeGreaterThan(0);
         expect(state._mapLayoutPending).toBe(true);
 
+        simulation.tick(20);
+        const alphaBeforeArrival = simulation.alpha();
         const store = new FlowStore();
         store.upsertBatch([...flows, makeFlow({
             srcNs: kind === 'workload' ? 'a' : 'new', dstNs: 'b',
@@ -5008,6 +5010,7 @@ describe('AntreaFlowVisibilityPage — namespace aggregation', () => {
         state._entries = store.getAll();
         await page.updateComplete;
         simulation.stop();
+        expect(simulation.alpha()).toBe(alphaBeforeArrival);
         expect(children.every(n => n.fx == null && n.fy == null)).toBe(true);
         expect([peer.fx, peer.fy]).toEqual(peerPosition);
         expect(root.querySelector('.map-layout-snapshot')).toBe(snapshot);
@@ -5358,6 +5361,31 @@ describe('AntreaFlowVisibilityPage — namespace aggregation', () => {
             window.dispatchEvent(mouse('mouseup', ...to));
             target.dispatchEvent(mouse('click', ...to));
         };
+
+        test('dragging a namespace background pans the scoped map even when its hull is reused', async () => {
+            const { page, state } = await aggregate([makeFlow({ srcNs: 'a', dstNs: 'b' })]);
+            const simulation = state._simulation.stop().tick(300);
+            simulation.on('end')!.call(simulation);
+            state._toggleNamespace('a');
+            await page.updateComplete;
+            const root = page.shadowRoot!;
+            const boundary = root.querySelector('.ns-hulls g.namespace rect')!;
+            state._clusterWide = false;
+            state._expandedNamespaces = new Set();
+            await page.updateComplete;
+            simulation.stop().tick(300);
+            simulation.on('end')!.call(simulation);
+            expect(root.contains(boundary)).toBe(true);
+            const svg = root.querySelector<SVGSVGElement>('#graph-svg')!;
+            const before = d3.zoomTransform(svg);
+            const nodes = simulation.nodes() as D3Node[];
+            const positions = () => nodes.map(n => [n.x, n.y, n.fx, n.fy, n.userPinned]);
+            const original = positions();
+            press(boundary, [100, 90]);
+            expect(d3.zoomTransform(svg)).toMatchObject({ x: before.x + 60, y: before.y + 40, k: before.k });
+            expect(positions()).toEqual(original);
+            await vi.advanceTimersByTimeAsync(0);
+        });
 
         test.each([
             { scale: 0.5, distance: 2, drag: false }, { scale: 2, distance: 4, drag: true },

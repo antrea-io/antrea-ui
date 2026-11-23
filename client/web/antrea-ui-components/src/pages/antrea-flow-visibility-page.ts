@@ -2159,7 +2159,9 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         const nsHulls = layer('ns-hulls');
         const hullGroups = nsHulls.selectAll<SVGGElement, [string, D3Node[]]>('g.namespace')
             .data(Array.from(nsMap), d => d[0]).join('g').attr('class', 'namespace')
-            .style('cursor', 'grab').call(this._namespaceDrag);
+            .style('cursor', () => this._clusterWide ? 'grab' : null);
+        if (this._clusterWide) hullGroups.call(this._namespaceDrag);
+        else hullGroups.on('.drag', null);
         hullGroups.selectAll('rect').data(d => [d]).join('rect').attr('rx', 12).attr('ry', 12)
             .style('fill', MAP_COLOR_VAR.nsHullFill).style('stroke', MAP_COLOR_VAR.nsHullStroke)
             .attr('stroke-width', 1).attr('stroke-dasharray', '4,2');
@@ -2526,6 +2528,9 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
             simulation.stop();
             finishLayout();
         } else if (added.length && !resetPositions) {
+            // Batches arriving during a hidden layout must let it cool so the map becomes interactive.
+            if (full && initial) simulation.alpha(1);
+            else if (namespaceTransition || !this._mapLayoutStatic || !continuingLayout) simulation.alpha(0.15);
             this._mapLayoutPending = true;
             this._mapLayoutFull = full;
             this._mapLayoutStatic = this._mapLayoutStatic || full || namespaceTransition;
@@ -2534,7 +2539,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
             if (!full && !continuingLayout) {
                 for (const n of pinMapNodes(d3Nodes.filter(n => !added.includes(n)))) this._settlePinned.add(n);
             }
-            simulation.alpha(namespaceTransition ? 0.15 : initial ? 1 : full ? simulation.alpha() : 0.15).alphaTarget(0).restart();
+            simulation.alphaTarget(0).restart();
         } else if (newViewport && this._mapLayoutPending && simulation.alpha() >= simulation.alphaMin()) {
             // Continue an interrupted layout at its existing alpha and node positions.
             simulation.restart();
