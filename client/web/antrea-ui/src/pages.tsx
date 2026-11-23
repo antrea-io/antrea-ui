@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import React, { useRef, useCallback, useEffect, useState } from 'react';
+import React, { useRef, useCallback, useEffect, useMemo, useState } from 'react';
 import { useSelector } from 'react-redux';
 import '@antrea/ui-components';
 import {
@@ -26,6 +26,8 @@ import type { PluginAccessRequirement, ScopeChangeDetail, ScopeChosenDetail } fr
 import { Navigate, useLocation, useSearchParams } from 'react-router';
 import { getLastScope, scopeSearch, setLastScope } from './lastScope';
 import { useLogout } from './logout';
+import { bindPluginScope } from './pluginScope';
+import type { PluginScopeNavigation } from './pluginScope';
 import { allowsPluginItem, BUILTIN_LANDING_PAGE_TAB_ID, getEdgeExtraRenderers, getFlowTableColumnsProcessors } from './plugins';
 import { useAccess, useScopeUser } from './access';
 import type { LandingPageTab } from './plugins';
@@ -83,7 +85,7 @@ function RequirePermission({ allowed, loaded, children }: { allowed: boolean, lo
     return <>{children}</>;
 }
 
-function useLitPage() {
+function useLitPage(navigation?: PluginScopeNavigation) {
     const logout = useLogout();
     const attachedTo = useRef<HTMLElement | null>(null);
 
@@ -108,7 +110,8 @@ function useLitPage() {
         if (attachedTo.current) attachedTo.current.removeEventListener('antrea-session-expired', onSessionExpired);
         attachedTo.current = el;
         if (el) el.addEventListener('antrea-session-expired', onSessionExpired);
-    }, [onSessionExpired]);
+        bindPluginScope(el ? { sessionExpired: onSessionExpired, navigation } : null);
+    }, [onSessionExpired, navigation]);
 
     return { ref };
 }
@@ -217,18 +220,27 @@ export function SupportBundlePage() {
 // or its URL is remembered as the last scope chosen (see lastScope.ts), which the navigation
 // entries carry.
 function useNamespaceScope() {
-    const { ref: litRef } = useLitPage();
     const { search } = useLocation();
     const [, setSearchParams] = useSearchParams();
     const user = useScopeUser();
+    const navigation = useMemo<PluginScopeNavigation>(() => ({
+        writeScope: namespace => setSearchParams(prev => {
+            const next = new URLSearchParams(prev);
+            if (namespace === null) next.delete('namespace');
+            else next.set('namespace', namespace);
+            return next;
+        }, { replace: true }),
+        rememberScope: scope => setLastScope(user, scope),
+    }), [setSearchParams, user]);
+    const { ref: litRef } = useLitPage(navigation);
     const attachedTo = useRef<HTMLElement | null>(null);
     const onScopeChange = useCallback((e: Event) => {
         const { search } = (e as CustomEvent<ScopeChangeDetail>).detail;
         setSearchParams(new URLSearchParams(search), { replace: true });
     }, [setSearchParams]);
     const onScopeChosen = useCallback((e: Event) => {
-        setLastScope(user, (e as CustomEvent<ScopeChosenDetail>).detail.scope);
-    }, [user]);
+        navigation.rememberScope((e as CustomEvent<ScopeChosenDetail>).detail.scope);
+    }, [navigation]);
     // A callback ref for the same reason as useLitPage's: the element mounts once the permission
     // check resolves, which does not re-render a hook declared here to notice it.
     const ref = useCallback((el: HTMLElement | null) => {
