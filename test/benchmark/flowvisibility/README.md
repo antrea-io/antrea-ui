@@ -84,8 +84,8 @@ bin/flowbench run --context kind-flowbench --scale small,medium,large
 For each scale, `run` deploys it, restarting antrea-ui and `fakefa` so that every measurement
 starts from fresh processes, opens the Service Map (`--path /flows/list?namespace=_all` for the
 flow list) in a headless Chromium logged in as the benchmark's cluster-admin, waits for the first
-render, lets it warm up (`--warmup`, 30s), then samples for `--duration` (2m) every
-`--sample-interval` (2s). Use `--no-deploy` to measure whatever is deployed instead, as it is.
+visible map node or flow row, lets it warm up (`--warmup`, 30s), then samples for `--duration`
+(2m) every `--sample-interval` (2s). Use `--no-deploy` to measure whatever is deployed instead, as it is.
 
 The default path, `/flows/map?namespace=_all`, is the cluster-wide map. It folds each identified
 Namespace into one node and draws at most 50 edges, though the page still streams and stores every
@@ -108,7 +108,7 @@ With several scales, `comparison.md` puts them side by side.
 
 | Metric | Source |
 | --- | --- |
-| First render, settle time | Time to the map's first node (or the list's first flow); then time until the main thread is first under 20% busy, i.e. the initial layout has converged. Only during the warmup, so a long settle needs a long `--warmup` |
+| First render, settle time | Time from navigation until the initial map layout shows a node or the flow list shows a row. Settle time starts there and ends at the first sample with main-thread usage under 20%. Only during the warmup, so a long settle needs a long `--warmup` |
 | Flows streamed to antrea-ui | `fakefa` `/stats`, read through the API server's Service proxy |
 | Connections in the page's flow store, map nodes and edges, SVG elements | The page's DOM, and its flow store's size |
 | Renderer main thread busy, and its script, layout and style shares | CDP `Performance.getMetrics` (`TaskDuration`, `ScriptDuration`, ...) |
