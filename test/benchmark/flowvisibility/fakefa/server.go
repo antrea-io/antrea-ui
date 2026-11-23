@@ -26,6 +26,7 @@ import (
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 	"k8s.io/apimachinery/pkg/labels"
 
@@ -105,24 +106,25 @@ func (s *Server) GetFlows(req *flowpb.GetFlowsRequest, stream flowpb.FlowStreamS
 	s.streamsOpen.Add(1)
 	defer s.streamsOpen.Add(-1)
 
-	var droppedTotal uint64
+	var droppedTotal, reportedDropped uint64
 	// lastToken is the sequence number of the last resume token sent.
 	lastToken := from - 1
-	send := func(flows []*flowpb.Flow) error {
+	send := func(flows []*flowpb.Flow, sequence int64) error {
 		resp := &flowpb.GetFlowsResponse{
 			Flows:        flows,
 			DroppedCount: droppedTotal,
-			ResumeToken:  &flowpb.ResumeToken{StreamEpoch: s.epoch, SequenceNumber: from - 1},
+			ResumeToken:  &flowpb.ResumeToken{StreamEpoch: s.epoch, SequenceNumber: sequence},
 		}
 		if err := stream.Send(resp); err != nil {
 			return err
 		}
-		lastToken = from - 1
+		lastToken = sequence
+		reportedDropped = droppedTotal
 		s.recordsSent.Add(uint64(len(flows)))
 		s.bytesSent.Add(uint64(proto.Size(resp))) // #nosec G115: a size is never negative
 		return nil
 	}
-	if err := send(nil); err != nil {
+	if err := send(nil, from-1); err != nil {
 		return err
 	}
 
@@ -140,23 +142,38 @@ func (s *Server) GetFlows(req *flowpb.GetFlowsRequest, stream flowpb.FlowStreamS
 		from = next
 		droppedTotal += dropped
 		var out []*flowpb.Flow
+		var flowBytes int
 		for i, r := range records {
 			if !m.match(r) {
 				continue
 			}
+			// Reserve 1 KiB of the 4 MiB response for dropped_count and the resume token.
+			const maxFlowBytes = (4 << 20) - 1024
+			size := protowire.SizeTag(1) + protowire.SizeBytes(proto.Size(r))
+			if size > maxFlowBytes {
+				droppedTotal++
+				continue
+			}
+			if flowBytes+size > maxFlowBytes {
+				// The token stops just before r, which starts the next response.
+				if err := send(out, first+int64(i)-1); err != nil {
+					return err
+				}
+				out = nil
+				flowBytes = 0
+			}
 			out = append(out, r)
-			if maxCount > 0 && sent+uint64(len(out)) == maxCount {
-				// The rest of the batch is not accounted for: the resume token stops at the last
-				// record sent.
+			flowBytes += size
+			sent++
+			if maxCount > 0 && sent == maxCount {
 				from = first + int64(i) + 1
 				break
 			}
 		}
-		if len(out) > 0 || dropped > 0 || from-1-lastToken >= tokenRefreshSpan {
-			if err := send(out); err != nil {
+		if len(out) > 0 || droppedTotal > reportedDropped || from-1-lastToken >= tokenRefreshSpan {
+			if err := send(out, from-1); err != nil {
 				return err
 			}
-			sent += uint64(len(out))
 		}
 		if maxCount > 0 && sent >= maxCount {
 			return nil
@@ -164,7 +181,7 @@ func (s *Server) GetFlows(req *flowpb.GetFlowsRequest, stream flowpb.FlowStreamS
 		if len(records) < maxBatch {
 			if !req.Follow {
 				if from-1 > lastToken {
-					return send(nil)
+					return send(nil, from-1)
 				}
 				return nil
 			}
@@ -190,6 +207,7 @@ type filter struct {
 	selector   labels.Selector
 	services   []string
 	flowTypes  []flowpb.FlowType
+	outcomes   []flowpb.NetworkPolicyOutcome
 	prefixes   []netip.Prefix
 	direction  flowpb.FlowFilterDirection
 }
@@ -206,11 +224,17 @@ func newMatcher(req *flowpb.GetFlowsRequest) (*matcher, error) {
 		if f.Direction == flowpb.FlowFilterDirection_FLOW_FILTER_DIRECTION_FROM && len(f.ServiceNames) > 0 {
 			return nil, errors.New("a filter cannot combine direction FROM with service_names")
 		}
+		for _, outcome := range f.NetworkPolicyOutcomes {
+			if _, ok := flowpb.NetworkPolicyOutcome_name[int32(outcome)]; !ok || outcome == flowpb.NetworkPolicyOutcome_NETWORK_POLICY_OUTCOME_UNSPECIFIED {
+				return nil, errors.New("invalid network_policy_outcomes value")
+			}
+		}
 		pf := filter{
 			namespaces: f.Namespaces,
 			pods:       f.PodNames,
 			services:   f.ServiceNames,
 			flowTypes:  f.FlowTypes,
+			outcomes:   f.NetworkPolicyOutcomes,
 			direction:  f.Direction,
 		}
 		if f.PodLabelSelector != "" {
@@ -238,7 +262,8 @@ func newMatcher(req *flowpb.GetFlowsRequest) (*matcher, error) {
 
 func (m *matcher) match(r *flowpb.Flow) bool {
 	k := r.K8S
-	if m.namespace != "" && k.SourcePodNamespace != m.namespace && k.DestinationPodNamespace != m.namespace {
+	if m.namespace != "" && k.GetSourcePodNamespace() != m.namespace &&
+		(k.GetDestinationPodNamespace() != m.namespace || !reachedDestinationNamespace(k)) {
 		return false
 	}
 	if !m.since.IsZero() && r.EndTs.AsTime().Before(m.since) {
@@ -258,24 +283,45 @@ type endpoint struct {
 	ip             []byte
 }
 
+func reachedDestinationNamespace(k *flowpb.Kubernetes) bool {
+	if k.GetEgressNetworkPolicyRuleAction().Denies() {
+		return false
+	}
+	if !k.GetIngressNetworkPolicyRuleAction().Denies() {
+		return true
+	}
+	switch k.GetIngressNetworkPolicyType() {
+	case flowpb.NetworkPolicyType_NETWORK_POLICY_TYPE_K8S:
+		// An implicit K8s isolation drop can omit the policy Namespace.
+		return true
+	case flowpb.NetworkPolicyType_NETWORK_POLICY_TYPE_ANP:
+		return k.GetIngressNetworkPolicyNamespace() == k.GetDestinationPodNamespace()
+	default:
+		return false
+	}
+}
+
 // match reports whether r passes f: the endpoint criteria (Namespace, Pod, labels, IP) must all
 // hold for the same endpoint, the one f's direction selects, or either one for "both".
 func (f *filter) match(r *flowpb.Flow) bool {
 	k := r.K8S
-	if len(f.flowTypes) > 0 && !slices.Contains(f.flowTypes, k.FlowType) {
+	if len(f.flowTypes) > 0 && !slices.Contains(f.flowTypes, k.GetFlowType()) {
+		return false
+	}
+	if len(f.outcomes) > 0 && !slices.Contains(f.outcomes, k.PolicyOutcome()) {
 		return false
 	}
 	if len(f.services) > 0 {
 		// An entry is either a plain name, matching a Service of that name in any Namespace, or
 		// namespace/name, matching that Service only.
-		nsName, _, _ := strings.Cut(k.DestinationServicePortName, ":")
+		nsName, _, _ := strings.Cut(k.GetDestinationServicePortName(), ":")
 		_, svc, _ := strings.Cut(nsName, "/")
 		if svc == "" || !slices.ContainsFunc(f.services, func(s string) bool { return s == svc || s == nsName }) {
 			return false
 		}
 	}
-	src := endpoint{k.SourcePodNamespace, k.SourcePodName, k.SourcePodLabels.GetLabels(), r.Ip.GetSource()}
-	dst := endpoint{k.DestinationPodNamespace, k.DestinationPodName, k.DestinationPodLabels.GetLabels(), r.Ip.GetDestination()}
+	src := endpoint{k.GetSourcePodNamespace(), k.GetSourcePodName(), k.GetSourcePodLabels().GetLabels(), r.Ip.GetSource()}
+	dst := endpoint{k.GetDestinationPodNamespace(), k.GetDestinationPodName(), k.GetDestinationPodLabels().GetLabels(), r.Ip.GetDestination()}
 	switch f.direction {
 	case flowpb.FlowFilterDirection_FLOW_FILTER_DIRECTION_FROM:
 		return f.matchEndpoint(src)

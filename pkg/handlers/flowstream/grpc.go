@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"io"
 	"net/netip"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -89,6 +90,9 @@ const (
 	// maxCount fail this way. Not a permission problem. Not retryable: the same request will be
 	// rejected again.
 	StreamErrorCodeInvalidRequest = "invalid_request"
+	// StreamErrorCodeQueryIncomplete means a finite source counted records outside the
+	// requested policy outcomes toward max_count. More matching records may remain unread.
+	StreamErrorCodeQueryIncomplete = "flow_query_incomplete"
 	// StreamErrorCodeFlowAggregatorTooOld means the flow source predates per-user flow
 	// authorization, so it would ignore the stream's scope and stream every flow it has,
 	// unredacted. The value predates flow sources and is kept because it is part of the SSE
@@ -367,7 +371,9 @@ func (h *GRPCFlowStreamSubscriber) Subscribe(ctx context.Context, scope *FlowStr
 		// server-streaming RPC, an error the server returns before sending anything (FA's
 		// Unauthenticated/ResourceExhausted included) surfaces on the first Recv, not on the
 		// call that opens the stream.
-		stream, firstResp, err := h.startStream(ctx, client, callCtx, req)
+		callCtx, cancel := context.WithCancel(callCtx)
+		defer cancel()
+		stream, resp, err := h.startStream(ctx, client, callCtx, req)
 		if err != nil {
 			h.logDenial(ctx, err)
 			errCh <- err
@@ -395,7 +401,7 @@ func (h *GRPCFlowStreamSubscriber) Subscribe(ctx context.Context, scope *FlowStr
 		// "supported" verdict would let a rollback, or a rolling update briefly routing to an
 		// old replica, stream unredacted data with no error for as long as the verdict stayed
 		// trusted.
-		if firstResp.GetResumeToken().GetStreamEpoch() == "" {
+		if resp.GetResumeToken().GetStreamEpoch() == "" {
 			errCh <- flowSourceTooOldErr(h.name, h.address)
 			return
 		}
@@ -405,13 +411,32 @@ func (h *GRPCFlowStreamSubscriber) Subscribe(ctx context.Context, scope *FlowStr
 		// We forward a new event only when the count increases; the forwarded value is the
 		// absolute cumulative total, not a per-event delta.
 		var lastDroppedCount uint64
-		if firstResp != nil {
-			if !h.forwardResp(ctx, firstResp, &lastDroppedCount, flowsCh) {
+		var received uint64
+		var skipped bool
+		for {
+			if len(filter.NetworkPolicyOutcomes) > 0 {
+				// Older sources ignore the protobuf field. Rule actions survive redaction,
+				// so the backend can apply the same filter to authorized records.
+				count := len(resp.Flows)
+				resp.Flows = slices.DeleteFunc(resp.Flows, func(f *flowpb.Flow) bool {
+					return !slices.Contains(filter.NetworkPolicyOutcomes, f.GetK8S().PolicyOutcome())
+				})
+				if req.MaxCount > 0 {
+					received += uint64(count)
+					skipped = skipped || len(resp.Flows) < count
+					// A source that counted nonmatches can stop at max_count with more
+					// matches still unread. EOF would report that result as complete.
+					if skipped && received >= uint64(req.MaxCount) {
+						errCh <- &StreamError{Code: StreamErrorCodeQueryIncomplete, msg: fmt.Sprintf(
+							"flow source %q reached the query limit before filtering by network policy outcome; use a source that supports network_policy_outcomes or narrow the time window", h.name)}
+						return
+					}
+				}
+			}
+			if !h.forwardResp(ctx, resp, &lastDroppedCount, flowsCh) {
 				return
 			}
-		}
-		for {
-			resp, err := stream.Recv()
+			resp, err = stream.Recv()
 			if err != nil {
 				if !filter.following() && ctx.Err() == nil && status.Code(err) == codes.Canceled {
 					errCh <- retryableInternalStreamError(fmt.Errorf("flow source %q canceled the query before completion", h.name))
@@ -428,9 +453,6 @@ func (h *GRPCFlowStreamSubscriber) Subscribe(ctx context.Context, scope *FlowStr
 				streamErr := h.classifyStreamErr(err)
 				h.logDenial(ctx, streamErr)
 				errCh <- streamErr
-				return
-			}
-			if !h.forwardResp(ctx, resp, &lastDroppedCount, flowsCh) {
 				return
 			}
 		}
@@ -617,12 +639,13 @@ var filterDirectionToProto = map[FlowFilterDirection]flowpb.FlowFilterDirection{
 // GetFlowsRequest.Namespaces, and is where a future multi-Namespace scope would land.
 func filterToGetFlowsRequest(scope *FlowStreamScope, filter *FlowStreamFilter) *flowpb.GetFlowsRequest {
 	pbFilter := &flowpb.FlowFilter{
-		Namespaces:       filter.Namespaces,
-		PodNames:         filter.PodNames,
-		PodLabelSelector: filter.PodLabelSelector,
-		ServiceNames:     filter.ServiceNames,
-		Ips:              filter.IPs,
-		Direction:        filterDirectionToProto[filter.Direction],
+		Namespaces:            filter.Namespaces,
+		PodNames:              filter.PodNames,
+		PodLabelSelector:      filter.PodLabelSelector,
+		ServiceNames:          filter.ServiceNames,
+		NetworkPolicyOutcomes: filter.NetworkPolicyOutcomes,
+		Ips:                   filter.IPs,
+		Direction:             filterDirectionToProto[filter.Direction],
 	}
 	for _, ft := range filter.FlowTypes {
 		pbFilter.FlowTypes = append(pbFilter.FlowTypes, flowpb.FlowType(ft))
