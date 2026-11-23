@@ -96,6 +96,7 @@ func TestFilterToGetFlowsRequest(t *testing.T) {
 		wantIPs        []string
 		wantLabelSel   string
 		wantFlowTypes  []flowpb.FlowType
+		wantOutcomes   []flowpb.NetworkPolicyOutcome
 	}{
 		{
 			name:          "empty filter maps to BOTH direction; gRPC follow is always true",
@@ -132,7 +133,11 @@ func TestFilterToGetFlowsRequest(t *testing.T) {
 				ServiceNames:     []string{"svc-a"},
 				IPs:              []string{"10.0.0.1", "10.0.0.0/24"},
 				FlowTypes:        []apisv1.FlowType{apisv1.FlowTypeIntraNode, apisv1.FlowTypeInterNode},
-				Direction:        FlowFilterDirectionFrom,
+				NetworkPolicyOutcomes: []flowpb.NetworkPolicyOutcome{
+					flowpb.NetworkPolicyOutcome_NETWORK_POLICY_OUTCOME_ALLOWED,
+					flowpb.NetworkPolicyOutcome_NETWORK_POLICY_OUTCOME_UNPROTECTED,
+				},
+				Direction: FlowFilterDirectionFrom,
 			},
 			wantDirection:  flowpb.FlowFilterDirection_FLOW_FILTER_DIRECTION_FROM,
 			wantNamespaces: []string{"default", "kube-system"},
@@ -141,6 +146,10 @@ func TestFilterToGetFlowsRequest(t *testing.T) {
 			wantIPs:        []string{"10.0.0.1", "10.0.0.0/24"},
 			wantLabelSel:   "app=frontend",
 			wantFlowTypes:  []flowpb.FlowType{flowpb.FlowType_FLOW_TYPE_INTRA_NODE, flowpb.FlowType_FLOW_TYPE_INTER_NODE},
+			wantOutcomes: []flowpb.NetworkPolicyOutcome{
+				flowpb.NetworkPolicyOutcome_NETWORK_POLICY_OUTCOME_ALLOWED,
+				flowpb.NetworkPolicyOutcome_NETWORK_POLICY_OUTCOME_UNPROTECTED,
+			},
 		},
 	}
 
@@ -157,6 +166,7 @@ func TestFilterToGetFlowsRequest(t *testing.T) {
 			assert.Equal(t, tt.wantIPs, req.Filters[0].Ips)
 			assert.Equal(t, tt.wantLabelSel, req.Filters[0].PodLabelSelector)
 			assert.Equal(t, tt.wantFlowTypes, req.Filters[0].FlowTypes)
+			assert.Equal(t, tt.wantOutcomes, req.Filters[0].NetworkPolicyOutcomes)
 			assert.True(t, req.Follow, "gRPC follow must always be true")
 		})
 	}

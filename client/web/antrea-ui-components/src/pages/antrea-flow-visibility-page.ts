@@ -50,6 +50,8 @@ import {
     FLOW_QUERY_STATE_EVENT,
     FlowFilterDirection,
     FlowTypeName,
+    NetworkPolicyOutcome,
+    restrictedPolicyOutcomes,
     streamFilterKey,
 } from '../lib/flow-stream.js';
 import {
@@ -168,6 +170,12 @@ const NONE_SEEN_FILTERED_HINT = 'None seen in this scope yet. The applied filter
 // a Pod and some endpoint in that Namespace. Grouping them is what tells them apart from the scope,
 // which is also a Namespace but says whose traffic is shown.
 const ENDPOINT_HINT = 'These filters all match the same endpoint of a flow: its source, its destination, or either one.';
+
+const POLICY_OUTCOMES: { value: NetworkPolicyOutcome; label: string; edgeRole: EdgeRole; hint: string }[] = [
+    { value: 'allowed', label: 'Allowed', edgeRole: 'allow', hint: 'A rule allowed the flow and neither side recorded a Drop or Reject.' },
+    { value: 'denied', label: 'Denied', edgeRole: 'drop', hint: 'An ingress or egress rule dropped or rejected the flow.' },
+    { value: 'unprotected', label: 'Unprotected', edgeRole: 'default', hint: 'Neither ingress nor egress recorded a rule for this flow.' },
+];
 
 // Said on whichever of the two controls is held back: a Service is only ever the destination of a
 // flow, so the Flow Aggregator rejects a Service filter with the endpoint filters on the source.
@@ -954,12 +962,17 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
             padding-bottom: calc(0.75rem + 1px);
         }
         .filter-actions { gap: 0.5rem; flex-shrink: 0; }
-        .endpoint-group {
+        .endpoint-group, .outcome-group {
             display: flex; align-items: flex-end; gap: 1rem; flex-wrap: wrap;
             margin: 0; padding: 0.25rem 0.75rem 0.75rem; min-width: 0;
             border: 1px solid var(--antrea-color-border, #314351); border-radius: 4px;
         }
-        .endpoint-group legend { padding: 0 4px; margin-bottom: 0; }
+        .endpoint-group legend, .outcome-group legend { padding: 0 4px; margin-bottom: 0; }
+        .outcome-group label {
+            display: inline-flex; align-items: center; gap: 0.25rem; min-height: 2rem;
+            font-size: var(--antrea-font-size-base, 0.875rem); cursor: pointer;
+        }
+        .outcome-group input { margin: 0; accent-color: var(--antrea-color-primary, #0079b8); }
         .status-row { display: flex; align-items: center; gap: 1.5rem; flex-wrap: wrap; font-size: 0.75rem; color: var(--antrea-color-text-muted, #adbbc4); }
         .status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
 
@@ -1160,6 +1173,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
     @state() private _pendingPods: string[] = [];
     @state() private _pendingServices: string[] = [];
     @state() private _pendingFlowType: FlowTypeName | '' = '';
+    @state() private _pendingOutcomes: NetworkPolicyOutcome[] = [];
     @state() private _pendingDirection: FlowFilterDirection = 'both';
     // What is typed in the open filter menu's search box. Only one menu is open at a time, and
     // opening one starts a new search.
@@ -1716,6 +1730,8 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
             if (svcNames.length) filter.services = svcNames;
         }
         if (this._pendingFlowType) filter.flowTypes = [this._pendingFlowType];
+        const outcomes = restrictedPolicyOutcomes(this._pendingOutcomes);
+        if (outcomes.length) filter.networkPolicyOutcomes = outcomes;
         const ips = this._pendingIps.split(',').map(s => s.trim()).filter(Boolean);
         if (ips.length) filter.ips = ips;
         if (this._pendingDirection !== 'both') filter.direction = this._pendingDirection;
@@ -1726,6 +1742,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         this._nsOpen = false; this._podOpen = false; this._svcOpen = false;
         this._pendingNs = []; this._pendingPods = []; this._pendingServices = [];
         this._pendingFlowType = ''; this._pendingDirection = 'both';
+        this._pendingOutcomes = [];
         this._pendingIps = ''; this._pendingPodLabel = '';
         this._applyFilter({});
     }
@@ -2696,7 +2713,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         return this._scope !== null && names.length === 0;
     }
 
-    private _toggleSelection(current: string[], value: string): string[] {
+    private _toggleSelection<T extends string>(current: T[], value: T): T[] {
         return current.includes(value) ? current.filter(v => v !== value) : [...current, value];
     }
 
@@ -2790,6 +2807,17 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
                         </div>
                     </div>
 
+                    <fieldset class="outcome-group">
+                        <legend class="field-label" title="Leave all unchecked to include every verdict.">Policy verdict</legend>
+                        ${POLICY_OUTCOMES.map(({ value, label, hint }) => html`
+                            <label title=${hint}>
+                                <input type="checkbox" .value=${value} .checked=${this._pendingOutcomes.includes(value)}
+                                    @change=${() => { this._pendingOutcomes = this._toggleSelection(this._pendingOutcomes, value); }} />
+                                ${label}
+                            </label>
+                        `)}
+                    </fieldset>
+
                     <div class="filter-actions">
                         <antrea-button type="button" @click=${this._onApplyFilters}>Apply Filters</antrea-button>
                         <antrea-button type="button" action="outline" @click=${this._onResetFilters}>Reset</antrea-button>
@@ -2804,7 +2832,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
                     </span>
                     <span>${this._entries.length} connections</span>
                     ${!this._following ? html`<span>${this._snapshotCount} snapshots received</span>` : nothing}
-                    ${this._droppedCount > 0 ? html`<span class="warn">${this._droppedCount} flows dropped (buffer overflow)</span>` : nothing}
+                    ${this._droppedCount > 0 ? html`<span class="warn">${this._droppedCount} flow records dropped by the source</span>` : nothing}
                     ${this._evictionWarning && this._following ? html`<span class="warn">Store limit reached, oldest entries evicted</span>` : nothing}
                     ${!this._following && this._truncated ? html`<span class="warn">Result truncated at ${this._resultLimit} records, so some connections may be missing or show older totals. ${NARROW_QUERY_HINT}</span>` : nothing}
                     ${!this._following && this._evictionWarning ? html`<span class="warn">Store limit reached, so some connections are missing or show older totals. ${NARROW_QUERY_HINT}</span>` : nothing}
@@ -2938,9 +2966,9 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
                 <div id="graph-tooltip" class="map-tooltip" part="map-tooltip"></div>
                 <div class="map-legend" part="map-legend">
                     <div class="map-legend-title">Legend</div>
-                    <div class="legend-row"><svg width="24" height="6"><line x1="0" y1="3" x2="24" y2="3" style="stroke:${EDGE_COLOR_VAR.allow}" stroke-width="${EDGE_STROKE_WIDTH}"/></svg><span>Allow</span></div>
-                    <div class="legend-row"><svg width="24" height="6"><line x1="0" y1="3" x2="24" y2="3" style="stroke:${EDGE_COLOR_VAR.drop}" stroke-width="${EDGE_STROKE_WIDTH}"/></svg><span>Drop / Reject</span></div>
-                    <div class="legend-row"><svg width="24" height="6"><line x1="0" y1="3" x2="24" y2="3" style="stroke:${EDGE_COLOR_VAR.default}" stroke-width="${EDGE_STROKE_WIDTH}"/></svg><span>No policy</span></div>
+                    ${POLICY_OUTCOMES.map(({ edgeRole, label }) => html`
+                        <div class="legend-row"><svg width="24" height="6"><line x1="0" y1="3" x2="24" y2="3" style="stroke:${EDGE_COLOR_VAR[edgeRole]}" stroke-width="${EDGE_STROKE_WIDTH}"/></svg><span>${label}</span></div>
+                    `)}
                     <div class="legend-row"><svg width="24" height="14"><rect x="1" y="1" width="22" height="12" rx="3" ry="3" style="fill:${MAP_COLOR_VAR.nsHullFill};stroke:${MAP_COLOR_VAR.nsHullStroke}" stroke-width="1" stroke-dasharray="4,2"/></svg><span>Namespace</span></div>
                     <div class="legend-row"><svg width="24" height="14"><rect x="1" y="1" width="22" height="12" rx="6" ry="6" style="fill:${MAP_COLOR_VAR.nodeFill};stroke:${MAP_COLOR_VAR.nodeStroke}" stroke-width="1.5"/></svg><span>Service (destination only)</span></div>
                     <div class="legend-row"><svg width="24" height="14"><rect x="1" y="1" width="22" height="12" rx="3" ry="3" style="fill:${MAP_COLOR_VAR.nodeFill};stroke:${MAP_COLOR_VAR.nodeStroke}" stroke-width="1.5"/></svg><span>Workload</span></div>

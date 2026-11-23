@@ -17,6 +17,13 @@ import { getApiBase } from './api.js';
 
 export type FlowFilterDirection = 'both' | 'from' | 'to';
 export type FlowTypeName = 'intra-node' | 'inter-node' | 'to-external' | 'from-external';
+const POLICY_OUTCOMES = ['allowed', 'denied', 'unprotected'] as const;
+export type NetworkPolicyOutcome = typeof POLICY_OUTCOMES[number];
+
+export function restrictedPolicyOutcomes(outcomes?: NetworkPolicyOutcome[]): NetworkPolicyOutcome[] {
+    const selected = POLICY_OUTCOMES.filter(outcome => outcomes?.includes(outcome));
+    return selected.length === POLICY_OUTCOMES.length ? [] : selected;
+}
 
 /** Peer filters. These narrow the stream; they do not authorize it. Their endpoint criteria
  * (namespaces, pods, podLabelSelector, ips) all match the one endpoint the direction picks, on
@@ -32,6 +39,7 @@ export interface FlowPeerFilter {
     /** Destination Services, each as namespace/name. */
     services?: string[];
     flowTypes?: FlowTypeName[];
+    networkPolicyOutcomes?: NetworkPolicyOutcome[];
     ips?: string[];
     direction?: FlowFilterDirection;
 }
@@ -89,6 +97,7 @@ export function streamFilterKey(f: FlowStreamFilter): string {
     const pods = [...(f.pods ?? [])].sort();
     const services = [...(f.services ?? [])].sort();
     const flowTypes = [...(f.flowTypes ?? [])].sort();
+    const networkPolicyOutcomes = restrictedPolicyOutcomes(f.networkPolicyOutcomes);
     const ips = [...(f.ips ?? [])].sort();
     const direction = f.direction && f.direction !== 'both' ? f.direction : 'both';
     // The scope must be part of the key. This is the reconnect predicate, so a scope change that
@@ -105,6 +114,7 @@ export function streamFilterKey(f: FlowStreamFilter): string {
         podLabelSelector: f.podLabelSelector ?? '',
         services,
         flowTypes,
+        networkPolicyOutcomes,
         ips,
         direction,
         observedNamespace: f.observedNamespace ?? '',
@@ -157,6 +167,8 @@ function buildStreamURL(filter: FlowStreamFilter): string {
     if (filter.podLabelSelector) params.set('podLabelSelector', filter.podLabelSelector);
     if (filter.services?.length) params.set('services', filter.services.join(','));
     if (filter.flowTypes?.length) params.set('flowTypes', filter.flowTypes.join(','));
+    const outcomes = restrictedPolicyOutcomes(filter.networkPolicyOutcomes);
+    if (outcomes.length) params.set('networkPolicyOutcomes', outcomes.join(','));
     if (filter.ips?.length) params.set('ips', filter.ips.join(','));
     if (filter.direction && filter.direction !== 'both') params.set('direction', filter.direction);
     if (filter.observedNamespace) params.set('observedNamespace', filter.observedNamespace);

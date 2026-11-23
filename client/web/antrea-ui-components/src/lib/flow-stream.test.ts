@@ -767,6 +767,17 @@ describe('FlowStreamClient', () => {
         client.stop();
     });
 
+    test('selecting every policy outcome has the same request and identity as no restriction', async () => {
+        const filter: FlowStreamFilter = { clusterWide: true, networkPolicyOutcomes: ['denied', 'allowed', 'denied', 'unprotected'] };
+        expect(streamFilterKey(filter)).toBe(streamFilterKey({ clusterWide: true }));
+        stubFetch(async () => sseResponse([]));
+        const client = new FlowStreamClient(filter, makeCallbacks(), 10);
+        client.start();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(new URL(fetchMock.mock.calls[0][0], 'http://test').searchParams.has('networkPolicyOutcomes')).toBe(false);
+        client.stop();
+    });
+
     test('a different source is a different stream', () => {
         expect(streamFilterKey({ clusterWide: true, source: 'a' })).not.toBe(streamFilterKey({ clusterWide: true, source: 'b' }));
         expect(streamFilterKey({ clusterWide: true })).toBe(streamFilterKey({ clusterWide: true, source: '' }));
