@@ -2757,8 +2757,8 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
                     ${!this._following ? html`<span>${this._snapshotCount} snapshots received</span>` : nothing}
                     ${this._droppedCount > 0 ? html`<span class="warn">${this._droppedCount} flow records dropped by the source</span>` : nothing}
                     ${this._evictionWarning && this._following ? html`<span class="warn">Store limit reached, oldest entries evicted</span>` : nothing}
-                    ${!this._following && this._truncated ? html`<span class="warn">Result truncated at ${this._resultLimit} records, so some connections may be missing or show older totals. ${NARROW_QUERY_HINT}</span>` : nothing}
-                    ${!this._following && this._evictionWarning ? html`<span class="warn">Store limit reached, so some connections are missing or show older totals. ${NARROW_QUERY_HINT}</span>` : nothing}
+                    ${!this._following && this._truncated ? html`<span class="warn">Result truncated at ${this._resultLimit} records, so some connections may be missing or show partial totals. ${NARROW_QUERY_HINT}</span>` : nothing}
+                    ${!this._following && this._evictionWarning ? html`<span class="warn">Store limit reached, so the oldest connections are missing or show partial totals. ${NARROW_QUERY_HINT}</span>` : nothing}
                 </div>
             </div>
         `;

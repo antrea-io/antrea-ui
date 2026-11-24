@@ -246,3 +246,115 @@ test('finite query snapshots preserve the latest total without becoming live rat
     expect(store.getAll()[0].flow.stats.octetTotalCount).toBe(500);
     expect(store.getAll()[0].samples).toEqual([]);
 });
+
+describe('FlowStore finite queries from a source that sends deltas only', () => {
+    // A record of the connection to dstPort, ended `minute` minutes into the window, that moved
+    // `octets` bytes forward and `reverse` back since the previous record.
+    function delta(dstPort: number, minute: number, octets: number, reverse = 0): Flow {
+        const flow = makeFlow('10.0.0.2', dstPort);
+        flow.id = `flow-${dstPort}-${minute}`;
+        flow.endTs = new Date(Date.UTC(2026, 2, 25, 0, minute)).toISOString();
+        flow.stats.octetDeltaCount = octets;
+        flow.stats.packetDeltaCount = 1;
+        flow.reverseStats.octetDeltaCount = reverse;
+        flow.reverseStats.packetDeltaCount = reverse > 0 ? 1 : 0;
+        return flow;
+    }
+
+    test('sums the deltas of every record of a connection, newest first', () => {
+        const store = new FlowStore();
+        const records = [delta(80, 3, 300, 30), delta(80, 2, 200, 20), delta(80, 1, 100, 10)];
+
+        store.upsertBatch(records, true);
+
+        const [entry] = store.getAll();
+        expect(store.size()).toBe(1);
+        expect(entry.flow.id).toBe('flow-80-3');
+        expect(entry.flow.stats).toMatchObject({ octetTotalCount: 600, packetTotalCount: 3, octetDeltaCount: 300 });
+        expect(entry.flow.reverseStats).toMatchObject({ octetTotalCount: 60, packetTotalCount: 3 });
+        // The received records are not modified.
+        expect(records[0].stats.octetTotalCount).toBe(0);
+    });
+
+    test('sums the same whatever the arrival order', () => {
+        const forward = new FlowStore();
+        const backward = new FlowStore();
+        const records = [delta(80, 1, 100), delta(80, 2, 200), delta(80, 3, 300)];
+
+        forward.upsertBatch(records, true);
+        backward.upsertBatch([...records].reverse(), true);
+
+        for (const store of [forward, backward]) {
+            expect(store.getAll()[0].flow.id).toBe('flow-80-3');
+            expect(store.getAll()[0].flow.stats.octetTotalCount).toBe(600);
+        }
+    });
+
+    test('keeps the latest record when the records carry totals', () => {
+        const store = new FlowStore();
+        const older = delta(80, 1, 100);
+        older.stats.octetTotalCount = 100;
+        const newer = delta(80, 2, 200);
+        newer.stats.octetTotalCount = 300;
+
+        store.upsertBatch([newer, older], true);
+
+        expect(store.getAll()[0].flow.stats.octetTotalCount).toBe(300);
+    });
+
+    test('a live stream is not summed', () => {
+        const store = new FlowStore();
+        store.upsertBatch([delta(80, 1, 100), delta(80, 2, 200)]);
+        expect(store.getAll()[0].flow.stats.octetTotalCount).toBe(0);
+        expect(store.getAll()[0].deltaSums).toBeUndefined();
+    });
+
+    test.each([
+        ['newest first', [5, 4, 3, 2, 1]],
+        ['oldest first', [1, 2, 3, 4, 5]],
+        ['in no order', [3, 5, 1, 4, 2]],
+    ])('keeps the newest connections when full, with records arriving %s', (_, minutes) => {
+        const store = new FlowStore(2);
+
+        store.upsertBatch(minutes.map(m => delta(1000 + m, m, 10)), true);
+
+        expect(store.getAll().map(e => e.flow.id).sort()).toEqual(['flow-1004-4', 'flow-1005-5']);
+        expect(store.getEvictionCount()).toBe(3);
+        expect(store.hasEvicted()).toBe(true);
+    });
+
+    test('records of a stored connection still add to its sums when the store is full', () => {
+        const store = new FlowStore(2);
+
+        store.upsertBatch([delta(1, 5, 50), delta(2, 4, 40), delta(3, 1, 10), delta(1, 3, 30), delta(2, 2, 20)], true);
+
+        const byPort = new Map(store.getAll().map(e => [e.flow.transport.destinationPort, e]));
+        expect(byPort.get(1)!.flow.stats.octetTotalCount).toBe(80);
+        expect(byPort.get(2)!.flow.stats.octetTotalCount).toBe(60);
+        expect(byPort.has(3)).toBe(false);
+        expect(store.getEvictionCount()).toBe(1);
+    });
+
+    test('stays correct when records keep updating the same connections', () => {
+        const store = new FlowStore(3);
+        const records: Flow[] = [];
+        for (let minute = 1; minute <= 120; minute++) {
+            for (let port = 1; port <= 3; port++) records.push(delta(port, minute % 60, 1));
+        }
+        records.push(delta(9, 0, 1));
+
+        store.upsertBatch(records, true);
+
+        expect(store.size()).toBe(3);
+        expect(store.getAll().map(e => e.flow.transport.destinationPort).sort()).toEqual([1, 2, 3]);
+        expect(store.getAll()[0].flow.stats.octetTotalCount).toBe(120);
+    });
+
+    test('clear forgets the eviction order', () => {
+        const store = new FlowStore(1);
+        store.upsertBatch([delta(1, 5, 1), delta(2, 1, 1)], true);
+        store.clear();
+        store.upsertBatch([delta(3, 1, 1), delta(4, 2, 1)], true);
+        expect(store.getAll().map(e => e.flow.transport.destinationPort)).toEqual([4]);
+    });
+});
