@@ -4376,7 +4376,13 @@ describe('AntreaFlowVisibilityPage — incremental service map', () => {
     test('counter updates retain edge widths and layout forces without DOM writes', async () => {
         const { page, state } = await mountMap();
         const forward = makeFlow();
-        await update(page, state, [forward]);
+        const store = new FlowStore();
+        const publish = async (flows: Flow[]) => {
+            store.upsertBatch(flows);
+            state._entries = store.getAll();
+            await page.updateComplete;
+        };
+        await publish([forward, makeFlow({ dstIP: '10.0.0.3', dstPod: 'other-abc12' })]);
         const simulation = state._simulation.stop();
         const forceNames = ['link', 'charge', 'collision', 'cluster'];
         const forces = forceNames.map(name => simulation.force(name));
@@ -4388,12 +4394,12 @@ describe('AntreaFlowVisibilityPage — incremental service map', () => {
         observer.observe(root.querySelector('.map-content')!, { subtree: true, attributes: true, childList: true });
         try {
             const updated = { ...forward, stats: { ...forward.stats, octetTotalCount: 2048 } };
-            await update(page, state, [updated]);
+            await publish([updated]);
             expect(mutations).toHaveLength(0);
 
             // A second connection to the same workload only updates the data used by the
             // tooltip; it leaves the width, labels, geometry and layout alone.
-            await update(page, state, [updated, makeFlow({ srcIP: '10.0.0.9' })]);
+            await publish([makeFlow({ srcIP: '10.0.0.9' })]);
             expect(mutations).toHaveLength(0);
             expect(path.getAttribute('stroke-width')).toBe(width);
             forceNames.forEach((name, i) => expect(simulation.force(name)).toBe(forces[i]));
@@ -4404,6 +4410,21 @@ describe('AntreaFlowVisibilityPage — incremental service map', () => {
         const tooltip = root.querySelector('#graph-tooltip')!;
         expect(tooltip.textContent).toContain('2 connections');
         expect(tooltip.textContent).toContain('2.1 KB');
+    });
+
+    test('edge labels show an observed protocol and port regardless of arrival order', async () => {
+        const { page, state } = await mountMap();
+        const tcp = makeFlow({ dstPort: 443 });
+        const udp = makeFlow({ dstPort: 53 });
+        udp.transport.protocolNumber = 17;
+        const icmp = makeFlow({ dstPort: 0 });
+        icmp.transport.protocolNumber = 1;
+        for (const flows of [[tcp, udp], [udp, tcp], [udp, icmp, tcp, makeFlow({ dstPort: 80 })]]) {
+            await update(page, state, flows);
+            showEdgeLabels(page.shadowRoot!);
+            expect(page.shadowRoot!.querySelector('.edge-labels text')!.textContent)
+                .toBe(flows.includes(icmp) ? 'ICMP +3' : 'TCP/443 +1');
+        }
     });
 
     test('updates labels and verdicts without bounding-box reads, including ticks', async () => {
@@ -4965,6 +4986,38 @@ describe('AntreaFlowVisibilityPage — namespace aggregation', () => {
         await assertSettled();
     });
 
+    test('a new workload in an expanded namespace starts near its members and leaves other namespaces clear', async () => {
+        const flows = [makeFlow({ srcNs: 'a', dstNs: 'b' }), makeFlow({ srcNs: 'c', dstNs: 'b', srcIP: '10.0.0.3' })];
+        const { page, state } = await aggregate(flows);
+        const simulation = state._simulation;
+        const settle = () => {
+            simulation.stop().tick(300);
+            simulation.on('end')!.call(simulation);
+        };
+        settle();
+        state._toggleNamespace('a');
+        await page.updateComplete;
+        settle();
+        const byId = (id: string) => simulation.nodes().find(n => n.id === id)!;
+        Object.assign(byId('a/client'), { x: 0, y: 0 });
+        const folded = Object.assign(byId('namespace:b'), { x: 400, y: 0 });
+        Object.assign(byId('namespace:c'), { x: 1000, y: 0 });
+        const store = new FlowStore();
+        store.upsertBatch([...flows, makeFlow({ srcNs: 'a', srcPod: 'late-abc12', srcIP: '10.0.0.4', dstNs: 'c' })]);
+        state._entries = store.getAll();
+        await page.updateComplete;
+        const late = byId('a/late');
+        expect(Math.hypot(late.x!, late.y!)).toBeCloseTo(80);
+        settle();
+        const hull = page.shadowRoot!.querySelector('.ns-hulls rect')!;
+        const [x, y, width, height] = ['x', 'y', 'width', 'height'].map(attr => Number(hull.getAttribute(attr)));
+        expect([folded.x, folded.y]).toEqual([400, 0]);
+        const box = page.shadowRoot!.querySelector('[aria-label^="Expand namespace b."] rect')!;
+        const hw = Number(box.getAttribute('width')) / 2, hh = Number(box.getAttribute('height')) / 2;
+        expect(folded.x! + hw <= x || folded.x! - hw >= x + width ||
+            folded.y! + hh <= y || folded.y! - hh >= y + height).toBe(true);
+    });
+
     test('expanding beside another expanded namespace preserves its workload offsets', async () => {
         const { page, state } = await aggregate([
             makeFlow({ srcNs: 'a', dstNs: 'c' }),
@@ -5317,13 +5370,16 @@ describe('AntreaFlowVisibilityPage — namespace aggregation', () => {
         expect((labels[1] as SVGElement).style.fill).toContain('--antrea-color-edge-drop');
     });
 
-    test('namespace hover reads the latest internal bytes after a counter-only update', async () => {
+    test('an open namespace tooltip follows live counters and closes when its node disappears', async () => {
         const flow = makeFlow({ srcNs: 'a', dstNs: 'a' });
         const { page, state } = await aggregate([flow]);
         state._simulation.stop();
         const root = page.shadowRoot!;
         const node = root.querySelector<SVGGElement>('.nodes .node')!;
         const enter = d3.select(node).on('mouseenter');
+        const tooltip = root.querySelector<HTMLElement>('#graph-tooltip')!;
+        node.dispatchEvent(new MouseEvent('mouseenter', { clientX: 30, clientY: 40 }));
+        expect(tooltip.style.opacity).toBe('1');
         const store = new FlowStore();
         store.upsertBatch([{
             ...flow,
@@ -5335,8 +5391,15 @@ describe('AntreaFlowVisibilityPage — namespace aggregation', () => {
         expect(root.querySelector('.nodes .node')).toBe(node);
         expect(d3.select(node).on('mouseenter')).toBe(enter);
         expect(state._graphRef.nodes[0].internal!.bytes).toBe(3072);
-        node.dispatchEvent(new MouseEvent('mouseenter'));
-        expect(root.querySelector('#graph-tooltip')!.textContent).toContain('1 internal connections, 0 denied, 3.0 KB');
+        expect(tooltip.textContent).toContain('1 internal connections, 0 denied, 3.0 KB');
+        expect([tooltip.style.left, tooltip.style.top]).toEqual(['42px', '52px']);
+        store.upsertBatch([makeFlow({ srcNs: 'a', dstNs: 'a', srcIP: '10.0.0.9', ingressAction: NetworkPolicyRuleAction.Drop })]);
+        state._entries = store.getAll();
+        await page.updateComplete;
+        expect(tooltip.textContent).toContain('2 internal connections, 1 denied');
+        state._entries = [];
+        await page.updateComplete;
+        expect(tooltip.style.opacity).toBe('0');
     });
 
     test('a counter-only update changes a folded namespace in place', async () => {
@@ -5862,6 +5925,28 @@ describe('AntreaFlowVisibilityPage — namespace aggregation', () => {
         expect(state._graphRef.nodes.some(n => n.id === 'b/server')).toBe(true);
     });
 
+    test.each([
+        { disclosure: EndpointDisclosure.Full, target: 'b' },
+        { disclosure: EndpointDisclosure.Flow, target: 'b (2 addresses)' },
+    ])('shows the endpoint label $target in the edge tooltip and details', async ({ disclosure, target }) => {
+        const { page } = await aggregate([
+            makeFlow({ srcNs: 'a', dstNs: 'a', dstPort: 81, ingressAction: NetworkPolicyRuleAction.Drop }),
+            makeFlow({ srcNs: 'a', dstNs: 'b', dstDisclosure: disclosure }),
+            makeFlow({ srcNs: 'a', dstNs: 'b', dstDisclosure: disclosure, dstIP: '10.0.0.3' }),
+        ]);
+        const root = page.shadowRoot!;
+        const edge = root.querySelector('.edges path')!;
+        edge.dispatchEvent(new MouseEvent('mouseenter'));
+        expect(root.querySelector('#graph-tooltip > div')!.textContent).toBe(`a → ${target}`);
+        edge.dispatchEvent(new MouseEvent('click'));
+        await page.updateComplete;
+        const rows = Array.from(root.querySelectorAll('.edge-details-rows > div'), el => el.textContent.trim());
+        expect(rows).toContain('Source: a');
+        expect(rows).toContain(`Target: ${target}`);
+        expect(rows).toContain('Connections: 2');
+        expect(root.querySelector('.nodes')!.textContent).toContain('1 internal · 1 denied');
+    });
+
     test('publishes endpoint kinds and clears folded selection on expansion', async () => {
         const { page, state } = await aggregate([makeFlow({ srcNs: 'a', dstNs: 'b' })]);
         const selected = vi.fn();
@@ -5927,6 +6012,41 @@ describe('AntreaFlowVisibilityPage — namespace aggregation', () => {
         state._toggleNamespace('a');
         await page.updateComplete;
         expect(root.querySelectorAll('.edges path')).toHaveLength(2);
+    });
+
+    test.each(['individual', 'all'])('reranks tied edges on expansion and %s namespace collapse', async mode => {
+        const { page, state } = await aggregate([
+            makeFlow({ srcNs: 'a', dstNs: 'b' }),
+            makeFlow({ srcNs: 'a', dstNs: 'b', srcPod: 'second-abc12', dstPort: 81 }),
+            makeFlow({ srcNs: 'c', dstNs: 'd', dstPort: 82 }),
+            makeFlow({ srcNs: 'c', dstNs: 'd', dstPort: 83 }),
+        ]);
+        state._edgeLimit = 1;
+        const settle = async () => {
+            await page.updateComplete;
+            state._simulation.stop().tick(300);
+            state._simulation.on('end')!.call(state._simulation);
+            await page.updateComplete;
+        };
+        await settle();
+        const root = page.shadowRoot!;
+        const drawn = () => Array.from(root.querySelectorAll('.edges path'),
+            path => (d3.select(path).datum() as { edgeKey: string }).edgeKey).sort();
+        expect(drawn()).toEqual(['namespace:a|namespace:b']);
+
+        // Splitting a's two connections across workloads leaves c → d as the busiest edge.
+        root.querySelector('[aria-label^="Expand namespace a."]')!.dispatchEvent(new MouseEvent('click'));
+        await settle();
+        expect(drawn()).toEqual(['a/client|namespace:b', 'a/second|namespace:b', 'namespace:c|namespace:d']);
+        if (mode === 'all') root.querySelector<HTMLButtonElement>('[aria-label="Collapse all namespaces"]')!.click();
+        else root.querySelector('.ns-hulls text')!.dispatchEvent(new MouseEvent('click'));
+        await settle();
+        expect(drawn()).toEqual(['namespace:a|namespace:b']);
+
+        // Expanding c keeps its two connections together. Its workload now wins the stable tie.
+        root.querySelector('[aria-label^="Expand namespace c."]')!.dispatchEvent(new MouseEvent('click'));
+        await settle();
+        expect(drawn()).toEqual(['c/client|namespace:d']);
     });
 
     test('retained highlights combine with hover and preserve busy edges, selection, layout and zoom', async () => {

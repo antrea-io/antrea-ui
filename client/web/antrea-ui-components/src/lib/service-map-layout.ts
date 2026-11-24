@@ -18,13 +18,13 @@ import type { SimulationNodeDatum } from 'd3';
 export interface PositionedNode extends SimulationNodeDatum { id: string; }
 
 /** Reconciles graph metadata without losing positions, velocities or pins.
- * New nodes start near an already placed neighbour (or the map centre). Whether the
+ * New nodes start near retained namespace members, a connected neighbour, or the map centre. Whether the
  * retained nodes stay put while additions settle is up to the caller, see
  * pinMapNodes. The caller only needs to reheat when `added` is nonempty.
  */
 export function reconcileMapNodes<N extends PositionedNode>(
     previous: N[], incoming: N[], edges: { source: string; target: string }[],
-    center: { x: number; y: number },
+    center: { x: number; y: number }, namespace?: (node: N) => string | undefined,
 ): { nodes: N[]; added: N[] } {
     const old = new Map(previous.map(n => [n.id, n]));
     const added: N[] = [];
@@ -38,6 +38,7 @@ export function reconcileMapNodes<N extends PositionedNode>(
     if (!previous.length || !added.length) return { nodes, added };
 
     const retained = new Map(nodes.filter(n => old.has(n.id)).map(n => [n.id, n]));
+    const centers = namespace && namespaceCenters(retained.values(), namespace);
     const neighbours = new Map<string, N[]>();
     for (const edge of edges) {
         for (const [id, peerId] of [[edge.source, edge.target], [edge.target, edge.source]]) {
@@ -50,8 +51,10 @@ export function reconcileMapNodes<N extends PositionedNode>(
     }
     for (const node of added) {
         const peers = neighbours.get(node.id) ?? [];
-        const x = peers.length ? peers.reduce((sum, n) => sum + (n.x ?? center.x), 0) / peers.length : center.x;
-        const y = peers.length ? peers.reduce((sum, n) => sum + (n.y ?? center.y), 0) / peers.length : center.y;
+        const ns = namespace?.(node);
+        const origin = ns ? centers?.get(ns) : undefined;
+        const x = origin?.x ?? (peers.length ? peers.reduce((sum, n) => sum + (n.x ?? center.x), 0) / peers.length : center.x);
+        const y = origin?.y ?? (peers.length ? peers.reduce((sum, n) => sum + (n.y ?? center.y), 0) / peers.length : center.y);
         // Stable, separated seeds avoid the many-body singularity at a neighbour's position.
         let hash = 0;
         for (const char of node.id) hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
@@ -78,10 +81,7 @@ export function pinMapNodes<N extends SimulationNodeDatum>(nodes: N[]): N[] {
     return pinned;
 }
 
-/** Applies the same normalized centroid to every member of each namespace. */
-export function clusterMapNodes<N extends SimulationNodeDatum>(
-    nodes: N[], namespace: (node: N) => string | undefined, alpha: number,
-): void {
+function namespaceCenters<N extends SimulationNodeDatum>(nodes: Iterable<N>, namespace: (node: N) => string | undefined) {
     const centroids = new Map<string, { x: number; y: number; count: number }>();
     for (const node of nodes) {
         const ns = namespace(node);
@@ -93,6 +93,14 @@ export function clusterMapNodes<N extends SimulationNodeDatum>(
         centroids.set(ns, c);
     }
     for (const c of centroids.values()) { c.x /= c.count; c.y /= c.count; }
+    return centroids;
+}
+
+/** Applies the same normalized centroid to every member of each namespace. */
+export function clusterMapNodes<N extends SimulationNodeDatum>(
+    nodes: N[], namespace: (node: N) => string | undefined, alpha: number,
+): void {
+    const centroids = namespaceCenters(nodes, namespace);
     for (const node of nodes) {
         const ns = namespace(node);
         if (!ns) continue;

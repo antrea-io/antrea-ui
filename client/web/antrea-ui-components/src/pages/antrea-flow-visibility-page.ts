@@ -529,7 +529,7 @@ function formatBitRate(bps: number): string {
 function nodeLabel(graph: GraphData, id: string): string {
     const node = graph.nodeMap.get(id);
     if (!node) return workloadShortName(id);
-    return node.detail && node.kind !== 'workload' ? `${node.shortName} (${node.detail})` : node.shortName;
+    return node.addresses ? `${node.shortName} (${node.detail})` : node.shortName;
 }
 
 function edgeToDetails(edge: WorkloadEdge): EdgeDetails {
@@ -610,13 +610,18 @@ function policyAllows(action: NetworkPolicyRuleAction): boolean {
 }
 
 function edgeLabel(edge: WorkloadEdge): string {
-    const protocols = Array.from(edge.protoPorts.keys()).map(getProtocolName);
-    const ports = Array.from(edge.protoPorts.values()).flatMap(s => Array.from(s)).sort((a, b) => a - b);
-    if (!protocols.length && !ports.length) return '';
-    let label = ports[0] ? `${protocols[0] ?? '?'}/${ports[0]}` : (protocols[0] ?? '?');
-    const extras = Math.max(protocols.length, ports.length) - 1;
-    if (extras > 0) label += ` +${extras}`;
-    return label;
+    if (!edge.protoPorts.size) return '';
+    const protocol = Math.min(...edge.protoPorts.keys());
+    const ports = edge.protoPorts.get(protocol)!;
+    const name = getProtocolName(protocol);
+    const label = ports.size ? `${name}/${Math.min(...ports)}` : name;
+    let combinations = 0;
+    for (const destinations of edge.protoPorts.values()) combinations += Math.max(1, destinations.size);
+    return combinations > 1 ? `${label} +${combinations - 1}` : label;
+}
+
+function namespaceTrafficTooltip(internal: NonNullable<WorkloadNode['internal']>): string {
+    return `${internal.connections} internal connections, ${internal.denied} denied, ${formatBytes(internal.bytes)}. Click to expand.`;
 }
 
 // ── D3 node geometry ─────────────────────────────────────────────────────────
@@ -1028,8 +1033,11 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         .map-toolbar-controls { gap: 12px; flex-wrap: wrap; }
         .map-toolbar-controls > .field-select { width: 16rem; max-width: 100%; }
         .map-toolbar-controls > .field-select, .map-toolbar-controls > antrea-button, .map-edge-count { flex-shrink: 0; }
-        .map-container { position: relative; width: 100%; min-width: 0; height: max(360px, 70dvh); }
-        .map-svg { display: block; width: 100%; height: 100%; box-sizing: border-box; border: 1px solid var(--antrea-color-border, #314351); border-radius: 4px; background: var(--antrea-color-bg-dark, #17242b); }
+        .map-container {
+            position: relative; width: 100%; min-width: 0; height: max(360px, 70dvh);
+            display: grid; grid-template: minmax(0, 1fr) auto / minmax(0, 1fr); row-gap: 10px;
+        }
+        .map-svg { grid-area: 1 / 1 / -1 / -1; display: block; width: 100%; height: 100%; box-sizing: border-box; border: 1px solid var(--antrea-color-border, #314351); border-radius: 4px; background: var(--antrea-color-bg-dark, #17242b); }
         .map-svg, .map-svg text { -webkit-user-select: none; user-select: none; }
         .map-loading { position: absolute; inset: 0; display: grid; place-items: center; pointer-events: none; color: var(--antrea-color-text-muted, #8899a4); }
         .map-tooltip {
@@ -1048,7 +1056,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
             color: var(--antrea-color-map-legend-text, #adbbc4); line-height: 1.8;
         }
         .map-controls {
-            position: absolute; bottom: 10px; right: 10px;
+            grid-area: 2 / 1; justify-self: end; margin: 0 10px 10px 0;
             display: flex; flex-direction: column; gap: 4px;
         }
         .map-control-btn {
@@ -1064,13 +1072,11 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         .map-legend-title { font-weight: 600; margin-bottom: 2px; }
         .legend-row { display: flex; align-items: center; gap: 6px; }
         .edge-details {
-            position: absolute; top: 10px; right: 10px;
+            grid-area: 1 / 1; place-self: start end; margin: 10px 10px 0 0;
             background: var(--antrea-color-bg, #1b2a32);
             border: 1px solid var(--antrea-color-border, #314351);
             border-radius: 4px; padding: 16px; min-width: 280px; max-width: 350px; z-index: 10;
-            /* Leave room for the zoom controls: 3 x 32px buttons + 2 x 4px gaps, their 10px bottom
-               offset, this card's 10px top offset and a 10px gap. */
-            box-sizing: border-box; max-height: calc(100% - 134px); overflow: auto;
+            box-sizing: border-box; max-height: calc(100% - 10px); overflow: auto;
         }
         .edge-details-close {
             position: sticky; top: 0; float: right;
@@ -1211,7 +1217,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
     // The part of the view key that does not depend on the hovered node, and the function that
     // restyles the drawn map for a different one.
     private _mapShapeKey = '';
-    // Namespaces that expanded since the last layout finished. Their boundaries are only as large
+    // Expanded namespaces that gained members since the last layout. Their boundaries are only as large
     // as the settled layout makes them, so what they cover is moved aside once it has settled.
     private _expandingNamespaces = new Set<string>();
     // The edge under the pointer, and the nodes whose edges are emphasised, as of the last build.
@@ -1936,6 +1942,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
             if (parent) this._rememberPosition(parent);
             expanded.add(namespace);
         }
+        this._busiestEdges.clear();
         this._expandedNamespaces = expanded;
     }
 
@@ -1949,6 +1956,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
     private _collapseAllNamespaces() {
         this._hoveredNode = null;
         this._hideTooltip();
+        this._busiestEdges.clear();
         this._expandedNamespaces = new Set();
     }
 
@@ -1960,7 +1968,17 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
 
         const graph = reuseGraph ? this._graphRef : buildGraph(this._entries, this._clusterWide, this._expandedNamespaces);
         const previousGraph = this._graphRef;
-        if (this._hoveredNode && !graph.nodeMap.has(this._hoveredNode)) this._hoveredNode = null;
+        if (!reuseGraph && this._hoveredNode) {
+            const hovered = graph.nodeMap.get(this._hoveredNode);
+            if (!hovered) {
+                this._hoveredNode = null;
+                this._hideTooltip();
+            } else if (hovered.internal) {
+                const body = this._tooltipEl?.querySelector('.node-tooltip-body');
+                const text = namespaceTrafficTooltip(hovered.internal);
+                if (body && body.textContent !== text) body.textContent = text;
+            }
+        }
         const previousPinCount = this._pinnedNodes.size;
         for (const id of this._pinnedNodes) if (!graph.nodeMap.has(id)) this._pinnedNodes.delete(id);
         if (this._pinnedNodes.size !== previousPinCount) this.requestUpdate();
@@ -1999,8 +2017,8 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
 
         // Which edges are drawn, and the hover and pin state they are drawn with, are part of
         // what the joins below render. Unchanged, the shortcut is safe; changed, it is not.
-        const shapeKey = JSON.stringify([shownEdges.map(e => `${e.source}|${e.target}`),
-            [...structuralKeys], [...this._pinnedNodes],
+        const shapeKey = JSON.stringify([shownEdges.map(e => `${e.source}|${e.target}`).sort(),
+            [...structuralKeys].sort(), [...this._pinnedNodes].sort(),
             this._clusterWide, [...this._expandedNamespaces].sort()]);
         const viewKey = `${shapeKey}|${this._hoveredNode}`;
         const sameShape = shapeKey === this._mapShapeKey;
@@ -2041,13 +2059,14 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         const { nodes: d3Nodes, added } = reconcileMapNodes<D3Node>(
             previousNodes, graph.nodes.map(node => ({ ...node, hideNamespace: expandedEndpoint(node.id) })),
             structural, { x: this._svgWidth / 2, y: this._svgHeight / 2 },
+            n => n.hideNamespace ? n.namespace : undefined,
         );
         const previousWorkloadNamespaces = new Set(previousNodes.filter(n => n.kind === 'workload').map(n => n.namespace));
         const namespaceTransition = !resetPositions && added.some(n =>
             (n.kind === 'workload' && previousGraph.nodeMap.has(`namespace:${n.namespace}`)) ||
             (n.kind === 'namespace' && previousWorkloadNamespaces.has(n.namespace)));
         for (const node of added) {
-            if (node.kind === 'workload' && previousGraph.nodeMap.has(`namespace:${node.namespace}`)) {
+            if (node.hideNamespace) {
                 this._expandingNamespaces.add(node.namespace);
             }
         }
@@ -2289,8 +2308,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
                 this._buildServiceMap(true);
                 if (d.kind === 'namespace') {
                     const internal = this._graphRef.nodeMap.get(d.id)!.internal!;
-                    this._showNodeTooltip(event, d.shortName,
-                        `${internal.connections} internal connections, ${internal.denied} denied, ${formatBytes(internal.bytes)}. Click to expand.`);
+                    this._showNodeTooltip(event, d.shortName, namespaceTrafficTooltip(internal));
                 }
                 if (d.kind !== 'undisclosedNamespace') return;
                 this._showNodeTooltip(event, d.shortName, collapsedNamespaceTooltip(d.shortName));
@@ -2510,10 +2528,21 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         const full = !resetPositions && !namespaceTransition && (initial || (this._mapLayoutFull && simulation.alpha() >= simulation.alphaMin()));
         const continuingLayout = this._mapLayoutPending && simulation.alpha() >= simulation.alphaMin();
         for (const n of this._settlePinned) if (!nodeById.has(n.id)) this._settlePinned.delete(n);
-        // Remove old links before nodes: forceLink otherwise initializes stale endpoints.
         if (added.length) simulation.force('anchorX', null).force('anchorY', null);
+        const layoutLink = d3.forceLink<D3Node, D3Link>(layoutLinks).id(d => d.id).distance(link => {
+            const source = link.source as D3Node, target = link.target as D3Node;
+            // A distant peer must not pull a new member out of an established namespace.
+            // Keep the cross-namespace span at its seeded length while the members settle.
+            if (source.namespace !== target.namespace &&
+                ((source.hideNamespace && previousWorkloadNamespaces.has(source.namespace)) ||
+                 (target.hideNamespace && previousWorkloadNamespaces.has(target.namespace)))) {
+                return Math.max(120, Math.hypot(source.x! - target.x!, source.y! - target.y!));
+            }
+            return 120;
+        });
+        // Remove old links before nodes: forceLink otherwise initializes stale endpoints.
         simulation.force('link', null).nodes(d3Nodes)
-            .force('link', d3.forceLink<D3Node, D3Link>(layoutLinks).id(d => d.id).distance(120))
+            .force('link', layoutLink)
             .force('charge', d3.forceManyBody<D3Node>().strength(-400).distanceMin(60).distanceMax(400))
             .force('collision', d3.forceCollide<D3Node>().radius(d => nodeCollideRadius(d) + 20))
             .force('cluster', (alpha: number) => clusterMapNodes(
@@ -2635,6 +2664,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         header.style.marginBottom = '4px';
         const text = document.createElement('div');
         text.textContent = body;
+        text.className = 'node-tooltip-body';
         text.style.maxWidth = '260px';
         tip.append(header, text);
         tip.style.left = `${event.clientX + 12}px`;

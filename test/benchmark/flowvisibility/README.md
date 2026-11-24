@@ -88,9 +88,14 @@ visible map node or flow row, lets it warm up (`--warmup`, 30s), then samples fo
 (2m) every `--sample-interval` (2s). Use `--no-deploy` to measure whatever is deployed instead, as it is.
 
 The default path, `/flows/map?namespace=_all`, is the cluster-wide map. It folds each identified
-Namespace into one node and draws at most 50 edges, though the page still streams and stores every
-connection. The workload-level map is only drawn for a Namespace-scoped `--path`, such as
-`/flows/map?namespace=<namespace>`, so measure that to see the cost of drawing workloads.
+Namespace into one node and shows up to 50 of the busiest edges by default. This display limit
+does not filter the stream. The page retains up to 10,000 distinct connection keys and evicts the
+least recently used entry when a new key would exceed that limit. For large runs such as `xlarge`,
+check `storeEntries` and `storeEvicted` in `page-samples.jsonl` to see how many entries the map
+is built from and whether any have been evicted.
+
+Use a Namespace-scoped `--path`, such as `/flows/map?namespace=<namespace>`, to measure the cost
+of drawing workloads.
 
 Results go to `test/benchmark/flowvisibility/results/<timestamp>/<scale>/`:
 
