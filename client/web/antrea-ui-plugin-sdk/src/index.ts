@@ -27,6 +27,8 @@
 // npm dependency — a registry living in a normally-imported package would not be the same
 // object your plugin and the host both see.
 //
+// EdgeSelection.sourceKind and targetKind identify the node kind at each end of the edge.
+// Plugins running on older hosts may receive a selection without these fields.
 // EdgeSelection/FlowEntry-derived and access types are re-exported from @antrea/ui-components
 // (a peer dependency, types-only — nothing from it ends up in your plugin's bundle) so you don't
 // hand-roll the shape the host expects.

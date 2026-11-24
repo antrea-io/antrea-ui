@@ -13,7 +13,7 @@
 // limitations under the License.
 
 import { describe, expect, test } from 'vitest';
-import { clusterMapNodes, pinMapNodes, reconcileMapNodes } from './service-map-layout';
+import { clusterMapNodes, pinMapNodes, reconcileMapNodes, seedNamespaceTransition, separateFromNamespaces, restoreMapPositions, nodeBounds } from './service-map-layout';
 import type { PositionedNode } from './service-map-layout';
 
 describe('incremental map layout', () => {
@@ -64,5 +64,124 @@ describe('incremental map layout', () => {
         expect(nodes[2]).toMatchObject({ vx: 0, vy: 0 });
         expect(nodes[3]).toMatchObject({ vx: 0, vy: 0 });
         expect(reversed.reverse()).toEqual(nodes);
+    });
+});
+
+
+test('expansion seeds around the old namespace without moving existing nodes and collapses at centroid', () => {
+    const parent = { id: 'namespace:a', namespace: 'a', kind: 'namespace', x: 500, y: 400 };
+    const near = { id: 'namespace:b', namespace: 'b', kind: 'namespace', x: 510, y: 400 };
+    const pinned = { id: 'namespace:c', namespace: 'c', kind: 'namespace', x: 510, y: 410, userPinned: true };
+    const far = { id: 'namespace:d', namespace: 'd', kind: 'namespace', x: 1000, y: 900 };
+    const result = reconcileMapNodes([parent, near, pinned, far], [
+        { id: 'a/one', namespace: 'a', kind: 'workload' },
+        { id: 'a/two', namespace: 'a', kind: 'workload' }, near, pinned, far,
+    ], [], { x: 0, y: 0 });
+    seedNamespaceTransition([parent, near, pinned, far], result.added);
+    const children = result.added;
+    expect(children[0].x! - 500).toBeCloseTo(80);
+    expect(children[1].x! - 500).toBeCloseTo(-80);
+    expect(near).toMatchObject({ x: 510, y: 400 });
+    expect((near as PositionedNode).fx).toBeUndefined();
+    expect((near as PositionedNode).fy).toBeUndefined();
+    expect(pinned).toMatchObject({ x: 510, y: 410 });
+    expect(far).toMatchObject({ x: 1000, y: 900 });
+    const collapsed = { id: 'namespace:a', namespace: 'a', kind: 'namespace', x: 0, y: 0 };
+    seedNamespaceTransition(result.nodes, [collapsed]);
+    expect(collapsed.x).toBeCloseTo(500);
+    expect(collapsed.y).toBeCloseTo(400);
+});
+
+test('restoring a node whose place was taken keeps the new occupant and nearby nodes fixed', () => {
+    const restored = { id: 'dragged', x: 300, y: 200 };
+    const neighbours = [
+        { id: 'new', x: 0, y: 0 }, { id: 'above', x: 0, y: -40 }, { id: 'below', x: 0, y: 40 },
+    ];
+    const positions = neighbours.map(n => [n.x, n.y]);
+    restoreMapPositions([restored, ...neighbours], new Map([['dragged', { x: 0, y: 0 }]]),
+        n => nodeBounds([n], () => ({ hw: 20, hh: 20 })));
+    expect(neighbours.map(n => [n.x, n.y])).toEqual(positions);
+    expect(restored.y).toBe(0);
+    expect(Math.abs(restored.x)).toBeCloseTo(41);
+});
+
+describe('separateFromNamespaces', () => {
+    interface N extends PositionedNode { namespace: string; kind: string; userPinned?: boolean }
+    const node = (id: string, namespace: string, kind: string, x: number, y: number): N =>
+        ({ id, namespace, kind, x, y });
+    const options = {
+        inBoundary: (n: N) => n.kind === 'workload',
+        halfSize: () => ({ hw: 50, hh: 20 }),
+        padding: { side: 10, top: 30, bottom: 10 },
+        gap: 20,
+    };
+    const rect = (members: N[], boundary: boolean) => ({
+        left: Math.min(...members.map(n => n.x!)) - 50 - (boundary ? 10 : 0),
+        right: Math.max(...members.map(n => n.x!)) + 50 + (boundary ? 10 : 0),
+        top: Math.min(...members.map(n => n.y!)) - 20 - (boundary ? 30 : 0),
+        bottom: Math.max(...members.map(n => n.y!)) + 20 + (boundary ? 10 : 0),
+    });
+    const overlap = (a: ReturnType<typeof rect>, b: ReturnType<typeof rect>) =>
+        a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+
+    test('moves what the boundary covers clear of it, and leaves the rest and the namespace alone', () => {
+        const members = [node('w1', 'a', 'workload', 0, 0), node('w2', 'a', 'workload', 200, 0)];
+        const covered = node('ns-b', 'b', 'namespace', 100, 10);
+        const far = node('ns-c', 'c', 'namespace', 2000, 2000);
+        separateFromNamespaces([...members, covered, far], new Set(['a']), options);
+        expect(members.map(n => [n.x, n.y])).toEqual([[0, 0], [200, 0]]);
+        expect(overlap(rect([covered], false), rect(members, true))).toBe(false);
+        expect([far.x, far.y]).toEqual([2000, 2000]);
+    });
+
+    test('moves another boundary as a whole', () => {
+        const members = [node('w1', 'a', 'workload', 0, 0), node('w2', 'a', 'workload', 200, 0)];
+        const other = [node('x1', 'b', 'workload', 100, 40), node('x2', 'b', 'workload', 300, 40)];
+        const offsets = other.map(n => n.x! - other[0].x!);
+        separateFromNamespaces([...members, ...other], new Set(['a']), options);
+        expect(other.map(n => n.x! - other[0].x!)).toEqual(offsets);
+        expect(other[0].y).toBe(other[1].y);
+        expect(overlap(rect(other, true), rect(members, true))).toBe(false);
+    });
+
+    test.each([
+        { x: 0, y: 0 }, { x: 200, y: 0 }, { x: -200, y: 0 },
+        { x: 0, y: 200 }, { x: 0, y: -200 },
+    ])('clears a node deeply inside a boundary from ($x, $y)', ({ x, y }) => {
+        const members = [node('w1', 'a', 'workload', -1000, -1000), node('w2', 'a', 'workload', 1000, 1000)];
+        const covered: N = { ...node('ns-b', 'b', 'namespace', x, y), fx: x, fy: y };
+        separateFromNamespaces([...members, covered], new Set(['a']), options);
+        const boundary = rect(members, true);
+        const padded = {
+            left: boundary.left - options.gap, right: boundary.right + options.gap,
+            top: boundary.top - options.gap, bottom: boundary.bottom + options.gap,
+        };
+        expect(overlap(rect([covered], false), padded)).toBe(false);
+        expect([covered.fx, covered.fy]).toEqual([covered.x, covered.y]);
+        expect(members.map(n => [n.x, n.y])).toEqual([[-1000, -1000], [1000, 1000]]);
+    });
+
+    test('does not move a node the user dragged, with or without its pin', () => {
+        const members = [node('w1', 'a', 'workload', 0, 0)];
+        const dragged: N = { ...node('ns-b', 'b', 'namespace', 30, 10), userPinned: true, fx: 30, fy: 10 };
+        separateFromNamespaces([...members, dragged], new Set(['a']), options);
+        expect([dragged.x, dragged.y, dragged.fx, dragged.fy]).toEqual([30, 10, 30, 10]);
+    });
+
+    test('moves a temporary pin with its node', () => {
+        const members = [node('w1', 'a', 'workload', 0, 0)];
+        const covered: N = { ...node('ns-b', 'b', 'namespace', 30, 10), fx: 30, fy: 10 };
+        separateFromNamespaces([...members, covered], new Set(['a']), options);
+        expect([covered.fx, covered.fy]).toEqual([covered.x, covered.y]);
+        expect([covered.x, covered.y]).not.toEqual([30, 10]);
+    });
+
+    test('pulls apart nodes that a move left overlapping', () => {
+        const members = [node('w1', 'a', 'workload', 0, 0)];
+        const first = node('ns-b', 'b', 'namespace', 0, 10);
+        const second = node('ns-c', 'c', 'namespace', 0, 80);
+        separateFromNamespaces([...members, first, second], new Set(['a']), options);
+        expect(overlap(rect([first], false), rect([second], false))).toBe(false);
+        expect(overlap(rect([first], false), rect(members, true))).toBe(false);
     });
 });

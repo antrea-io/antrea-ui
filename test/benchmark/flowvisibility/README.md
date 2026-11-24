@@ -84,8 +84,18 @@ bin/flowbench run --context kind-flowbench --scale small,medium,large
 For each scale, `run` deploys it, restarting antrea-ui and `fakefa` so that every measurement
 starts from fresh processes, opens the Service Map (`--path /flows/list?namespace=_all` for the
 flow list) in a headless Chromium logged in as the benchmark's cluster-admin, waits for the first
-render, lets it warm up (`--warmup`, 30s), then samples for `--duration` (2m) every
-`--sample-interval` (2s). Use `--no-deploy` to measure whatever is deployed instead, as it is.
+visible map node or flow row, lets it warm up (`--warmup`, 30s), then samples for `--duration`
+(2m) every `--sample-interval` (2s). Use `--no-deploy` to measure whatever is deployed instead, as it is.
+
+The default path, `/flows/map?namespace=_all`, is the cluster-wide map. It folds each identified
+Namespace into one node and shows up to 50 of the busiest edges by default. This display limit
+does not filter the stream. The page retains up to 10,000 distinct connection keys and evicts the
+least recently used entry when a new key would exceed that limit. For large runs such as `xlarge`,
+check `storeEntries` and `storeEvicted` in `page-samples.jsonl` to see how many entries the map
+is built from and whether any have been evicted.
+
+Use a Namespace-scoped `--path`, such as `/flows/map?namespace=<namespace>`, to measure the cost
+of drawing workloads.
 
 Results go to `test/benchmark/flowvisibility/results/<timestamp>/<scale>/`:
 
@@ -103,7 +113,7 @@ With several scales, `comparison.md` puts them side by side.
 
 | Metric | Source |
 | --- | --- |
-| First render, settle time | Time to the map's first node (or the list's first flow); then time until the main thread is first under 20% busy, i.e. the initial layout has converged. Only during the warmup, so a long settle needs a long `--warmup` |
+| First render, settle time | Time from navigation until the initial map layout shows a node or the flow list shows a row. Settle time starts there and ends at the first sample with main-thread usage under 20%. Only during the warmup, so a long settle needs a long `--warmup` |
 | Flows streamed to antrea-ui | `fakefa` `/stats`, read through the API server's Service proxy |
 | Connections in the page's flow store, map nodes and edges, SVG elements | The page's DOM, and its flow store's size |
 | Renderer main thread busy, and its script, layout and style shares | CDP `Performance.getMetrics` (`TaskDuration`, `ScriptDuration`, ...) |
@@ -133,7 +143,7 @@ browser or the host is busy. Percentiles, minimums and maximums are those of the
 `--scale large --set peersPerWorkload=6 --set activeTimeout=30s`. `flowbench presets` lists the
 presets and every knob with its default.
 
-| Preset | Namespaces | Nodes | Pods/Node | Pods/workload | Workloads (map nodes) | Long-lived connections | Records/s |
+| Preset | Namespaces | Nodes | Pods/Node | Pods/workload | Workloads | Long-lived connections | Records/s |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | tiny | 3 | 2 | 10 | 2 | 10 | ~60 | ~3 |
 | small | 10 | 5 | 20 | 3 | 33 | ~250 | ~14 |
@@ -147,9 +157,9 @@ Topology:
 | --- | --- |
 | `namespaces` | Application Namespaces; workloads are spread evenly across them |
 | `nodes`, `podsPerNode` | Pods are dealt to Nodes round-robin; Pods on the same Node talk intra-node |
-| `podsPerWorkload` | Replicas per workload. A workload is one Service Map node |
+| `podsPerWorkload` | Replicas per workload. A workload is one Service Map node in a Namespace-scoped map |
 | `serviceFraction` | Fraction of workloads behind a ClusterIP Service; only those can be peers |
-| `peersPerWorkload` | Services each workload is a client of: the out-degree of a map node |
+| `peersPerWorkload` | Services each workload is a client of: the out-degree of a workload's node |
 | `crossNamespaceFraction` | Fraction of those peers in another Namespace |
 | `externalEgressFraction`, `externalIngressFraction`, `externalIPs` | Traffic to and from outside the cluster |
 | `allowPolicyFraction`, `dropPolicyFraction` | Fraction of edges an allow or a drop rule applies to (edge colors) |

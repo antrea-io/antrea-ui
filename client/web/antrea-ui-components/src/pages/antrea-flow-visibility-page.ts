@@ -16,7 +16,8 @@ import { html, css, nothing, svg } from 'lit';
 import type { TemplateResult } from 'lit';
 import { state, query, property } from 'lit/decorators.js';
 import * as d3 from 'd3';
-import { reconcileMapNodes, clusterMapNodes, pinMapNodes } from '../lib/service-map-layout.js';
+import { busiestMapEdges } from '../lib/service-map-edges.js';
+import { reconcileMapNodes, clusterMapNodes, pinMapNodes, seedNamespaceTransition, separateFromNamespaces, nodeBounds, restoreMapPositions } from '../lib/service-map-layout.js';
 import { pageStyles, pickerStyles } from '../lib/styles.js';
 import { SCOPE_ALL, scopeToValue, valueToScope } from '../lib/namespace-scope.js';
 import { createNamespaceScope } from '../lib/namespace-scope-controller.js';
@@ -74,6 +75,9 @@ import '../antrea-namespace-picker';
 export interface EdgeSelection {
     source: string;
     target: string;
+    /** Endpoint IDs are opaque; namespace aggregates use `namespace:<name>`. */
+    sourceKind?: NodeKind;
+    targetKind?: NodeKind;
     destPorts: string;
     ingressPolicyNames: string[];
     egressPolicyNames: string[];
@@ -257,10 +261,11 @@ function workloadShortName(id: string): string { return id.split('/').pop() ?? i
 
 /**
  * What a node stands for. A boolean `isExternal` could not express the two collapsed forms, and
- * everything that branches on this has to handle all four: `nodeHalfSize`, `nodeBoundary`,
+ * everything that branches on this has to handle each kind: `nodeHalfSize`, `nodeBoundary`,
  * `nodeCollideRadius`, the node-rendering branch and the three hull-membership filters. Missing
  * one is a layout bug, not a visual nit.
  *
+ * - `namespace`         — an expandable aggregate of identified workloads and Services.
  * - `workload`          — a workload in this cluster, identified, or a destination's Service.
  *                         A Service node says nothing of the endpoint behind it, which can
  *                         be withheld or outside the Pod network.
@@ -280,7 +285,7 @@ function workloadShortName(id: string): string { return id.split('/').pop() ?? i
  *                         which is false and unknowable, and a force layout would pull the one
  *                         thing nobody can see into the centre of the graph.
  */
-type NodeKind = 'workload' | 'external' | 'undisclosedNamespace' | 'undisclosed';
+export type NodeKind = 'namespace' | 'workload' | 'external' | 'undisclosedNamespace' | 'undisclosed';
 
 interface WorkloadNode {
     id: string;
@@ -301,6 +306,7 @@ interface WorkloadNode {
      * over-counts a Pod that restarted with a new address, and for a host-network Pod it is a
      * Node address. */
     addresses?: Set<string>;
+    internal?: { connections: number; denied: number; bytes: number };
 }
 interface WorkloadEdge {
     source: string; target: string;
@@ -420,7 +426,7 @@ function addressesLabel(addresses: Set<string>): string {
     return `${addresses.size} addresses`;
 }
 
-function buildGraph(entries: FlowEntry[]): GraphData {
+function buildGraph(entries: FlowEntry[], folded = false, expanded = new Set<string>()): GraphData {
     const nodeMap = new Map<string, WorkloadNode>();
     const edgeMap = new Map<string, WorkloadEdge>();
     // Ids that some end reached as a workload rather than through a destination Service.
@@ -430,24 +436,40 @@ function buildGraph(entries: FlowEntry[]): GraphData {
         const flowType = flow.k8s.flowType as FlowType;
         const srcDesc = describeEndpoint(flow, 'source');
         const dstDesc = describeEndpoint(flow, 'destination');
-        // Only the unidentified side collapses. A flow from an in-scope workload to a peer the
-        // caller may not identify keeps its source at workload granularity: collapsing both ends
-        // would destroy the one thing the caller is entitled to see, which of their own
-        // workloads is talking outward.
+        // Resolve redacted IDs against identified workload IDs before namespace folding.
+        // This preserves each undisclosed peer's identity across expand/collapse without
+        // asserting any relationship between peers whose membership was withheld.
         const srcIdentified = identifiedNodeId(srcDesc);
         const dstIdentified = identifiedNodeId(dstDesc);
-        const srcId = srcIdentified ?? collapsedNodeId(srcDesc, dstIdentified);
-        const dstId = dstIdentified ?? collapsedNodeId(dstDesc, srcIdentified);
+        const fold = (desc: EndpointDesc, id: string) => folded && desc.kind === 'workload'
+            && desc.namespace && !expanded.has(desc.namespace) ? `namespace:${desc.namespace}` : id;
+        const srcId = fold(srcDesc, srcIdentified ?? collapsedNodeId(srcDesc, dstIdentified));
+        const dstId = fold(dstDesc, dstIdentified ?? collapsedNodeId(dstDesc, srcIdentified));
         for (const [id, desc] of [[srcId, srcDesc], [dstId, dstDesc]] as [string, EndpointDesc][]) {
             let node = nodeMap.get(id);
-            if (!node) { node = nodeFor(desc, id); nodeMap.set(id, node); }
+            if (!node) {
+                node = id.startsWith('namespace:') && desc.kind === 'workload'
+                    ? { id, shortName: desc.namespace, namespace: desc.namespace, kind: 'namespace', detail: '', serviceOnly: false,
+                        internal: { connections: 0, denied: 0, bytes: 0 } }
+                    : nodeFor(desc, id);
+                nodeMap.set(id, node);
+            }
             if (desc.kind === 'workload' && !desc.viaService) workloadIds.add(id);
             if (node.addresses) {
                 const address = desc.kind === 'undisclosedNamespace' || desc.kind === 'undisclosed' ? desc.address : '';
                 if (address) node.addresses.add(address);
             }
         }
-        if (srcId === dstId) continue;
+        if (srcId === dstId) {
+            const internal = nodeMap.get(srcId)?.internal;
+            if (internal) {
+                internal.connections++;
+                internal.bytes += flow.stats.octetTotalCount + flow.reverseStats.octetTotalCount;
+                if ([flow.k8s.ingressNetworkPolicyRuleAction, flow.k8s.egressNetworkPolicyRuleAction]
+                    .some(a => !policyAllows(a))) internal.denied++;
+            }
+            continue;
+        }
         const edgeKey = `${srcId}|${dstId}`;
         let edge = edgeMap.get(edgeKey);
         if (!edge) {
@@ -490,6 +512,7 @@ function buildGraph(entries: FlowEntry[]): GraphData {
     for (const node of nodeMap.values()) {
         node.serviceOnly = node.kind === 'workload' && !workloadIds.has(node.id);
         if (node.addresses) node.detail = addressesLabel(node.addresses);
+        if (node.internal) node.detail = `${node.internal.connections} internal · ${node.internal.denied} denied`;
     }
     return { nodes: Array.from(nodeMap.values()), edges: Array.from(edgeMap.values()), edgeMap, nodeMap };
 }
@@ -507,7 +530,7 @@ function formatBitRate(bps: number): string {
 function nodeLabel(graph: GraphData, id: string): string {
     const node = graph.nodeMap.get(id);
     if (!node) return workloadShortName(id);
-    return node.detail && node.kind !== 'workload' ? `${node.shortName} (${node.detail})` : node.shortName;
+    return node.addresses ? `${node.shortName} (${node.detail})` : node.shortName;
 }
 
 function edgeToDetails(edge: WorkloadEdge): EdgeDetails {
@@ -526,10 +549,12 @@ function edgeToDetails(edge: WorkloadEdge): EdgeDetails {
     };
 }
 
-function edgeToSelection(edge: WorkloadEdge): EdgeSelection {
+function edgeToSelection(edge: WorkloadEdge, graph: GraphData): EdgeSelection {
     return {
         source: edge.source,
         target: edge.target,
+        sourceKind: graph.nodeMap.get(edge.source)?.kind,
+        targetKind: graph.nodeMap.get(edge.target)?.kind,
         destPorts: edgeToDetails(edge).destPortsStr,
         ingressPolicyNames: Array.from(edge.ingressPolicyNames),
         egressPolicyNames: Array.from(edge.egressPolicyNames),
@@ -550,6 +575,7 @@ const EDGE_COLOR_VAR: Record<EdgeRole, string> = {
 };
 // Same rationale as EDGE_COLOR_VAR above: set via .style() so var() resolves.
 const MAP_COLOR_VAR = {
+    background: 'var(--antrea-color-bg-dark, #17242b)',
     nsHullFill: 'var(--antrea-color-map-ns-hull-fill, rgba(106,159,181,0.08))',
     nsHullStroke: 'var(--antrea-color-map-ns-hull-stroke, rgba(106,159,181,0.25))',
     nsLabel: 'var(--antrea-color-map-ns-label, rgba(106,159,181,0.5))',
@@ -585,18 +611,34 @@ function policyAllows(action: NetworkPolicyRuleAction): boolean {
 }
 
 function edgeLabel(edge: WorkloadEdge): string {
-    const protocols = Array.from(edge.protoPorts.keys()).map(getProtocolName);
-    const ports = Array.from(edge.protoPorts.values()).flatMap(s => Array.from(s)).sort((a, b) => a - b);
-    if (!protocols.length && !ports.length) return '';
-    let label = ports[0] ? `${protocols[0] ?? '?'}/${ports[0]}` : (protocols[0] ?? '?');
-    const extras = Math.max(protocols.length, ports.length) - 1;
-    if (extras > 0) label += ` +${extras}`;
-    return label;
+    if (!edge.protoPorts.size) return '';
+    const protocol = Math.min(...edge.protoPorts.keys());
+    const ports = edge.protoPorts.get(protocol)!;
+    const name = getProtocolName(protocol);
+    const label = ports.size ? `${name}/${Math.min(...ports)}` : name;
+    let combinations = 0;
+    for (const destinations of edge.protoPorts.values()) combinations += Math.max(1, destinations.size);
+    return combinations > 1 ? `${label} +${combinations - 1}` : label;
+}
+
+function edgePinLabel(node: D3Node): string {
+    let name = node.shortName;
+    switch (node.kind) {
+        case 'workload': name = node.id; break;
+        case 'namespace': name = `namespace ${node.namespace}`; break;
+        case 'undisclosedNamespace': name = `undisclosed workloads in namespace ${node.namespace}`; break;
+        case 'undisclosed': name = `undisclosed peer (${node.id.slice('undisclosed-peer:'.length)})`; break;
+    }
+    return `Keep edges highlighted for ${name}`;
+}
+
+function namespaceTrafficTooltip(internal: NonNullable<WorkloadNode['internal']>): string {
+    return `${internal.connections} internal connections, ${internal.denied} denied, ${formatBytes(internal.bytes)}. Click to expand.`;
 }
 
 // ── D3 node geometry ─────────────────────────────────────────────────────────
 
-export interface D3Node extends d3.SimulationNodeDatum { id: string; shortName: string; namespace: string; kind: NodeKind; detail: string; serviceOnly: boolean; }
+export interface D3Node extends d3.SimulationNodeDatum { internal?: WorkloadNode['internal']; userPinned?: boolean; hideNamespace?: boolean; id: string; shortName: string; namespace: string; kind: NodeKind; detail: string; serviceOnly: boolean; }
 
 /** Whether this node is drawn as a diamond: an aggregate of unbounded cardinality with no
  * namespace, excluded from the hulls and not drillable. `undisclosed` reuses External's shape
@@ -606,18 +648,28 @@ function isDiamond(d: { kind: NodeKind }): boolean {
     return d.kind === 'external' || d.kind === 'undisclosed';
 }
 
-/** Whether this node belongs to a namespace hull. A real hull is a d3.polygonHull over its
- * members' positions, so the collapsed namespace - which by definition has no members - is not
+/** Whether this node belongs to a namespace boundary. The boundary encloses its members,
+ * so the collapsed namespace - which by definition has no members - is not
  * one of them: it is a fixed-size simulation node rendered in the hull's style, so that the
  * layout places it and edges terminate on it. */
 function inNamespaceHull(d: { kind: NodeKind; namespace: string }): boolean {
     return d.kind === 'workload' && !!d.namespace;
 }
-interface D3Link extends d3.SimulationLinkDatum<D3Node> { edgeKey: string; connectionCount: number; role: EdgeRole; label: string; curveOffset: number; }
+interface D3Link extends d3.SimulationLinkDatum<D3Node> { edgeKey: string; role: EdgeRole; label: string; curveOffset: number; }
 
+// A namespace boundary extends this far past its members, and has a header above them.
+const NAMESPACE_PADDING = 24;
+const NAMESPACE_HEADER = 18;
+// The clear space left between a namespace that has just expanded and what is moved aside.
+const NAMESPACE_GAP = 40;
+
+const EDGE_STROKE_WIDTH = 2;
+const EDGE_HIT_WIDTH = 8;
+const DEFAULT_EDGE_LIMIT = 50;
 /** The factor one click of the zoom in/out buttons scales the map by. */
 const MAP_ZOOM_STEP = 1.5;
 const NODE_RX = 8;
+const NAMESPACE_NODE_CLEARANCE = 2;
 const NODE_PADDING_X = 14;
 const NODE_PADDING_Y = 8;
 const EXTERNAL_SIZE = 20;
@@ -628,19 +680,88 @@ const CURVE_OFFSET = 30;
 const COLLAPSED_NS_MIN_WIDTH = 150;
 const COLLAPSED_NS_HEIGHT = 56;
 const LOCK_SIZE = 11;
+// The edge pin's glyph is about this wide, and sits this far from the edge of the node it marks.
+const EDGE_PIN_SIZE = 12;
+const EDGE_PIN_GAP = 4;
+
+// Pointer travel below this distance is a click, as far as D3 suppressing the click is concerned
+// and as far as pinning a node is concerned.
+const DRAG_CLICK_DISTANCE = 3;
+
+interface DragSlop {
+    start(event: d3.D3DragEvent<Element, unknown, unknown>): void;
+    end(event: d3.D3DragEvent<Element, unknown, unknown>): void;
+    /** The movement to apply for a drag event, or null while the gesture is still a click. Once
+     * the pointer has left the click distance, the first movement includes the distance spent. */
+    travel(event: d3.D3DragEvent<Element, unknown, unknown>): { dx: number; dy: number } | null;
+}
+
+function newDragSlop(): DragSlop {
+    // D3's clickDistance uses client pixels, while its drag coordinates already account for
+    // the map zoom. Track the same screen distance, including the matching touch in a gesture.
+    const clientPoint = (event: d3.D3DragEvent<Element, unknown, unknown>) => {
+        const source = event.sourceEvent as MouseEvent | TouchEvent;
+        return 'changedTouches' in source
+            ? Array.from(source.changedTouches).find(touch => touch.identifier === event.identifier)!
+            : source;
+    };
+    // One entry per active gesture, since touches can drag several nodes at once.
+    const gestures = new Map<unknown, { clientX: number; clientY: number; lastX: number; lastY: number; moved: boolean }>();
+    return {
+        start(event) {
+            const { clientX, clientY } = clientPoint(event);
+            gestures.set(event.identifier, { clientX, clientY, lastX: event.x, lastY: event.y, moved: false });
+        },
+        end(event) { gestures.delete(event.identifier); },
+        travel(event) {
+            const g = gestures.get(event.identifier);
+            if (!g) return null;
+            if (!g.moved) {
+                const { clientX, clientY } = clientPoint(event);
+                if (Math.hypot(clientX - g.clientX, clientY - g.clientY) <= DRAG_CLICK_DISTANCE) return null;
+                g.moved = true;
+            }
+            const delta = { dx: event.x - g.lastX, dy: event.y - g.lastY };
+            g.lastX = event.x; g.lastY = event.y;
+            return delta.dx || delta.dy ? delta : null;
+        },
+    };
+}
 
 function textWidth(text: string, size: number): number { return text.length * size * 0.6; }
 
+/** Updates a folded namespace's counters and denial colors without changing its geometry. */
+function syncNamespaceCounts(svg: SVGSVGElement, graph: GraphData) {
+    d3.select(svg).selectAll<SVGGElement, D3Node>('g.node').filter(d => d.kind === 'namespace').each(function (d) {
+        const node = graph.nodeMap.get(d.id);
+        if (!node) return;
+        d.detail = node.detail;
+        d.internal = node.internal;
+        const g = d3.select(this).select('g.node-body');
+        const hasInternalDenials = (d.internal?.denied ?? 0) > 0;
+        g.select('rect').style('stroke', hasInternalDenials ? EDGE_COLOR_VAR.drop : MAP_COLOR_VAR.nsHullStroke);
+        g.select('text.node-detail').text(d.detail)
+            .style('fill', hasInternalDenials ? EDGE_COLOR_VAR.drop : MAP_COLOR_VAR.nodeNamespaceText);
+        g.attr('aria-description', d.detail);
+    });
+}
+
 function nodeHalfSize(d: D3Node): { hw: number; hh: number } {
     if (isDiamond(d)) return { hw: EXTERNAL_SIZE, hh: EXTERNAL_SIZE };
-    const w = Math.max(textWidth(d.shortName, 12), textWidth(d.detail, 9)) + NODE_PADDING_X * 2 + (d.kind === 'undisclosedNamespace' ? LOCK_SIZE + 6 : 0);
-    if (d.kind === 'undisclosedNamespace') {
+    const w = Math.max(textWidth(d.shortName, 12), d.hideNamespace || d.kind === 'namespace' ? 0 : textWidth(d.detail, 9)) + NODE_PADDING_X * 2 + (d.kind === 'undisclosedNamespace' ? LOCK_SIZE + 6 : 0);
+    if (d.kind === 'undisclosedNamespace' || d.kind === 'namespace') {
         return { hw: Math.max(w, COLLAPSED_NS_MIN_WIDTH) / 2, hh: (COLLAPSED_NS_HEIGHT + NODE_PADDING_Y) / 2 };
     }
-    const hh = (38 + NODE_PADDING_Y) / 2;
+    const hh = ((d.hideNamespace ? 24 : 38) + NODE_PADDING_Y) / 2;
     // A pill is a rect with rx = hh. Narrower than a circle, SVG clamps rx to the half width and
     // draws an ellipse, which nodeBoundary does not model. Keep a pill at least as wide as one.
     return { hw: d.serviceOnly ? Math.max(w / 2, hh) : w / 2, hh };
+}
+
+/** Where the edge pin sits, as the centre of its glyph relative to the node's centre: just beyond
+ * the node's right edge, or beyond the right vertex of a diamond. */
+export function edgePinPosition(d: D3Node): [number, number] {
+    return [nodeHalfSize(d).hw + EDGE_PIN_GAP + EDGE_PIN_SIZE / 2, 0];
 }
 
 export function nodeBoundary(d: D3Node, tx: number, ty: number, gap: number): [number, number] {
@@ -648,7 +769,12 @@ export function nodeBoundary(d: D3Node, tx: number, ty: number, gap: number): [n
     const dx = tx - cx; const dy = ty - cy;
     const len = Math.sqrt(dx * dx + dy * dy) || 1;
     const ux = dx / len; const uy = dy / len;
-    const { hw, hh } = nodeHalfSize(d);
+    let { hw, hh } = nodeHalfSize(d);
+    // Keep incident edges and their arrowheads outside the namespace's opaque backing.
+    if (d.kind === 'namespace' || d.kind === 'undisclosedNamespace') {
+        hw += NAMESPACE_NODE_CLEARANCE;
+        hh += NAMESPACE_NODE_CLEARANCE;
+    }
     let scale: number;
     if (isDiamond(d)) scale = hw / (Math.abs(ux) + Math.abs(uy));
     else if (Math.abs(ux) * hh > Math.abs(uy) * hw) scale = hw / Math.abs(ux);
@@ -677,6 +803,70 @@ function quadMidpoint(sx: number, sy: number, tx: number, ty: number, offset: nu
     const dx = tx - sx; const dy = ty - sy; const len = Math.sqrt(dx * dx + dy * dy) || 1;
     const nx = -dy / len; const ny = dx / len;
     return [(sx + tx) / 2 + nx * offset, (sy + ty) / 2 + ny * offset];
+}
+
+const EDGE_LABEL_HEIGHT = 12;
+
+const NODE_INDEX_CELL = 128;
+
+/** A grid over node centres, so that asking whether a label box overlaps a node looks at the few
+ * nodes near it instead of every node. Built once per draw, as the nodes do not move within one. */
+export class NodeIndex {
+    private _cells = new Map<string, { node: D3Node; hw: number; hh: number }[]>();
+    private _maxHalfWidth = 0;
+    private _maxHalfHeight = 0;
+
+    constructor(nodes: readonly D3Node[]) {
+        for (const node of nodes) {
+            const { hw, hh } = nodeHalfSize(node);
+            this._maxHalfWidth = Math.max(this._maxHalfWidth, hw);
+            this._maxHalfHeight = Math.max(this._maxHalfHeight, hh);
+            const key = `${Math.floor(node.x! / NODE_INDEX_CELL)},${Math.floor(node.y! / NODE_INDEX_CELL)}`;
+            const cell = this._cells.get(key);
+            if (cell) cell.push({ node, hw, hh }); else this._cells.set(key, [{ node, hw, hh }]);
+        }
+    }
+
+    /** Whether a width by height box centred at (px, py) overlaps any node. */
+    covers(px: number, py: number, width: number, height: number): boolean {
+        const reachX = this._maxHalfWidth + width / 2;
+        const reachY = this._maxHalfHeight + height / 2;
+        const x1 = Math.floor((px + reachX) / NODE_INDEX_CELL);
+        const y1 = Math.floor((py + reachY) / NODE_INDEX_CELL);
+        for (let cx = Math.floor((px - reachX) / NODE_INDEX_CELL); cx <= x1; cx++) {
+            for (let cy = Math.floor((py - reachY) / NODE_INDEX_CELL); cy <= y1; cy++) {
+                const cell = this._cells.get(`${cx},${cy}`);
+                if (!cell) continue;
+                for (const { node, hw, hh } of cell) {
+                    if (Math.abs(px - node.x!) < hw + width / 2 && Math.abs(py - node.y!) < hh + height / 2) return true;
+                }
+            }
+        }
+        return false;
+    }
+}
+
+/** Where an edge's label is centred. It starts at quadMidpoint and, where a node covers that
+ * spot (an edge can pass behind a node that is not one of its ends), slides along the edge to the
+ * nearest spot that no node covers. With no such spot it stays at the midpoint. */
+export function edgeLabelPosition(
+    s: D3Node, t: D3Node, offset: number, width: number,
+    nodes: readonly D3Node[] | NodeIndex,
+): [number, number] {
+    const index = nodes instanceof NodeIndex ? nodes : new NodeIndex(nodes);
+    const [mx, my] = quadMidpoint(s.x!, s.y!, t.x!, t.y!, offset);
+    const covered = (px: number, py: number) => index.covers(px, py, width, EDGE_LABEL_HEIGHT);
+    if (!covered(mx, my)) return [mx, my];
+    const dx = t.x! - s.x!; const dy = t.y! - s.y!; const len = Math.sqrt(dx * dx + dy * dy) || 1;
+    const ux = dx / len; const uy = dy / len;
+    const STEP = 4;
+    for (let k = STEP; k <= len / 2; k += STEP) {
+        for (const sign of [1, -1]) {
+            const px = mx + ux * k * sign; const py = my + uy * k * sign;
+            if (!covered(px, py)) return [px, py];
+        }
+    }
+    return [mx, my];
 }
 
 function nodeCollideRadius(d: D3Node): number {
@@ -850,8 +1040,18 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
             font-size: 0.875rem;
         }
 
-        .map-container { position: relative; width: 100%; min-width: 0; height: max(360px, 70dvh); }
-        .map-svg { display: block; width: 100%; height: 100%; box-sizing: border-box; border: 1px solid var(--antrea-color-border, #314351); border-radius: 4px; background: var(--antrea-color-bg-dark, #17242b); }
+        .map-toolbar { margin-bottom: 8px; }
+        .map-toolbar > label { display: block; margin-bottom: 4px; }
+        .map-toolbar-controls { gap: 12px; flex-wrap: wrap; }
+        .map-toolbar-controls > .field-select { width: 16rem; max-width: 100%; }
+        .map-toolbar-controls > .field-select, .map-toolbar-controls > antrea-button, .map-edge-count { flex-shrink: 0; }
+        .map-container {
+            position: relative; width: 100%; min-width: 0; height: max(360px, 70dvh);
+            display: grid; grid-template: minmax(0, 1fr) auto / minmax(0, 1fr); row-gap: 10px;
+        }
+        .map-svg { grid-area: 1 / 1 / -1 / -1; display: block; width: 100%; height: 100%; box-sizing: border-box; border: 1px solid var(--antrea-color-border, #314351); border-radius: 4px; background: var(--antrea-color-bg-dark, #17242b); }
+        .map-svg, .map-svg text { -webkit-user-select: none; user-select: none; }
+        .map-loading { position: absolute; inset: 0; display: grid; place-items: center; pointer-events: none; color: var(--antrea-color-text-muted, #8899a4); }
         .map-tooltip {
             position: fixed; opacity: 0;
             background: var(--antrea-color-map-tooltip-bg, rgba(20,32,40,0.95));
@@ -868,7 +1068,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
             color: var(--antrea-color-map-legend-text, #adbbc4); line-height: 1.8;
         }
         .map-controls {
-            position: absolute; bottom: 10px; right: 10px;
+            grid-area: 2 / 1; justify-self: end; margin: 0 10px 10px 0;
             display: flex; flex-direction: column; gap: 4px;
         }
         .map-control-btn {
@@ -884,13 +1084,11 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         .map-legend-title { font-weight: 600; margin-bottom: 2px; }
         .legend-row { display: flex; align-items: center; gap: 6px; }
         .edge-details {
-            position: absolute; top: 10px; right: 10px;
+            grid-area: 1 / 1; place-self: start end; margin: 10px 10px 0 0;
             background: var(--antrea-color-bg, #1b2a32);
             border: 1px solid var(--antrea-color-border, #314351);
             border-radius: 4px; padding: 16px; min-width: 280px; max-width: 350px; z-index: 10;
-            /* Leave room for the zoom controls: 3 x 32px buttons + 2 x 4px gaps, their 10px bottom
-               offset, this card's 10px top offset and a 10px gap. */
-            box-sizing: border-box; max-height: calc(100% - 134px); overflow: auto;
+            box-sizing: border-box; max-height: calc(100% - 10px); overflow: auto;
         }
         .edge-details-close {
             position: sticky; top: 0; float: right;
@@ -1015,6 +1213,27 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
     @state() private _svgWidth = 1100;
     @state() private _svgHeight = 900;
     @state() private _selectedEdgeKey: string | null = null;
+    @state() private _edgeLimit = DEFAULT_EDGE_LIMIT;
+    @state() private _shownEdgeCount = 0;
+    @state() private _totalEdgeCount = 0;
+    @state() private _expandedNamespaces = new Set<string>();
+    private _keyboardToggleNamespace: string | null = null;
+    private _busiestEdges = new Set<string>();
+    private _pinnedNodes = new Set<string>();
+    private _hoveredNode: string | null = null;
+    private _mapViewKey = '';
+    // The part of the view key that does not depend on the hovered node, and the function that
+    // restyles the drawn map for a different one.
+    private _mapShapeKey = '';
+    // Expanded namespaces that gained members since the last layout. Their boundaries are only as large
+    // as the settled layout makes them, so what they cover is moved aside once it has settled.
+    private _expandingNamespaces = new Set<string>();
+    // The edge under the pointer, and the nodes whose edges are emphasised, as of the last build.
+    // An edge's port label is drawn only for these and for the selected edge.
+    private _hoveredEdgeKey: string | null = null;
+    private _lastHighlighted = new Set<string>();
+    private _updateEdgeLabels: (() => void) | null = null;
+    private _applyMapHighlight: ((highlighted: Set<string>, edges: WorkloadEdge[]) => void) | null = null;
 
     @query('#graph-svg') private _svgEl?: SVGSVGElement;
     @query('#graph-tooltip') private _tooltipEl?: HTMLDivElement;
@@ -1037,23 +1256,53 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
     private _mapLayoutPending = false;
     // Whether the unfinished layout is a full one (centred, nothing pinned) rather than
     // additions settling around pinned nodes.
-    private _mapLayoutFull = false;
+    @state() private _mapLayoutFull = false;
+    // Initial layouts and namespace transitions publish only their settled positions.
+    @state() private _mapLayoutStatic = false;
+    private _mapLayoutSnapshot: SVGGElement | null = null;
     // Nodes pinned only to keep them still while additions settle. Unlike a node the user
     // dragged, they are released when the layout ends.
     private _settlePinned = new Set<D3Node>();
     // D3 stores active touch gestures on the behavior, so it must survive map updates.
     // Gesture callbacks use the latest draw function to include newly joined edges and labels.
     private _drawServiceMap: (() => void) | null = null;
+    private _dragSlop = newDragSlop();
+    private _namespaceSlop = newDragSlop();
+    private _originalPositions = new Map<string, { x: number; y: number }>();
     private _mapDrag = d3.drag<SVGGElement, D3Node>()
-        .on('start', (_event, d) => {
-            // A running layout carries on for the free nodes, so even a click does not
-            // leave it half done. Only the dragged node is pinned, and it stays so.
-            this._settlePinned.delete(d);
-            d.fx = d.x; d.fy = d.y;
-        })
+        .clickDistance(DRAG_CLICK_DISTANCE)
+        .on('start', event => this._dragSlop.start(event))
+        .on('end', event => this._dragSlop.end(event))
         .on('drag', (event, d) => {
+            // Presses, touch taps and pointer jitter must not create drag pins or retain
+            // temporary layout pins. The same distance decides whether D3 suppresses the click.
+            if (!this._dragSlop.travel(event)) return;
+            this._rememberPosition(d);
+            this._settlePinned.delete(d);
+            d.userPinned = true;
             d.x = d.fx = event.x; d.y = d.fy = event.y;
             d.vx = 0; d.vy = 0;
+            this._drawServiceMap?.();
+        });
+    private _namespaceDrag = d3.drag<SVGGElement, [string, D3Node[]]>()
+        .subject(event => ({ x: event.x, y: event.y }))
+        .clickDistance(DRAG_CLICK_DISTANCE)
+        .on('start', event => this._namespaceSlop.start(event))
+        .on('end', event => this._namespaceSlop.end(event))
+        .on('drag', (event, [namespace]) => {
+            const travel = this._namespaceSlop.travel(event);
+            if (!travel) return;
+            // Read current members so a stream update during the gesture does not leave a
+            // newly joined workload behind. D3's deltas already account for the map zoom.
+            for (const node of this._simulation?.nodes() ?? []) {
+                if (!inNamespaceHull(node) || node.namespace !== namespace) continue;
+                this._rememberPosition(node);
+                this._settlePinned.delete(node);
+                node.userPinned = true;
+                node.x = node.fx = (node.x ?? 0) + travel.dx;
+                node.y = node.fy = (node.y ?? 0) + travel.dy;
+                node.vx = 0; node.vy = 0;
+            }
             this._drawServiceMap?.();
         });
     // The SVG is recreated when returning from the list. Retain the user's viewport here,
@@ -1073,7 +1322,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
     private _refreshTimer: ReturnType<typeof setInterval> | null = null;
     private _ro: ResizeObserver | null = null;
     private _roHost: HTMLElement | null = null;
-    private _graphRef: GraphData = { nodes: [], edges: [], edgeMap: new Map(), nodeMap: new Map() };
+    private _graphRef = buildGraph([]);
 
     private _handleDocClick = (e: PointerEvent) => {
         const path = e.composedPath();
@@ -1161,6 +1410,8 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         // which a reattached element still has.
         this._filterKey = '';
         this._simulation?.stop();
+        this._mapLayoutSnapshot?.remove();
+        this._mapLayoutSnapshot = null;
         this._ro?.disconnect();
         this._ro = null;
         this._roHost = null;
@@ -1207,22 +1458,25 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         // Leaving the map or clearing its scope removes the SVG; stop work on the detached DOM.
         if (mapVisibilityChanged && (this.viewMode !== 'map' || !this._scope)) {
             this._simulation?.stop();
+            this._mapLayoutSnapshot?.remove();
+            this._mapLayoutSnapshot = null;
             this._ro?.disconnect();
             this._ro = null;
             this._roHost = null;
         }
         // Rebuild map when entries or SVG dimensions change
-        if ((changed.has('_entries') || changed.has('_svgWidth') || changed.has('_svgHeight')) && this.viewMode === 'map') {
+        if ((changed.has('_entries') || changed.has('_svgWidth') || changed.has('_svgHeight') || changed.has('_edgeLimit') || changed.has('_expandedNamespaces')) && this.viewMode === 'map') {
             this._buildServiceMap();
         }
         if (changed.has('_selectedEdgeKey')) {
+            if (this.viewMode === 'map') this._buildServiceMap();
             this._dispatchEdgeSelected();
         }
     }
 
     private _dispatchEdgeSelected() {
         const edge = this._selectedEdgeKey ? this._graphRef.edgeMap.get(this._selectedEdgeKey) : undefined;
-        const detail = edge ? edgeToSelection(edge) : null;
+        const detail = edge ? edgeToSelection(edge, this._graphRef) : null;
         this.dispatchEvent(new CustomEvent<EdgeSelection | null>('antrea-edge-selected', { detail, bubbles: true, composed: true }));
     }
 
@@ -1312,7 +1566,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         // there under the new scope.
         this._client?.stop();
         this._client = null;
-        this._store.clear();
+        this._clearFlows();
         // The names the filter menus offer survive a new filter or a new mode, but are those of
         // one scope: another scope starts with none, even if its stream is refused or never opens.
         // No scope at all leaves them alone, though the menus do not offer them then: it mostly
@@ -1324,15 +1578,11 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
                 this._seenNamesKey = seenNamesKey;
             }
         }
-        this._entries = [];
-        this._evictionWarning = false;
-        this._droppedCount = 0;
         this._snapshotCount = 0;
         this._resultLimit = 0;
         this._truncated = false;
         this._queryState = 'idle';
         this._connected = false;
-        this._selectedEdgeKey = null;
         // The banner went with the stream, which is what it described: a refusal of the old
         // scope says nothing about the new one.
         this._error = null;
@@ -1388,12 +1638,28 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         else this._startStream();
     }
 
-    private _onClear() {
+    private _clearFlows() {
+        this._resetMapChoices();
+        // The list can receive the next batch before the map is mounted again. Discard the
+        // old layout here so matching IDs in the new data cannot inherit a drag or a pin.
+        this._simulation?.stop();
+        this._simulation = null;
+        this._settlePinned.clear();
+        this._mapLayoutPending = false;
+        this._mapLayoutFull = false;
+        this._mapLayoutStatic = false;
+        this._mapLayoutSnapshot?.remove();
+        this._mapLayoutSnapshot = null;
+        this._mapContent = null;
+        this._drawServiceMap = null;
+        this._updateEdgeLabels = null;
+        this._applyMapHighlight = null;
+        this._graphRef = buildGraph([]);
+
         this._store.clear();
         this._entries = [];
         this._evictionWarning = false;
         this._droppedCount = 0;
-        this._selectedEdgeKey = null;
     }
 
     // ── Available filter options (derived from the names seen) ────────────────
@@ -1500,10 +1766,6 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         const changedRoles = new Set<D3Link>();
         d3.select(svg).selectAll<SVGPathElement, D3Link>('.edges path').each(function (d) {
             const edge = graph.edgeMap.get(d.edgeKey)!;
-            if (d.connectionCount !== edge.connectionCount) {
-                d.connectionCount = edge.connectionCount;
-                d3.select(this).attr('stroke-width', Math.min(1.5 + Math.log2(d.connectionCount + 1), 6));
-            }
             const role = edgeRole(edge);
             if (d.role !== role) {
                 d.role = role;
@@ -1530,36 +1792,148 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
             });
     }
 
-    private _buildServiceMap() {
+    private _rememberPosition(node: D3Node) {
+        // Expanded workloads fold back into their namespace when the user resets the map.
+        if (this._clusterWide && inNamespaceHull(node)) return;
+        if (node.x != null && node.y != null && !this._originalPositions.has(node.id)) {
+            this._originalPositions.set(node.id, { x: node.x, y: node.y });
+        }
+    }
+
+    private _resetMapChoices() {
+        this._keyboardToggleNamespace = null;
+        this._originalPositions = new Map();
+        this._busiestEdges.clear();
+        this._pinnedNodes.clear();
+        this._hoveredNode = null;
+        this._hoveredEdgeKey = null;
+        this._selectedEdgeKey = null;
+        this._hideTooltip();
+        this._expandingNamespaces.clear();
+        this._expandedNamespaces = new Set();
+    }
+
+    private _toggleNamespace(namespace: string, fromKeyboard = false) {
+        // The active control is replaced while the new layout is hidden.
+        this._keyboardToggleNamespace = fromKeyboard ? namespace : null;
+        if (fromKeyboard) this._svgEl?.focus({ preventScroll: true });
+        this._hoveredNode = null;
+        this._hideTooltip();
+        const expanded = new Set(this._expandedNamespaces);
+        if (expanded.has(namespace)) expanded.delete(namespace);
+        else {
+            const parent = this._simulation?.nodes().find(n => n.id === `namespace:${namespace}`);
+            if (parent) this._rememberPosition(parent);
+            expanded.add(namespace);
+        }
+        this._busiestEdges.clear();
+        this._expandedNamespaces = expanded;
+    }
+
+    private _resetMap() {
+        const positions = this._originalPositions;
+        this._resetMapChoices();
+        this._edgeLimit = DEFAULT_EDGE_LIMIT;
+        this._buildServiceMap(false, positions);
+    }
+
+    private _collapseAllNamespaces() {
+        this._keyboardToggleNamespace = null;
+        this._hoveredNode = null;
+        this._hideTooltip();
+        this._busiestEdges.clear();
+        this._expandedNamespaces = new Set();
+    }
+
+    /** Redraws the map. With reuseGraph, the flows are taken to be unchanged since the last call,
+     * as when only the hovered node differs, and the graph is not built again. */
+    private _buildServiceMap(reuseGraph = false, resetPositions?: Map<string, { x: number; y: number }>) {
         const svg = this._svgEl;
         if (!svg) return;
 
-        const graph = buildGraph(this._entries);
+        const graph = reuseGraph ? this._graphRef : buildGraph(this._entries, this._clusterWide, this._expandedNamespaces);
         const previousGraph = this._graphRef;
+        if (!reuseGraph && this._hoveredNode) {
+            const hovered = graph.nodeMap.get(this._hoveredNode);
+            if (!hovered) {
+                this._hoveredNode = null;
+                this._hideTooltip();
+            } else if (hovered.internal) {
+                const body = this._tooltipEl?.querySelector('.node-tooltip-body');
+                const text = namespaceTrafficTooltip(hovered.internal);
+                if (body && body.textContent !== text) body.textContent = text;
+            }
+        }
+        const previousPinCount = this._pinnedNodes.size;
+        for (const id of this._pinnedNodes) if (!graph.nodeMap.has(id)) this._pinnedNodes.delete(id);
+        if (this._pinnedNodes.size !== previousPinCount) this.requestUpdate();
+        this._busiestEdges = busiestMapEdges(graph.edges, this._edgeLimit, this._busiestEdges);
+        const expandedEndpoint = (id: string) => {
+            const node = graph.nodeMap.get(id);
+            return this._clusterWide && node?.kind === 'workload' && this._expandedNamespaces.has(node.namespace);
+        };
+        const structural = graph.edges.filter(e => this._busiestEdges.has(`${e.source}|${e.target}`)
+            || expandedEndpoint(e.source) || expandedEndpoint(e.target));
+        const structuralKeys = new Set(structural.map(e => `${e.source}|${e.target}`));
+        const highlightedNodes = new Set(this._pinnedNodes);
+        if (this._hoveredNode) highlightedNodes.add(this._hoveredNode);
+        this._lastHighlighted = highlightedNodes;
+        const shownEdges = graph.edges.filter(e => structuralKeys.has(`${e.source}|${e.target}`)
+            || highlightedNodes.has(e.source) || highlightedNodes.has(e.target)
+            || `${e.source}|${e.target}` === this._selectedEdgeKey);
+        // Streaming counts can replace a hovered edge in the visible top edges. Removing its
+        // path/label does not send mouseleave, so clear the hover before applying node backing.
+        if (this._hoveredEdgeKey && !shownEdges.some(e => `${e.source}|${e.target}` === this._hoveredEdgeKey)) {
+            this._hoveredEdgeKey = null;
+            this._hideTooltip();
+        }
+        this._shownEdgeCount = shownEdges.length;
+        this._totalEdgeCount = graph.edges.length;
         this._graphRef = graph;
 
-        // If a topology rebuild drops the currently-selected edge, clear the selection so
+        // If a rebuild drops the currently-selected edge, clear the selection so
         // _dispatchEdgeSelected() emits null — otherwise a host listening on the
         // antrea-edge-selected extension point would keep believing an edge is selected even
-        // though the details card has disappeared (render() returns nothing once the edge is
-        // gone from edgeMap).
+        // though its edge is no longer visible.
         if (this._selectedEdgeKey && !graph.edgeMap.has(this._selectedEdgeKey)) {
             this._selectedEdgeKey = null;
         }
+
+        // Which edges are drawn, and the hover and pin state they are drawn with, are part of
+        // what the joins below render. Unchanged, the shortcut is safe; changed, it is not.
+        const shapeKey = JSON.stringify([shownEdges.map(e => `${e.source}|${e.target}`).sort(),
+            [...structuralKeys].sort(), [...this._pinnedNodes].sort(),
+            this._clusterWide, [...this._expandedNamespaces].sort()]);
+        const viewKey = `${shapeKey}|${this._hoveredNode}`;
+        const sameShape = shapeKey === this._mapShapeKey;
+        this._mapShapeKey = shapeKey;
+        // Hover that leaves the same edges drawn only changes which of them are emphasised.
+        if (reuseGraph && sameShape && this._applyMapHighlight && this._mapContent?.ownerSVGElement === svg) {
+            this._mapViewKey = viewKey;
+            this._applyMapHighlight(highlightedNodes, shownEdges);
+            this._updateEdgeLabels?.();
+            return;
+        }
+        const sameView = viewKey === this._mapViewKey;
+        this._mapViewKey = viewKey;
 
         // Stable topology needs no joins, force initialization or geometry writes. Still refresh
         // edge metadata: the same endpoints can acquire a new port, verdict or connection count.
         // Node appearance changes take the full path because they can change edge boundaries and
         // collision radii. A recreated SVG must also be populated, even with identical data.
-        if (this._mapContent?.ownerSVGElement === svg &&
+        if (!resetPositions && sameView && this._mapContent?.ownerSVGElement === svg &&
             graph.nodes.length === previousGraph.nodes.length &&
             graph.edges.length === previousGraph.edges.length &&
             graph.nodes.every(node => {
                 const old = previousGraph.nodeMap.get(node.id);
                 return old && node.kind === old.kind && node.namespace === old.namespace &&
-                    node.shortName === old.shortName && node.detail === old.detail && node.serviceOnly === old.serviceOnly;
+                    node.shortName === old.shortName && node.serviceOnly === old.serviceOnly &&
+                    // A folded namespace's counters change with traffic and are updated in place.
+                    (node.kind === 'namespace' || node.detail === old.detail);
             }) && graph.edges.every(edge => previousGraph.edgeMap.has(`${edge.source}|${edge.target}`))) {
             this._updateMapEdgeData(svg, graph);
+            syncNamespaceCounts(svg, graph);
+            this._updateEdgeLabels?.();
             this._mapZoom?.extent([[0, 0], [this._svgWidth, this._svgHeight]]);
             return;
         }
@@ -1567,9 +1941,71 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         const d3svg = d3.select(svg);
         const previousNodes = this._simulation?.nodes() ?? [];
         const { nodes: d3Nodes, added } = reconcileMapNodes<D3Node>(
-            previousNodes, graph.nodes, graph.edges, { x: this._svgWidth / 2, y: this._svgHeight / 2 },
+            previousNodes, graph.nodes.map(node => ({ ...node, hideNamespace: expandedEndpoint(node.id) })),
+            structural, { x: this._svgWidth / 2, y: this._svgHeight / 2 },
+            n => n.hideNamespace ? n.namespace : undefined,
         );
+        const previousWorkloadNamespaces = new Set(previousNodes.filter(n => n.kind === 'workload').map(n => n.namespace));
+        const namespaceTransition = !resetPositions && added.some(n =>
+            (n.kind === 'workload' && previousGraph.nodeMap.has(`namespace:${n.namespace}`)) ||
+            (n.kind === 'namespace' && previousWorkloadNamespaces.has(n.namespace)));
+        for (const node of added) {
+            if (node.hideNamespace) {
+                this._expandingNamespaces.add(node.namespace);
+            }
+        }
+        if (namespaceTransition && !this._mapLayoutSnapshot && this._mapContent?.ownerSVGElement === svg &&
+            this._mapContent.getAttribute('visibility') !== 'hidden') {
+            // Keep the last painted view while the replacement settles. This inert snapshot
+            // has no selectors or focus targets belonging to the live, interactive graph.
+            const snapshot = this._mapContent.cloneNode(true) as SVGGElement;
+            for (const element of [snapshot, ...Array.from(snapshot.querySelectorAll('*'))]) {
+                element.removeAttribute('class');
+                element.removeAttribute('id');
+                element.removeAttribute('tabindex');
+                element.removeAttribute('role');
+                element.removeAttribute('pointer-events');
+            }
+            snapshot.setAttribute('class', 'map-layout-snapshot');
+            snapshot.setAttribute('aria-hidden', 'true');
+            snapshot.setAttribute('pointer-events', 'none');
+            svg.append(snapshot);
+            this._mapLayoutSnapshot = snapshot;
+        }
+        seedNamespaceTransition(previousNodes, added);
         const nodeById = new Map(d3Nodes.map(n => [n.id, n]));
+
+        if (resetPositions) {
+            // A new aggregate without a saved position starts at its children's centroid.
+            for (const n of added) {
+                if (!resetPositions.has(n.id) && n.x != null && n.y != null) {
+                    resetPositions.set(n.id, { x: n.x, y: n.y });
+                }
+            }
+            for (const n of d3Nodes) {
+                if (n.userPinned) { n.userPinned = false; n.fx = null; n.fy = null; }
+            }
+            restoreMapPositions(d3Nodes, resetPositions, node => {
+                const box = nodeBounds([node], nodeHalfSize);
+                box.right += EDGE_PIN_GAP + EDGE_PIN_SIZE;
+                return box;
+            });
+            // A batch of new flows may already be settling when Reset is clicked.
+            if (this._mapLayoutPending) {
+                for (const n of d3Nodes) {
+                    if (!resetPositions.has(n.id)) continue;
+                    n.fx = n.x; n.fy = n.y;
+                    this._settlePinned.add(n);
+                }
+            }
+        } else if (this._originalPositions.size) {
+            const active = new Set(nodeById.keys());
+            // Keep the folded position while expanded, even if the last member is evicted.
+            for (const ns of this._expandedNamespaces) active.add(`namespace:${ns}`);
+            for (const id of this._originalPositions.keys()) {
+                if (!active.has(id)) this._originalPositions.delete(id);
+            }
+        }
 
         const bidirectionalPairs = new Set<string>();
         const edgeKeys = new Set(graph.edges.map(e => `${e.source}|${e.target}`));
@@ -1582,24 +2018,27 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
             defs.selectAll<SVGMarkerElement, EdgeRole>(`#arrowhead-${role}`).data([role]).join('marker')
                 .attr('id', `arrowhead-${role}`)
                 .attr('viewBox', '-10 -5 10 10').attr('refX', 0).attr('refY', 0)
-                .attr('markerWidth', 7).attr('markerHeight', 7).attr('orient', 'auto')
+                .attr('markerUnits', 'userSpaceOnUse')
+                .attr('markerWidth', 7.5).attr('markerHeight', 7.5).attr('orient', 'auto')
                 .selectAll<SVGPathElement, EdgeRole>('path').data([role]).join('path').attr('d', 'M-10,-4L0,0L-10,4').style('fill', EDGE_COLOR_VAR[role]);
         }
 
-        const d3Links: D3Link[] = graph.edges.map(e => {
+        const toLink = (e: WorkloadEdge): D3Link => {
             const pairKey = [e.source, e.target].sort().join('|');
             const isBi = bidirectionalPairs.has(pairKey);
             return {
                 source: nodeById.get(e.source)!,
                 target: nodeById.get(e.target)!,
                 edgeKey: `${e.source}|${e.target}`,
-                connectionCount: e.connectionCount,
                 role: edgeRole(e),
                 label: edgeLabel(e),
                 // Reversing the endpoints already reverses the curve's normal direction.
                 curveOffset: isBi ? CURVE_OFFSET : 0,
             };
-        });
+        };
+        const d3Links = shownEdges.map(toLink);
+        // Pinning changes visibility, while the same structural edges keep the layout stable.
+        const layoutLinks = structural.map(toLink);
 
         const newViewport = d3svg.select('g.map-content').empty();
         const transform = newViewport ? this._mapTransform : d3.zoomTransform(svg);
@@ -1610,16 +2049,23 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
             .on('zoom', event => {
                 this._mapTransform = event.transform;
                 container.attr('transform', event.transform);
+                this._mapLayoutSnapshot?.setAttribute('transform', event.transform.toString());
                 const [minimum, maximum] = zoom.scaleExtent();
                 this._canZoomIn = event.transform.k < maximum - 1e-9;
                 this._canZoomOut = event.transform.k > minimum + 1e-9;
             });
         this._mapZoom = zoom;
         this._mapContent = container.node();
-        d3svg.call(zoom);
+        // Double-clicking a namespace expands it on the first click, which replaces the node under
+        // the cursor. The second click can then land on empty background, and the double-click
+        // would zoom the map in. Nothing on the map is meant to be activated by a double-click.
+        d3svg.call(zoom).on('dblclick.zoom', null);
         if (newViewport) d3svg.call(zoom.transform, transform);
 
-        // Namespace hulls
+        // Namespace boundaries
+        const namespaceLabel = (namespace: string) => this._clusterWide ? `${namespace} ⊖ collapse` : namespace;
+        const namespaceMinWidth = (namespace: string) => textWidth(namespaceLabel(namespace), 10) + 24;
+        const namespacePadding = { side: NAMESPACE_PADDING, top: NAMESPACE_PADDING + NAMESPACE_HEADER, bottom: NAMESPACE_PADDING };
         const nsMap = new Map<string, D3Node[]>();
         for (const n of d3Nodes) {
             if (!inNamespaceHull(n)) continue;
@@ -1631,47 +2077,79 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
             .data([null]).join('g').attr('class', name);
         const nsHulls = layer('ns-hulls');
         const hullGroups = nsHulls.selectAll<SVGGElement, [string, D3Node[]]>('g.namespace')
-            .data(Array.from(nsMap), d => d[0]).join('g').attr('class', 'namespace');
-        hullGroups.selectAll('path').data(d => [d]).join('path')
+            .data(Array.from(nsMap), d => d[0]).join('g').attr('class', 'namespace')
+            .style('cursor', () => this._clusterWide ? 'grab' : null);
+        if (this._clusterWide) hullGroups.call(this._namespaceDrag);
+        else hullGroups.on('.drag', null);
+        hullGroups.selectAll('rect').data(d => [d]).join('rect').attr('rx', 12).attr('ry', 12)
             .style('fill', MAP_COLOR_VAR.nsHullFill).style('stroke', MAP_COLOR_VAR.nsHullStroke)
             .attr('stroke-width', 1).attr('stroke-dasharray', '4,2');
-        hullGroups.selectAll('text').data(d => [d]).join('text').text(d => d[0])
+        hullGroups.selectAll('text').data(d => [d]).join('text')
+            .text(d => namespaceLabel(d[0]))
+            .style('cursor', () => this._clusterWide ? 'pointer' : null)
+            .attr('role', this._clusterWide ? 'button' : null).attr('tabindex', this._clusterWide ? 0 : null)
+            .on('click', (_event, d) => { if (this._clusterWide) this._toggleNamespace(d[0]); })
+            .on('keydown', (event, d) => {
+                if (this._clusterWide && (event.key === 'Enter' || event.key === ' ')) {
+                    event.preventDefault(); this._toggleNamespace(d[0], true);
+                }
+            })
             .style('fill', MAP_COLOR_VAR.nsLabel).attr('font-size', '10px').attr('font-weight', '600');
         const nsGroups = hullGroups.nodes().map(element => {
             const group = d3.select<SVGGElement, [string, D3Node[]]>(element);
-            return { nodes: group.datum()[1], path: group.select('path'), label: group.select('text') };
+            return { namespace: group.datum()[0], nodes: group.datum()[1], boundary: group.select('rect'), label: group.select('text') };
         });
 
         // Edge paths
+        // A wider invisible stroke makes thin edges selectable, including when zoomed out.
+        // Draw it behind the visible paths so nearby targets cannot obscure the actual lines.
+        const edgeHitPaths = layer('edge-hit-targets').selectAll<SVGPathElement, D3Link>('path')
+            .data(d3Links, d => d.edgeKey).join('path')
+            .attr('fill', 'none').attr('stroke', 'transparent').attr('stroke-width', EDGE_HIT_WIDTH)
+            .attr('vector-effect', 'non-scaling-stroke').attr('pointer-events', 'visibleStroke');
         const linkPaths = layer('edges').selectAll<SVGPathElement, D3Link>('path')
             .data(d3Links, d => d.edgeKey).join('path')
             .attr('fill', 'none')
             .style('stroke', d => EDGE_COLOR_VAR[d.role])
-            .attr('stroke-width', d => Math.min(1.5 + Math.log2(d.connectionCount + 1), 6))
+            .attr('stroke-width', EDGE_STROKE_WIDTH)
             .attr('stroke-opacity', 0.6)
             .attr('marker-end', d => `url(#arrowhead-${d.role})`);
         const edgePathsByKey = new Map(linkPaths.nodes().map(path => [
             d3.select<SVGPathElement, D3Link>(path).datum().edgeKey, path,
         ]));
+        const edgeHitPathsByKey = new Map(edgeHitPaths.nodes().map(path => [
+            d3.select<SVGPathElement, D3Link>(path).datum().edgeKey, path,
+        ]));
+        const edgeLabelByKey = new Map<string, SVGGElement>();
         const bindEdgeEvents = <E extends SVGElement, P>(selection: d3.Selection<E, D3Link, SVGGElement, P>) => selection
             .style('cursor', 'pointer')
             .on('mouseenter', (event, d) => {
+                this._hoveredEdgeKey = d.edgeKey;
+                this._applyMapHighlight?.(this._lastHighlighted, shownEdges);
+                this._updateEdgeLabels?.();
                 d3.select(edgePathsByKey.get(d.edgeKey)!)
                     .attr('stroke-opacity', 1)
-                    .attr('stroke-width', Math.min(1.5 + Math.log2(d.connectionCount + 1), 6) + 1.5);
+                    .attr('stroke-width', EDGE_STROKE_WIDTH + 0.5);
                 const edge = this._graphRef.edgeMap.get(d.edgeKey);
                 if (edge) this._showTooltip(event, edge);
             })
             .on('mousemove', event => {
                 if (this._tooltipEl) {
-                    this._tooltipEl.style.left = `${event.pageX + 12}px`;
-                    this._tooltipEl.style.top = `${event.pageY + 12}px`;
+                    this._tooltipEl.style.left = `${event.clientX + 12}px`;
+                    this._tooltipEl.style.top = `${event.clientY + 12}px`;
                 }
             })
-            .on('mouseleave', (_event, d) => {
+            .on('mouseleave', (event: MouseEvent, d) => {
+                // Moving between an edge, its wider target and its label keeps the same hover.
+                const to = event.relatedTarget;
+                if (to instanceof Node && (to === edgePathsByKey.get(d.edgeKey) || to === edgeHitPathsByKey.get(d.edgeKey)
+                    || edgeLabelByKey.get(d.edgeKey)?.contains(to))) return;
+                this._hoveredEdgeKey = null;
+                this._applyMapHighlight?.(this._lastHighlighted, shownEdges);
+                this._updateEdgeLabels?.();
                 d3.select(edgePathsByKey.get(d.edgeKey)!)
                     .attr('stroke-opacity', 0.6)
-                    .attr('stroke-width', Math.min(1.5 + Math.log2(d.connectionCount + 1), 6));
+                    .attr('stroke-width', EDGE_STROKE_WIDTH);
                 this._hideTooltip();
             })
             .on('click', (_event, d) => {
@@ -1679,48 +2157,83 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
                 if (edge) this._selectedEdgeKey = d.edgeKey;
             });
         bindEdgeEvents(linkPaths);
+        bindEdgeEvents(edgeHitPaths);
 
         // Edge labels
         const edgeLabelGroups = layer('edge-labels').selectAll<SVGGElement, D3Link>('g')
             .data(d3Links.filter(d => d.label), d => d.edgeKey).join('g');
         bindEdgeEvents(edgeLabelGroups);
+        for (const group of edgeLabelGroups.nodes()) edgeLabelByKey.set(d3.select<SVGGElement, D3Link>(group).datum().edgeKey, group);
         edgeLabelGroups.selectAll('rect').data(d => [d]).join('rect')
             .attr('x', d => -textWidth(d.label, 9) / 2 - 3).attr('y', -6)
             .attr('width', d => textWidth(d.label, 9) + 6).attr('height', 12).attr('rx', 3).attr('ry', 3).style('fill', MAP_COLOR_VAR.edgeLabelBg).style('stroke', d => EDGE_COLOR_VAR[d.role]).attr('stroke-width', 0.5).attr('stroke-opacity', 0.5);
         edgeLabelGroups.selectAll('text').data(d => [d]).join('text').text(d => d.label).attr('text-anchor', 'middle').attr('dominant-baseline', 'central').style('fill', MAP_COLOR_VAR.edgeLabelText).attr('font-size', '9px').attr('pointer-events', 'none');
+
+        // Opaque backing hides passing edges through folded namespace bodies and leaves a
+        // narrow gap around their borders. Highlighting hides unrelated backings to reveal the
+        // full edge paths through those nodes. Expanded hulls stay translucent.
+        const namespaceBackings = layer('namespace-backings').attr('pointer-events', 'none')
+            .selectAll<SVGRectElement, D3Node>('rect')
+            .data(d3Nodes.filter(d => d.kind === 'namespace' || d.kind === 'undisclosedNamespace'), d => d.id)
+            .join('rect')
+            .attr('x', d => -nodeHalfSize(d).hw).attr('y', d => -nodeHalfSize(d).hh)
+            .attr('width', d => nodeHalfSize(d).hw * 2).attr('height', d => nodeHalfSize(d).hh * 2)
+            .attr('rx', NODE_RX).attr('ry', NODE_RX)
+            .style('fill', MAP_COLOR_VAR.background).style('stroke', MAP_COLOR_VAR.background)
+            .attr('stroke-width', NAMESPACE_NODE_CLEARANCE * 2);
 
         // Nodes
         const nodeGroup = layer('nodes').selectAll<SVGGElement, D3Node>('g.node')
             .data(d3Nodes, d => d.id).join('g').attr('class', 'node')
             .style('cursor', 'grab')
             .call(this._mapDrag)
-            .on('dblclick', (_event, d) => this._releaseMapNode(d))
-            // Only the collapsed namespace has anything actionable to say. The anonymous peer
-            // has no namespace to name a grant in, so it gets no tooltip at all - see
-            // describeEndpoint - and a workload node is itself disclosed and needs none.
-            .on('mouseenter', (event, d) => {
-                if (d.kind !== 'undisclosedNamespace') return;
-                this._showNodeTooltip(event, d.shortName, collapsedNamespaceTooltip(d.shortName));
+            .on('mouseenter', (_event, d) => {
+                this._hoveredNode = d.id;
+                this._buildServiceMap(true);
             })
-            .on('mousemove', (event, d) => {
-                if (d.kind !== 'undisclosedNamespace' || !this._tooltipEl) return;
-                this._tooltipEl.style.left = `${event.pageX + 12}px`;
-                this._tooltipEl.style.top = `${event.pageY + 12}px`;
-            })
-            .on('mouseleave', (_event, d) => {
-                if (d.kind !== 'undisclosedNamespace') return;
+            .on('mouseleave', () => {
+                this._hoveredNode = null;
+                this._buildServiceMap(true);
                 this._hideTooltip();
             });
 
-        nodeGroup.each(function (this: SVGGElement, d: D3Node) {
+        // Keep the pin beside the body in the same translated group. This preserves their tab
+        // order and exposes the pin independently of the namespace's button or image role.
+        const nodeBodies = nodeGroup.selectAll<SVGGElement, D3Node>('g.node-body')
+            .data(d => [d]).join('g').attr('class', 'node-body');
+        nodeBodies.filter(d => d.kind === 'namespace' || d.kind === 'undisclosedNamespace')
+            .on('mouseenter', (event, d) => {
+                const body = d.kind === 'namespace'
+                    ? namespaceTrafficTooltip(this._graphRef.nodeMap.get(d.id)!.internal!)
+                    : collapsedNamespaceTooltip(d.shortName);
+                this._showNodeTooltip(event, d.shortName, body);
+            })
+            .on('mousemove', event => {
+                if (!this._tooltipEl) return;
+                this._tooltipEl.style.left = `${event.clientX + 12}px`;
+                this._tooltipEl.style.top = `${event.clientY + 12}px`;
+            })
+            .on('mouseleave', () => this._hideTooltip());
+        nodeBodies.filter(d => d.kind === 'namespace')
+            .on('click', (_event, d) => this._toggleNamespace(d.namespace))
+            .on('keydown', (event, d) => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault(); this._toggleNamespace(d.namespace, true);
+                }
+            });
+        nodeBodies.each(function (this: SVGGElement, d: D3Node) {
             const g = d3.select(this);
             // Metadata changes update the glyph, but preserve its group, handlers and position.
             // serviceOnly picks the shape, and a flow can turn a Service node into a workload one
             // with neither the node nor any edge changing.
-            const appearance = JSON.stringify([d.kind, d.shortName, d.detail, d.serviceOnly]);
+            const appearance = JSON.stringify([d.kind, d.shortName, d.kind === 'namespace' ? null : d.detail,
+                d.serviceOnly, d.hideNamespace]);
             if (g.attr('data-appearance') === appearance) return;
             g.attr('data-appearance', appearance);
             g.selectAll('*').remove();
+            g.attr('role', d.kind === 'namespace' ? 'button' : null)
+                .attr('tabindex', d.kind === 'namespace' ? 0 : null);
+            if (d.kind === 'namespace') g.attr('aria-label', `Expand namespace ${d.namespace}`);
             if (d.kind === 'external' || d.kind === 'undisclosed') {
                 const s = EXTERNAL_SIZE;
                 const stroke = d.kind === 'external' ? MAP_COLOR_VAR.externalStroke : MAP_COLOR_VAR.undisclosedStroke;
@@ -1740,25 +2253,26 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
                 return;
             }
             const { hw, hh } = nodeHalfSize(d);
-            if (d.kind === 'undisclosedNamespace') {
-                // Drawn in the namespace hull's style rather than the workload's: what this
-                // stands for is a namespace whose contents are hidden, and a rounded rect in
-                // this map's grammar is a workload. It is a tidy rectangle where a real hull is
-                // an irregular polygon, because there are no members to hull.
+            if (d.kind === 'undisclosedNamespace' || d.kind === 'namespace') {
+                // Both folded and withheld namespaces use the hull style. The lock marks
+                // withheld contents; identified namespaces can expand into a real hull.
                 g.append('rect').attr('x', -hw).attr('y', -hh).attr('width', hw * 2).attr('height', hh * 2)
                     .attr('rx', NODE_RX).attr('ry', NODE_RX)
-                    .style('fill', MAP_COLOR_VAR.nsHullFill).style('stroke', MAP_COLOR_VAR.nsHullStroke)
+                    .style('fill', MAP_COLOR_VAR.nsHullFill)
+                    .style('stroke', MAP_COLOR_VAR.nsHullStroke)
                     .attr('stroke-width', 1).attr('stroke-dasharray', '4,2');
-                g.append('text').text(d.shortName).attr('dy', -3).attr('x', LOCK_SIZE / 2 + 3).attr('text-anchor', 'middle')
-                    .style('fill', MAP_COLOR_VAR.nsLabel).attr('font-size', '11px').attr('font-weight', '600');
-                appendLock(g, -textWidth(d.shortName, 11) / 2 - LOCK_SIZE / 2 + 3, -13, MAP_COLOR_VAR.nsLabel);
-                g.append('text').text(d.detail).attr('dy', 15).attr('text-anchor', 'middle')
+                g.append('text').text(d.shortName).attr('dy', -3).attr('x', d.kind === 'undisclosedNamespace' ? LOCK_SIZE / 2 + 3 : 0).attr('text-anchor', 'middle')
+                    .style('fill', d.kind === 'namespace' ? MAP_COLOR_VAR.nodeText : MAP_COLOR_VAR.nsLabel)
+                    .attr('font-size', '11px').attr('font-weight', '600');
+                if (d.kind === 'undisclosedNamespace') appendLock(g, -textWidth(d.shortName, 11) / 2 - LOCK_SIZE / 2 + 3, -13, MAP_COLOR_VAR.nsLabel);
+                g.append('text').attr('class', d.kind === 'namespace' ? 'node-detail' : null).text(d.detail)
+                    .attr('dy', 15).attr('text-anchor', 'middle')
                     .style('fill', MAP_COLOR_VAR.nodeNamespaceText).attr('font-size', '9px');
                 // Worth a tooltip because it is actionable: it can name the grant that would
                 // disclose this namespace. aria-label rather than an SVG <title> - the hover
                 // handler below draws the visible one in the same panel the edge tooltip uses,
                 // and a <title> would stack the browser's own on top of it.
-                g.attr('role', 'img').attr('aria-label', collapsedNamespaceTooltip(d.shortName));
+                if (d.kind === 'undisclosedNamespace') g.attr('role', 'img').attr('aria-label', collapsedNamespaceTooltip(d.shortName));
                 return;
             }
             // A node that is only ever a destination Service is a pill, where a workload is a
@@ -1766,73 +2280,182 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
             // one in nodeBoundary, because they end on the curve.
             const rx = d.serviceOnly ? hh : NODE_RX;
             g.append('rect').attr('x', -hw).attr('y', -hh).attr('width', hw * 2).attr('height', hh * 2).attr('rx', rx).attr('ry', rx).style('fill', MAP_COLOR_VAR.nodeFill).style('stroke', MAP_COLOR_VAR.nodeStroke).attr('stroke-width', 1.5);
-            g.append('text').text(d.shortName).attr('dy', -3).attr('text-anchor', 'middle').style('fill', MAP_COLOR_VAR.nodeText).attr('font-size', '12px').attr('font-weight', '600');
-            g.append('text').text(d.detail).attr('dy', 13).attr('text-anchor', 'middle').style('fill', MAP_COLOR_VAR.nodeNamespaceText).attr('font-size', '9px');
+            g.append('text').text(d.shortName).attr('dy', d.hideNamespace ? 0 : -3)
+                .attr('dominant-baseline', d.hideNamespace ? 'central' : null)
+                .attr('text-anchor', 'middle').style('fill', MAP_COLOR_VAR.nodeText).attr('font-size', '12px').attr('font-weight', '600');
+            if (!d.hideNamespace) g.append('text').text(d.detail).attr('dy', 13).attr('text-anchor', 'middle').style('fill', MAP_COLOR_VAR.nodeNamespaceText).attr('font-size', '9px');
         });
 
-        const HULL_PADDING = 50;
+        syncNamespaceCounts(svg, graph);
+        nodeGroup.each((d, index, groups) => {
+            const group = d3.select(groups[index]);
+            group.selectAll<SVGTextElement, D3Node>('text.edge-pin')
+                .data(expandedEndpoint(d.id) ? [] : [d]).join('text')
+                .attr('class', 'edge-pin').text('↔').attr('text-anchor', 'middle').attr('dominant-baseline', 'central')
+                .attr('x', edgePinPosition(d)[0]).attr('y', edgePinPosition(d)[1])
+                .attr('role', 'button').attr('tabindex', 0)
+                .attr('aria-label', edgePinLabel(d))
+                .attr('aria-pressed', this._pinnedNodes.has(d.id) ? 'true' : 'false')
+                .style('cursor', 'pointer').style('fill', MAP_COLOR_VAR.nodeText)
+                .attr('font-weight', this._pinnedNodes.has(d.id) ? 'bold' : 'normal')
+                // Marking edges must not start the parent node's drag gesture and pin its position.
+                .on('mousedown', event => event.stopPropagation())
+                .on('touchstart', event => event.stopPropagation())
+                .on('click', event => { event.stopPropagation(); togglePin(d.id); })
+                .on('keydown', event => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault(); event.stopPropagation(); togglePin(d.id);
+                    }
+                });
+        });
+        const togglePin = (id: string) => {
+            if (this._pinnedNodes.has(id)) this._pinnedNodes.delete(id);
+            else this._pinnedNodes.add(id);
+            this._buildServiceMap();
+            this.requestUpdate();
+        };
+        const applyHighlight = (highlighted: Set<string>, edges: WorkloadEdge[]) => {
+            const connected = new Set(highlighted);
+            for (const e of edges) {
+                if (highlighted.has(e.source) || highlighted.has(e.target)) {
+                    connected.add(e.source); connected.add(e.target);
+                }
+            }
+            const hoveredEdge = this._hoveredEdgeKey ? this._graphRef.edgeMap.get(this._hoveredEdgeKey) : undefined;
+            if (hoveredEdge) {
+                connected.add(hoveredEdge.source); connected.add(hoveredEdge.target);
+            }
+            const hasHighlight = highlighted.size > 0 || !!hoveredEdge;
+            nodeGroup.attr('opacity', d => !hasHighlight || connected.has(d.id) ? 1 : 0.2);
+            namespaceBackings.attr('opacity', d => !hasHighlight || connected.has(d.id) ? 1 : 0);
+            const edgeOpacity = (d: D3Link) => !hasHighlight || d.edgeKey === this._hoveredEdgeKey
+                || highlighted.has((d.source as D3Node).id) || highlighted.has((d.target as D3Node).id) ? 1 : 0.1;
+            linkPaths.attr('opacity', edgeOpacity);
+            edgeLabelGroups.attr('opacity', edgeOpacity);
+        };
+        this._applyMapHighlight = applyHighlight;
+        applyHighlight(highlightedNodes, shownEdges);
+
         function updateHulls() {
-            for (const { nodes, path, label } of nsGroups) {
-                if (nodes.length === 1) {
-                    const n = nodes[0];
-                    const px = HULL_PADDING; const py = HULL_PADDING;
-                    path.attr('d', `M${n.x! - px},${n.y! - py} L${n.x! + px},${n.y! - py} L${n.x! + px},${n.y! + py} L${n.x! - px},${n.y! + py} Z`);
-                    label.attr('x', n.x! - px + 6).attr('y', n.y! - py + 12);
-                    continue;
-                }
-                const points: [number, number][] = [];
-                for (const n of nodes) {
-                    const [x, y] = [n.x!, n.y!];
-                    points.push([x - HULL_PADDING, y - HULL_PADDING], [x + HULL_PADDING, y - HULL_PADDING], [x + HULL_PADDING, y + HULL_PADDING], [x - HULL_PADDING, y + HULL_PADDING]);
-                }
-                const hull = d3.polygonHull(points);
-                if (hull) {
-                    path.attr('d', `M${hull.map(p => p.join(',')).join('L')}Z`);
-                    label.attr('x', d3.min(hull, p => p[0])! + 6).attr('y', d3.min(hull, p => p[1])! + 12);
-                }
+            for (const { namespace, nodes, boundary, label } of nsGroups) {
+                const { left, top, right, bottom } = nodeBounds(nodes, nodeHalfSize, namespacePadding, namespaceMinWidth(namespace));
+                boundary.attr('x', left).attr('y', top)
+                    .attr('width', right - left).attr('height', bottom - top);
+                label.attr('x', left + 12).attr('y', top + 18);
             }
         }
 
+        const shownLabels = () => edgeLabelGroups.filter(function () { return this.getAttribute('display') !== 'none'; });
+        const placeLabels = (groups: d3.Selection<SVGGElement, D3Link, SVGGElement, null>, nodeIndex: NodeIndex) => {
+            groups.attr('transform', d => {
+                const s = d.source as D3Node; const t = d.target as D3Node;
+                const [mx, my] = edgeLabelPosition(s, t, d.curveOffset, textWidth(d.label, 9) + 6, nodeIndex);
+                return `translate(${mx},${my})`;
+            });
+        };
+        // A label is a detail of its edge: drawn while the edge is hovered or selected, or while
+        // either end is highlighted. Hidden ones are not placed, which also keeps them out of the
+        // per-tick cost of a large map.
+        // eslint-disable-next-line @typescript-eslint/no-this-alias
+        const self = this;
+        const updateLabels = () => {
+            const highlighted = this._lastHighlighted;
+            const revealed: SVGGElement[] = [];
+            edgeLabelGroups.each(function (d) {
+                const shown = highlighted.has((d.source as D3Node).id) || highlighted.has((d.target as D3Node).id)
+                    || d.edgeKey === self._selectedEdgeKey || d.edgeKey === self._hoveredEdgeKey;
+                const hidden = this.getAttribute('display') === 'none';
+                if (shown === !hidden) return;
+                if (shown) { this.removeAttribute('display'); revealed.push(this); } else this.setAttribute('display', 'none');
+            });
+            if (revealed.length) placeLabels(edgeLabelGroups.filter(function () { return revealed.includes(this); }), new NodeIndex(d3Nodes));
+        };
+        this._updateEdgeLabels = updateLabels;
         const draw = () => {
-            linkPaths.attr('d', d => {
+            const nodeIndex = new NodeIndex(d3Nodes);
+            const edgePath = (d: D3Link) => {
                 const s = d.source as D3Node; const t = d.target as D3Node;
                 const [sx, sy] = nodeBoundary(s, t.x!, t.y!, 1);
                 const [tx, ty] = nodeBoundary(t, s.x!, s.y!, 3);
                 return curvedPath(sx, sy, tx, ty, d.curveOffset);
-            });
-            edgeLabelGroups.attr('transform', d => {
-                const s = d.source as D3Node; const t = d.target as D3Node;
-                const [mx, my] = quadMidpoint(s.x!, s.y!, t.x!, t.y!, d.curveOffset);
-                return `translate(${mx},${my})`;
-            });
+            };
+            linkPaths.attr('d', edgePath);
+            edgeHitPaths.attr('d', edgePath);
+            placeLabels(shownLabels(), nodeIndex);
+            namespaceBackings.attr('transform', d => `translate(${d.x},${d.y})`);
             nodeGroup.attr('transform', d => `translate(${d.x},${d.y})`);
             updateHulls();
         };
         this._drawServiceMap = draw;
+        const finishLayout = () => {
+            if (this._expandingNamespaces.size) {
+                separateFromNamespaces<D3Node>(d3Nodes, this._expandingNamespaces, {
+                    inBoundary: inNamespaceHull, halfSize: nodeHalfSize, gap: NAMESPACE_GAP,
+                    padding: namespacePadding, minBoundaryWidth: namespaceMinWidth,
+                    beforeMove: node => this._rememberPosition(node),
+                });
+                this._expandingNamespaces.clear();
+            }
+            this._mapLayoutPending = false;
+            this._mapLayoutFull = false;
+            this._mapLayoutStatic = false;
+            for (const n of this._settlePinned) { n.fx = null; n.fy = null; }
+            this._settlePinned.clear();
+            draw();
+            container.attr('visibility', null);
+            this._mapLayoutSnapshot?.remove();
+            this._mapLayoutSnapshot = null;
+            const namespace = this._keyboardToggleNamespace;
+            this._keyboardToggleNamespace = null;
+            if (namespace && this.shadowRoot?.activeElement === svg) {
+                const control = this._expandedNamespaces.has(namespace)
+                    ? hullGroups.filter(([ns]) => ns === namespace).select<SVGTextElement>('text').node()
+                    : nodeBodies.filter(d => d.kind === 'namespace' && d.namespace === namespace).node();
+                control?.focus({ preventScroll: true });
+            }
+        };
 
         const simulation = this._simulation ?? d3.forceSimulation<D3Node>();
         // Without a node to keep still there is nothing to settle around, so the layout is a
         // full one. So is an addition arriving while the previous full layout is still
         // running: pinning half-settled nodes would leave the map that way.
         const initial = d3Nodes.length === added.length;
-        const full = initial || (this._mapLayoutFull && simulation.alpha() >= simulation.alphaMin());
+        const full = !resetPositions && !namespaceTransition && (initial || (this._mapLayoutFull && simulation.alpha() >= simulation.alphaMin()));
+        const continuingLayout = this._mapLayoutPending && simulation.alpha() >= simulation.alphaMin();
         for (const n of this._settlePinned) if (!nodeById.has(n.id)) this._settlePinned.delete(n);
-        // Remove old links before nodes: forceLink otherwise initializes stale endpoints.
         if (added.length) simulation.force('anchorX', null).force('anchorY', null);
+        const layoutLink = d3.forceLink<D3Node, D3Link>(layoutLinks).id(d => d.id).distance(link => {
+            const source = link.source as D3Node, target = link.target as D3Node;
+            // A distant peer must not pull a new member out of an established namespace.
+            // Keep the cross-namespace span at its seeded length while the members settle.
+            if (source.namespace !== target.namespace &&
+                ((source.hideNamespace && previousWorkloadNamespaces.has(source.namespace)) ||
+                 (target.hideNamespace && previousWorkloadNamespaces.has(target.namespace)))) {
+                return Math.max(120, Math.hypot(source.x! - target.x!, source.y! - target.y!));
+            }
+            return 120;
+        });
+        // Remove old links before nodes: forceLink otherwise initializes stale endpoints.
         simulation.force('link', null).nodes(d3Nodes)
-            .force('link', d3.forceLink<D3Node, D3Link>(d3Links).id(d => d.id).distance(120))
+            .force('link', layoutLink)
             .force('charge', d3.forceManyBody<D3Node>().strength(-400).distanceMin(60).distanceMax(400))
             .force('collision', d3.forceCollide<D3Node>().radius(d => nodeCollideRadius(d) + 20))
             .force('cluster', (alpha: number) => clusterMapNodes(
                 d3Nodes, n => inNamespaceHull(n) ? n.namespace : undefined, alpha,
             ))
-            .on('tick', draw)
-            .on('end', () => {
-                this._mapLayoutPending = false;
-                this._mapLayoutFull = false;
-                for (const n of this._settlePinned) { n.fx = null; n.fy = null; }
-                this._settlePinned.clear();
-            });
+            .on('tick', () => {
+                if (this._mapLayoutStatic) {
+                    // Compute a static layout without showing its intermediate positions.
+                    // Batch ticks, but yield each frame so large maps keep the UI responsive.
+                    const deadline = performance.now() + 8;
+                    for (let i = 0; i < 32 && simulation.alpha() >= simulation.alphaMin() && performance.now() < deadline; i++) {
+                        simulation.tick();
+                    }
+                    return;
+                }
+                draw();
+            })
+            .on('end', finishLayout);
         if (full) {
             simulation.force('center', d3.forceCenter<D3Node>(this._svgWidth / 2, this._svgHeight / 2))
                 .force('anchorX', null).force('anchorY', null);
@@ -1846,39 +2469,28 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         }
         if (!d3Nodes.length) {
             simulation.stop();
-            this._mapLayoutPending = false;
-            this._mapLayoutFull = false;
-            this._settlePinned.clear();
-        } else if (added.length) {
+            finishLayout();
+        } else if (added.length && !resetPositions) {
+            // Batches arriving during a hidden layout must let it cool so the map becomes interactive.
+            if (full && initial) simulation.alpha(1);
+            else if (namespaceTransition || !this._mapLayoutStatic || !continuingLayout) simulation.alpha(0.15);
             this._mapLayoutPending = true;
             this._mapLayoutFull = full;
-            if (!full) for (const n of pinMapNodes(d3Nodes.filter(n => !added.includes(n)))) this._settlePinned.add(n);
-            simulation.alpha(initial ? 1 : full ? simulation.alpha() : 0.15).alphaTarget(0).restart();
+            this._mapLayoutStatic = this._mapLayoutStatic || full || namespaceTransition;
+            // New arrivals must not freeze nodes that are still settling, including expanded
+            // workloads. Existing temporary and user pins already keep stable nodes in place.
+            if (!full && !continuingLayout) {
+                for (const n of pinMapNodes(d3Nodes.filter(n => !added.includes(n)))) this._settlePinned.add(n);
+            }
+            simulation.alphaTarget(0).restart();
         } else if (newViewport && this._mapLayoutPending && simulation.alpha() >= simulation.alphaMin()) {
             // Continue an interrupted layout at its existing alpha and node positions.
             simulation.restart();
         }
         this._simulation = simulation;
+        updateLabels();
+        container.attr('visibility', this._mapLayoutStatic ? 'hidden' : null);
         draw();
-    }
-
-    /** Frees a node the user dragged. A layout that is running carries on with it. Otherwise
-     * the node settles on its own, while the others stay where they are.
-     */
-    private _releaseMapNode(node: D3Node) {
-        const simulation = this._simulation;
-        if (!simulation || node.fx == null) return;
-        node.fx = null; node.fy = null;
-        // d3-drag starts on both mousedowns of a double click, so this also runs mid-layout.
-        // Pinning the others then would freeze the map half settled.
-        if (this._mapLayoutPending && simulation.alpha() >= simulation.alphaMin()) return;
-        // forceCenter would be absorbed entirely by the one free node, and the anchors still
-        // hold the positions of an earlier settle.
-        simulation.force('center', null).force('anchorX', null).force('anchorY', null);
-        for (const n of pinMapNodes(simulation.nodes().filter(n => n !== node))) this._settlePinned.add(n);
-        this._mapLayoutPending = true;
-        this._mapLayoutFull = false;
-        simulation.alpha(0.3).alphaTarget(0).restart();
     }
 
     private _showTooltip(event: MouseEvent, edge: WorkloadEdge) {
@@ -1923,8 +2535,8 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
             for (const [p, action] of edge.ingressPolicies) tip.append(policyLine(policyAllows(action), 'Ingress', p));
             for (const [p, action] of edge.egressPolicies) tip.append(policyLine(policyAllows(action), 'Egress', p));
         }
-        tip.style.left = `${event.pageX + 12}px`;
-        tip.style.top = `${event.pageY + 12}px`;
+        tip.style.left = `${event.clientX + 12}px`;
+        tip.style.top = `${event.clientY + 12}px`;
         tip.style.opacity = '1';
     }
 
@@ -1947,10 +2559,11 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         header.style.marginBottom = '4px';
         const text = document.createElement('div');
         text.textContent = body;
+        text.className = 'node-tooltip-body';
         text.style.maxWidth = '260px';
         tip.append(header, text);
-        tip.style.left = `${event.pageX + 12}px`;
-        tip.style.top = `${event.pageY + 12}px`;
+        tip.style.left = `${event.clientX + 12}px`;
+        tip.style.top = `${event.clientY + 12}px`;
         tip.style.opacity = '1';
     }
 
@@ -2132,7 +2745,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
                         <antrea-button type="button" @click=${this._onApplyFilters}>Apply Filters</antrea-button>
                         <antrea-button type="button" action="outline" @click=${this._onResetFilters}>Reset</antrea-button>
                         ${this._following ? html`<antrea-button type="button" action="outline" @click=${this._onPauseToggle}>${this._paused ? 'Resume' : 'Pause'}</antrea-button>` : nothing}
-                        ${this._following ? html`<antrea-button type="button" action="outline" @click=${this._onClear}>Clear</antrea-button>` : nothing}
+                        ${this._following ? html`<antrea-button type="button" action="outline" @click=${this._clearFlows}>Clear</antrea-button>` : nothing}
                     </div>
                 </div>
                 <div class="status-row">
@@ -2203,7 +2816,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
 
     private _renderEdgeExtra(edge: WorkloadEdge) {
         if (this.edgeExtraRenderers.length === 0) return nothing;
-        const selection = edgeToSelection(edge);
+        const selection = edgeToSelection(edge, this._graphRef);
         const nodes = this.edgeExtraRenderers
             .map(fn => {
                 try {
@@ -2243,10 +2856,10 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         `;
     }
 
-    private _renderMapControl(label: string, onClick: () => void, icon: TemplateResult, atLimit = false) {
+    private _renderMapControl(label: string, onClick: () => void, icon: TemplateResult, atLimit = false, disabled = !this._entries.length) {
         return html`
             <button type="button" class="map-control-btn" part="map-control" aria-label=${label} title=${label}
-                ?disabled=${!this._entries.length} aria-disabled=${atLimit ? 'true' : 'false'}
+                ?disabled=${disabled || this._mapLayoutStatic} aria-disabled=${atLimit ? 'true' : 'false'}
                 @click=${onClick}>
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${icon}</svg>
@@ -2254,22 +2867,47 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
     }
 
     private _renderServiceMap() {
+        const extraEdgeSources = this._clusterWide
+            ? 'Expanded namespaces, highlighted nodes, and selected edges'
+            : 'Highlighted nodes and selected edges';
         return html`
+            <div class="map-toolbar">
+                <label for="map-edge-limit">Busiest edges (connections)</label>
+                <div class="row map-toolbar-controls">
+                    <select id="map-edge-limit" class="field-select" @change=${(event: Event) => {
+                        this._busiestEdges.clear();
+                        this._edgeLimit = Number((event.target as HTMLSelectElement).value);
+                    }}>
+                        ${[25, 50, 100, 200, 0].map(n => html`<option value=${n} .selected=${n === this._edgeLimit}>${n || 'All'}</option>`)}
+                    </select>
+                    <span class="map-edge-count">${this._shownEdgeCount} of ${this._totalEdgeCount} edges</span>
+                    <span>Hover to highlight all of a node's edges and show their ports. Click ↔ to keep the highlight; click again to release it.
+                        ${this._edgeLimit > 0 ? html`${extraEdgeSources} can show more than ${this._edgeLimit} edges.` : nothing}
+                    </span>
+                </div>
+            </div>
             <div class="map-container">
-                <svg id="graph-svg" class="map-svg" part="map-svg" width=${this._svgWidth} height=${this._svgHeight}></svg>
+                <svg id="graph-svg" tabindex="-1" class="map-svg" part="map-svg" width=${this._svgWidth} height=${this._svgHeight} aria-busy=${this._mapLayoutStatic ? 'true' : 'false'}></svg>
+                ${this._mapLayoutStatic && !this._mapLayoutSnapshot ? html`<div class="map-loading" role="status">Loading map…</div>` : nothing}
                 <div id="graph-tooltip" class="map-tooltip" part="map-tooltip"></div>
                 <div class="map-legend" part="map-legend">
                     <div class="map-legend-title">Legend</div>
                     ${POLICY_OUTCOMES.map(({ edgeRole, label }) => html`
-                        <div class="legend-row"><svg width="24" height="6"><line x1="0" y1="3" x2="24" y2="3" style="stroke:${EDGE_COLOR_VAR[edgeRole]}" stroke-width="2"/></svg><span>${label}</span></div>
+                        <div class="legend-row"><svg width="24" height="6"><line x1="0" y1="3" x2="24" y2="3" style="stroke:${EDGE_COLOR_VAR[edgeRole]}" stroke-width="${EDGE_STROKE_WIDTH}"/></svg><span>${label}</span></div>
                     `)}
+                    <div class="legend-row"><svg width="24" height="14"><rect x="1" y="1" width="22" height="12" rx="3" ry="3" style="fill:${MAP_COLOR_VAR.nsHullFill};stroke:${MAP_COLOR_VAR.nsHullStroke}" stroke-width="1" stroke-dasharray="4,2"/></svg><span>Namespace</span></div>
                     <div class="legend-row"><svg width="24" height="14"><rect x="1" y="1" width="22" height="12" rx="6" ry="6" style="fill:${MAP_COLOR_VAR.nodeFill};stroke:${MAP_COLOR_VAR.nodeStroke}" stroke-width="1.5"/></svg><span>Service (destination only)</span></div>
                     <div class="legend-row"><svg width="24" height="14"><rect x="1" y="1" width="22" height="12" rx="3" ry="3" style="fill:${MAP_COLOR_VAR.nodeFill};stroke:${MAP_COLOR_VAR.nodeStroke}" stroke-width="1.5"/></svg><span>Workload</span></div>
                     <div class="legend-row"><svg width="24" height="14"><polygon points="12,1 23,7 12,13 1,7" style="fill:${MAP_COLOR_VAR.externalFill};stroke:${MAP_COLOR_VAR.externalStroke}" stroke-width="1.5"/></svg><span>External</span></div>
                     <div class="legend-row"><svg width="24" height="14"><polygon points="12,1 23,7 12,13 1,7" style="fill:${MAP_COLOR_VAR.undisclosedFill};stroke:${MAP_COLOR_VAR.undisclosedStroke}" stroke-width="1.5"/></svg><span>Undisclosed (in cluster)</span></div>
-                    <div style="margin-top:2px;color:var(--antrea-color-text-muted, #8899a4)">Line thickness = connection count</div>
                 </div>
-                <div class="map-controls" part="map-controls" role="group" aria-label="Map zoom controls">
+                <div class="map-controls" part="map-controls" role="group" aria-label="Map controls">
+                    ${this._clusterWide ? html`
+                        ${this._renderMapControl('Collapse all namespaces', () => this._collapseAllNamespaces(), svg`
+                            <path d="M3 3l6 6M9 4v5H4M21 3l-6 6M15 4v5h5M3 21l6-6M4 15h5v5M21 21l-6-6M15 20v-5h5"/>`, false, !this._expandedNamespaces.size)}
+                    ` : nothing}
+                    ${this._renderMapControl('Reset map', () => this._resetMap(), svg`
+                        <path d="M3 10a9 9 0 1 1 2 8M3 4v6h6"/>`)}
                     ${this._renderMapControl('Zoom in', () => this._zoomMap(MAP_ZOOM_STEP), svg`
                         <circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.5" y2="16.5"/>
                         <line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/>`, !this._canZoomIn)}

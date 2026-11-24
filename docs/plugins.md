@@ -1235,7 +1235,13 @@ against an earlier version:
   `undisclosed-peer:...`, and it names no workload. Do not build a URL or a
   Kubernetes lookup from it without checking it first; the `my-plugin?source=`
   link above is fine for a plugin that only passes the id back to its own page,
-  and wrong for one that expects `namespace/name`.
+  and wrong for one that expects `namespace/name`. In the cluster-wide map,
+  folded Namespaces use `namespace:<name>`. Optional `sourceKind` and
+  `targetKind` distinguish `namespace`, `workload`, `external`,
+  `undisclosedNamespace`, and `undisclosed`. Treat IDs as opaque and handle
+  absent kinds when supporting older hosts. Only `namespace` can expand;
+  undisclosed nodes remain withheld. Expanding or collapsing clears a selected
+  edge (emitting `null`) if its ID disappears.
 
 All registration functions, including the whole-new-page ones from "Writing
 a plugin" above:

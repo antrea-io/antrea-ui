@@ -81,8 +81,8 @@ function instrument() {
             frames: s.frames,
             maxFrameGapMs: s.maxFrameGap,
             maxLoopLagMs: s.maxLoopLag,
-            mapNodes: svg ? svg.querySelectorAll('g[style*="grab"]').length : 0,
-            mapEdges: svg ? svg.querySelectorAll('path[fill="none"]').length : 0,
+            mapNodes: svg ? svg.querySelectorAll('g.nodes > g.node').length : 0,
+            mapEdges: svg ? svg.querySelectorAll('g.edges > path').length : 0,
             svgElements: svg ? svg.getElementsByTagName('*').length : 0,
             pageElements: p?.shadowRoot ? p.shadowRoot.querySelectorAll('*').length : 0,
             storeEntries: typeof p?._store?.size === 'function' ? p._store.size() : null,
@@ -135,11 +135,10 @@ async function main() {
     await page.goto(cfg.url + cfg.path, { waitUntil: 'domcontentloaded' });
     const cdp = await context.newCDPSession(page);
     await cdp.send('Performance.enable', { timeDomain: 'timeTicks' });
-    // The map's first node, or for the list view the first stored flow.
-    await page.waitForFunction(() => {
-        const c = window.__flowbench.collect();
-        return c.mapNodes > 0 || (c.storeEntries > 0 && !c.svgElements);
-    }, null, { timeout: (cfg.firstRenderTimeoutSeconds ?? 120) * 1000, polling: 100 });
+    // Nodes are inserted before the initial map layout is shown.
+    await page.locator('antrea-flow-visibility-page')
+        .locator('#graph-svg:not([aria-busy="true"]) g.nodes > g.node, .flow-list-scroll tbody tr')
+        .first().waitFor({ state: 'visible', timeout: (cfg.firstRenderTimeoutSeconds ?? 120) * 1000 });
     const firstRender = Date.now();
     emit('first-render', { ms: firstRender - start });
 
