@@ -57,6 +57,9 @@ export interface NamespaceScopeHostAdapter {
     writeScope(namespace: string | null): void;
     /** Records the last scope chosen for the signed-in user. */
     rememberScope(scope: string): void;
+    /** The mounted page's declared permissions, used when the plugin supplies no override.
+     * Read when access loads, since a plugin may be created before the host binds its page. */
+    getResources?(): NamespaceScopeResources | undefined;
     /** Says that the session is dead (the API answered 401). */
     sessionExpired(): void;
 }
@@ -68,8 +71,9 @@ export interface NamespaceScopeOptions {
     /** Where the scope events are dispatched from: the page's own element, or any node inside it
      * (the events bubble and are composed). A host adapter may handle them directly. */
     target: EventTarget;
-    /** The page's permissions, any-of, as in `requires.resources`. They decide the cluster-wide
-     * verdict. Absent: allowed for a cluster admin, unknown for anyone else. */
+    /** Overrides the page's declared permissions, any-of, as in `requires.resources`.
+     * Absent: use the host's declaration; without one, allowed for a cluster admin and unknown
+     * for anyone else. */
     resources?: NamespaceScopeResources;
 }
 
@@ -169,7 +173,8 @@ export function createNamespaceScope(options: NamespaceScopeControllerOptions): 
     }
 
     function clusterWide(s: AccessSummary | null): Verdict {
-        if (resources) return pageVerdict(s, queriesOf(resources));
+        const effective = resources ?? adapter?.getResources?.();
+        if (effective) return pageVerdict(s, queriesOf(effective));
         return s?.clusterAdmin ? 'allowed' : 'unknown';
     }
 
@@ -261,6 +266,8 @@ export function createNamespaceScope(options: NamespaceScopeControllerOptions): 
                 return null;
             });
             if (!isCurrent() || options.isActive?.() === false) return;
+            // The page's ref may have attached after create() or the first location update.
+            replaceResources(resources);
             const result = await namespaceAccess(s, clusterWide, onExpired);
             // The page may have been left while this loaded: going on would load content nothing
             // will show.
@@ -273,9 +280,10 @@ export function createNamespaceScope(options: NamespaceScopeControllerOptions): 
     }
 
     function replaceResources(next: NamespaceScopeResources | undefined): boolean {
-        const nextKey = resourcesKey(next);
-        if (nextKey === resourceKey) return false;
+        // Remember an explicit override even when it equals the current route declaration.
         resources = next;
+        const nextKey = resourcesKey(resources ?? adapter?.getResources?.());
+        if (nextKey === resourceKey) return false;
         resourceKey = nextKey;
         access = null;
         return true;
@@ -299,7 +307,7 @@ export function createNamespaceScope(options: NamespaceScopeControllerOptions): 
                 followPopState = false;
             }
             const next = search ?? window.location.search;
-            const resourcesChanged = options !== undefined && replaceResources(options.resources);
+            const resourcesChanged = replaceResources(options ? options.resources : resources);
             const first = !started;
             if (first || canonicalSearch(next) !== canonicalSearch(appliedSearch)) {
                 started = true;

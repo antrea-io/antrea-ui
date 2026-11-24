@@ -20,7 +20,7 @@
 import { createPluginNamespaceScope } from '@antrea/ui-components';
 import type { NamespaceScopeHostAdapter } from '@antrea/ui-components';
 
-export type PluginScopeNavigation = Pick<NamespaceScopeHostAdapter, 'writeScope' | 'rememberScope'>;
+export type PluginScopeNavigation = Pick<NamespaceScopeHostAdapter, 'writeScope' | 'rememberScope' | 'getResources'>;
 type PluginScopeBindings = { navigation?: PluginScopeNavigation; sessionExpired(): void };
 
 let bindings: PluginScopeBindings | null = null;
@@ -32,6 +32,7 @@ export function bindPluginScope(next: PluginScopeBindings | null): void {
 const adapter: NamespaceScopeHostAdapter = {
     writeScope: namespace => bindings?.navigation?.writeScope(namespace),
     rememberScope: scope => bindings?.navigation?.rememberScope(scope),
+    getResources: () => bindings?.navigation?.getResources?.(),
     sessionExpired: () => bindings?.sessionExpired(),
 };
 

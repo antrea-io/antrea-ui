@@ -17,7 +17,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { resetAccessSummary } from './access-api.js';
 import type { AccessSummary } from './access-api.js';
 import { createNamespaceScope } from './namespace-scope-controller.js';
-import type { NamespaceScopeHostAdapter, NamespaceScopeOptions } from './namespace-scope-controller.js';
+import type { NamespaceScopeHostAdapter, NamespaceScopeOptions, NamespaceScopeResources } from './namespace-scope-controller.js';
 import { createPluginNamespaceScope } from './plugin-namespace-scope.js';
 import { SCOPE_CHANGE_EVENT, SCOPE_CHOSEN_EVENT } from './namespace-scope.js';
 
@@ -446,6 +446,71 @@ describe('createNamespaceScope', () => {
 });
 
 describe('createNamespaceScope with a host adapter', () => {
+    it('uses route permissions bound after the plugin starts loading access', async () => {
+        body = summary(clusterPods);
+        const route: { resources?: NamespaceScopeResources } = {};
+        const adapter = {
+            writeScope: vi.fn(), rememberScope: vi.fn(), sessionExpired: vi.fn(),
+            getResources: () => route.resources,
+        };
+        const handle = createPluginNamespaceScope(adapter).create({ target: new EventTarget() });
+        handle.setLocationSearch('');
+        route.resources = { anyOf: PODS };
+        await loaded(handle);
+        expect(handle.state().access?.clusterWide).toBe('allowed');
+        expect(handle.state().scope).toEqual({ kind: 'all' });
+        handle.dispose();
+    });
+
+    it('uses explicit permissions until cleared, even when they match the route declaration', async () => {
+        body = summary(clusterPods);
+        const services = [{ group: '', resource: 'services', verb: 'list' }];
+        let routeResources = PODS;
+        const adapter = {
+            writeScope: vi.fn(), rememberScope: vi.fn(), sessionExpired: vi.fn(),
+            getResources: () => routeResources,
+        };
+        const handle = createPluginNamespaceScope(adapter).create({ target: new EventTarget(), resources: services });
+        handle.setLocationSearch('');
+        await loaded(handle);
+        expect(handle.state().access?.clusterWide).toBe('denied');
+        handle.setResources(undefined);
+        await loaded(handle);
+        expect(handle.state().scope).toEqual({ kind: 'all' });
+
+        handle.setResources(PODS);
+        routeResources = services;
+        handle.setLocationSearch('');
+        expect(handle.state().scope).toEqual({ kind: 'all' });
+        handle.setResources(undefined);
+        expect(handle.state().scope).toBeNull();
+        await loaded(handle);
+        expect(handle.state().access?.clusterWide).toBe('denied');
+        expect(handle.state().scope).toEqual({ kind: 'namespace', namespace: 'ns-a' });
+        handle.dispose();
+    });
+
+    it('invalidates a default when the route permissions change with the same query string', async () => {
+        body = summary(clusterPods);
+        let routeResources = PODS;
+        const adapter = {
+            writeScope: vi.fn(), rememberScope: vi.fn(), sessionExpired: vi.fn(),
+            getResources: () => routeResources,
+        };
+        const handle = createPluginNamespaceScope(adapter).create({ target: new EventTarget() });
+        handle.setLocationSearch('');
+        await loaded(handle);
+        expect(handle.state().scope).toEqual({ kind: 'all' });
+        routeResources = [{ group: '', resource: 'services', verb: 'list' }];
+        handle.setLocationSearch('');
+        expect(handle.state().access).toBeNull();
+        expect(handle.state().scope).toBeNull();
+        await loaded(handle);
+        expect(handle.state().access?.clusterWide).toBe('denied');
+        expect(handle.state().scope).toEqual({ kind: 'namespace', namespace: 'ns-a' });
+        handle.dispose();
+    });
+
     function adapterSetup() {
         const adapter = {
             writeScope: vi.fn(), rememberScope: vi.fn(), sessionExpired: vi.fn(),

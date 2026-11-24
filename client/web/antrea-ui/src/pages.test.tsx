@@ -681,6 +681,38 @@ describe('PluginPage', () => {
     }
     customElements.define('antrea-test-picker-page', PickerPageElement);
 
+    describe.each(['headless', 'picker'] as const)('%s route permissions', kind => {
+        test.each(['allowed', 'denied', 'unknown'] as const)('uses the route declaration for a %s verdict when resources are omitted', async verdict => {
+            const access = {
+                ...summary(false), namespaces: ['ns-a'],
+                rules: {
+                    resourceRules: verdict === 'allowed'
+                        ? [{ apiGroups: [''], resources: ['pods'], verbs: ['list'] }] : [],
+                    nonResourceRules: [], incomplete: verdict === 'unknown',
+                },
+            };
+            vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(access), { status: 200 })));
+            const pods = [{ group: '', resource: 'pods', verb: 'list' }];
+            const resources = kind === 'headless' ? pods : { anyOf: pods };
+            const tag = `antrea-test-${kind}-page`;
+            render(
+                <Provider store={setupStore({ session: 'authenticated' })}>
+                    <AccessProvider>
+                        <MemoryRouter initialEntries={['/plugin/pods']}>
+                            <PluginPage tag={tag} access={[{ namespaceScope: true, resources }]} />
+                        </MemoryRouter>
+                    </AccessProvider>
+                </Provider>,
+            );
+            await waitFor(() => expect(document.querySelector(tag)).not.toBeNull());
+            const page = document.querySelector(tag) as HeadlessPageElement | PickerPageElement;
+            const state = () => page instanceof HeadlessPageElement ? page.scope.state() : page.picker.scope;
+            await waitFor(() => expect(state()?.access?.clusterWide).toBe(verdict));
+            expect(state()?.scope).toEqual(verdict === 'allowed' ? { kind: 'all' } : { kind: 'namespace', namespace: 'ns-a' });
+            expect(state()?.offerAll).toBe(verdict !== 'denied');
+        });
+    });
+
     test('only a Namespace-aware plugin page can change the route and last scope through the picker', async () => {
         sessionStorage.clear();
         resetAccessSummary();

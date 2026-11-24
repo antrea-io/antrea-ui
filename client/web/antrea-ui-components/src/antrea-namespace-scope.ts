@@ -34,7 +34,8 @@ export const NAMESPACE_SCOPE_STATE_EVENT = 'antrea-namespace-scope-state';
  * NAMESPACE_SCOPE_STATE_EVENT. It renders into its own shadow root, so the plugin's styles
  * neither break it nor are needed by it.
  *
- * Give it the page's `locationSearch` and the same `resources` as the route's `requires`.
+ * Give it the page's `locationSearch`. Resources default to the route's `requires.resources`;
+ * supply `resources` to override them, for example when switching between watching and listing.
  */
 export class AntreaNamespaceScope extends LitElement {
     static override styles = [pageStyles, pickerStyles, css`
@@ -43,7 +44,7 @@ export class AntreaNamespaceScope extends LitElement {
 
     /** The `locationSearch` the host set on the plugin element. Absent: window.location.search. */
     @property({ attribute: false }) locationSearch?: string;
-    /** The page's permissions, any-of, as in `requires.resources`. */
+    /** Overrides the route's permissions, any-of, as in `requires.resources`. */
     @property({ attribute: false }) resources?: NamespaceScopeResources;
     @property() label = 'Namespace';
     @property() inputId = 'namespace-scope-picker';

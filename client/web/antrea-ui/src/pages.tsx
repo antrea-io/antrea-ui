@@ -22,7 +22,7 @@ import {
     sessionIdentity, apiFetchAppSettings, GATE_TRACEFLOW_CREATE, GATE_SUPPORTBUNDLE_LIST, SCOPE_CHANGE_EVENT, SCOPE_CHOSEN_EVENT,
 } from '@antrea/ui-components';
 import { isNamespaceAware } from '@antrea/ui-components';
-import type { PluginAccessRequirement, ScopeChangeDetail, ScopeChosenDetail } from '@antrea/ui-components';
+import type { NamespaceScopeResources, PluginAccessRequirement, ScopeChangeDetail, ScopeChosenDetail } from '@antrea/ui-components';
 import { Navigate, useLocation, useSearchParams } from 'react-router';
 import { getLastScope, scopeSearch, setLastScope } from './lastScope';
 import { useLogout } from './logout';
@@ -219,7 +219,7 @@ export function SupportBundlePage() {
 // query string, and follows it when it changes. A scope the page takes from its picker
 // or its URL is remembered as the last scope chosen (see lastScope.ts), which the navigation
 // entries carry.
-function useNamespaceScope() {
+function useNamespaceScope(resources?: NamespaceScopeResources) {
     const { search } = useLocation();
     const [, setSearchParams] = useSearchParams();
     const user = useScopeUser();
@@ -231,7 +231,8 @@ function useNamespaceScope() {
             return next;
         }, { replace: true }),
         rememberScope: scope => setLastScope(user, scope),
-    }), [setSearchParams, user]);
+        getResources: () => resources,
+    }), [setSearchParams, user, resources]);
     const { ref: litRef } = useLitPage(navigation);
     const attachedTo = useRef<HTMLElement | null>(null);
     const onScopeChange = useCallback((e: Event) => {
@@ -335,7 +336,7 @@ export function PluginPage({ tag, access }: { tag: string, access?: readonly Plu
     const accessState = useAccess();
     // A route that declares `namespaceScope` is a Namespace-aware page: it gets the same
     // query-string wiring as the built-in ones (see useNamespaceScope).
-    const element = isNamespaceAware(access) ? <NamespaceAwarePluginElement tag={tag} /> : <PluginElement tag={tag} />;
+    const element = isNamespaceAware(access) ? <NamespaceAwarePluginElement tag={tag} access={access} /> : <PluginElement tag={tag} />;
     if (!access?.length) return element;
     return (
         <RequirePermission allowed={allowsPluginItem(accessState, access)} loaded={accessState.loaded}>
@@ -351,7 +352,10 @@ function PluginElement({ tag }: { tag: string }) {
 
 // The element is handed the query string (`locationSearch`) like a built-in Namespace-aware page,
 // and may report a scope change or choice with SCOPE_CHANGE_EVENT and SCOPE_CHOSEN_EVENT.
-function NamespaceAwarePluginElement({ tag }: { tag: string }) {
-    const { ref } = useNamespaceScope();
+function NamespaceAwarePluginElement({ tag, access }: { tag: string, access?: readonly PluginAccessRequirement[] }) {
+    const declared = access?.find(requirement => requirement.namespaceScope)?.resources;
+    // Namespace-aware declarations accept only an array or anyOf; registration rejects allOf.
+    const resources = Array.isArray(declared) || declared && 'anyOf' in declared ? declared : undefined;
+    const { ref } = useNamespaceScope(resources);
     return React.createElement(tag, { ref });
 }
