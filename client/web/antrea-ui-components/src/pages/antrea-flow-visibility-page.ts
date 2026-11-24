@@ -25,7 +25,7 @@ import type { NamespaceScopeHandle, NamespaceScopeState } from '../lib/namespace
 import { GATE_FLOWS_WATCH, GATE_FLOWS_LIST } from '../lib/access-api.js';
 import type { ScopeSelectDetail } from '../antrea-namespace-picker.js';
 import { SessionAwarePage } from '../lib/session-aware-page.js';
-import { FlowStore, FlowEntry, entryBitRate } from '../lib/flow-store.js';
+import { FlowStore, FlowEntry, LIVE_FLOW_WINDOW_MS, entryBitRate } from '../lib/flow-store.js';
 import { SeenNames } from '../lib/seen-names.js';
 import {
     FlowType,
@@ -1398,7 +1398,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
     override connectedCallback() {
         super.connectedCallback();
         this._refreshTimer = setInterval(() => {
-            if (this._store.size() > 0) this._entries = this._store.getAll();
+            if (this._following && !this._paused) this._expireLiveFlows();
         }, 5000);
         window.addEventListener('pointerdown', this._handleDocClick);
     }
@@ -1712,10 +1712,18 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         this._applyFilter({});
     }
 
+    private _expireLiveFlows() {
+        if (this._store.expireLiveEntries()) this._entries = this._store.getAll();
+        this._evictionWarning = this._store.hasEvicted();
+    }
+
     private _onPauseToggle() {
         this._paused = !this._paused;
         if (this._paused) this._stopStream();
-        else this._startStream();
+        else {
+            this._expireLiveFlows();
+            this._startStream();
+        }
     }
 
     private _clearFlows() {
@@ -2806,10 +2814,10 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
                         <span class="status-dot" style="background-color:${statusColor}"></span>
                         ${statusText}
                     </span>
-                    <span>${this._entries.length} connections</span>
+                    <span>${this._entries.length} connection${this._entries.length === 1 ? '' : 's'}${this._following ? ` reported in the last ${LIVE_FLOW_WINDOW_MS / 60_000} min` : ''}</span>
                     ${!this._following ? html`<span>${this._snapshotCount} snapshots received</span>` : nothing}
                     ${this._droppedCount > 0 ? html`<span class="warn">${this._droppedCount} flow records dropped by the source</span>` : nothing}
-                    ${this._evictionWarning && this._following ? html`<span class="warn">Store limit reached, oldest entries evicted</span>` : nothing}
+                    ${this._evictionWarning && this._following ? html`<span class="warn">Store limit reached, some recent connections may be missing</span>` : nothing}
                     ${!this._following && this._truncated ? html`<span class="warn">Result truncated at ${this._resultLimit} records, so some connections may be missing or show older totals. ${NARROW_QUERY_HINT}</span>` : nothing}
                     ${!this._following && this._evictionWarning ? html`<span class="warn">Store limit reached, so some connections are missing or show older totals. ${NARROW_QUERY_HINT}</span>` : nothing}
                 </div>

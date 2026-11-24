@@ -16,7 +16,7 @@ import type { SeenNames } from '../lib/seen-names';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import './antrea-flow-visibility-page';
 import * as d3 from 'd3';
-import { FlowStore } from '../lib/flow-store';
+import { FlowStore, LIVE_FLOW_WINDOW_MS } from '../lib/flow-store';
 import type { FlowEntry } from '../lib/flow-store';
 import type { PositionedNode } from '../lib/service-map-layout';
 import { SCOPE_CHANGE_EVENT, SCOPE_CHOSEN_EVENT } from '../lib/namespace-scope';
@@ -148,6 +148,7 @@ let el: AntreaFlowVisibilityPage | undefined;
 
 beforeEach(() => {
     vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-03-25T00:01:00Z'));
 });
 
 afterEach(async () => {
@@ -2101,13 +2102,15 @@ describe('AntreaFlowVisibilityPage — filters, sort, text filter, pause/resume,
         expect(pauseBtn.textContent).toContain('Resume');
 
         const callsAfterPause = streamCalls(fetchMock).length;
-        await vi.advanceTimersByTimeAsync(60_000);
+        await vi.advanceTimersByTimeAsync(LIVE_FLOW_WINDOW_MS);
         expect(streamCalls(fetchMock)).toHaveLength(callsAfterPause);
 
+        expect(page.shadowRoot!.querySelectorAll('tbody tr')).toHaveLength(2);
         pauseBtn.click();
         await page.updateComplete;
         await vi.advanceTimersByTimeAsync(0);
         expect(streamCalls(fetchMock).length).toBeGreaterThan(callsAfterPause);
+        expect(page.shadowRoot!.querySelectorAll('tbody tr')).toHaveLength(0);
     });
 
     test('clear empties the flow list and resets counters', async () => {
@@ -3957,8 +3960,9 @@ describe('flowQuery', () => {
     });
 
     test('Last Seen carries the date in a finite query', async () => {
-        const earlier = new Date(2026, 2, 23, 12, 34, 56);
-        const later = new Date(2026, 2, 24, 12, 34, 56);
+        const earlier = new Date(2026, 2, 23, 23, 59, 0);
+        const later = new Date(2026, 2, 24, 0, 0, 0);
+        vi.setSystemTime(later);
         const flows = [
             { ...makeFlow({ srcIP: '10.0.0.1' }), endTs: earlier.toISOString() },
             { ...makeFlow({ srcIP: '10.0.0.3' }), endTs: later.toISOString() },
@@ -4049,10 +4053,10 @@ describe('flow query state event', () => {
         await setQuery(page, { follow: false });
         expect(seen.at(-1)).toMatchObject({ state: 'complete', truncated: false, evicted: true });
         expect(page.shadowRoot!.textContent).toContain('some connections are missing or show older totals');
-        expect(page.shadowRoot!.textContent).not.toContain('oldest entries evicted');
+        expect(page.shadowRoot!.textContent).not.toContain('some recent connections may be missing');
     });
 
-    test('a live stream keeps its own eviction warning and reports no eviction', async () => {
+    test('a quiet live stream ages the selected edge and its eviction warning out of the view', async () => {
         const page = await mount(async () => sseResponse([]));
         const seen = collect(page);
         (page as unknown as { _store: FlowStore })._store = new FlowStore(1);
@@ -4061,7 +4065,23 @@ describe('flow query state event', () => {
         await setQuery(page, { follow: true, requestId: 1 });
         await vi.advanceTimersByTimeAsync(1000);
         await page.updateComplete;
-        expect(page.shadowRoot!.textContent).toContain('Store limit reached, oldest entries evicted');
+        page.viewMode = 'map';
+        await page.updateComplete;
+        const root = page.shadowRoot!;
+        expect(root.textContent).toContain('Store limit reached, some recent connections may be missing');
+        const selected = vi.fn();
+        page.addEventListener('antrea-edge-selected', selected);
+        root.querySelector('.edges path')!.dispatchEvent(new MouseEvent('click'));
+        await page.updateComplete;
+        expect(root.querySelectorAll('.edge-connection')).toHaveLength(1);
+
+        await vi.advanceTimersByTimeAsync(LIVE_FLOW_WINDOW_MS);
+        await page.updateComplete;
+        expect(root.querySelector('.edges path')).toBeNull();
+        expect(root.querySelector('.edge-details')).toBeNull();
+        expect(selected.mock.calls.at(-1)![0].detail).toBeNull();
+        expect(root.querySelector('.status-row')!.textContent).toContain('0 connections reported in the last 3 min');
+        expect(root.querySelector('.status-row .warn')).toBeNull();
         expect(seen.some(d => d.evicted)).toBe(false);
     });
 

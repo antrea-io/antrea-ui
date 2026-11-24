@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { describe, expect, test } from 'vitest';
-import { FlowStore } from './flow-store';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { FlowStore, LIVE_FLOW_WINDOW_MS } from './flow-store';
 import {
     Flow,
     FlowType,
@@ -79,6 +79,12 @@ function makeFlow(dstIP: string, dstPort: number, proto: number = 6): Flow {
     };
 }
 
+beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-03-25T00:01:10Z'));
+});
+afterEach(() => { vi.useRealTimers(); });
+
 describe('FlowStore', () => {
     test('upsert inserts a new entry', () => {
         const store = new FlowStore();
@@ -110,16 +116,82 @@ describe('FlowStore', () => {
         expect(store.getAll().map(e => e.flow.id)).toEqual(['second']);
     });
 
-    test('a live stream replaces a record even when its endTs is older', () => {
+    test('replaying an earlier or simultaneous active report cannot reopen a finished connection', () => {
+        const store = new FlowStore(1);
+        const active = { ...makeFlow('10.0.0.2', 80), endReason: FlowEndReason.ActiveTimeout };
+        const final = { ...active, endTs: new Date().toISOString(), endReason: FlowEndReason.EndOfFlow };
+        store.upsertBatch([final, active, { ...active, endTs: final.endTs }]);
+        expect(store.getAll().map(e => e.flow)).toEqual([final]);
+    });
+
+    test('live backfill outside the window consumes no capacity and causes no eviction warning', () => {
         const store = new FlowStore();
-        const newer = makeFlow('10.0.0.2', 80);
-        newer.endTs = '2026-03-25T00:05:00Z';
-        const older = makeFlow('10.0.0.2', 80);
-        older.id = 'older';
+        const recent = makeFlow('10.0.0.2', 80);
+        const dns = makeFlow('10.0.0.3', 53, 17);
+        const endTs = new Date(Date.now() - LIVE_FLOW_WINDOW_MS).toISOString();
+        const old = Array.from({ length: 10_001 }, (_, i) => ({
+            ...dns, endTs, transport: { ...dns.transport, sourcePort: 32_768 + i },
+        }));
+        store.upsertBatch([...old, recent]);
+        store.upsertBatch(old);
+        expect(store.getAll().map(e => e.flow)).toEqual([recent]);
+        expect(store.hasEvicted()).toBe(false);
+    });
 
-        store.upsertBatch([newer, older]);
+    test('a new report extends retention, while reading a connection does not', () => {
+        const store = new FlowStore();
+        const first = makeFlow('10.0.0.2', 80);
+        const second = makeFlow('10.0.0.3', 443);
+        store.upsertBatch([first, second]);
+        vi.advanceTimersByTime(60_000);
+        const refreshed = { ...second, endTs: new Date().toISOString() };
+        store.upsert(refreshed);
+        store.get(connectionKey(first));
+        vi.setSystemTime(Date.parse(first.endTs) + LIVE_FLOW_WINDOW_MS);
+        expect(store.expireLiveEntries()).toBe(true);
+        expect(store.getAll().map(e => e.flow)).toEqual([refreshed]);
+        expect(store.hasEvicted()).toBe(false);
+    });
 
-        expect(store.getAll().map(e => e.flow.id)).toEqual(['older']);
+    test('a live batch frees expired entries before enforcing the limit', () => {
+        const store = new FlowStore(1);
+        store.upsert(makeFlow('10.0.0.2', 80));
+        vi.advanceTimersByTime(LIVE_FLOW_WINDOW_MS);
+        const recent = { ...makeFlow('10.0.0.3', 443), endTs: new Date().toISOString() };
+        store.upsert(recent);
+        expect(store.getAll().map(e => e.flow)).toEqual([recent]);
+        expect(store.getEvictionCount()).toBe(0);
+    });
+
+    test.each([FlowEndReason.IdleTimeout, FlowEndReason.EndOfFlow, FlowEndReason.ForcedEnd, FlowEndReason.LackOfResources])(
+        'final exports (%s) leave room for continuing connections between periodic reports', endReason => {
+            const store = new FlowStore(2);
+            const active = { ...makeFlow('10.0.0.2', 80), endReason: FlowEndReason.ActiveTimeout };
+            store.upsert(active);
+            for (let port = 1; port <= 10; port++) store.upsert({ ...makeFlow('10.0.0.3', port), endReason });
+            const next = { ...makeFlow('10.0.0.4', 443), endReason: FlowEndReason.ActiveTimeout };
+            store.upsert(next);
+            store.upsert({ ...makeFlow('10.0.0.5', 443), endReason });
+            expect(store.getAll().map(e => e.flow)).toEqual([active, next]);
+            expect(store.hasEvicted()).toBe(true);
+            vi.advanceTimersByTime(60_000);
+            store.upsert({ ...active, endTs: new Date().toISOString() });
+            expect(store.get(connectionKey(active))!.samples).toHaveLength(2);
+            vi.setSystemTime(Date.parse(active.endTs) + LIVE_FLOW_WINDOW_MS);
+            store.expireLiveEntries();
+            expect(store.getAll().map(e => e.key)).toEqual([connectionKey(active)]);
+            expect(store.hasEvicted()).toBe(false);
+        },
+    );
+
+    test('finite results and their capacity warning survive the live window', () => {
+        const store = new FlowStore(1);
+        const historic = { ...makeFlow('10.0.0.3', 443), endTs: '2025-01-01T00:00:00Z' };
+        store.upsertBatch([makeFlow('10.0.0.2', 80), historic], true);
+        vi.advanceTimersByTime(LIVE_FLOW_WINDOW_MS * 2);
+        expect(store.expireLiveEntries()).toBe(false);
+        expect(store.getAll().map(e => e.flow)).toEqual([historic]);
+        expect(store.hasEvicted()).toBe(true);
     });
 
     test('upsert with same connection key deduplicates', () => {
