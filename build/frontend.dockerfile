@@ -56,7 +56,7 @@ ARG ANTREA_UI_VERSION=""
 ENV VITE_ANTREA_UI_VERSION=$ANTREA_UI_VERSION
 RUN yarn workspace antrea-ui run build
 
-FROM nginx/nginx-unprivileged:1.30.7
+FROM nginx/nginx-unprivileged:1.30.8
 
 COPY --from=build-web /app/antrea-ui/build /app
 COPY build/scripts/nginx-reloader.sh /docker-entrypoint.d/99-nginx-reloader.sh
