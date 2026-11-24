@@ -967,7 +967,7 @@ describe('AntreaFlowVisibilityPage — the scope in the URL', () => {
 
     // Only a default needs the list and the verdict. A scope in the URL is used as given, so the
     // stream opens on it while the list is still loading for the picker.
-    test('a scope in the URL does not wait for the access summary', async () => {
+    test('a scope in the URL opens the stream on connect and reconnect while the access summary is pending', async () => {
         const fetchMock = vi.fn(async () => sseResponse([]));
         let release!: () => void;
         const gate = new Promise<void>(r => { release = r; });
@@ -988,10 +988,17 @@ describe('AntreaFlowVisibilityPage — the scope in the URL', () => {
         expect(streamCalls(fetchMock)).toHaveLength(1);
         expect(streamParams(fetchMock).get('observedNamespace')).toBe('ns-a');
 
+        el.remove();
+        await el.updateComplete;
+        document.body.appendChild(el);
+        await el.updateComplete;
+        expect(streamCalls(fetchMock)).toHaveLength(2);
+        expect(streamParams(fetchMock, 1).get('observedNamespace')).toBe('ns-a');
+
         release();
         await vi.advanceTimersByTimeAsync(0);
         await el.updateComplete;
-        expect(streamCalls(fetchMock)).toHaveLength(1);
+        expect(streamCalls(fetchMock)).toHaveLength(2);
         expect(scopeValue(el)).toBe('ns-a');
     });
 
@@ -3850,6 +3857,24 @@ describe('flowQuery', () => {
             expect(params.get('observedNamespace')).toBe(namespace === '_all' ? null : namespace);
         }
         expect(window.location.search).toBe(`?namespace=${namespace}`);
+    });
+
+    test('uses only the final scope when the host changes mode and URL together', async () => {
+        const fetchMock = vi.fn(async (url: string) => streamParams([url]).get('follow') === 'false'
+            ? finiteResponse([FINITE_COMPLETE]) : sseResponse([]));
+        const page = await mount(fetchMock, {
+            search: '/?namespace=_all',
+            flowAccess: () => flowAccessFixture({ namespaces: ['ns-a'], clusterWide: 'allowed', verb: 'watch' }),
+        });
+        page.locationSearch = '';
+        page.flowQuery = { follow: false };
+        await page.updateComplete;
+        await vi.advanceTimersByTimeAsync(0);
+        const calls = streamCalls(fetchMock);
+        expect(calls).toHaveLength(2);
+        expect(streamParams(calls[1]).get('follow')).toBe('false');
+        expect(streamParams(calls[1]).get('observedNamespace')).toBe('ns-a');
+        expect(streamParams(calls[1]).has('clusterWide')).toBe(false);
     });
 
     test('a refused finite query says which verb it needs, and does not retry', async () => {

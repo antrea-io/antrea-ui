@@ -105,3 +105,19 @@ export function writeScopeToURL(host: EventTarget, scope: string): string {
     }));
     return url.search;
 }
+
+/** The scope in force on a Namespace-aware page. SCOPE_ALL is an
+ * internal sentinel, so it does not appear here. */
+export type NamespaceScope = { kind: 'all' } | { kind: 'namespace', namespace: string };
+
+/** The picker's value for `scope`: SCOPE_ALL, a Namespace name, or '' for none. */
+export function scopeToValue(scope: NamespaceScope | null): string {
+    if (!scope) return '';
+    return scope.kind === 'all' ? SCOPE_ALL : scope.namespace;
+}
+
+/** The scope a picker value stands for, or null for '' (none). */
+export function valueToScope(value: string): NamespaceScope | null {
+    if (value === '') return null;
+    return value === SCOPE_ALL ? { kind: 'all' } : { kind: 'namespace', namespace: value };
+}

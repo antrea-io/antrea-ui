@@ -96,15 +96,20 @@ async function fetchNamespaceNames(): Promise<{ names: string[], cut: boolean }>
     };
 }
 
+function unknownOnError(err: unknown, onSessionExpired?: () => void): null {
+    if (err instanceof APIError && err.code === 401) onSessionExpired?.();
+    return null;
+}
+
 /** Whether a namespace exists, asked of the API again: a list loaded earlier may predate it.
  * Null when the answer could not be had, which is not a "no". Needs the caller to be allowed to
  * get namespaces, which the chart's roles grant along with list. */
-export async function namespaceExists(name: string): Promise<boolean | null> {
+export async function namespaceExists(name: string, onSessionExpired?: () => void): Promise<boolean | null> {
     try {
         await apiFetchJSON(`k8s/api/v1/namespaces/${encodeURIComponent(name)}`);
         return true;
     } catch (e) {
-        return e instanceof APIError && e.code === 404 ? false : null;
+        return e instanceof APIError && e.code === 404 ? false : unknownOnError(e, onSessionExpired);
     }
 }
 
@@ -128,9 +133,10 @@ export function isValidNamespaceName(name: string): boolean {
  */
 export async function namespaceAccess(
     summary: AccessSummary | null, clusterWide: (summary: AccessSummary | null) => Verdict,
+    onSessionExpired?: () => void,
 ): Promise<NamespaceAccess> {
     const mayList = mayListNamespaces(summary);
-    const listed = mayList ? await listNamespaceNames().catch(() => null) : null;
+    const listed = mayList ? await listNamespaceNames().catch(err => unknownOnError(err, onSessionExpired)) : null;
     const candidates = candidatesFromSummary(summary) ?? listed?.names ?? null;
     return {
         // `namespace` is only set on a summary evaluated for one namespace, whose rules can show
@@ -179,6 +185,7 @@ export interface ScopeNote {
  */
 export async function scopeNote(
     access: NamespaceAccess | null, ns: string, isCurrent: () => boolean,
+    onSessionExpired?: () => void,
 ): Promise<ScopeNote | null> {
     if (!ns || !access || mayNameNamespace(access) || access.candidates?.includes(ns)) return null;
     if (!access.mayList) {
@@ -187,7 +194,7 @@ export async function scopeNote(
             text: `Namespace ${ns} is not in your list: it may not exist, or you may not have access`,
         };
     }
-    const exists = await namespaceExists(ns);
+    const exists = await namespaceExists(ns, () => { if (isCurrent()) onSessionExpired?.(); });
     if (!isCurrent()) return null;
     return exists === false ? { kind: 'missing', text: `Namespace ${ns} does not exist` } : null;
 }
