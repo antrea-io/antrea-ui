@@ -620,6 +620,17 @@ function edgeLabel(edge: WorkloadEdge): string {
     return combinations > 1 ? `${label} +${combinations - 1}` : label;
 }
 
+function edgePinLabel(node: D3Node): string {
+    let name = node.shortName;
+    switch (node.kind) {
+        case 'workload': name = node.id; break;
+        case 'namespace': name = `namespace ${node.namespace}`; break;
+        case 'undisclosedNamespace': name = `undisclosed workloads in namespace ${node.namespace}`; break;
+        case 'undisclosed': name = `undisclosed peer (${node.id.slice('undisclosed-peer:'.length)})`; break;
+    }
+    return `Keep edges highlighted for ${name}`;
+}
+
 function namespaceTrafficTooltip(internal: NonNullable<WorkloadNode['internal']>): string {
     return `${internal.connections} internal connections, ${internal.denied} denied, ${formatBytes(internal.bytes)}. Click to expand.`;
 }
@@ -730,7 +741,7 @@ function syncNamespaceCounts(svg: SVGSVGElement, graph: GraphData) {
         g.select('rect').style('stroke', hasInternalDenials ? EDGE_COLOR_VAR.drop : MAP_COLOR_VAR.nsHullStroke);
         g.select('text.node-detail').text(d.detail)
             .style('fill', hasInternalDenials ? EDGE_COLOR_VAR.drop : MAP_COLOR_VAR.nodeNamespaceText);
-        g.attr('aria-label', `Expand namespace ${d.namespace}. ${d.detail}`);
+        g.attr('aria-description', d.detail);
     });
 }
 
@@ -1209,7 +1220,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
     @state() private _shownEdgeCount = 0;
     @state() private _totalEdgeCount = 0;
     @state() private _expandedNamespaces = new Set<string>();
-    @state() private _canCollapseNamespaces = false;
+    private _keyboardToggleNamespace: string | null = null;
     private _busiestEdges = new Set<string>();
     private _pinnedNodes = new Set<string>();
     private _hoveredNode: string | null = null;
@@ -1921,6 +1932,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
     }
 
     private _resetMapChoices() {
+        this._keyboardToggleNamespace = null;
         this._originalPositions = new Map();
         this._busiestEdges.clear();
         this._pinnedNodes.clear();
@@ -1932,7 +1944,10 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         this._expandedNamespaces = new Set();
     }
 
-    private _toggleNamespace(namespace: string) {
+    private _toggleNamespace(namespace: string, fromKeyboard = false) {
+        // The active control is replaced while the new layout is hidden.
+        this._keyboardToggleNamespace = fromKeyboard ? namespace : null;
+        if (fromKeyboard) this._svgEl?.focus({ preventScroll: true });
         this._hoveredNode = null;
         this._hideTooltip();
         const expanded = new Set(this._expandedNamespaces);
@@ -1954,6 +1969,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
     }
 
     private _collapseAllNamespaces() {
+        this._keyboardToggleNamespace = null;
         this._hoveredNode = null;
         this._hideTooltip();
         this._busiestEdges.clear();
@@ -2005,7 +2021,6 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         this._shownEdgeCount = shownEdges.length;
         this._totalEdgeCount = graph.edges.length;
         this._graphRef = graph;
-        this._canCollapseNamespaces = graph.nodes.some(node => node.kind === 'workload' && this._expandedNamespaces.has(node.namespace));
 
         // If a rebuild drops the currently-selected edge, clear the selection so
         // _dispatchEdgeSelected() emits null — otherwise a host listening on the
@@ -2207,7 +2222,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
             .on('click', (_event, d) => { if (this._clusterWide) this._toggleNamespace(d[0]); })
             .on('keydown', (event, d) => {
                 if (this._clusterWide && (event.key === 'Enter' || event.key === ' ')) {
-                    event.preventDefault(); this._toggleNamespace(d[0]);
+                    event.preventDefault(); this._toggleNamespace(d[0], true);
                 }
             })
             .style('fill', MAP_COLOR_VAR.nsLabel).attr('font-size', '10px').attr('font-weight', '600');
@@ -2303,20 +2318,9 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
             .data(d3Nodes, d => d.id).join('g').attr('class', 'node')
             .style('cursor', 'grab')
             .call(this._mapDrag)
-            .on('mouseenter', (event, d) => {
+            .on('mouseenter', (_event, d) => {
                 this._hoveredNode = d.id;
                 this._buildServiceMap(true);
-                if (d.kind === 'namespace') {
-                    const internal = this._graphRef.nodeMap.get(d.id)!.internal!;
-                    this._showNodeTooltip(event, d.shortName, namespaceTrafficTooltip(internal));
-                }
-                if (d.kind !== 'undisclosedNamespace') return;
-                this._showNodeTooltip(event, d.shortName, collapsedNamespaceTooltip(d.shortName));
-            })
-            .on('mousemove', event => {
-                if (!this._tooltipEl) return;
-                this._tooltipEl.style.left = `${event.clientX + 12}px`;
-                this._tooltipEl.style.top = `${event.clientY + 12}px`;
             })
             .on('mouseleave', () => {
                 this._hoveredNode = null;
@@ -2328,11 +2332,24 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         // order and exposes the pin independently of the namespace's button or image role.
         const nodeBodies = nodeGroup.selectAll<SVGGElement, D3Node>('g.node-body')
             .data(d => [d]).join('g').attr('class', 'node-body');
+        nodeBodies.filter(d => d.kind === 'namespace' || d.kind === 'undisclosedNamespace')
+            .on('mouseenter', (event, d) => {
+                const body = d.kind === 'namespace'
+                    ? namespaceTrafficTooltip(this._graphRef.nodeMap.get(d.id)!.internal!)
+                    : collapsedNamespaceTooltip(d.shortName);
+                this._showNodeTooltip(event, d.shortName, body);
+            })
+            .on('mousemove', event => {
+                if (!this._tooltipEl) return;
+                this._tooltipEl.style.left = `${event.clientX + 12}px`;
+                this._tooltipEl.style.top = `${event.clientY + 12}px`;
+            })
+            .on('mouseleave', () => this._hideTooltip());
         nodeBodies.filter(d => d.kind === 'namespace')
             .on('click', (_event, d) => this._toggleNamespace(d.namespace))
             .on('keydown', (event, d) => {
                 if (event.key === 'Enter' || event.key === ' ') {
-                    event.preventDefault(); this._toggleNamespace(d.namespace);
+                    event.preventDefault(); this._toggleNamespace(d.namespace, true);
                 }
             });
         nodeBodies.each(function (this: SVGGElement, d: D3Node) {
@@ -2347,6 +2364,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
             g.selectAll('*').remove();
             g.attr('role', d.kind === 'namespace' ? 'button' : null)
                 .attr('tabindex', d.kind === 'namespace' ? 0 : null);
+            if (d.kind === 'namespace') g.attr('aria-label', `Expand namespace ${d.namespace}`);
             if (d.kind === 'external' || d.kind === 'undisclosed') {
                 const s = EXTERNAL_SIZE;
                 const stroke = d.kind === 'external' ? MAP_COLOR_VAR.externalStroke : MAP_COLOR_VAR.undisclosedStroke;
@@ -2407,7 +2425,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
                 .attr('class', 'edge-pin').text('↔').attr('text-anchor', 'middle').attr('dominant-baseline', 'central')
                 .attr('x', edgePinPosition(d)[0]).attr('y', edgePinPosition(d)[1])
                 .attr('role', 'button').attr('tabindex', 0)
-                .attr('aria-label', `Keep edges highlighted for ${d.shortName}`)
+                .attr('aria-label', edgePinLabel(d))
                 .attr('aria-pressed', this._pinnedNodes.has(d.id) ? 'true' : 'false')
                 .style('cursor', 'pointer').style('fill', MAP_COLOR_VAR.nodeText)
                 .attr('font-weight', this._pinnedNodes.has(d.id) ? 'bold' : 'normal')
@@ -2518,6 +2536,14 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
             container.attr('visibility', null);
             this._mapLayoutSnapshot?.remove();
             this._mapLayoutSnapshot = null;
+            const namespace = this._keyboardToggleNamespace;
+            this._keyboardToggleNamespace = null;
+            if (namespace && this.shadowRoot?.activeElement === svg) {
+                const control = this._expandedNamespaces.has(namespace)
+                    ? hullGroups.filter(([ns]) => ns === namespace).select<SVGTextElement>('text').node()
+                    : nodeBodies.filter(d => d.kind === 'namespace' && d.namespace === namespace).node();
+                control?.focus({ preventScroll: true });
+            }
         };
 
         const simulation = this._simulation ?? d3.forceSimulation<D3Node>();
@@ -2965,10 +2991,10 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         `;
     }
 
-    private _renderMapControl(label: string, onClick: () => void, icon: TemplateResult, atLimit = false, disabled = false) {
+    private _renderMapControl(label: string, onClick: () => void, icon: TemplateResult, atLimit = false, disabled = !this._entries.length) {
         return html`
             <button type="button" class="map-control-btn" part="map-control" aria-label=${label} title=${label}
-                ?disabled=${disabled || !this._entries.length || this._mapLayoutStatic} aria-disabled=${atLimit ? 'true' : 'false'}
+                ?disabled=${disabled || this._mapLayoutStatic} aria-disabled=${atLimit ? 'true' : 'false'}
                 @click=${onClick}>
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${icon}</svg>
@@ -2976,24 +3002,27 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
     }
 
     private _renderServiceMap() {
+        const extraEdgeSources = this._clusterWide
+            ? 'Expanded namespaces, highlighted nodes, and selected edges'
+            : 'Highlighted nodes and selected edges';
         return html`
             <div class="map-toolbar">
                 <label for="map-edge-limit">Busiest edges (connections)</label>
                 <div class="row map-toolbar-controls">
-                    <select id="map-edge-limit" class="field-select" aria-label="Busiest edges" @change=${(event: Event) => {
+                    <select id="map-edge-limit" class="field-select" @change=${(event: Event) => {
                         this._busiestEdges.clear();
                         this._edgeLimit = Number((event.target as HTMLSelectElement).value);
                     }}>
                         ${[25, 50, 100, 200, 0].map(n => html`<option value=${n} .selected=${n === this._edgeLimit}>${n || 'All'}</option>`)}
                     </select>
-                    <span class="map-edge-count" role="status">${this._shownEdgeCount} of ${this._totalEdgeCount} edges</span>
+                    <span class="map-edge-count">${this._shownEdgeCount} of ${this._totalEdgeCount} edges</span>
                     <span>Hover to highlight all of a node's edges and show their ports. Click ↔ to keep the highlight; click again to release it.
-                        ${this._edgeLimit > 0 ? html`Expanded namespaces, highlighted nodes, and selected edges can show more than ${this._edgeLimit} edges.` : nothing}
+                        ${this._edgeLimit > 0 ? html`${extraEdgeSources} can show more than ${this._edgeLimit} edges.` : nothing}
                     </span>
                 </div>
             </div>
             <div class="map-container">
-                <svg id="graph-svg" class="map-svg" part="map-svg" width=${this._svgWidth} height=${this._svgHeight} aria-busy=${this._mapLayoutStatic ? 'true' : 'false'}></svg>
+                <svg id="graph-svg" tabindex="-1" class="map-svg" part="map-svg" width=${this._svgWidth} height=${this._svgHeight} aria-busy=${this._mapLayoutStatic ? 'true' : 'false'}></svg>
                 ${this._mapLayoutStatic && !this._mapLayoutSnapshot ? html`<div class="map-loading" role="status">Loading map…</div>` : nothing}
                 <div id="graph-tooltip" class="map-tooltip" part="map-tooltip"></div>
                 <div class="map-legend" part="map-legend">
@@ -3010,7 +3039,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
                 <div class="map-controls" part="map-controls" role="group" aria-label="Map controls">
                     ${this._clusterWide ? html`
                         ${this._renderMapControl('Collapse all namespaces', () => this._collapseAllNamespaces(), svg`
-                            <path d="M3 3l6 6M9 4v5H4M21 3l-6 6M15 4v5h5M3 21l6-6M4 15h5v5M21 21l-6-6M15 20v-5h5"/>`, false, !this._canCollapseNamespaces)}
+                            <path d="M3 3l6 6M9 4v5H4M21 3l-6 6M15 4v5h5M3 21l6-6M4 15h5v5M21 21l-6-6M15 20v-5h5"/>`, false, !this._expandedNamespaces.size)}
                     ` : nothing}
                     ${this._renderMapControl('Reset map', () => this._resetMap(), svg`
                         <path d="M3 10a9 9 0 1 1 2 8M3 4v6h6"/>`)}

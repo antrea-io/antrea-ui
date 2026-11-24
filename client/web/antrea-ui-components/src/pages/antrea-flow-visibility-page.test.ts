@@ -4785,11 +4785,11 @@ describe('AntreaFlowVisibilityPage — namespace aggregation', () => {
         _toggleNamespace(ns: string): void;
         _buildServiceMap(): void;
     }
-    async function aggregate(flows: Flow[]) {
+    async function aggregate(flows: Flow[], clusterWide = true) {
         const page = await mount(async () => sseResponse([]));
         await vi.advanceTimersByTimeAsync(0);
         const state = page as unknown as AggregateState;
-        state._clusterWide = true;
+        state._clusterWide = clusterWide;
         page.viewMode = 'map';
         await page.updateComplete;
         const store = new FlowStore();
@@ -4836,6 +4836,63 @@ describe('AntreaFlowVisibilityPage — namespace aggregation', () => {
         await settle();
         expect(state._expandedNamespaces.size).toBe(0);
         expect(button('Collapse all namespaces').disabled).toBe(true);
+    });
+
+    test('keyboard namespace toggles focus the replacement control unless focus moved during layout', async () => {
+        const { page, state } = await aggregate([makeFlow({ srcNs: 'a', dstNs: 'b' })]);
+        const root = page.shadowRoot!;
+        const settle = async () => {
+            state._simulation.stop().tick(300);
+            state._simulation.on('end')!.call(state._simulation);
+            await page.updateComplete;
+        };
+        await settle();
+        const folded = () => root.querySelector<SVGGElement>('[aria-label="Expand namespace a"]')!;
+        const header = () => root.querySelector<SVGTextElement>('.ns-hulls text[role="button"]')!;
+        const toggle = async (key: string) => {
+            root.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
+            await page.updateComplete;
+        };
+        folded().focus();
+        await toggle('Enter');
+        await settle();
+        expect(root.activeElement).toBe(header());
+        await toggle(' ');
+        await settle();
+        expect(root.activeElement).toBe(folded());
+
+        await toggle('Enter');
+        const limit = root.querySelector<HTMLSelectElement>('#map-edge-limit')!;
+        limit.focus();
+        await settle();
+        expect(root.activeElement).toBe(limit);
+    });
+
+    test.each([true, false])('returning namespaces respect collapse all during eviction (clicked: %s)', async collapse => {
+        const original = makeFlow({ srcNs: 'a', dstNs: 'b' });
+        const { page, state } = await aggregate([original]);
+        const store = new FlowStore(1);
+        const publish = async (flow: Flow) => {
+            store.upsertBatch([flow]);
+            state._entries = store.getAll();
+            await page.updateComplete;
+            state._simulation.stop().tick(300);
+            state._simulation.on('end')!.call(state._simulation);
+            await page.updateComplete;
+        };
+        await publish(original);
+        state._toggleNamespace('a');
+        await page.updateComplete;
+        await publish(makeFlow({ srcNs: 'c', dstNs: 'd', dstPort: 81 }));
+        expect(store.hasEvicted()).toBe(true);
+        const root = page.shadowRoot!;
+        expect(root.querySelector('.ns-hulls text')).toBeNull();
+        const button = root.querySelector<HTMLButtonElement>('[aria-label="Collapse all namespaces"]')!;
+        expect(button.disabled).toBe(false);
+        if (collapse) button.click();
+        await publish(original);
+        expect(root.querySelector('[aria-label="Expand namespace a"]') !== null).toBe(collapse);
+        expect(button.disabled).toBe(collapse);
     });
 
     test.each(['empty', 'undisclosed'])('the collapse control is disabled for an %s map', async kind => {
@@ -5012,7 +5069,7 @@ describe('AntreaFlowVisibilityPage — namespace aggregation', () => {
         const hull = page.shadowRoot!.querySelector('.ns-hulls rect')!;
         const [x, y, width, height] = ['x', 'y', 'width', 'height'].map(attr => Number(hull.getAttribute(attr)));
         expect([folded.x, folded.y]).toEqual([400, 0]);
-        const box = page.shadowRoot!.querySelector('[aria-label^="Expand namespace b."] rect')!;
+        const box = page.shadowRoot!.querySelector('[aria-label="Expand namespace b"] rect')!;
         const hw = Number(box.getAttribute('width')) / 2, hh = Number(box.getAttribute('height')) / 2;
         expect(folded.x! + hw <= x || folded.x! - hw >= x + width ||
             folded.y! + hh <= y || folded.y! - hh >= y + height).toBe(true);
@@ -5344,7 +5401,7 @@ describe('AntreaFlowVisibilityPage — namespace aggregation', () => {
                 destService: 'b/web:https', ingressPolicy: 'deny', ingressAction: NetworkPolicyRuleAction.Drop }),
             makeFlow({ srcNs: 'b', dstNs: 'a', srcIP: '10.0.0.3' }),
         ]);
-        expect(page.shadowRoot!.querySelector<HTMLSelectElement>('select[aria-label="Busiest edges"]')!.value).toBe('50');
+        expect(page.shadowRoot!.querySelector<HTMLSelectElement>('#map-edge-limit')!.value).toBe('50');
         expect(state._graphRef.nodes.map(n => n.id).sort()).toEqual(['namespace:a', 'namespace:b']);
         const forward = state._graphRef.edges.find(e => e.source === 'namespace:a')!;
         expect(forward).toMatchObject({ target: 'namespace:b', connectionCount: 2, totalBytesForward: 200, totalBytesReverse: 200 });
@@ -5378,7 +5435,8 @@ describe('AntreaFlowVisibilityPage — namespace aggregation', () => {
         const node = root.querySelector<SVGGElement>('.nodes .node')!;
         const enter = d3.select(node).on('mouseenter');
         const tooltip = root.querySelector<HTMLElement>('#graph-tooltip')!;
-        node.dispatchEvent(new MouseEvent('mouseenter', { clientX: 30, clientY: 40 }));
+        node.dispatchEvent(new MouseEvent('mouseenter'));
+        node.querySelector('.node-body')!.dispatchEvent(new MouseEvent('mouseenter', { clientX: 30, clientY: 40 }));
         expect(tooltip.style.opacity).toBe('1');
         const store = new FlowStore();
         store.upsertBatch([{
@@ -5409,6 +5467,10 @@ describe('AntreaFlowVisibilityPage — namespace aggregation', () => {
         const root = page.shadowRoot!;
         const node = root.querySelector<SVGGElement>('.nodes .node')!;
         const children = Array.from(node.children);
+        const body = node.querySelector<SVGGElement>('.node-body')!;
+        body.focus();
+        expect(body.getAttribute('aria-label')).toBe('Expand namespace a');
+        expect(body.getAttribute('aria-description')).toBe('1 internal · 0 denied');
         const store = new FlowStore();
         store.upsertBatch([flow, makeFlow({ srcNs: 'a', dstNs: 'a', srcIP: '10.0.0.3' })]);
         state._entries = store.getAll();
@@ -5416,7 +5478,9 @@ describe('AntreaFlowVisibilityPage — namespace aggregation', () => {
         expect(root.querySelector('.nodes .node')).toBe(node);
         expect(Array.from(node.children)).toEqual(children);
         expect(node.textContent).toContain('2 internal · 0 denied');
-        expect(node.querySelector('[role="button"]')!.getAttribute('aria-label')).toContain('2 internal · 0 denied');
+        expect(body.getAttribute('aria-label')).toBe('Expand namespace a');
+        expect(body.getAttribute('aria-description')).toBe('2 internal · 0 denied');
+        expect(root.activeElement).toBe(body);
     });
 
     test.each([NetworkPolicyRuleAction.Drop, NetworkPolicyRuleAction.Reject])('refreshes internal denial colors in place for action %s', async action => {
@@ -5461,20 +5525,55 @@ describe('AntreaFlowVisibilityPage — namespace aggregation', () => {
             target.dispatchEvent(mouse('click', ...to));
         };
 
-        test('dragging a namespace background pans the scoped map even when its hull is reused', async () => {
+        test('rendering a reused namespace hull in scoped mode removes its cluster-wide drag handler', async () => {
             const { page, state } = await aggregate([makeFlow({ srcNs: 'a', dstNs: 'b' })]);
             const simulation = state._simulation.stop().tick(300);
             simulation.on('end')!.call(simulation);
             state._toggleNamespace('a');
             await page.updateComplete;
             const root = page.shadowRoot!;
-            const boundary = root.querySelector('.ns-hulls g.namespace rect')!;
+            const hull = root.querySelector<SVGGElement>('.ns-hulls g.namespace')!;
+            expect(d3.select(hull).on('mousedown.drag')).toBeDefined();
+            // Exercise the D3 join on the existing SVG without opening a new flow stream.
             state._clusterWide = false;
             state._expandedNamespaces = new Set();
+            state._buildServiceMap();
+            expect(root.contains(hull)).toBe(true);
+            expect(d3.select(hull).on('mousedown.drag')).toBeUndefined();
+        });
+
+        test('dragging the namespace background pans the map after the user switches scope', async () => {
+            const fetchMock = vi.fn(async (url: string) => sseResponse([flowEventChunk([
+                makeFlow({ srcNs: 'a', dstNs: url.includes('observedNamespace=a') ? 'a' : 'b' }),
+            ])]));
+            const page = await mount(fetchMock, {
+                search: '/?namespace=_all',
+                flowAccess: () => flowAccessFixture({ namespaces: ['a', 'b'], clusterWide: 'allowed' }),
+            });
+            page.viewMode = 'map';
+            await vi.advanceTimersByTimeAsync(1000);
             await page.updateComplete;
-            simulation.stop().tick(300);
-            simulation.on('end')!.call(simulation);
-            expect(root.contains(boundary)).toBe(true);
+            const root = page.shadowRoot!;
+            const settle = () => {
+                const simulation = (page as unknown as AggregateState)._simulation.stop().tick(300);
+                simulation.on('end')!.call(simulation);
+                return simulation;
+            };
+            settle();
+            root.querySelector('[aria-label="Expand namespace a"]')!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+            await page.updateComplete;
+            settle();
+            expect(root.querySelector('.ns-hulls g.namespace')).not.toBeNull();
+
+            await chooseScope(page, 'a');
+            await vi.advanceTimersByTimeAsync(1000);
+            await page.updateComplete;
+            const calls = streamCalls(fetchMock);
+            expect(calls).toHaveLength(2);
+            expect(streamParams(calls[0]).get('clusterWide')).toBe('true');
+            expect(streamParams(calls[1]).get('observedNamespace')).toBe('a');
+            const simulation = settle();
+            const boundary = root.querySelector('.ns-hulls g.namespace rect')!;
             const svg = root.querySelector<SVGSVGElement>('#graph-svg')!;
             const before = d3.zoomTransform(svg);
             const nodes = simulation.nodes() as D3Node[];
@@ -5635,7 +5734,7 @@ describe('AntreaFlowVisibilityPage — namespace aggregation', () => {
             sim.on('end')!.call(sim);
             await page.updateComplete;
             const root = page.shadowRoot!;
-            const group = root.querySelector('.nodes [aria-label^="Expand namespace a."]')!;
+            const group = root.querySelector('.nodes [aria-label="Expand namespace a"]')!;
             const node = d3.select(group).datum() as D3Node;
             const peer = sim.nodes().find(n => n.id === 'namespace:b') as D3Node;
             Object.assign(node, { x: 0, y: 0 });
@@ -5682,11 +5781,11 @@ describe('AntreaFlowVisibilityPage — namespace aggregation', () => {
             Object.assign(find('namespace:c'), { x: 850, y: 60 });
             const entries = state._entries;
             const root = page.shadowRoot!;
-            const peer = root.querySelector<SVGGElement>('.nodes [aria-label^="Expand namespace b."]')!;
+            const peer = root.querySelector<SVGGElement>('.nodes [aria-label="Expand namespace b"]')!;
             press(peer, [70, 80]);
             await vi.advanceTimersByTimeAsync(0);
             expect((d3.select(peer).datum() as D3Node).userPinned).toBe(true);
-            const pin = root.querySelector('[aria-label="Keep edges highlighted for b"]')!;
+            const pin = root.querySelector('[aria-label="Keep edges highlighted for namespace b"]')!;
             pin.dispatchEvent(new MouseEvent('click', { bubbles: true }));
             expect(pin.getAttribute('aria-pressed')).toBe('true');
             const edge = root.querySelector('.edges path')!;
@@ -5884,12 +5983,42 @@ describe('AntreaFlowVisibilityPage — namespace aggregation', () => {
         expect(root.querySelector('.edges path')).toBe(path);
     });
 
-    test('folded and withheld namespaces expose separate keyboard-accessible edge pins', async () => {
-        const { page, state } = await aggregate([makeFlow({
-            srcNs: 'a', dstNs: 'b', dstDisclosure: EndpointDisclosure.Flow,
-        })]);
+    test('the expand tooltip follows the namespace body and clears when the pointer crosses onto the pin', async () => {
+        const { page } = await aggregate([makeFlow({ srcNs: 'a', dstNs: 'b' })]);
         const root = page.shadowRoot!;
-        for (const [name, role] of [['a', 'button'], ['b', 'img']]) {
+        const body = root.querySelector('[aria-label="Expand namespace a"]')!;
+        const node = body.parentElement!;
+        const pin = node.querySelector('.edge-pin')!;
+        const tooltip = root.querySelector<HTMLElement>('#graph-tooltip')!;
+        node.dispatchEvent(new MouseEvent('mouseenter'));
+        pin.dispatchEvent(new MouseEvent('mouseenter'));
+        expect(tooltip.style.opacity).not.toBe('1');
+        body.dispatchEvent(new MouseEvent('mouseenter', { relatedTarget: pin }));
+        expect(tooltip.textContent).toContain('Click to expand.');
+        expect(tooltip.style.opacity).toBe('1');
+        body.dispatchEvent(new MouseEvent('mouseleave', { relatedTarget: pin }));
+        pin.dispatchEvent(new MouseEvent('mouseenter', { relatedTarget: body }));
+        expect(tooltip.style.opacity).toBe('0');
+        pin.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        expect(pin.getAttribute('aria-pressed')).toBe('true');
+        expect(body.isConnected).toBe(true);
+    });
+
+    test('scoped pins identify workloads with the same name in different namespaces', async () => {
+        const { page } = await aggregate([makeFlow({
+            srcNs: 'a', dstNs: 'b', srcPod: 'api-abc12', dstPod: 'api-xyz34',
+        })], false);
+        const pins = Array.from(page.shadowRoot!.querySelectorAll('.edge-pin'), pin => pin.getAttribute('aria-label'));
+        expect(pins.sort()).toEqual(['Keep edges highlighted for a/api', 'Keep edges highlighted for b/api']);
+    });
+
+    test('folded and withheld namespaces expose separate keyboard-accessible edge pins', async () => {
+        const { page, state } = await aggregate([
+            makeFlow({ srcNs: 'a', dstNs: 'b' }),
+            makeFlow({ srcNs: 'a', dstNs: 'b', dstPort: 81, dstDisclosure: EndpointDisclosure.Flow }),
+        ]);
+        const root = page.shadowRoot!;
+        for (const [name, role] of [['namespace b', 'button'], ['undisclosed workloads in namespace b', 'img']]) {
             const pin = root.querySelector<SVGTextElement>(`[aria-label="Keep edges highlighted for ${name}"]`)!;
             const node = pin.closest('.node')!;
             expect(node.querySelector(`.node-body[role="${role}"]`)).not.toBeNull();
@@ -5979,7 +6108,11 @@ describe('AntreaFlowVisibilityPage — namespace aggregation', () => {
             return root.querySelector('.map-edge-count')!.textContent;
         };
         expect(await count()).toBe('1 of 3 edges');
-        expect(root.querySelector('select[aria-label="Busiest edges"]')!.classList.contains('field-select')).toBe(true);
+        expect(root.querySelector('.map-edge-count')!.closest('[role="status"], [aria-live="polite"], [aria-live="assertive"]')).toBeNull();
+        const limit = root.querySelector<HTMLSelectElement>('#map-edge-limit')!;
+        expect(limit.classList.contains('field-select')).toBe(true);
+        expect(limit.labels![0].textContent).toBe('Busiest edges (connections)');
+        expect(limit.hasAttribute('aria-label')).toBe(false);
         const a = Array.from(root.querySelectorAll<SVGGElement>('.nodes .node'))
             .find(el => (d3.select(el).datum() as PositionedNode).id === 'namespace:a')!;
         expect(root.querySelectorAll('.edges path')).toHaveLength(1);
@@ -6035,7 +6168,7 @@ describe('AntreaFlowVisibilityPage — namespace aggregation', () => {
         expect(drawn()).toEqual(['namespace:a|namespace:b']);
 
         // Splitting a's two connections across workloads leaves c → d as the busiest edge.
-        root.querySelector('[aria-label^="Expand namespace a."]')!.dispatchEvent(new MouseEvent('click'));
+        root.querySelector('[aria-label="Expand namespace a"]')!.dispatchEvent(new MouseEvent('click'));
         await settle();
         expect(drawn()).toEqual(['a/client|namespace:b', 'a/second|namespace:b', 'namespace:c|namespace:d']);
         if (mode === 'all') root.querySelector<HTMLButtonElement>('[aria-label="Collapse all namespaces"]')!.click();
@@ -6044,7 +6177,7 @@ describe('AntreaFlowVisibilityPage — namespace aggregation', () => {
         expect(drawn()).toEqual(['namespace:a|namespace:b']);
 
         // Expanding c keeps its two connections together. Its workload now wins the stable tie.
-        root.querySelector('[aria-label^="Expand namespace c."]')!.dispatchEvent(new MouseEvent('click'));
+        root.querySelector('[aria-label="Expand namespace c"]')!.dispatchEvent(new MouseEvent('click'));
         await settle();
         expect(drawn()).toEqual(['c/client|namespace:d']);
     });
@@ -6163,7 +6296,7 @@ describe('AntreaFlowVisibilityPage — namespace aggregation', () => {
         const root = page.shadowRoot!;
         const toolbar = () => root.querySelector('.map-toolbar')!.textContent!;
         const mark = root.querySelector('.edge-pin')!;
-        expect(toolbar()).toContain('can show more than 50 edges');
+        expect(toolbar()).toContain('Expanded namespaces, highlighted nodes, and selected edges can show more than 50 edges.');
         for (let i = 0; i < 2; i++) {
             mark.dispatchEvent(new MouseEvent('click', { bubbles: true }));
             await page.updateComplete;
@@ -6171,6 +6304,10 @@ describe('AntreaFlowVisibilityPage — namespace aggregation', () => {
             expect(mark.getAttribute('aria-pressed')).toBe(i === 0 ? 'true' : 'false');
             expect(toolbar()).toContain('Click ↔ to keep the highlight; click again to release it');
         }
+        state._clusterWide = false;
+        await page.updateComplete;
+        expect(toolbar()).toContain('Highlighted nodes and selected edges can show more than 50 edges.');
+        expect(toolbar()).not.toContain('Expanded namespaces');
         state._edgeLimit = 0;
         await page.updateComplete;
         expect(toolbar()).not.toContain('can show more than');
