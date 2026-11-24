@@ -310,23 +310,14 @@ interface WorkloadNode {
 }
 interface WorkloadEdge {
     source: string; target: string;
-    connectionCount: number; totalBytesForward: number; totalBytesReverse: number; bitRate: number;
+    connections: FlowEntry[];
+    readonly connectionCount: number;
+    outcomes: Map<ConnectionOutcome, number>;
+    totalBytesForward: number; totalBytesReverse: number; bitRate: number;
     protoPorts: Map<number, Set<number>>;
-    /** Each "name (Action)" display string to the action it carries. A map rather than a set
-     * because an edge aggregates records: one direction can hold both an allow and a drop, and
-     * anything rendering a policy per line needs that policy's own action, not the edge's. */
-    ingressPolicies: Map<string, NetworkPolicyRuleAction>;
-    egressPolicies: Map<string, NetworkPolicyRuleAction>;
-    // Raw policy names (unlike ingressPolicies/egressPolicies, which are "name (Action)" display
-    // strings) — needed to link to a policy by exact name, e.g. from a downstream host page.
+    // Plugins link to policies by their raw names.
     ingressPolicyNames: Set<string>; egressPolicyNames: Set<string>;
     flowTypes: Set<FlowType>;
-}
-interface EdgeDetails {
-    source: string; target: string;
-    connectionCount: number; totalBytesForward: number; totalBytesReverse: number; bitRate: number;
-    destPortsStr: string;
-    ingressPolicies: string[]; egressPolicies: string[]; flowTypes: string[];
 }
 interface GraphData { nodes: WorkloadNode[]; edges: WorkloadEdge[]; edgeMap: Map<string, WorkloadEdge>; nodeMap: Map<string, WorkloadNode>; }
 
@@ -465,48 +456,33 @@ function buildGraph(entries: FlowEntry[], folded = false, expanded = new Set<str
             if (internal) {
                 internal.connections++;
                 internal.bytes += flow.stats.octetTotalCount + flow.reverseStats.octetTotalCount;
-                if ([flow.k8s.ingressNetworkPolicyRuleAction, flow.k8s.egressNetworkPolicyRuleAction]
-                    .some(a => !policyAllows(a))) internal.denied++;
+                if (OUTCOME_ROLES[connectionOutcome(flow)] === 'drop') internal.denied++;
             }
             continue;
         }
         const edgeKey = `${srcId}|${dstId}`;
         let edge = edgeMap.get(edgeKey);
         if (!edge) {
-            edge = { source: srcId, target: dstId, connectionCount: 0, totalBytesForward: 0, totalBytesReverse: 0, bitRate: 0, protoPorts: new Map(), ingressPolicies: new Map(), egressPolicies: new Map(), ingressPolicyNames: new Set(), egressPolicyNames: new Set(), flowTypes: new Set() };
+            edge = {
+                source: srcId, target: dstId, connections: [], outcomes: new Map(),
+                get connectionCount() { return this.connections.length; },
+                totalBytesForward: 0, totalBytesReverse: 0, bitRate: 0, protoPorts: new Map(),
+                ingressPolicyNames: new Set(), egressPolicyNames: new Set(), flowTypes: new Set(),
+            };
             edgeMap.set(edgeKey, edge);
         }
-        // One per store entry, which is one per connection: FlowStore already keys on
-        // connectionKey, so the records reaching here are deduplicated and counting them is
-        // counting connections. A collapsed node therefore reports the sum of whatever number
-        // of peers happens to sit behind it, which is what its label claims.
-        edge.connectionCount++;
+        // FlowStore has already deduplicated reports by connection key.
+        edge.connections.push(entry);
+        const outcome = connectionOutcome(flow);
+        edge.outcomes.set(outcome, (edge.outcomes.get(outcome) ?? 0) + 1);
         edge.totalBytesForward += flow.stats.octetTotalCount;
         edge.totalBytesReverse += flow.reverseStats.octetTotalCount;
         edge.bitRate += entryBitRate(entry);
         let protoSet = edge.protoPorts.get(flow.transport.protocolNumber);
         if (!protoSet) { protoSet = new Set(); edge.protoPorts.set(flow.transport.protocolNumber, protoSet); }
         if (flow.transport.destinationPort) protoSet.add(flow.transport.destinationPort);
-        // Keyed on what formatPolicyInfo makes of the pair rather than on the name alone: at the
-        // Flow tier the name is cleared but the action survives, and dropping the edge's policy
-        // information because the name went missing would lose the one field redaction
-        // deliberately preserved - including the colour edgeRole gives the edge. The raw-name
-        // sets stay keyed on the name, since there is no name to link to.
-        // The tier used for a policy is that of the side it is evaluated on: the destination for
-        // an ingress policy, the source for an egress one. That is right for a Namespaced policy,
-        // whose identity follows its Namespace. A cluster-scoped policy's identity follows the
-        // cluster segment instead, so its name can be withheld on an endpoint disclosed in full:
-        // formatPolicyInfo takes the policy's type for that.
-        const ingressInfo = formatPolicyInfo(flow.k8s.ingressNetworkPolicyName, flow.k8s.ingressNetworkPolicyRuleAction, flow.k8s.destinationDisclosure, flow.k8s.ingressNetworkPolicyType);
-        if (ingressInfo) {
-            edge.ingressPolicies.set(ingressInfo, flow.k8s.ingressNetworkPolicyRuleAction);
-            if (flow.k8s.ingressNetworkPolicyName) edge.ingressPolicyNames.add(flow.k8s.ingressNetworkPolicyName);
-        }
-        const egressInfo = formatPolicyInfo(flow.k8s.egressNetworkPolicyName, flow.k8s.egressNetworkPolicyRuleAction, flow.k8s.sourceDisclosure, flow.k8s.egressNetworkPolicyType);
-        if (egressInfo) {
-            edge.egressPolicies.set(egressInfo, flow.k8s.egressNetworkPolicyRuleAction);
-            if (flow.k8s.egressNetworkPolicyName) edge.egressPolicyNames.add(flow.k8s.egressNetworkPolicyName);
-        }
+        if (flow.k8s.ingressNetworkPolicyName) edge.ingressPolicyNames.add(flow.k8s.ingressNetworkPolicyName);
+        if (flow.k8s.egressNetworkPolicyName) edge.egressPolicyNames.add(flow.k8s.egressNetworkPolicyName);
         edge.flowTypes.add(flowType);
     }
     for (const node of nodeMap.values()) {
@@ -533,20 +509,13 @@ function nodeLabel(graph: GraphData, id: string): string {
     return node.addresses ? `${node.shortName} (${node.detail})` : node.shortName;
 }
 
-function edgeToDetails(edge: WorkloadEdge): EdgeDetails {
+function edgeDestPorts(edge: WorkloadEdge): string {
     const destPortsList: string[] = [];
     edge.protoPorts.forEach((ports, proto) => {
         const name = getProtocolName(proto);
         destPortsList.push(ports.size > 0 ? `${name}(${Array.from(ports).sort((a, b) => a - b).join(', ')})` : name);
     });
-    return {
-        source: edge.source, target: edge.target,
-        connectionCount: edge.connectionCount, totalBytesForward: edge.totalBytesForward, totalBytesReverse: edge.totalBytesReverse, bitRate: edge.bitRate,
-        destPortsStr: destPortsList.join(', '),
-        ingressPolicies: Array.from(edge.ingressPolicies.keys()),
-        egressPolicies: Array.from(edge.egressPolicies.keys()),
-        flowTypes: Array.from(edge.flowTypes).map(ft => flowTypeLabel[ft] ?? 'Unknown'),
-    };
+    return destPortsList.join(', ');
 }
 
 function edgeToSelection(edge: WorkloadEdge, graph: GraphData): EdgeSelection {
@@ -555,10 +524,10 @@ function edgeToSelection(edge: WorkloadEdge, graph: GraphData): EdgeSelection {
         target: edge.target,
         sourceKind: graph.nodeMap.get(edge.source)?.kind,
         targetKind: graph.nodeMap.get(edge.target)?.kind,
-        destPorts: edgeToDetails(edge).destPortsStr,
+        destPorts: edgeDestPorts(edge),
         ingressPolicyNames: Array.from(edge.ingressPolicyNames),
         egressPolicyNames: Array.from(edge.egressPolicyNames),
-        protected: edge.ingressPolicies.size > 0 || edge.egressPolicies.size > 0,
+        protected: edge.ingressPolicyNames.size > 0 || edge.egressPolicyNames.size > 0 || edgeRole(edge) !== 'default',
     };
 }
 
@@ -593,21 +562,39 @@ const MAP_COLOR_VAR = {
     undisclosedStroke: 'var(--antrea-color-map-undisclosed-stroke, #a98bc4)',
 } as const;
 
-/** The edge's own colour, which is deliberately the whole edge's verdict rather than any one
- * policy's: one drop anywhere on it is what the reader needs to see. Per-policy rendering must
- * not reuse this - see policyAllows. */
-function edgeRole(edge: WorkloadEdge): EdgeRole {
-    const all = new Set([...edge.ingressPolicies.values(), ...edge.egressPolicies.values()]);
-    if (all.has(NetworkPolicyRuleAction.Drop) || all.has(NetworkPolicyRuleAction.Reject)) return 'drop';
-    if (all.has(NetworkPolicyRuleAction.Allow)) return 'allow';
-    return 'default';
+const OUTCOME_ROLES = {
+    Allowed: 'allow', Dropped: 'drop', Rejected: 'drop', 'No policy action': 'default',
+} as const;
+type ConnectionOutcome = keyof typeof OUTCOME_ROLES;
+const CONNECTIONS_PER_PAGE = 25;
+
+// Count one verdict per connection even when policies matched in both directions.
+function connectionOutcome({ k8s }: Flow): ConnectionOutcome {
+    const ingress = k8s.ingressNetworkPolicyRuleAction;
+    const egress = k8s.egressNetworkPolicyRuleAction;
+    if (egress === NetworkPolicyRuleAction.Drop || ingress === NetworkPolicyRuleAction.Drop) return 'Dropped';
+    if (egress === NetworkPolicyRuleAction.Reject || ingress === NetworkPolicyRuleAction.Reject) return 'Rejected';
+    if (egress === NetworkPolicyRuleAction.Allow || ingress === NetworkPolicyRuleAction.Allow) return 'Allowed';
+    return 'No policy action';
 }
 
-/** Whether one policy's action let the traffic through. Per policy, never per edge: an edge
- * aggregates records, so one direction can carry both an allow and a drop, and marking every
- * line in that direction by the direction's worst action labels the allow rule a denial. */
-function policyAllows(action: NetworkPolicyRuleAction): boolean {
-    return action !== NetworkPolicyRuleAction.Drop && action !== NetworkPolicyRuleAction.Reject;
+function edgeRole(edge: WorkloadEdge): EdgeRole {
+    if (edge.outcomes.has('Dropped') || edge.outcomes.has('Rejected')) return 'drop';
+    return edge.outcomes.has('Allowed') ? 'allow' : 'default';
+}
+
+const CONNECTION_OUTCOMES = Object.keys(OUTCOME_ROLES) as ConnectionOutcome[];
+
+function outcomeCounts(edge: WorkloadEdge, view: 'label' | 'tooltip'): string[] {
+    const counts = new Map<string, number>();
+    for (const outcome of CONNECTION_OUTCOMES) {
+        const count = edge.outcomes.get(outcome);
+        if (!count) continue;
+        let name = outcome === 'No policy action' ? 'with no policy action' : outcome.toLowerCase();
+        if (view === 'label' && OUTCOME_ROLES[outcome] === 'drop') name = 'denied';
+        counts.set(name, (counts.get(name) ?? 0) + count);
+    }
+    return Array.from(counts, ([name, count]) => `${count} ${name}`);
 }
 
 function edgeLabel(edge: WorkloadEdge): string {
@@ -615,10 +602,17 @@ function edgeLabel(edge: WorkloadEdge): string {
     const protocol = Math.min(...edge.protoPorts.keys());
     const ports = edge.protoPorts.get(protocol)!;
     const name = getProtocolName(protocol);
-    const label = ports.size ? `${name}/${Math.min(...ports)}` : name;
+    let label = ports.size ? `${name}/${Math.min(...ports)}` : name;
     let combinations = 0;
     for (const destinations of edge.protoPorts.values()) combinations += Math.max(1, destinations.size);
-    return combinations > 1 ? `${label} +${combinations - 1}` : label;
+    if (combinations > 1) label += ` +${combinations - 1}`;
+    if (edge.outcomes.size > 1) {
+        const counts = outcomeCounts(edge, 'label');
+        for (let i = 0; i < counts.length; i += 2) {
+            label += '\n' + counts.slice(i, i + 2).join(' · ');
+        }
+    }
+    return label;
 }
 
 function edgePinLabel(node: D3Node): string {
@@ -655,7 +649,15 @@ function isDiamond(d: { kind: NodeKind }): boolean {
 function inNamespaceHull(d: { kind: NodeKind; namespace: string }): boolean {
     return d.kind === 'workload' && !!d.namespace;
 }
-interface D3Link extends d3.SimulationLinkDatum<D3Node> { edgeKey: string; role: EdgeRole; label: string; curveOffset: number; }
+interface D3Link extends d3.SimulationLinkDatum<D3Node> {
+    source: D3Node;
+    target: D3Node;
+    edgeKey: string;
+    mixed: boolean;
+    role: EdgeRole;
+    label: ReturnType<typeof layoutEdgeLabel>;
+    bidirectional: boolean;
+}
 
 // A namespace boundary extends this far past its members, and has a header above them.
 const NAMESPACE_PADDING = 24;
@@ -673,7 +675,9 @@ const NAMESPACE_NODE_CLEARANCE = 2;
 const NODE_PADDING_X = 14;
 const NODE_PADDING_Y = 8;
 const EXTERNAL_SIZE = 20;
-const CURVE_OFFSET = 30;
+const MIN_LABEL_OFFSET = 15;
+const LABEL_GAP = 6;
+const LABEL_LINE_HEIGHT = 12;
 // The collapsed namespace is a fixed-size node, not a hull over members it does not have, so it
 // needs a size of its own: wide and shallow enough to read as a small, empty namespace outline
 // rather than as an oversized workload.
@@ -746,6 +750,21 @@ function syncNamespaceCounts(svg: SVGSVGElement, graph: GraphData) {
     });
 }
 
+function layoutEdgeLabel(text: string) {
+    const lines = text.split('\n');
+    return { text, lines, width: Math.max(...lines.map(line => textWidth(line, 9))) + 6, height: lines.length * LABEL_LINE_HEIGHT };
+}
+
+function renderEdgeLabel(this: SVGGElement, { label }: D3Link) {
+    const group = d3.select(this);
+    const { lines, width, height } = label;
+    group.attr('aria-description', lines.join(', '));
+    group.select('rect').attr('x', -width / 2).attr('y', -height / 2)
+        .attr('width', width).attr('height', height);
+    group.select('text').selectAll<SVGTSpanElement, string>('tspan').data(lines).join('tspan')
+        .attr('x', 0).attr('y', (_, i) => (i + 0.5) * LABEL_LINE_HEIGHT - height / 2).text(line => line);
+}
+
 function nodeHalfSize(d: D3Node): { hw: number; hh: number } {
     if (isDiamond(d)) return { hw: EXTERNAL_SIZE, hh: EXTERNAL_SIZE };
     const w = Math.max(textWidth(d.shortName, 12), d.hideNamespace || d.kind === 'namespace' ? 0 : textWidth(d.detail, 9)) + NODE_PADDING_X * 2 + (d.kind === 'undisclosedNamespace' ? LOCK_SIZE + 6 : 0);
@@ -792,20 +811,31 @@ export function nodeBoundary(d: D3Node, tx: number, ty: number, gap: number): [n
     return [cx + ux * (scale + gap), cy + uy * (scale + gap)];
 }
 
-function curvedPath(sx: number, sy: number, tx: number, ty: number, offset: number): string {
-    const dx = tx - sx; const dy = ty - sy; const len = Math.sqrt(dx * dx + dy * dy) || 1;
-    const nx = -dy / len; const ny = dx / len;
-    const mx = (sx + tx) / 2 + nx * offset; const my = (sy + ty) / 2 + ny * offset;
-    return `M${sx},${sy} Q${mx},${my} ${tx},${ty}`;
+/** Clip the edge to its nodes and leave room on each side for opposing labels. */
+function edgeSegment({ source, target, label, bidirectional }: D3Link) {
+    let dx = target.x! - source.x!;
+    const dy = target.y! - source.y!;
+    if (!dx && !dy) dx = source.id < target.id ? 1 : -1;
+    const [sx, sy] = nodeBoundary(source, source.x! + dx, source.y! + dy, 1);
+    const [tx, ty] = nodeBoundary(target, target.x! - dx, target.y! - dy, 3);
+    const length = Math.hypot(dx, dy);
+    const extent = (Math.abs(dy) * label.width + Math.abs(dx) * label.height) / (2 * length);
+    const offset = bidirectional ? Math.max(MIN_LABEL_OFFSET, extent + LABEL_GAP / 2) : 0;
+    return { sx, sy, tx, ty, offset };
 }
 
 function quadMidpoint(sx: number, sy: number, tx: number, ty: number, offset: number): [number, number] {
-    const dx = tx - sx; const dy = ty - sy; const len = Math.sqrt(dx * dx + dy * dy) || 1;
-    const nx = -dy / len; const ny = dx / len;
-    return [(sx + tx) / 2 + nx * offset, (sy + ty) / 2 + ny * offset];
+    const dx = tx - sx, dy = ty - sy;
+    const length = Math.hypot(dx, dy) || 1;
+    return [(sx + tx) / 2 - dy / length * offset, (sy + ty) / 2 + dx / length * offset];
 }
 
-const EDGE_LABEL_HEIGHT = 12;
+function edgePath(link: D3Link): string {
+    const { sx, sy, tx, ty, offset } = edgeSegment(link);
+    // At the halfway point a quadratic reaches half of the control point's offset.
+    const [cx, cy] = quadMidpoint(sx, sy, tx, ty, 2 * offset);
+    return `M${sx},${sy} Q${cx},${cy} ${tx},${ty}`;
+}
 
 const NODE_INDEX_CELL = 128;
 
@@ -850,12 +880,12 @@ export class NodeIndex {
  * spot (an edge can pass behind a node that is not one of its ends), slides along the edge to the
  * nearest spot that no node covers. With no such spot it stays at the midpoint. */
 export function edgeLabelPosition(
-    s: D3Node, t: D3Node, offset: number, width: number,
-    nodes: readonly D3Node[] | NodeIndex,
+    s: Pick<D3Node, 'x' | 'y'>, t: Pick<D3Node, 'x' | 'y'>, offset: number, width: number,
+    nodes: readonly D3Node[] | NodeIndex, height = LABEL_LINE_HEIGHT,
 ): [number, number] {
     const index = nodes instanceof NodeIndex ? nodes : new NodeIndex(nodes);
     const [mx, my] = quadMidpoint(s.x!, s.y!, t.x!, t.y!, offset);
-    const covered = (px: number, py: number) => index.covers(px, py, width, EDGE_LABEL_HEIGHT);
+    const covered = (px: number, py: number) => index.covers(px, py, width, height);
     if (!covered(mx, my)) return [mx, my];
     const dx = t.x! - s.x!; const dy = t.y! - s.y!; const len = Math.sqrt(dx * dx + dy * dy) || 1;
     const ux = dx / len; const uy = dy / len;
@@ -869,6 +899,12 @@ export function edgeLabelPosition(
     return [mx, my];
 }
 
+function labelTransform(link: D3Link, index: NodeIndex): string {
+    const { sx, sy, tx, ty, offset } = edgeSegment(link);
+    const [x, y] = edgeLabelPosition({ x: sx, y: sy }, { x: tx, y: ty }, offset, link.label.width, index, link.label.height);
+    return `translate(${x},${y})`;
+}
+
 function nodeCollideRadius(d: D3Node): number {
     if (isDiamond(d)) return EXTERNAL_SIZE + 4;
     const { hw } = nodeHalfSize(d);
@@ -880,21 +916,37 @@ function nodeCollideRadius(d: D3Node): number {
 type SortField = 'lastSeen' | 'source' | 'destination' | 'destinationService' | 'protocol' | 'destPort' | 'bytesFwd' | 'bytesRev' | 'ingressPolicy' | 'egressPolicy' | 'flowType';
 type SortDir = 'asc' | 'desc';
 
+function flowSource(flow: Flow): EndpointView {
+    return endpointView(flow.k8s.sourceDisclosure, flow.k8s.sourcePodNamespace, flow.k8s.sourcePodName, flow.ip.source, flow.k8s.flowType as FlowType === FlowType.FromExternal);
+}
+
+function flowDestination(flow: Flow): EndpointView {
+    return endpointView(flow.k8s.destinationDisclosure, flow.k8s.destinationPodNamespace, flow.k8s.destinationPodName, flow.ip.destination, flow.k8s.flowType as FlowType === FlowType.ToExternal);
+}
+
+function ingressPolicyInfo(flow: Flow): string {
+    return formatPolicyInfo(flow.k8s.ingressNetworkPolicyName, flow.k8s.ingressNetworkPolicyRuleAction, flow.k8s.destinationDisclosure, flow.k8s.ingressNetworkPolicyType);
+}
+
+function egressPolicyInfo(flow: Flow): string {
+    return formatPolicyInfo(flow.k8s.egressNetworkPolicyName, flow.k8s.egressNetworkPolicyRuleAction, flow.k8s.sourceDisclosure, flow.k8s.egressNetworkPolicyType);
+}
+
 function sortValue(entry: FlowEntry, field: SortField): string | number {
     const { flow } = entry;
     switch (field) {
         case 'lastSeen': return new Date(flow.endTs).getTime();
         // The text the cell shows, so the order matches what the user reads: a withheld endpoint
         // shows "ns/<hidden>", not its address, and a policy that was withheld shows its action.
-        case 'source': return endpointView(flow.k8s.sourceDisclosure, flow.k8s.sourcePodNamespace, flow.k8s.sourcePodName, flow.ip.source, flow.k8s.flowType as FlowType === FlowType.FromExternal).text;
-        case 'destination': return endpointView(flow.k8s.destinationDisclosure, flow.k8s.destinationPodNamespace, flow.k8s.destinationPodName, flow.ip.destination, flow.k8s.flowType as FlowType === FlowType.ToExternal).text;
+        case 'source': return flowSource(flow).text;
+        case 'destination': return flowDestination(flow).text;
         case 'destinationService': return destinationServiceView(flow.k8s.destinationServiceDisclosure, flow.k8s.destinationServicePortName).text;
         case 'protocol': return flow.transport.protocolNumber;
         case 'destPort': return flow.transport.destinationPort;
         case 'bytesFwd': return flow.stats.octetTotalCount;
         case 'bytesRev': return flow.reverseStats.octetTotalCount;
-        case 'ingressPolicy': return formatPolicyInfo(flow.k8s.ingressNetworkPolicyName, flow.k8s.ingressNetworkPolicyRuleAction, flow.k8s.destinationDisclosure, flow.k8s.ingressNetworkPolicyType) || '-';
-        case 'egressPolicy': return formatPolicyInfo(flow.k8s.egressNetworkPolicyName, flow.k8s.egressNetworkPolicyRuleAction, flow.k8s.sourceDisclosure, flow.k8s.egressNetworkPolicyType) || '-';
+        case 'ingressPolicy': return ingressPolicyInfo(flow) || '-';
+        case 'egressPolicy': return egressPolicyInfo(flow) || '-';
         case 'flowType': return flow.k8s.flowType;
     }
 }
@@ -951,15 +1003,15 @@ function renderRedactable(view: EndpointView): string | TemplateResult {
 // a FlowTableColumnsProcessor inserts don't have one, so they render but aren't sortable.
 const BASE_COLUMNS: (FlowTableColumn & { field?: SortField })[] = [
     { key: 'lastSeen', field: 'lastSeen', label: 'Last Seen', render: e => new Date(e.flow.endTs).toLocaleTimeString() },
-    { key: 'source', field: 'source', label: 'Source', render: e => renderRedactable(endpointView(e.flow.k8s.sourceDisclosure, e.flow.k8s.sourcePodNamespace, e.flow.k8s.sourcePodName, e.flow.ip.source, e.flow.k8s.flowType as FlowType === FlowType.FromExternal)) },
-    { key: 'destination', field: 'destination', label: 'Destination', render: e => renderRedactable(endpointView(e.flow.k8s.destinationDisclosure, e.flow.k8s.destinationPodNamespace, e.flow.k8s.destinationPodName, e.flow.ip.destination, e.flow.k8s.flowType as FlowType === FlowType.ToExternal)) },
+    { key: 'source', field: 'source', label: 'Source', render: e => renderRedactable(flowSource(e.flow)) },
+    { key: 'destination', field: 'destination', label: 'Destination', render: e => renderRedactable(flowDestination(e.flow)) },
     { key: 'destinationService', field: 'destinationService', label: 'Dest Service', render: e => renderRedactable(destinationServiceView(e.flow.k8s.destinationServiceDisclosure, e.flow.k8s.destinationServicePortName)) },
     { key: 'protocol', field: 'protocol', label: 'Protocol', render: e => getProtocolName(e.flow.transport.protocolNumber) },
     { key: 'destPort', field: 'destPort', label: 'Dest Port', render: e => String(e.flow.transport.destinationPort) },
     { key: 'bytesFwd', field: 'bytesFwd', label: 'Bytes (Fwd)', render: e => formatBytes(e.flow.stats.octetTotalCount) },
     { key: 'bytesRev', field: 'bytesRev', label: 'Bytes (Rev)', render: e => formatBytes(e.flow.reverseStats.octetTotalCount) },
-    { key: 'ingressPolicy', field: 'ingressPolicy', label: 'Ingress Policy', render: e => formatPolicyInfo(e.flow.k8s.ingressNetworkPolicyName, e.flow.k8s.ingressNetworkPolicyRuleAction, e.flow.k8s.destinationDisclosure, e.flow.k8s.ingressNetworkPolicyType) || '-' },
-    { key: 'egressPolicy', field: 'egressPolicy', label: 'Egress Policy', render: e => formatPolicyInfo(e.flow.k8s.egressNetworkPolicyName, e.flow.k8s.egressNetworkPolicyRuleAction, e.flow.k8s.sourceDisclosure, e.flow.k8s.egressNetworkPolicyType) || '-' },
+    { key: 'ingressPolicy', field: 'ingressPolicy', label: 'Ingress Policy', render: e => ingressPolicyInfo(e.flow) || '-' },
+    { key: 'egressPolicy', field: 'egressPolicy', label: 'Egress Policy', render: e => egressPolicyInfo(e.flow) || '-' },
     { key: 'flowType', field: 'flowType', label: 'Flow Type', render: e => flowTypeLabel[e.flow.k8s.flowType as FlowType] ?? 'Unknown' },
 ];
 
@@ -1087,7 +1139,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
             grid-area: 1 / 1; place-self: start end; margin: 10px 10px 0 0;
             background: var(--antrea-color-bg, #1b2a32);
             border: 1px solid var(--antrea-color-border, #314351);
-            border-radius: 4px; padding: 16px; min-width: 280px; max-width: 350px; z-index: 10;
+            border-radius: 4px; padding: 16px; width: min(380px, calc(100% - 20px)); overflow-wrap: anywhere; z-index: 10;
             box-sizing: border-box; max-height: calc(100% - 10px); overflow: auto;
         }
         .edge-details-close {
@@ -1095,11 +1147,19 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
             background: none; border: none; color: var(--antrea-color-text-muted, #adbbc4);
             cursor: pointer; font-size: 14px; line-height: 1; padding: 2px;
         }
-        .edge-details-section-label {
-            font-weight: 500; text-transform: uppercase; letter-spacing: 0.05em;
-            color: var(--antrea-color-text-muted, #adbbc4); font-size: 11px; margin-bottom: 12px;
-        }
+        .edge-details-title { margin: 0 1.5rem 0.4rem 0; font-size: 1rem; }
         .edge-details-rows { display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.8125rem; }
+        .edge-connections {
+            display: grid; gap: 0.5rem; list-style: none; padding: 0; margin: 0.75rem 0 0;
+            font-size: 0.8125rem; line-height: 1.5;
+        }
+        .edge-connection {
+            border-inline-start: 3px solid var(--outcome-color); padding: 0.4rem 0.6rem;
+            background: var(--antrea-color-bg-dark, #17242b);
+        }
+        .connection-heading, .connection-pages { display: flex; justify-content: space-between; gap: 0.5rem; }
+        .connection-outcome { color: var(--outcome-color); font-weight: 600; }
+        .connection-pages { align-items: center; margin-top: 0.75rem; font-size: 0.8125rem; }
         .edge-extra { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--antrea-color-border, #314351); }
         .warn { color: var(--antrea-color-warning, #f5a623); }
         .redacted { display: inline-flex; align-items: center; gap: 4px; color: var(--antrea-color-text-muted, #adbbc4); }
@@ -1212,6 +1272,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
     // Service map
     @state() private _svgWidth = 1100;
     @state() private _svgHeight = 900;
+    @state() private _connectionPage = 0;
     @state() private _selectedEdgeKey: string | null = null;
     @state() private _edgeLimit = DEFAULT_EDGE_LIMIT;
     @state() private _shownEdgeCount = 0;
@@ -1322,7 +1383,8 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
     private _refreshTimer: ReturnType<typeof setInterval> | null = null;
     private _ro: ResizeObserver | null = null;
     private _roHost: HTMLElement | null = null;
-    private _graphRef = buildGraph([]);
+    @state() private _graphRef = buildGraph([]);
+    private _pendingResetPositions?: Map<string, { x: number; y: number }>;
 
     private _handleDocClick = (e: PointerEvent) => {
         const path = e.composedPath();
@@ -1429,6 +1491,22 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         if (changed.has('_menuQuery') || changed.has('_pendingDirection') || changed.has('_nsOpen') || changed.has('_podOpen') || changed.has('_svcOpen')) {
             this._menuRows = null;
         }
+        // The Lit details panel and the D3 paths must render the same stream snapshot.
+        if (this.viewMode === 'map' && (changed.has('_entries') || changed.has('viewMode') ||
+            changed.has('_expandedNamespaces') || changed.has('_clusterWide'))) {
+            this._graphRef = buildGraph(this._entries, this._clusterWide, this._expandedNamespaces);
+        }
+        if (changed.has('_selectedEdgeKey')) this._connectionPage = 0;
+        if (this._selectedEdgeKey && (changed.has('_graphRef') || changed.has('_selectedEdgeKey'))) {
+            const edge = this._graphRef.edgeMap.get(this._selectedEdgeKey);
+            if (edge) {
+                // The store moves refreshed connections to the end. Keep the rows on a page stable.
+                edge.connections.sort((a, b) => a.key.localeCompare(b.key));
+                this._connectionPage = Math.min(this._connectionPage, Math.ceil(edge.connections.length / CONNECTIONS_PER_PAGE) - 1);
+            } else {
+                this._selectedEdgeKey = null;
+            }
+        }
     }
 
     override updated(changed: Map<string, unknown>) {
@@ -1450,11 +1528,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         }
         // The map DOM is created when either its view or its scope becomes available.
         const mapVisibilityChanged = changed.has('viewMode') || changed.has('_observedNs') || changed.has('_clusterWide');
-        if (mapVisibilityChanged && this.viewMode === 'map' && this._scope) {
-            // Lit recreates the SVG; joins populate it from the retained node positions. A scope
-            // switch keeps the same container, so only a newly created one needs binding.
-            if (this._setupResizeObserver()) this._buildServiceMap();
-        }
+        const newMap = mapVisibilityChanged && this.viewMode === 'map' && this._scope && this._setupResizeObserver();
         // Leaving the map or clearing its scope removes the SVG; stop work on the detached DOM.
         if (mapVisibilityChanged && (this.viewMode !== 'map' || !this._scope)) {
             this._simulation?.stop();
@@ -1463,13 +1537,19 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
             this._ro?.disconnect();
             this._ro = null;
             this._roHost = null;
+            this._hideTooltip();
         }
-        // Rebuild map when entries or SVG dimensions change
-        if ((changed.has('_entries') || changed.has('_svgWidth') || changed.has('_svgHeight') || changed.has('_edgeLimit') || changed.has('_expandedNamespaces')) && this.viewMode === 'map') {
-            this._buildServiceMap();
+        if (this.viewMode === 'map' && (newMap || changed.has('_graphRef') || changed.has('_svgWidth') ||
+            changed.has('_svgHeight') || changed.has('_edgeLimit') || changed.has('_selectedEdgeKey'))) {
+            this._buildServiceMap(false, this._pendingResetPositions, changed.get('_graphRef') as GraphData | undefined);
+            this._pendingResetPositions = undefined;
+        }
+        if (changed.has('_graphRef') && this._hoveredEdgeKey) {
+            const hovered = this._graphRef.edgeMap.get(this._hoveredEdgeKey);
+            if (hovered) this._showEdgeTooltip(hovered);
+            else this._hideTooltip();
         }
         if (changed.has('_selectedEdgeKey')) {
-            if (this.viewMode === 'map') this._buildServiceMap();
             this._dispatchEdgeSelected();
         }
     }
@@ -1762,10 +1842,15 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
     }
 
     private _updateMapEdgeData(svg: SVGSVGElement, graph: GraphData) {
-        const changedLabels = new Set<D3Link>();
+        const changedLabels = new Map<D3Link, SVGPathElement>();
         const changedRoles = new Set<D3Link>();
         d3.select(svg).selectAll<SVGPathElement, D3Link>('.edges path').each(function (d) {
             const edge = graph.edgeMap.get(d.edgeKey)!;
+            const mixed = edge.outcomes.size > 1;
+            if (d.mixed !== mixed) {
+                d.mixed = mixed;
+                d3.select(this).attr('stroke-dasharray', mixed ? '6 4' : null);
+            }
             const role = edgeRole(edge);
             if (d.role !== role) {
                 d.role = role;
@@ -1773,21 +1858,31 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
                 d3.select(this).style('stroke', EDGE_COLOR_VAR[role]).attr('marker-end', `url(#arrowhead-${role})`);
             }
             const label = edgeLabel(edge);
-            if (d.label !== label) {
-                d.label = label;
-                changedLabels.add(d);
+            if (d.label.text !== label) {
+                d.label = layoutEdgeLabel(label);
+                changedLabels.set(d, this);
             }
         });
         if (!changedLabels.size && !changedRoles.size) return;
+        d3.select(svg).selectAll<SVGPathElement, D3Link>('.edge-hit-targets path')
+            .filter(d => d.bidirectional && changedLabels.has(d))
+            .each(function (d) {
+                const path = edgePath(d);
+                this.setAttribute('d', path);
+                changedLabels.get(d)!.setAttribute('d', path);
+            });
+        let nodeIndex: NodeIndex | undefined;
         d3.select(svg).selectAll<SVGGElement, D3Link>('.edge-labels g')
             .filter(d => changedLabels.has(d) || changedRoles.has(d))
             .each(function (d) {
                 const group = d3.select(this);
                 if (changedRoles.has(d)) group.select('rect').style('stroke', EDGE_COLOR_VAR[d.role]);
                 if (changedLabels.has(d)) {
-                    const width = textWidth(d.label, 9);
-                    group.select('rect').attr('x', -width / 2 - 3).attr('width', width + 6);
-                    group.select('text').text(d.label);
+                    renderEdgeLabel.call(this, d);
+                    if (group.attr('display') !== 'none') {
+                        nodeIndex ??= new NodeIndex(d3.select(svg).selectAll<SVGGElement, D3Node>('.nodes .node').data());
+                        group.attr('transform', labelTransform(d, nodeIndex));
+                    }
                 }
             });
     }
@@ -1831,10 +1926,9 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
     }
 
     private _resetMap() {
-        const positions = this._originalPositions;
+        this._pendingResetPositions = this._originalPositions;
         this._resetMapChoices();
         this._edgeLimit = DEFAULT_EDGE_LIMIT;
-        this._buildServiceMap(false, positions);
     }
 
     private _collapseAllNamespaces() {
@@ -1845,15 +1939,13 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         this._expandedNamespaces = new Set();
     }
 
-    /** Redraws the map. With reuseGraph, the flows are taken to be unchanged since the last call,
-     * as when only the hovered node differs, and the graph is not built again. */
-    private _buildServiceMap(reuseGraph = false, resetPositions?: Map<string, { x: number; y: number }>) {
+    /** A node hover can update just the highlights when the drawn edges stay the same. */
+    private _buildServiceMap(highlightOnly = false, resetPositions?: Map<string, { x: number; y: number }>, previousGraph = this._graphRef) {
         const svg = this._svgEl;
         if (!svg) return;
 
-        const graph = reuseGraph ? this._graphRef : buildGraph(this._entries, this._clusterWide, this._expandedNamespaces);
-        const previousGraph = this._graphRef;
-        if (!reuseGraph && this._hoveredNode) {
+        const graph = this._graphRef;
+        if (!highlightOnly && this._hoveredNode) {
             const hovered = graph.nodeMap.get(this._hoveredNode);
             if (!hovered) {
                 this._hoveredNode = null;
@@ -1889,15 +1981,6 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         }
         this._shownEdgeCount = shownEdges.length;
         this._totalEdgeCount = graph.edges.length;
-        this._graphRef = graph;
-
-        // If a rebuild drops the currently-selected edge, clear the selection so
-        // _dispatchEdgeSelected() emits null — otherwise a host listening on the
-        // antrea-edge-selected extension point would keep believing an edge is selected even
-        // though its edge is no longer visible.
-        if (this._selectedEdgeKey && !graph.edgeMap.has(this._selectedEdgeKey)) {
-            this._selectedEdgeKey = null;
-        }
 
         // Which edges are drawn, and the hover and pin state they are drawn with, are part of
         // what the joins below render. Unchanged, the shortcut is safe; changed, it is not.
@@ -1908,7 +1991,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         const sameShape = shapeKey === this._mapShapeKey;
         this._mapShapeKey = shapeKey;
         // Hover that leaves the same edges drawn only changes which of them are emphasised.
-        if (reuseGraph && sameShape && this._applyMapHighlight && this._mapContent?.ownerSVGElement === svg) {
+        if (highlightOnly && sameShape && this._applyMapHighlight && this._mapContent?.ownerSVGElement === svg) {
             this._mapViewKey = viewKey;
             this._applyMapHighlight(highlightedNodes, shownEdges);
             this._updateEdgeLabels?.();
@@ -2007,12 +2090,6 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
             }
         }
 
-        const bidirectionalPairs = new Set<string>();
-        const edgeKeys = new Set(graph.edges.map(e => `${e.source}|${e.target}`));
-        for (const e of graph.edges) {
-            if (edgeKeys.has(`${e.target}|${e.source}`)) bidirectionalPairs.add([e.source, e.target].sort().join('|'));
-        }
-
         const defs = d3svg.selectAll<SVGDefsElement, null>('defs').data([null]).join('defs');
         for (const role of EDGE_ROLES) {
             defs.selectAll<SVGMarkerElement, EdgeRole>(`#arrowhead-${role}`).data([role]).join('marker')
@@ -2023,19 +2100,15 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
                 .selectAll<SVGPathElement, EdgeRole>('path').data([role]).join('path').attr('d', 'M-10,-4L0,0L-10,4').style('fill', EDGE_COLOR_VAR[role]);
         }
 
-        const toLink = (e: WorkloadEdge): D3Link => {
-            const pairKey = [e.source, e.target].sort().join('|');
-            const isBi = bidirectionalPairs.has(pairKey);
-            return {
-                source: nodeById.get(e.source)!,
-                target: nodeById.get(e.target)!,
-                edgeKey: `${e.source}|${e.target}`,
-                role: edgeRole(e),
-                label: edgeLabel(e),
-                // Reversing the endpoints already reverses the curve's normal direction.
-                curveOffset: isBi ? CURVE_OFFSET : 0,
-            };
-        };
+        const toLink = (e: WorkloadEdge): D3Link => ({
+            source: nodeById.get(e.source)!,
+            target: nodeById.get(e.target)!,
+            edgeKey: `${e.source}|${e.target}`,
+            mixed: e.outcomes.size > 1,
+            role: edgeRole(e),
+            label: layoutEdgeLabel(edgeLabel(e)),
+            bidirectional: graph.edgeMap.has(`${e.target}|${e.source}`),
+        });
         const d3Links = shownEdges.map(toLink);
         // Pinning changes visibility, while the same structural edges keep the layout stable.
         const layoutLinks = structural.map(toLink);
@@ -2111,6 +2184,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
             .data(d3Links, d => d.edgeKey).join('path')
             .attr('fill', 'none')
             .style('stroke', d => EDGE_COLOR_VAR[d.role])
+            .attr('stroke-dasharray', d => d.mixed ? '6 4' : null)
             .attr('stroke-width', EDGE_STROKE_WIDTH)
             .attr('stroke-opacity', 0.6)
             .attr('marker-end', d => `url(#arrowhead-${d.role})`);
@@ -2131,14 +2205,12 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
                     .attr('stroke-opacity', 1)
                     .attr('stroke-width', EDGE_STROKE_WIDTH + 0.5);
                 const edge = this._graphRef.edgeMap.get(d.edgeKey);
-                if (edge) this._showTooltip(event, edge);
-            })
-            .on('mousemove', event => {
-                if (this._tooltipEl) {
-                    this._tooltipEl.style.left = `${event.clientX + 12}px`;
-                    this._tooltipEl.style.top = `${event.clientY + 12}px`;
+                if (edge) {
+                    this._positionTooltip(event);
+                    this._showEdgeTooltip(edge);
                 }
             })
+            .on('mousemove', event => this._positionTooltip(event))
             .on('mouseleave', (event: MouseEvent, d) => {
                 // Moving between an edge, its wider target and its label keeps the same hover.
                 const to = event.relatedTarget;
@@ -2152,22 +2224,29 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
                     .attr('stroke-width', EDGE_STROKE_WIDTH);
                 this._hideTooltip();
             })
-            .on('click', (_event, d) => {
-                const edge = this._graphRef.edgeMap.get(d.edgeKey);
-                if (edge) this._selectedEdgeKey = d.edgeKey;
-            });
+            .on('click', (_event, d) => this._openEdgeDetails(d.edgeKey));
         bindEdgeEvents(linkPaths);
-        bindEdgeEvents(edgeHitPaths);
+        bindEdgeEvents(edgeHitPaths)
+            .attr('role', 'button').attr('tabindex', 0)
+            .attr('aria-label', d => {
+                const edge = graph.edgeMap.get(d.edgeKey)!;
+                return `Show connections from ${nodeLabel(graph, edge.source)} to ${nodeLabel(graph, edge.target)}`;
+            })
+            .on('keydown', (event: KeyboardEvent, d) => {
+                if (event.key !== 'Enter' && event.key !== ' ') return;
+                event.preventDefault();
+                void this._openEdgeDetails(d.edgeKey);
+            });
 
         // Edge labels
         const edgeLabelGroups = layer('edge-labels').selectAll<SVGGElement, D3Link>('g')
-            .data(d3Links.filter(d => d.label), d => d.edgeKey).join('g');
+            .data(d3Links.filter(d => d.label.text), d => d.edgeKey).join('g');
         bindEdgeEvents(edgeLabelGroups);
         for (const group of edgeLabelGroups.nodes()) edgeLabelByKey.set(d3.select<SVGGElement, D3Link>(group).datum().edgeKey, group);
         edgeLabelGroups.selectAll('rect').data(d => [d]).join('rect')
-            .attr('x', d => -textWidth(d.label, 9) / 2 - 3).attr('y', -6)
-            .attr('width', d => textWidth(d.label, 9) + 6).attr('height', 12).attr('rx', 3).attr('ry', 3).style('fill', MAP_COLOR_VAR.edgeLabelBg).style('stroke', d => EDGE_COLOR_VAR[d.role]).attr('stroke-width', 0.5).attr('stroke-opacity', 0.5);
-        edgeLabelGroups.selectAll('text').data(d => [d]).join('text').text(d => d.label).attr('text-anchor', 'middle').attr('dominant-baseline', 'central').style('fill', MAP_COLOR_VAR.edgeLabelText).attr('font-size', '9px').attr('pointer-events', 'none');
+            .attr('rx', 3).attr('ry', 3).style('fill', MAP_COLOR_VAR.edgeLabelBg).style('stroke', d => EDGE_COLOR_VAR[d.role]).attr('stroke-width', 0.5).attr('stroke-opacity', 0.5);
+        edgeLabelGroups.selectAll('text').data(d => [d]).join('text').attr('text-anchor', 'middle').attr('dominant-baseline', 'central').style('fill', MAP_COLOR_VAR.edgeLabelText).attr('font-size', '9px').attr('pointer-events', 'none');
+        edgeLabelGroups.each(renderEdgeLabel);
 
         // Opaque backing hides passing edges through folded namespace bodies and leaves a
         // narrow gap around their borders. Highlighting hides unrelated backings to reveal the
@@ -2347,11 +2426,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
 
         const shownLabels = () => edgeLabelGroups.filter(function () { return this.getAttribute('display') !== 'none'; });
         const placeLabels = (groups: d3.Selection<SVGGElement, D3Link, SVGGElement, null>, nodeIndex: NodeIndex) => {
-            groups.attr('transform', d => {
-                const s = d.source as D3Node; const t = d.target as D3Node;
-                const [mx, my] = edgeLabelPosition(s, t, d.curveOffset, textWidth(d.label, 9) + 6, nodeIndex);
-                return `translate(${mx},${my})`;
-            });
+            groups.attr('transform', d => labelTransform(d, nodeIndex));
         };
         // A label is a detail of its edge: drawn while the edge is hovered or selected, or while
         // either end is highlighted. Hidden ones are not placed, which also keeps them out of the
@@ -2373,14 +2448,11 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         this._updateEdgeLabels = updateLabels;
         const draw = () => {
             const nodeIndex = new NodeIndex(d3Nodes);
-            const edgePath = (d: D3Link) => {
-                const s = d.source as D3Node; const t = d.target as D3Node;
-                const [sx, sy] = nodeBoundary(s, t.x!, t.y!, 1);
-                const [tx, ty] = nodeBoundary(t, s.x!, s.y!, 3);
-                return curvedPath(sx, sy, tx, ty, d.curveOffset);
-            };
-            linkPaths.attr('d', edgePath);
-            edgeHitPaths.attr('d', edgePath);
+            linkPaths.each(function (d) {
+                const path = edgePath(d);
+                this.setAttribute('d', path);
+                edgeHitPathsByKey.get(d.edgeKey)!.setAttribute('d', path);
+            });
             placeLabels(shownLabels(), nodeIndex);
             namespaceBackings.attr('transform', d => `translate(${d.x},${d.y})`);
             nodeGroup.attr('transform', d => `translate(${d.x},${d.y})`);
@@ -2493,50 +2565,30 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         draw();
     }
 
-    private _showTooltip(event: MouseEvent, edge: WorkloadEdge) {
+    private _positionTooltip(event: MouseEvent) {
+        if (!this._tooltipEl) return;
+        this._tooltipEl.style.left = `${event.clientX + 12}px`;
+        this._tooltipEl.style.top = `${event.clientY + 12}px`;
+    }
+
+    private _showEdgeTooltip(edge: WorkloadEdge) {
         const tip = this._tooltipEl;
         if (!tip) return;
-        const portParts: string[] = [];
-        edge.protoPorts.forEach((pSet, proto) => {
-            const name = getProtocolName(proto);
-            portParts.push(pSet.size > 0 ? `${name}(${Array.from(pSet).sort((a, b) => a - b).join(', ')})` : name);
-        });
-
-        // Built from text nodes rather than innerHTML: edge.source/target (derived from pod
-        // labels) and policy names are server-supplied data, not markup we control.
         const div = (text: string) => {
             const e = document.createElement('div');
             e.textContent = text;
             return e;
         };
-        const policyLine = (allow: boolean, direction: string, name: string) => {
-            const line = document.createElement('div');
-            const mark = document.createElement('span');
-            mark.style.color = allow ? EDGE_COLOR_VAR.allow : EDGE_COLOR_VAR.drop;
-            mark.textContent = allow ? '✓' : '✗';
-            line.append(mark, document.createTextNode(` ${direction}: ${name}`));
-            return line;
-        };
-
         tip.replaceChildren();
         const header = div(`${nodeLabel(this._graphRef, edge.source)} → ${nodeLabel(this._graphRef, edge.target)}`);
         header.style.fontWeight = '600';
         header.style.marginBottom = '4px';
         tip.append(header);
-        tip.append(div(portParts.join(', ') || '-'));
-        tip.append(div(`${edge.connectionCount} connection${edge.connectionCount !== 1 ? 's' : ''}`));
+        tip.append(div(edgeDestPorts(edge) || '-'));
+        tip.append(div(`${edge.connections.length} connection${edge.connections.length !== 1 ? 's' : ''}`));
         tip.append(div(`↑ ${formatBytes(edge.totalBytesForward)}   ↓ ${formatBytes(edge.totalBytesReverse)}`));
         if (this._following && edge.bitRate > 0) tip.append(div(`Throughput: ${formatBitRate(edge.bitRate)}`));
-        if (edge.ingressPolicies.size > 0 || edge.egressPolicies.size > 0) {
-            const hr = document.createElement('hr');
-            hr.style.borderColor = 'var(--antrea-color-map-tooltip-border, #555)';
-            hr.style.margin = '4px 0';
-            tip.append(hr);
-            for (const [p, action] of edge.ingressPolicies) tip.append(policyLine(policyAllows(action), 'Ingress', p));
-            for (const [p, action] of edge.egressPolicies) tip.append(policyLine(policyAllows(action), 'Egress', p));
-        }
-        tip.style.left = `${event.clientX + 12}px`;
-        tip.style.top = `${event.clientY + 12}px`;
+        tip.append(div(outcomeCounts(edge, 'tooltip').join(', ')));
         tip.style.opacity = '1';
     }
 
@@ -2562,12 +2614,13 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         text.className = 'node-tooltip-body';
         text.style.maxWidth = '260px';
         tip.append(header, text);
-        tip.style.left = `${event.clientX + 12}px`;
-        tip.style.top = `${event.clientY + 12}px`;
+        this._hoveredEdgeKey = null;
+        this._positionTooltip(event);
         tip.style.opacity = '1';
     }
 
     private _hideTooltip() {
+        this._hoveredEdgeKey = null;
         if (this._tooltipEl) this._tooltipEl.style.opacity = '0';
     }
 
@@ -2830,29 +2883,71 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         return nodes.length ? html`<div class="edge-extra">${nodes}</div>` : nothing;
     }
 
+    private _renderConnection({ flow }: FlowEntry) {
+        const outcome = connectionOutcome(flow);
+        const ingress = ingressPolicyInfo(flow);
+        const egress = egressPolicyInfo(flow);
+        const { protocolNumber, sourcePort, destinationPort } = flow.transport;
+        return html`
+            <li class="edge-connection" style="--outcome-color:${EDGE_COLOR_VAR[OUTCOME_ROLES[outcome]]}">
+                <div class="connection-heading">
+                    <strong>${getProtocolName(protocolNumber)}${destinationPort ? `/${destinationPort}` : ''}</strong>
+                    <span class="connection-outcome">${outcome}</span>
+                </div>
+                <div>Source${sourcePort ? ` (port ${sourcePort})` : ''}: ${renderRedactable(flowSource(flow))}</div>
+                <div>Destination: ${renderRedactable(flowDestination(flow))}</div>
+                <div>${formatBytes(flow.stats.octetTotalCount)} forward · ${formatBytes(flow.reverseStats.octetTotalCount)} reverse</div>
+                ${ingress ? html`<div>Ingress: ${ingress}</div>` : nothing}
+                ${egress ? html`<div>Egress: ${egress}</div>` : nothing}
+            </li>`;
+    }
+
+    private async _openEdgeDetails(key: string) {
+        if (!this._graphRef.edgeMap.has(key)) return;
+        this._selectedEdgeKey = key;
+        this._hideTooltip();
+        await this.updateComplete;
+        if (this._selectedEdgeKey === key) {
+            this.renderRoot.querySelector<HTMLButtonElement>('.edge-details-close')?.focus({ preventScroll: true });
+        }
+    }
+
+    private _closeEdgeDetails() {
+        const key = this._selectedEdgeKey;
+        this._selectedEdgeKey = null;
+        if (this._svgEl) d3.select(this._svgEl).selectAll<SVGPathElement, D3Link>('.edge-hit-targets path')
+            .filter(d => d.edgeKey === key).node()?.focus({ preventScroll: true });
+    }
+
     private _renderEdgeDetails() {
         if (!this._selectedEdgeKey) return nothing;
         const edge = this._graphRef.edgeMap.get(this._selectedEdgeKey);
         if (!edge) return nothing;
-        const d = edgeToDetails(edge);
+        const count = edge.connections.length;
+        const start = this._connectionPage * CONNECTIONS_PER_PAGE;
+        const end = Math.min(start + CONNECTIONS_PER_PAGE, count);
         return html`
-            <div class="edge-details">
-                <button class="edge-details-close" @click=${() => { this._selectedEdgeKey = null; }}>✕</button>
-                <div class="edge-details-section-label">Connection Stats</div>
+            <section class="edge-details" aria-label="Edge details"
+                @keydown=${(e: KeyboardEvent) => { if (e.key === 'Escape') this._closeEdgeDetails(); }}>
+                <button type="button" class="edge-details-close" aria-label="Close edge details"
+                    @click=${this._closeEdgeDetails}>✕</button>
+                <h3 class="edge-details-title">${nodeLabel(this._graphRef, edge.source)} → ${nodeLabel(this._graphRef, edge.target)}</h3>
                 <div class="edge-details-rows">
-                    <div><strong>Source:</strong> ${nodeLabel(this._graphRef, d.source)}</div>
-                    <div><strong>Target:</strong> ${nodeLabel(this._graphRef, d.target)}</div>
-                    <div><strong>Connections:</strong> ${d.connectionCount}</div>
-                    <div><strong>Bytes (Fwd):</strong> ${formatBytes(d.totalBytesForward)}</div>
-                    <div><strong>Bytes (Rev):</strong> ${formatBytes(d.totalBytesReverse)}</div>
-                    ${this._following && d.bitRate > 0 ? html`<div><strong>Bit Rate:</strong> ${formatBitRate(d.bitRate)}</div>` : nothing}
-                    <div><strong>Dest Ports:</strong> ${d.destPortsStr || '-'}</div>
-                    ${d.ingressPolicies.length ? html`<div><strong>Ingress Policies:</strong> ${d.ingressPolicies.join(', ')}</div>` : nothing}
-                    ${d.egressPolicies.length ? html`<div><strong>Egress Policies:</strong> ${d.egressPolicies.join(', ')}</div>` : nothing}
-                    <div><strong>Flow Types:</strong> ${d.flowTypes.join(', ') || '-'}</div>
+                    <div><strong>${count} connection${count === 1 ? '' : 's'}</strong> · ${Array.from(edge.flowTypes, ft => flowTypeLabel[ft] ?? 'Unknown').join(', ')}</div>
+                    <div>${formatBytes(edge.totalBytesForward)} forward · ${formatBytes(edge.totalBytesReverse)} reverse</div>
+                    ${this._following && edge.bitRate > 0 ? html`<div><strong>Bit Rate:</strong> ${formatBitRate(edge.bitRate)}</div>` : nothing}
                 </div>
+                ${count > CONNECTIONS_PER_PAGE ? html`
+                    <div class="connection-pages">
+                        <button type="button" ?disabled=${start === 0} @click=${() => this._connectionPage--}>Previous</button>
+                        <span>${start + 1}–${end} of ${count}</span>
+                        <button type="button" ?disabled=${end === count} @click=${() => this._connectionPage++}>Next</button>
+                    </div>` : nothing}
+                <ul class="edge-connections" aria-label="Connections">
+                    ${edge.connections.slice(start, end).map(entry => this._renderConnection(entry))}
+                </ul>
                 ${this._renderEdgeExtra(edge)}
-            </div>
+            </section>
         `;
     }
 
@@ -2895,6 +2990,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
                     ${POLICY_OUTCOMES.map(({ edgeRole, label }) => html`
                         <div class="legend-row"><svg width="24" height="6"><line x1="0" y1="3" x2="24" y2="3" style="stroke:${EDGE_COLOR_VAR[edgeRole]}" stroke-width="${EDGE_STROKE_WIDTH}"/></svg><span>${label}</span></div>
                     `)}
+                    <div class="legend-row"><svg width="24" height="6"><line x1="0" y1="3" x2="24" y2="3" stroke="currentColor" stroke-width="2" stroke-dasharray="6 4"/></svg><span>Policy action varies by connection</span></div>
                     <div class="legend-row"><svg width="24" height="14"><rect x="1" y="1" width="22" height="12" rx="3" ry="3" style="fill:${MAP_COLOR_VAR.nsHullFill};stroke:${MAP_COLOR_VAR.nsHullStroke}" stroke-width="1" stroke-dasharray="4,2"/></svg><span>Namespace</span></div>
                     <div class="legend-row"><svg width="24" height="14"><rect x="1" y="1" width="22" height="12" rx="6" ry="6" style="fill:${MAP_COLOR_VAR.nodeFill};stroke:${MAP_COLOR_VAR.nodeStroke}" stroke-width="1.5"/></svg><span>Service (destination only)</span></div>
                     <div class="legend-row"><svg width="24" height="14"><rect x="1" y="1" width="22" height="12" rx="3" ry="3" style="fill:${MAP_COLOR_VAR.nodeFill};stroke:${MAP_COLOR_VAR.nodeStroke}" stroke-width="1.5"/></svg><span>Workload</span></div>

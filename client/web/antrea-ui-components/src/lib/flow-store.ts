@@ -69,7 +69,7 @@ export function entryBitRate(entry: FlowEntry): number {
 }
 
 // nextSamples appends a new observation to the existing sample history, handling counter
-// resets (a new connection reusing the same masked 5-tuple key) and pruning anything older
+// resets (a new connection reusing the same 5-tuple) and pruning anything older
 // than the sliding window relative to the newest sample.
 function nextSamples(existing: FlowSample[], flow: Flow): FlowSample[] {
     const endMs = Date.parse(flow.endTs);
@@ -104,7 +104,7 @@ function nextSamples(existing: FlowSample[], flow: Flow): FlowSample[] {
 
 /**
  * Bounded in-memory flow store with LRU eviction.
- * Deduplicates flows by connection key (5-tuple with source port masked).
+ * Deduplicates flows by transport 5-tuple.
  * When the store exceeds maxEntries, the oldest entries are evicted.
  */
 export class FlowStore {
@@ -117,9 +117,8 @@ export class FlowStore {
     }
 
     // finite marks a snapshot from a finite query: it is the latest total, not one more sample of a
-    // live rate. service.proto defines no order within a finite query's records, and the key drops
-    // the source port so several connections share it, so the record with the latest endTs is kept
-    // rather than the last one received.
+    // live rate. service.proto defines no order within a finite query's records, so keep the
+    // latest endTs for each connection.
     upsert(flow: Flow, finite = false): void {
         const key = connectionKey(flow);
         const existing = this.entries.get(key);

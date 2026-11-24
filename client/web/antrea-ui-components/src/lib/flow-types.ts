@@ -398,14 +398,7 @@ export function formatBytes(bytes: number): string {
     return `${value.toFixed(i > 0 ? 1 : 0)} ${units[i]}`;
 }
 
-/**
- * Connection key for deduplication: 5-tuple with source port masked off.
- * Two flow records with the same key represent the same logical connection.
- */
-export function connectionKey(flow: Flow): string {
-    const srcIP = flow.ip.source;
-    const dstIP = flow.ip.destination;
-    const proto = flow.transport.protocolNumber;
-    const dstPort = flow.transport.destinationPort;
-    return `${srcIP}|${dstIP}|${proto}|${dstPort}`;
+/** Transport five-tuple shared by successive reports for a connection. */
+export function connectionKey({ ip, transport }: Flow): string {
+    return `${ip.source}|${ip.destination}|${transport.protocolNumber}|${transport.destinationPort}|${transport.sourcePort}`;
 }

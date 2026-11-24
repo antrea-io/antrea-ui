@@ -48,6 +48,7 @@ interface FlowOverrides {
     egressAction?: NetworkPolicyRuleAction;
     /** Part of connectionKey, so two records differing only here are two connections. */
     dstPort?: number;
+    srcPort?: number;
     srcIP?: string;
     dstIP?: string;
     srcNs?: string;
@@ -69,7 +70,7 @@ function makeFlow(overrides: FlowOverrides = {}): Flow {
         // entries with distinct pod names but the same IPs collapse into a single FlowStore
         // entry. Tests distinguishing entries by pod name must also vary the source IP.
         ip: { version: IPVersion.IPv4, source: overrides.srcIP ?? '10.0.0.1', destination: overrides.dstIP ?? '10.0.0.2' },
-        transport: { protocolNumber: 6, sourcePort: 12345, destinationPort: overrides.dstPort ?? 80 },
+        transport: { protocolNumber: 6, sourcePort: overrides.srcPort ?? 12345, destinationPort: overrides.dstPort ?? 80 },
         k8s: {
             flowType: overrides.flowType ?? FlowType.InterNode,
             sourceDisclosure: overrides.srcDisclosure ?? EndpointDisclosure.Full,
@@ -1853,6 +1854,28 @@ describe('AntreaFlowVisibilityPage — antrea-edge-selected extension point', ()
         expect(detail).toMatchObject({ protected: true, ingressPolicyNames: ['allow-client'] });
     });
 
+    test.each(['keyboard', 'path click', 'label click'])('focuses the details on %s and returns focus to the edge on Escape', async action => {
+        const page = await mountWithOneEdge();
+        const root = page.shadowRoot!;
+        const hit = root.querySelector<SVGPathElement>('.edge-hit-targets [role="button"]')!;
+        const label = root.querySelector<SVGGElement>('.edge-labels g')!;
+        expect(hit.getAttribute('aria-label')).toBe('Show connections from client to server');
+        if (action === 'keyboard') {
+            hit.focus();
+            hit.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+        } else {
+            const target = action === 'path click' ? root.querySelector('.edges path')! : label;
+            target.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        }
+        await page.updateComplete;
+        const close = root.querySelector<HTMLButtonElement>('.edge-details-close')!;
+        expect(root.activeElement).toBe(close);
+        close.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+        await page.updateComplete;
+        expect(root.querySelector('.edge-details')).toBeNull();
+        expect(root.activeElement).toBe(hit);
+    });
+
     test('clicking the close button emits null', async () => {
         const page = await mountWithOneEdge();
         const path = page.shadowRoot!.querySelector<SVGPathElement>('svg path[fill="none"]')!;
@@ -1879,10 +1902,8 @@ describe('AntreaFlowVisibilityPage — antrea-edge-selected extension point', ()
         const onSelected = vi.fn();
         page.addEventListener('antrea-edge-selected', onSelected);
 
-        // Force a topology rebuild with a completely different edge (simulating the old one
-        // aging out of the store) by replacing _entries directly.
+        // Simulate the selected edge aging out of the store.
         (page as unknown as { _entries: unknown[] })._entries = [];
-        (page as unknown as { _buildServiceMap(): void })._buildServiceMap();
         await page.updateComplete;
 
         expect(onSelected).toHaveBeenCalledTimes(1);
@@ -3431,7 +3452,7 @@ describe('AntreaFlowVisibilityPage — disclosure in the flow list', () => {
 // of the disclosure markers the Flow Aggregator put on each record.
 describe('AntreaFlowVisibilityPage — collapsed peers in the service map', () => {
     interface TestNode { id: string; shortName: string; namespace: string; kind: string; detail: string; serviceOnly: boolean }
-    interface TestEdge { source: string; target: string; connectionCount: number; totalBytesForward: number }
+    interface TestEdge { source: string; target: string; connections: unknown[]; totalBytesForward: number }
     interface TestGraph { nodes: TestNode[]; edges: TestEdge[] }
 
     async function graphFor(flows: Flow[]): Promise<{ page: AntreaFlowVisibilityPage; graph: TestGraph }> {
@@ -3521,7 +3542,7 @@ describe('AntreaFlowVisibilityPage — collapsed peers in the service map', () =
 
         expect(graph.edges).toHaveLength(1);
         // Both peers behind the collapsed node, and the bytes of both flows.
-        expect(graph.edges[0].connectionCount).toBe(2);
+        expect(graph.edges[0].connections).toHaveLength(2);
         expect(graph.edges[0].totalBytesForward).toBe(200);
     });
 
@@ -3536,30 +3557,7 @@ describe('AntreaFlowVisibilityPage — collapsed peers in the service map', () =
         ]);
 
         expect(graph.edges).toHaveLength(1);
-        expect(graph.edges[0].connectionCount).toBe(2);
-    });
-
-    // The edge's colour is the whole edge's verdict - one drop anywhere on it turns it red - but a
-    // tooltip lists one line per policy, and stamping the direction's worst action on every line
-    // marked an allow rule as a denial.
-    test('each policy line is marked by its own action, not the edge\'s', async () => {
-        const { page, graph } = await graphFor([
-            makeFlow({ dstPort: 80, egressPolicy: 'allow-egress-from-client', egressAction: NetworkPolicyRuleAction.Allow }),
-            makeFlow({ dstPort: 6443, egressPolicy: 'deny-egress-to-apiserver', egressAction: NetworkPolicyRuleAction.Drop }),
-        ]);
-
-        expect(graph.edges).toHaveLength(1);
-        (page as unknown as { _showTooltip(e: MouseEvent, edge: unknown): void })
-            ._showTooltip(new MouseEvent('mousemove'), graph.edges[0]);
-        await page.updateComplete;
-
-        const lines = Array.from(page.shadowRoot!.querySelectorAll('#graph-tooltip > div'))
-            .map(d => d.textContent ?? '')
-            .filter(t => t.includes('Egress:'));
-        expect(lines).toEqual([
-            '✓ Egress: allow-egress-from-client (Allow)',
-            '✗ Egress: deny-egress-to-apiserver (Drop)',
-        ]);
+        expect(graph.edges[0].connections).toHaveLength(2);
     });
 
     // Form A's tooltip is actionable, so it is worth showing; Form B has no namespace to name,
@@ -3576,7 +3574,7 @@ describe('AntreaFlowVisibilityPage — collapsed peers in the service map', () =
         // aria-label, not an SVG <title>: the visible tooltip is drawn in the same panel the
         // edge tooltip uses, and a <title> would stack the browser's own on top of it. The
         // label is what a screen reader gets, and it carries the same string.
-        const labels = Array.from(page.shadowRoot!.querySelectorAll('#graph-svg g[aria-label]'))
+        const labels = Array.from(page.shadowRoot!.querySelectorAll('#graph-svg .node-body[aria-label]'))
             .map(g => g.getAttribute('aria-label'));
         expect(labels).toHaveLength(1);
         expect(labels[0]).toContain('Workloads in ns-c are not shown');
@@ -4235,10 +4233,9 @@ describe('AntreaFlowVisibilityPage — incremental service map', () => {
         const { page, state } = await mountMap();
         const source = reverseNames ? 'server-xyz34' : 'client-abc12';
         const target = reverseNames ? 'client-abc12' : 'server-xyz34';
-        await update(page, state, [
-            makeFlow({ srcPod: source, dstPod: target, dstPort: 8080 }),
-            makeFlow({ srcPod: target, dstPod: source, srcIP: '10.0.0.2', dstIP: '10.0.0.1', dstPort: 8080 }),
-        ]);
+        const forward = makeFlow({ srcPod: source, dstPod: target, dstPort: 8080, ingressPolicy: 'allow-client' });
+        const reverse = makeFlow({ srcPod: target, dstPod: source, srcIP: '10.0.0.2', dstIP: '10.0.0.1', dstPort: 8080, ingressPolicy: 'allow-server' });
+        await update(page, state, [forward, reverse]);
         const simulation = state._simulation.stop().alpha(0);
         const sourceId = reverseNames ? 'default/server' : 'default/client';
         for (const node of simulation.nodes()) {
@@ -4246,6 +4243,13 @@ describe('AntreaFlowVisibilityPage — incremental service map', () => {
             node.y = 200 + (node.id === sourceId ? 0 : dy);
         }
         simulation.on('end')!.call(simulation);
+        // Grow the two labels on a settled layout without another simulation tick.
+        const denied = (flow: Flow) => ({
+            ...flow,
+            transport: { ...flow.transport, sourcePort: 54321 },
+            k8s: { ...flow.k8s, ingressNetworkPolicyRuleAction: NetworkPolicyRuleAction.Drop },
+        });
+        await update(page, state, [forward, denied(forward), reverse, denied(reverse)]);
         const root = page.shadowRoot!;
         const paths = Array.from(root.querySelectorAll('.edges path'));
         showEdgeLabels(root);
@@ -4258,6 +4262,12 @@ describe('AntreaFlowVisibilityPage — incremental service map', () => {
             return side(cx, cy);
         });
         const labelPositions = labels.map(label => svgCoordinates(label.getAttribute('transform')!));
+        paths.forEach((path, i) => {
+            const [sx, sy, cx, cy, tx, ty] = svgCoordinates(path.getAttribute('d')!);
+            expect(labelPositions[i][0]).toBeCloseTo((sx + 2 * cx + tx) / 4);
+            expect(labelPositions[i][1]).toBeCloseTo((sy + 2 * cy + ty) / 4);
+            expect(labels[i].textContent).toContain('1 allowed · 1 denied');
+        });
         const labelSides = labelPositions.map(([x, y]) => side(x, y));
         expect(curveSides[0] * curveSides[1]).toBeLessThan(0);
         expect(labelSides[0] * labelSides[1]).toBeLessThan(0);
@@ -4385,17 +4395,151 @@ describe('AntreaFlowVisibilityPage — incremental service map', () => {
         target.dispatchEvent(new MouseEvent('mouseenter'));
         expect(tooltip.textContent).toContain('2 connections');
         expect(tooltip.textContent).toContain('TCP(443)');
-        expect(tooltip.textContent).toContain('deny');
+        expect(tooltip.textContent).toContain('1 dropped, 1 with no policy action');
         hit.dispatchEvent(new MouseEvent('click', { bubbles: true }));
         await page.updateComplete;
-        expect(root.querySelector('.edge-details')!.textContent).toContain('Connections: 2');
-        expect(root.querySelector('.edge-details')!.textContent).toContain('TCP(443)');
+        expect(root.querySelector('.edge-details')!.textContent).toContain('2 connections');
+        expect(root.querySelector('.edge-details')!.textContent).toContain('TCP/443');
         expect(onSelected).toHaveBeenCalledOnce();
         expect(onSelected.mock.calls[0][0].detail).toMatchObject({
             source: 'default/client', target: 'default/server', destPorts: 'TCP(443)',
             ingressPolicyNames: ['deny'],
         });
         expect(root.querySelector('.map-content')!.getAttribute('transform')).toBe(transform);
+    });
+
+    test('a mixed edge counts connections and expands to their own destinations, bytes and policy actions', async () => {
+        const { page, state } = await mountMap();
+        const allowed = makeFlow({ dstPort: 80, egressPolicy: 'allow-client' });
+        const dropped = makeFlow({
+            dstPort: 53, dstIP: '10.0.0.3', dstPod: 'server-pqrst', egressPolicy: 'allow-client',
+            ingressPolicy: 'deny-dns', ingressAction: NetworkPolicyRuleAction.Drop,
+        });
+        dropped.transport.protocolNumber = 17;
+        dropped.stats.octetTotalCount = 2048;
+        dropped.reverseStats.octetTotalCount = 0;
+        await update(page, state, [allowed, dropped, dropped]);
+        const root = page.shadowRoot!;
+        const path = root.querySelector('.edges path')!;
+        expect(path.getAttribute('marker-end')).toBe('url(#arrowhead-drop)');
+        expect(path.getAttribute('stroke-dasharray')).toBeTruthy();
+        path.dispatchEvent(new MouseEvent('mouseenter'));
+        const tip = root.querySelector('#graph-tooltip')!;
+        expect(tip.textContent).toContain('1 allowed, 1 dropped');
+        expect(Array.from(root.querySelectorAll('.edge-labels tspan'), line => line.textContent)).toEqual([
+            'TCP/80 +1', '1 allowed · 1 denied',
+        ]);
+        expect(tip.textContent).not.toMatch(/allow-client|deny-dns/);
+
+        path.dispatchEvent(new MouseEvent('click'));
+        await page.updateComplete;
+        const rows = root.querySelectorAll<HTMLElement>('.edge-connections li');
+        expect(rows).toHaveLength(2);
+        expect(rows[0].textContent).toContain('TCP/80');
+        expect(rows[0].textContent).toContain('default/server-xyz34');
+        expect(rows[0].textContent).toContain('100 B forward · 100 B reverse');
+        expect(rows[0].textContent).toContain('Egress: allow-client (Allow)');
+        expect(rows[0].textContent).not.toContain('deny-dns');
+        expect(rows[0].style.getPropertyValue('--outcome-color')).toContain('edge-allow');
+        expect(rows[1].textContent).toContain('UDP/53');
+        expect(rows[1].textContent).toContain('default/server-pqrst');
+        expect(rows[1].textContent).toContain('2.0 KB forward · 0 B reverse');
+        expect(rows[1].textContent).toContain('Ingress: deny-dns (Drop)');
+        expect(rows[1].textContent).toContain('Egress: allow-client (Allow)');
+        expect(rows[1].style.getPropertyValue('--outcome-color')).toContain('edge-drop');
+    });
+
+    test('separate client sockets and replicas keep their own source, verdict and byte totals', async () => {
+        const { page, state } = await mountMap();
+        const first = makeFlow({ id: '', srcPod: 'client-abc12', srcPort: 31001, dstPort: 443, ingressAction: NetworkPolicyRuleAction.Drop });
+        const second = makeFlow({ id: '', srcPod: 'client-abc12', srcPort: 31002, dstPort: 443, ingressPolicy: 'allow-client' });
+        const replica = makeFlow({ id: '', srcPod: 'client-pqrst', srcIP: '10.0.0.9', srcPort: 31001, dstPort: 443, ingressPolicy: 'allow-replica' });
+        first.stats.octetTotalCount = 64;
+        second.stats.octetTotalCount = 1024;
+        await update(page, state, [first, second, replica, first]);
+        const root = page.shadowRoot!;
+        expect(root.querySelector('.edge-labels text')!.textContent).toContain('2 allowed · 1 denied');
+        root.querySelector('.edges path')!.dispatchEvent(new MouseEvent('click'));
+        await page.updateComplete;
+        const rows = Array.from(root.querySelectorAll('.edge-connection'), row => row.textContent);
+        expect(rows).toHaveLength(3);
+        expect(rows[0]).toContain('Source (port 31001): default/client-abc12');
+        expect(rows[0]).toContain('Dropped');
+        expect(rows[0]).toContain('64 B forward');
+        expect(rows[1]).toContain('Source (port 31002): default/client-abc12');
+        expect(rows[1]).toContain('1.0 KB forward');
+        expect(rows[1]).toContain('allow-client (Allow)');
+        expect(rows[2]).toContain('Source (port 31001): default/client-pqrst');
+        expect(rows[2]).toContain('allow-replica (Allow)');
+    });
+
+    test('a selected edge refreshes its rows and dashing when only outcomes change', async () => {
+        const { page, state } = await mountMap();
+        const flow = (dstPort: number, ingressAction: NetworkPolicyRuleAction) => makeFlow({
+            dstPort, ingressAction, ingressPolicyType: NetworkPolicyType.ACNP,
+        });
+        const { Allow, Drop, Reject, NoAction } = NetworkPolicyRuleAction;
+        const root = page.shadowRoot!;
+        await update(page, state, [flow(80, Drop), flow(443, Drop)]);
+        const path = root.querySelector('.edges path')!;
+        path.dispatchEvent(new MouseEvent('click'));
+        await page.updateComplete;
+        path.dispatchEvent(new MouseEvent('mouseenter'));
+        for (const [first, second, role, label, summary, outcomes] of [
+            [Drop, Drop, 'drop', '', '2 dropped', ['Dropped', 'Dropped']],
+            [Drop, Allow, 'drop', '1 allowed · 1 denied', '1 allowed, 1 dropped', ['Allowed', 'Dropped']],
+            [Reject, Allow, 'drop', '1 allowed · 1 denied', '1 allowed, 1 rejected', ['Allowed', 'Rejected']],
+            [Drop, Reject, 'drop', '2 denied', '1 dropped, 1 rejected', ['Rejected', 'Dropped']],
+            [Reject, Reject, 'drop', '', '2 rejected', ['Rejected', 'Rejected']],
+            [Allow, Allow, 'allow', '', '2 allowed', ['Allowed', 'Allowed']],
+            [NoAction, NoAction, 'default', '', '2 with no policy action', ['No policy action', 'No policy action']],
+        ] as const) {
+            await update(page, state, [flow(80, first), flow(443, second)]);
+            expect(root.querySelector('.edges path')).toBe(path);
+            expect(path.getAttribute('marker-end')).toBe(`url(#arrowhead-${role})`);
+            expect(path.hasAttribute('stroke-dasharray')).toBe(Boolean(label));
+            const lines = Array.from(root.querySelectorAll('.edge-labels tspan'), line => line.textContent);
+            expect(lines.slice(1)).toEqual(label ? [label] : []);
+            expect(root.querySelector('#graph-tooltip')!.textContent).toContain(summary);
+            expect(Array.from(root.querySelectorAll('.connection-outcome'), el => el.textContent)).toEqual(outcomes);
+        }
+    });
+
+    test('a row shows withheld endpoints and policy while retaining the reported reject', async () => {
+        const { page, state } = await mountMap();
+        await update(page, state, [makeFlow({
+            srcIP: '10.0.1.8', srcNs: 'clients', srcPod: '', srcDisclosure: EndpointDisclosure.Flow,
+            dstIP: '10.0.2.9', dstNs: '', dstPod: '', dstDisclosure: EndpointDisclosure.Flow,
+            ingressAction: NetworkPolicyRuleAction.Reject,
+        })]);
+        const root = page.shadowRoot!;
+        const selected = vi.fn();
+        page.addEventListener('antrea-edge-selected', selected);
+        root.querySelector('.edges path')!.dispatchEvent(new MouseEvent('click'));
+        await page.updateComplete;
+        expect(Array.from(root.querySelectorAll('.edge-connection .redacted'), el => el.textContent))
+            .toEqual(['clients/⟨hidden⟩', '10.0.2.9']);
+        expect(root.querySelector('.edge-connection')!.textContent).toContain('Ingress: Rejected (policy hidden)');
+        expect(selected.mock.calls[0][0].detail).toMatchObject({ protected: true, ingressPolicyNames: [] });
+    });
+
+    test('large edges page through every connection and clamp the page when flows disappear', async () => {
+        const { page, state } = await mountMap();
+        const flows = Array.from({ length: 26 }, (_, i) => makeFlow({ dstPort: 8000 + i }));
+        await update(page, state, flows);
+        const root = page.shadowRoot!;
+        root.querySelector('.edges path')!.dispatchEvent(new MouseEvent('click'));
+        await page.updateComplete;
+        const rows = () => root.querySelectorAll('.edge-connection');
+        expect(rows()).toHaveLength(25);
+        expect(rows()[0].textContent).toContain('TCP/8000');
+        root.querySelector<HTMLButtonElement>('.connection-pages button:last-child')!.click();
+        await page.updateComplete;
+        expect(rows()).toHaveLength(1);
+        expect(rows()[0].textContent).toContain('TCP/8025');
+        await update(page, state, flows.slice(0, 2));
+        expect(rows()).toHaveLength(2);
+        expect(root.querySelector('.connection-pages')).toBeNull();
     });
 
     test('counter updates retain edge widths and layout forces without DOM writes', async () => {
@@ -5432,7 +5576,22 @@ describe('AntreaFlowVisibilityPage — namespace aggregation', () => {
         expect(forward).toMatchObject({ target: 'namespace:b', connectionCount: 2, totalBytesForward: 200, totalBytesReverse: 200 });
         expect(forward.protoPorts.get(6)).toEqual(new Set([80, 443]));
         expect(forward.ingressPolicyNames).toEqual(new Set(['allow', 'deny']));
-        expect(page.shadowRoot!.querySelector('.edges path')!.getAttribute('marker-end')).toBe('url(#arrowhead-drop)');
+        const root = page.shadowRoot!;
+        const path = root.querySelector('.edges path')!;
+        const label = root.querySelector('.edge-labels g')!;
+        expect(path.getAttribute('marker-end')).toBe('url(#arrowhead-drop)');
+        expect(path.getAttribute('stroke-dasharray')).toBeTruthy();
+        expect(label.getAttribute('display')).toBe('none');
+        path.dispatchEvent(new MouseEvent('mouseenter'));
+        expect(label.getAttribute('display')).toBeNull();
+        expect(label.textContent).toContain('1 allowed · 1 denied');
+        path.dispatchEvent(new MouseEvent('click'));
+        await page.updateComplete;
+        expect(root.querySelector('.edge-details-title')!.textContent).toBe('a → b');
+        const rows = Array.from(root.querySelectorAll('.edge-connection'), el => el.textContent);
+        expect(rows).toHaveLength(2);
+        expect(rows.some(row => row.includes('Allowed') && row.includes('a/client-abc12'))).toBe(true);
+        expect(rows.some(row => row.includes('Dropped') && row.includes('a/other-abc12'))).toBe(true);
     });
 
     test('summarizes internal drops including same-workload traffic once, without self-loops', async () => {
@@ -5750,6 +5909,7 @@ describe('AntreaFlowVisibilityPage — namespace aggregation', () => {
             await vi.advanceTimersByTimeAsync(0);
             expect((state._simulation.nodes() as D3Node[]).some(n => n.namespace === 'a' && n.userPinned)).toBe(true);
             root.querySelector<HTMLButtonElement>('[aria-label="Reset map"]')!.click();
+            await page.updateComplete;
             expect(find('namespace:a')).toMatchObject({ x: -1000, y: 0 });
         });
 
@@ -5770,6 +5930,7 @@ describe('AntreaFlowVisibilityPage — namespace aggregation', () => {
             press(group, [240, 250]);
             await vi.advanceTimersByTimeAsync(0);
             root.querySelector<HTMLButtonElement>('[aria-label="Reset map"]')!.click();
+            await page.updateComplete;
             expect(peer).toMatchObject({ x: peerX, y: 0 });
             expect(node.y).toBe(0);
             const [left, right] = side > 0 ? [node, peer] : [peer, node];
@@ -6094,10 +6255,9 @@ describe('AntreaFlowVisibilityPage — namespace aggregation', () => {
         expect(root.querySelector('#graph-tooltip > div')!.textContent).toBe(`a → ${target}`);
         edge.dispatchEvent(new MouseEvent('click'));
         await page.updateComplete;
-        const rows = Array.from(root.querySelectorAll('.edge-details-rows > div'), el => el.textContent.trim());
-        expect(rows).toContain('Source: a');
-        expect(rows).toContain(`Target: ${target}`);
-        expect(rows).toContain('Connections: 2');
+        expect(root.querySelector('.edge-details-title')!.textContent).toBe(`a → ${target}`);
+        expect(root.querySelector('.edge-details-rows')!.textContent).toContain('2 connections');
+        expect(root.querySelectorAll('.edge-connection')).toHaveLength(2);
         expect(root.querySelector('.nodes')!.textContent).toContain('1 internal · 1 denied');
     });
 

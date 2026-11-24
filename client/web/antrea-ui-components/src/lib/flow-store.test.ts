@@ -93,7 +93,6 @@ describe('FlowStore', () => {
         newer.endTs = '2026-03-25T00:05:00Z';
         const older = makeFlow('10.0.0.2', 80);
         older.id = 'older';
-        older.transport.sourcePort = 54321;
 
         store.upsertBatch([newer, older], true);
 
@@ -128,7 +127,6 @@ describe('FlowStore', () => {
         const flow1 = makeFlow('10.0.0.2', 80);
         const flow2 = makeFlow('10.0.0.2', 80);
         flow2.id = 'updated-flow';
-        flow2.transport.sourcePort = 54321;
 
         store.upsert(flow1);
         store.upsert(flow2);
@@ -136,6 +134,15 @@ describe('FlowStore', () => {
         expect(store.size()).toBe(1);
         const entries = store.getAll();
         expect(entries[0].flow.id).toBe('updated-flow');
+    });
+
+    test.each([false, true])('distinct source ports retain separate reports (finite=%s)', finite => {
+        const store = new FlowStore();
+        const first = makeFlow('10.0.0.2', 443);
+        const second = makeFlow('10.0.0.2', 443);
+        second.transport.sourcePort = 54321;
+        store.upsertBatch([first, second, second], finite);
+        expect(store.getAll().map(entry => entry.flow.transport.sourcePort)).toEqual([12345, 54321]);
     });
 
     test('upsert with different key grows the store', () => {

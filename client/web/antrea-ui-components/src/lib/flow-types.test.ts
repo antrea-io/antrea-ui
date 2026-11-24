@@ -94,10 +94,10 @@ function makeFlow(overrides: {
 }
 
 describe('connectionKey', () => {
-    test('masks source port', () => {
+    test('different source port produces different key', () => {
         const flow1 = makeFlow({ srcPort: 11111 });
         const flow2 = makeFlow({ srcPort: 22222 });
-        expect(connectionKey(flow1)).toBe(connectionKey(flow2));
+        expect(connectionKey(flow1)).not.toBe(connectionKey(flow2));
     });
 
     test('different destination port produces different key', () => {
@@ -124,9 +124,9 @@ describe('connectionKey', () => {
         expect(connectionKey(flow1)).not.toBe(connectionKey(flow2));
     });
 
-    test('key format is srcIP|dstIP|proto|dstPort', () => {
+    test('key format is srcIP|dstIP|proto|dstPort|srcPort', () => {
         const flow = makeFlow({ srcIP: '1.2.3.4', dstIP: '5.6.7.8', proto: 6, dstPort: 443 });
-        expect(connectionKey(flow)).toBe('1.2.3.4|5.6.7.8|6|443');
+        expect(connectionKey(flow)).toBe('1.2.3.4|5.6.7.8|6|443|12345');
     });
 });
 
