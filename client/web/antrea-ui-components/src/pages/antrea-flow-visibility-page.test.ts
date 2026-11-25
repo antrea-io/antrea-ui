@@ -4863,6 +4863,47 @@ describe('AntreaFlowVisibilityPage — namespace aggregation', () => {
         expect(button('Collapse all namespaces').disabled).toBe(true);
     });
 
+    test('the body beneath the decorative arrow expands the namespace and the header folds it again', async () => {
+        const { page } = await aggregate([makeFlow({ srcNs: 'a', dstNs: 'b' })]);
+        const root = page.shadowRoot!;
+        const body = root.querySelector('.node-body[aria-label="Expand namespace a"]')!;
+        const arrow = body.parentElement!.querySelector('.namespace-expand')!;
+        expect(body.getAttribute('aria-expanded')).toBe('false');
+        expect(arrow.getAttribute('aria-hidden')).toBe('true');
+        // Press and release on either side of the arrow hit the same button.
+        expect(arrow.getAttribute('pointer-events')).toBe('none');
+        body.dispatchEvent(new MouseEvent('click', { bubbles: true, ctrlKey: true }));
+        await page.updateComplete;
+        expect(body.isConnected).toBe(true);
+        body.querySelector('rect')!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        await page.updateComplete;
+        const header = root.querySelector('.namespace-header[aria-label="Collapse namespace a"]')!;
+        expect(header.getAttribute('aria-expanded')).toBe('true');
+        for (const selector of ['.edges', '.edge-hit-targets', '.edge-labels']) {
+            expect(root.querySelector(selector)!.compareDocumentPosition(header) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+        }
+        header.dispatchEvent(new MouseEvent('click', { bubbles: true, ctrlKey: true }));
+        await page.updateComplete;
+        expect(header.isConnected).toBe(true);
+        header.querySelector('path')!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        await page.updateComplete;
+        expect(root.querySelector('.node-body[aria-label="Expand namespace a"]')).not.toBeNull();
+    });
+
+    test('reserves the arrow and padding when sizing a folded Namespace title', async () => {
+        const name = 'm'.repeat(30);
+        const { page } = await aggregate([makeFlow({ srcNs: name, dstNs: 'b' })]);
+        const body = page.shadowRoot!.querySelector(`[aria-label="Expand namespace ${name}"]`)!;
+        const rect = body.querySelector('rect')!;
+        const title = body.querySelector('text')!;
+        const right = Number(rect.getAttribute('x')) + Number(rect.getAttribute('width'));
+        const titleEnd = Number(title.getAttribute('x')) + Number(title.getAttribute('textLength'));
+        expect(title.textContent).toBe(name);
+        expect(title.hasAttribute('textLength')).toBe(true);
+        expect(title.getAttribute('lengthAdjust')).toBe('spacingAndGlyphs');
+        expect(titleEnd).toBeLessThan(right);
+    });
+
     test('keyboard namespace toggles focus the replacement control unless focus moved during layout', async () => {
         const { page, state } = await aggregate([makeFlow({ srcNs: 'a', dstNs: 'b' })]);
         const root = page.shadowRoot!;
@@ -4873,7 +4914,7 @@ describe('AntreaFlowVisibilityPage — namespace aggregation', () => {
         };
         await settle();
         const folded = () => root.querySelector<SVGGElement>('[aria-label="Expand namespace a"]')!;
-        const header = () => root.querySelector<SVGTextElement>('.ns-hulls text[role="button"]')!;
+        const header = () => root.querySelector<SVGGElement>('.namespace-header[role="button"]')!;
         const toggle = async (key: string) => {
             root.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
             await page.updateComplete;
@@ -4882,9 +4923,20 @@ describe('AntreaFlowVisibilityPage — namespace aggregation', () => {
         await toggle('Enter');
         await settle();
         expect(root.activeElement).toBe(header());
+        const repeatSpace = () => root.activeElement!.dispatchEvent(
+            new KeyboardEvent('keydown', { key: ' ', repeat: true, bubbles: true, cancelable: true }));
+        expect(repeatSpace()).toBe(false);
+        expect(state._expandedNamespaces.has('a')).toBe(true);
         await toggle(' ');
+        // New traffic can perform another graph join before focus returns from the SVG.
+        const arrivals = new FlowStore();
+        arrivals.upsertBatch([makeFlow({ srcNs: 'a', dstNs: 'c' })]);
+        state._entries = [...state._entries, ...arrivals.getAll()];
+        await page.updateComplete;
         await settle();
         expect(root.activeElement).toBe(folded());
+        expect(repeatSpace()).toBe(false);
+        expect(state._expandedNamespaces.has('a')).toBe(false);
 
         await toggle('Enter');
         const limit = root.querySelector<HTMLSelectElement>('#map-edge-limit')!;
@@ -4911,7 +4963,7 @@ describe('AntreaFlowVisibilityPage — namespace aggregation', () => {
         await publish(makeFlow({ srcNs: 'c', dstNs: 'd', dstPort: 81 }));
         expect(store.hasEvicted()).toBe(true);
         const root = page.shadowRoot!;
-        expect(root.querySelector('.ns-hulls text')).toBeNull();
+        expect(root.querySelector('.namespace-header text')).toBeNull();
         const button = root.querySelector<HTMLButtonElement>('[aria-label="Collapse all namespaces"]')!;
         expect(button.disabled).toBe(false);
         if (collapse) button.click();
@@ -4963,9 +5015,12 @@ describe('AntreaFlowVisibilityPage — namespace aggregation', () => {
             expect(x + Number(body.getAttribute('width'))).toBeLessThan(right);
             expect(y + Number(body.getAttribute('height'))).toBeLessThan(bottom);
         }
-        const label = root.querySelector('.ns-hulls text')!;
+        const label = root.querySelector('.namespace-header text')!;
         expect(label.textContent).toContain(namespace);
-        expect(Number(label.getAttribute('y'))).toBeGreaterThan(top);
+        const header = label.parentElement!;
+        expect(header.getAttribute('aria-label')).toBe(`Collapse namespace ${namespace}`);
+        expect(header.getAttribute('aria-expanded')).toBe('true');
+        expect(header.getAttribute('transform')).toBe(`translate(${left + 8},${top + 2})`);
         const legend = Array.from(root.querySelectorAll('.legend-row')).find(row => row.textContent === 'Namespace')!;
         expect(legend.querySelector('rect')!.getAttribute('stroke-dasharray')).toBe(boundary.getAttribute('stroke-dasharray'));
     });
@@ -5311,7 +5366,7 @@ describe('AntreaFlowVisibilityPage — namespace aggregation', () => {
         restart.mockRestore();
     });
 
-    test.each(['rect', 'text'])('dragging an expanded namespace by its %s moves its members and edges together', async target => {
+    test.each(['.namespace-boundary', '.namespace-header text'])('dragging an expanded namespace by its %s moves its members and edges together', async target => {
         const { page, state } = await aggregate([
             makeFlow({ srcNs: 'a', dstNs: 'b' }),
             makeFlow({ srcNs: 'a', dstNs: 'b', srcPod: 'second-abc12', srcIP: '10.0.0.3' }),
@@ -5341,11 +5396,11 @@ describe('AntreaFlowVisibilityPage — namespace aggregation', () => {
             Object.defineProperty(event, 'view', { value: window });
             return event;
         };
-        group.querySelector(target)!.dispatchEvent(mouse('mousedown', 40, 50));
+        root.querySelector(target)!.dispatchEvent(mouse('mousedown', 40, 50));
         window.dispatchEvent(mouse('mousemove', 100, 90));
         window.dispatchEvent(mouse('mouseup', 100, 90));
         // The click emitted at the end of a title drag must not collapse the namespace.
-        group.querySelector(target)!.dispatchEvent(mouse('click', 100, 90));
+        root.querySelector(target)!.dispatchEvent(mouse('click', 100, 90));
         expect(state._expandedNamespaces.has('a')).toBe(true);
         const nodes = simulation.nodes() as D3Node[];
         for (const node of nodes.filter(n => n.namespace === 'a')) {
@@ -5366,7 +5421,7 @@ describe('AntreaFlowVisibilityPage — namespace aggregation', () => {
         const moved = simulation.nodes().map(n => [n.x, n.y]);
         await vi.advanceTimersByTimeAsync(100);
         expect(simulation.nodes().map(n => [n.x, n.y])).toEqual(moved);
-        group.querySelector('text')!.dispatchEvent(mouse('click', 100, 90));
+        root.querySelector('.namespace-header text')!.dispatchEvent(mouse('click', 100, 90));
         await page.updateComplete;
         expect(state._expandedNamespaces.has('a')).toBe(false);
     });
@@ -5483,6 +5538,24 @@ describe('AntreaFlowVisibilityPage — namespace aggregation', () => {
         state._entries = [];
         await page.updateComplete;
         expect(tooltip.style.opacity).toBe('0');
+    });
+
+    test('long traffic counters fit the existing namespace box as counts grow and shrink', async () => {
+        const { page, state } = await aggregate([makeFlow({ srcNs: 'a', dstNs: 'a', ingressAction: NetworkPolicyRuleAction.Drop })]);
+        const body = page.shadowRoot!.querySelector('.node-body')!;
+        const detail = body.querySelector('.node-detail')!;
+        const initialX = detail.getAttribute('x');
+        const width = Number(body.querySelector('rect')!.getAttribute('width'));
+        const original = state._entries;
+        state._entries = Array(10_000).fill(original[0]);
+        await page.updateComplete;
+        expect(detail.textContent).toBe('10000 internal · 10000 denied');
+        expect(detail.hasAttribute('textLength')).toBe(true);
+        expect(Number(detail.getAttribute('x')) + Number(detail.getAttribute('textLength'))).toBeLessThan(width / 2);
+        state._entries = original;
+        await page.updateComplete;
+        expect(detail.hasAttribute('textLength')).toBe(false);
+        expect(detail.getAttribute('x')).toBe(initialX);
     });
 
     test('a counter-only update changes a folded namespace in place', async () => {
@@ -5652,14 +5725,15 @@ describe('AntreaFlowVisibilityPage — namespace aggregation', () => {
             expect(state._expandedNamespaces.size).toBe(1);
         });
 
-        test('moving past the click distance pins the node and does not expand it', async () => {
-            const { page, state } = await aggregate([makeFlow({ srcNs: 'a', dstNs: 'b' })]);
-            const simulation = state._simulation.stop();
-            const node = page.shadowRoot!.querySelector('.nodes .node')!;
-            press(node, [70, 80]);
-            expect((simulation.nodes() as D3Node[]).filter(n => n.userPinned)).toHaveLength(1);
-            expect(state._expandedNamespaces.size).toBe(0);
-        });
+        test.each([['.node-body rect', 6], ['.node-body text', 30]] as const)(
+            'moving past the click distance on %s pins the node without expanding it', async (target, distance) => {
+                const { page, state } = await aggregate([makeFlow({ srcNs: 'a', dstNs: 'b' })]);
+                const simulation = state._simulation.stop();
+                const node = page.shadowRoot!.querySelector('.nodes .node')!;
+                press(node.querySelector(target)!, [40 + distance, 50]);
+                expect((simulation.nodes() as D3Node[]).filter(n => n.userPinned)).toHaveLength(1);
+                expect(state._expandedNamespaces.size).toBe(0);
+            });
 
         test('a press that moves a pixel or two on a namespace boundary pins no workload', async () => {
             const { page, state } = await aggregate([makeFlow({ srcNs: 'a', dstNs: 'b' })]);
@@ -6197,7 +6271,7 @@ describe('AntreaFlowVisibilityPage — namespace aggregation', () => {
         await settle();
         expect(drawn()).toEqual(['a/client|namespace:b', 'a/second|namespace:b', 'namespace:c|namespace:d']);
         if (mode === 'all') root.querySelector<HTMLButtonElement>('[aria-label="Collapse all namespaces"]')!.click();
-        else root.querySelector('.ns-hulls text')!.dispatchEvent(new MouseEvent('click'));
+        else root.querySelector('.namespace-header')!.dispatchEvent(new MouseEvent('click'));
         await settle();
         expect(drawn()).toEqual(['namespace:a|namespace:b']);
 
