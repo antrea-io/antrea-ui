@@ -285,9 +285,11 @@ type FlowFilter struct {
 	// together select a Pod by namespace and name.
 	// FROM applies filters to the source (sender) side, TO applies them to the
 	// destination (receiver) side, and BOTH (default) matches either side.
-	//   BOTH (default) - match source OR destination
-	//   FROM           - match source only
-	//   TO             - match destination only
+	//
+	//	BOTH (default) - match source OR destination
+	//	FROM           - match source only
+	//	TO             - match destination only
+	//
 	// Cannot combine FROM with service_names (services are always a
 	// destination-side concept).
 	Direction FlowFilterDirection `protobuf:"varint,7,opt,name=direction,proto3,enum=antrea_io.antrea.pkg.apis.flow.v1alpha1.FlowFilterDirection" json:"direction,omitempty"`
@@ -760,7 +762,7 @@ const file_pkg_apis_flow_v1alpha1_service_proto_rawDesc = "" +
 	"\x11FlowExportService\x12{\n" +
 	"\x06Export\x126.antrea_io.antrea.pkg.apis.flow.v1alpha1.ExportRequest\x1a7.antrea_io.antrea.pkg.apis.flow.v1alpha1.ExportResponse(\x012\x97\x01\n" +
 	"\x11FlowStreamService\x12\x81\x01\n" +
-	"\bGetFlows\x128.antrea_io.antrea.pkg.apis.flow.v1alpha1.GetFlowsRequest\x1a9.antrea_io.antrea.pkg.apis.flow.v1alpha1.GetFlowsResponse0\x01B\x18Z\x16pkg/apis/flow/v1alpha1b\x06proto3"
+	"\bGetFlows\x128.antrea_io.antrea.pkg.apis.flow.v1alpha1.GetFlowsRequest\x1a9.antrea_io.antrea.pkg.apis.flow.v1alpha1.GetFlowsResponse0\x01B Z\x1eantrea.io/antrea-ui/pkg/flowpbb\x06proto3"
 
 var (
 	file_pkg_apis_flow_v1alpha1_service_proto_rawDescOnce sync.Once
