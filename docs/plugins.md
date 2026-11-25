@@ -874,8 +874,9 @@ there's no host-provided import map for a runtime `import()`.
 The host passes your element no credential, and there is none to ask for:
 requests to the Antrea UI backend authenticate with the `antrea-ui-session`
 cookie the browser already holds, so `credentials: 'include'` is the whole of
-it. The example below does exactly that with a plain `fetch`. If you would
-rather have `apiFetch`/`apiFetchJSON` (they also turn a non-2xx response into
+it. The [Pod count helper](../plugins/examples/pod-counter/src/count-pods.ts)
+uses a plain `fetch` with this option. If you would rather have
+`apiFetch`/`apiFetchJSON` (they also turn a non-2xx response into
 an `APIError`), note that `@antrea/ui-components` is not published to a
 registry yet, so a plugin outside this repo has to depend on it the same way
 it depends on the SDK: add
@@ -887,27 +888,37 @@ defined. A plugin bundles its own copy of that module, so its `apiFetch`
 always makes same-origin requests and does not pick up the host's API base.
 Never send an `Authorization` header of your own.
 
-`plugins/examples/pod-counter/src/index.ts`:
+This excerpt illustrates page and sidebar registration. The [complete pod-counter
+entry](../plugins/examples/pod-counter/src/index.ts) also registers a
+[Service Map node card](#service-map-node-cards).
 
 ```ts
 import { LitElement, html } from 'lit';
 import { state } from 'lit/decorators.js';
 import { registerRoute, registerSidebarEntry } from '@antrea/ui-plugin-sdk';
+import { countPods } from './count-pods.js';
 
 class AntreaPluginPodCounter extends LitElement {
     @state() private _count: number | null = null;
     @state() private _error: string | null = null;
+    private _request?: AbortController;
 
     connectedCallback() {
         super.connectedCallback();
-        fetch('/api/v1/k8s/api/v1/pods', { credentials: 'include' })
-            .then((res) => {
-                if (res.status === 403) throw new Error('you do not have permission to list Pods');
-                if (!res.ok) throw new Error(`request failed: ${res.status}`);
-                return res.json();
-            })
-            .then((data) => { this._count = data.items?.length ?? 0; })
-            .catch((e) => { this._error = e instanceof Error ? e.message : String(e); });
+        const request = new AbortController();
+        this._request = request;
+        this._count = null;
+        this._error = null;
+        countPods(undefined, request.signal)
+            .then(count => { if (!request.signal.aborted) this._count = count; })
+            .catch((e) => {
+                if (!request.signal.aborted) this._error = e instanceof Error ? e.message : String(e);
+            });
+    }
+
+    disconnectedCallback() {
+        super.disconnectedCallback();
+        this._request?.abort();
     }
 
     render() {
@@ -1250,6 +1261,7 @@ a plugin" above:
 | --- | --- | --- |
 | `registerRoute` | Router | Adds a whole new page at `route.path`, rendering `route.tag`'s custom element. |
 | `registerSidebarEntry` | Sidebar | Adds a nav entry linking to `entry.path`; nests under `entry.parentPath` if set. |
+| `registerNodeCardProvider` | Service Map node card | Contributes data or links on left-click or keyboard activation. Multiple plugins can contribute to one card. |
 | `registerEdgeExtraRenderer` | Service map edge details card | Called with an `EdgeSelection` on each selection change; return `null` to render nothing. |
 | `registerFlowTableColumnsProcessor` | Flow list table | Plugin-added columns aren't sortable — only built-in columns carry the sort key. |
 | `registerLandingPageTab` | Overview landing page | Adds a tab rendering `tab.tag`'s custom element. `tab.id` must not be `traffic-inventory` or another plugin's id. |
@@ -1262,6 +1274,41 @@ for how the registered functions are consumed. `@antrea/ui-plugin-sdk` only
 re-exports types from `@antrea/ui-components` (a peer dependency,
 types-only — nothing from it ends up in your plugin's bundle) so the shapes
 stay in sync with what the host actually expects.
+
+### Service Map node cards
+
+Register the provider in the plugin's manifest `entry`. The
+[pod-counter example](../plugins/examples/pod-counter/src/index.ts) adds a Pod
+count to folded Namespaces and to workload or Service nodes with a disclosed
+Namespace. Click the node or focus it and press Enter or Space to open the
+card. The plugin uses the Kubernetes API to count Pods in the selected
+Namespace. If the API denies the request, the card displays the permission error.
+After a successful count it also links to the cluster counter when the user's
+access summary allows listing Pods cluster-wide or the verdict is unknown. On
+hosts without the access API, the card shows only the Namespace count.
+
+Give each provider a plugin-qualified `id`. The host applies its optional
+`requires` under the same rules as a plugin route. The synchronous
+`appliesTo(node)` decides which nodes offer the card and should perform no I/O.
+`getItems(node, signal)` runs only when the user opens one. Return an array or
+a promise of an array containing any combination of these rows:
+
+```ts
+type NodeCardItem =
+    | { kind: 'value'; label: string; value: string }
+    | { kind: 'link'; label: string; href: string };
+```
+
+Return an empty array to contribute nothing. If all providers return empty
+arrays, the card stays closed or closes after loading. Pass the supplied
+`AbortSignal` to any fetch so closing the card or switching nodes cancels the
+request. Links can be relative to the document base or absolute HTTP(S) URLs.
+
+The SDK exports `NodeSelection` as a discriminated union. A workload has its
+display `label` and, when known, `namespace`. A destination-only Service has
+a `name` and `namespace`. A folded `namespace` aggregate exposes its Namespace
+name. A collapsed `undisclosedNamespace` has only the disclosed Namespace name. For `external` and `undisclosed`, only the kind is
+provided. Workload labels can group several Pods or fall back to an address.
 
 ## Trying it locally
 
@@ -1352,8 +1399,8 @@ actual Kind cluster rather than a standalone container.
 ## Future work
 
 * **More extension points.** `@antrea/ui-plugin-sdk` (see "Extending an
-  existing page" above) currently only covers the service map's edge
-  details card, the flow list table, and the Overview landing page's tabs
+  existing page" above) currently covers the Service Map's node and edge
+  details cards, the flow list table, and the Overview landing page's tabs
   (`registerLandingPageTab`). Other built-in pages (Summary, Traceflow)
   don't expose any extension points yet — adding one means the
   same shape: a new registration function in the SDK, a registry entry in

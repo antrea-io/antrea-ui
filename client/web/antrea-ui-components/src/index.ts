@@ -96,6 +96,8 @@ export {
     GATE_EVENTS_LIST,
 } from './lib/access-api.js';
 export type { PluginAccessRequirement, PluginResourceRequirement, PluginHostAccess } from './lib/plugin-access.js';
-export { parseAccessRequirements, meetsAccessRequirements, isNamespaceAware, createPluginHostAccess } from './lib/plugin-access.js';
+export { allowsPluginItem, parseAccessRequirements, meetsAccessRequirements, isNamespaceAware, createPluginHostAccess } from './lib/plugin-access.js';
 export type { NamespaceAccess } from './lib/namespace-access.js';
 export { flowAccess, isValidNamespaceName } from './lib/namespace-access.js';
+export { createNodeCardRegistry } from './lib/node-card.js';
+export type { NodeSelection, NodeCardItem, NodeCardProvider } from './lib/node-card.js';

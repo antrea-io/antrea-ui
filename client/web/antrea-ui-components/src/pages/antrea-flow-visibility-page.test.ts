@@ -18,6 +18,7 @@ import './antrea-flow-visibility-page';
 import * as d3 from 'd3';
 import { FlowStore } from '../lib/flow-store';
 import type { FlowEntry } from '../lib/flow-store';
+import { createNodeCardRegistry, type NodeCardItem, type NodeCardProvider } from '../lib/node-card';
 import type { PositionedNode } from '../lib/service-map-layout';
 import { SCOPE_CHANGE_EVENT, SCOPE_CHOSEN_EVENT } from '../lib/namespace-scope';
 import type { ScopeChangeDetail, ScopeChosenDetail } from '../lib/namespace-scope';
@@ -229,7 +230,7 @@ function accessSummaryResponse(f: FlowAccessFixture): Response {
 // describe the stream.
 async function mount(
     fetchImpl: (url: string, init?: RequestInit) => Promise<Response>,
-    opts: { search?: string; flowAccess?: () => FlowAccessFixture; flowQuery?: FlowQuery } = {},
+    opts: { search?: string; flowAccess?: () => FlowAccessFixture; flowQuery?: FlowQuery; parent?: ShadowRoot } = {},
 ): Promise<AntreaFlowVisibilityPage> {
     // A page that mounts twice in one test must not be answered from the first one's summaries.
     resetAccessSummary();
@@ -257,7 +258,7 @@ async function mount(
     }));
     el = document.createElement('antrea-flow-visibility-page') as AntreaFlowVisibilityPage;
     el.flowQuery = opts.flowQuery;
-    document.body.appendChild(el);
+    (opts.parent ?? document.body).appendChild(el);
     await el.updateComplete;
     // The namespace list has to resolve before any stream can open (see onSessionReady), so let
     // that fetch and the render it triggers land before returning.
@@ -1534,20 +1535,394 @@ describe('AntreaFlowVisibilityPage — viewMode', () => {
     });
 });
 
-describe('AntreaFlowVisibilityPage — service map zoom controls', () => {
-    async function mountMap(flows: Flow[]): Promise<AntreaFlowVisibilityPage> {
-        const page = await mount(async () => sseResponse(flows.length ? [flowEventChunk(flows)] : []));
-        await page.updateComplete;
-        await vi.advanceTimersByTimeAsync(0);
-        await vi.advanceTimersByTimeAsync(1000);
-        page.viewMode = 'map';
-        await page.updateComplete;
-        const simulation = (page as unknown as { _simulation: d3.Simulation<PositionedNode, undefined> })._simulation;
-        simulation.stop().tick(300);
-        simulation.on('end')!.call(simulation);
-        await page.updateComplete;
-        return page;
+async function mountMap(flows: Flow[], search?: string, parent?: ShadowRoot): Promise<AntreaFlowVisibilityPage> {
+    const page = await mount(async () => sseResponse(flows.length ? [flowEventChunk(flows)] : []), { search, parent });
+    await page.updateComplete;
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(1000);
+    page.viewMode = 'map';
+    await page.updateComplete;
+    const simulation = (page as unknown as { _simulation: d3.Simulation<PositionedNode, undefined> })._simulation;
+    simulation.stop().tick(300);
+    simulation.on('end')!.call(simulation);
+    await page.updateComplete;
+    return page;
+}
+
+describe('Service Map plugin node cards', () => {
+    class VisibilityObserver {
+        constructor(readonly notify: (entries: { isIntersecting: boolean }[]) => void) {}
+        observe = vi.fn();
+        disconnect = vi.fn();
     }
+    const observers: VisibilityObserver[] = [];
+    beforeEach(() => {
+        observers.length = 0;
+        vi.stubGlobal('IntersectionObserver', class extends VisibilityObserver {
+            constructor(notify: VisibilityObserver['notify']) { super(notify); observers.push(this); }
+        });
+    });
+
+    function open(node: Element) {
+        const event = new MouseEvent('click', { button: 0, bubbles: true, cancelable: true });
+        node.dispatchEvent(event);
+        return event.defaultPrevented;
+    }
+
+    test('leaves clicks unhandled for ineligible, invalid or empty contributions', async () => {
+        const page = await mountMap([makeFlow({})]);
+        const node = page.shadowRoot!.querySelector('g.node-body')!;
+        expect(open(node)).toBe(false);
+        expect(node.hasAttribute('tabindex')).toBe(false);
+        const skip = vi.fn();
+        page.nodeCardProviders = [
+            { id: 'skip', appliesTo: () => false, getItems: skip },
+            { id: 'empty', appliesTo: () => true, getItems: () => [] },
+            { id: 'bad-link', appliesTo: () => true, getItems: () => [{ kind: 'link', label: 'Bad', href: 'data:,test' }] },
+        ];
+        await page.updateComplete;
+        expect(open(node)).toBe(false);
+        expect(skip).not.toHaveBeenCalled();
+        expect(page.shadowRoot!.querySelector('[role="dialog"]')).toBeNull();
+        page.nodeCardProviders = [];
+        await page.updateComplete;
+        expect(node.hasAttribute('aria-haspopup')).toBe(false);
+    });
+
+    test('isolates a malformed URL on browsers without URL.parse', async () => {
+        const page = await mountMap([makeFlow({})]);
+        const root = page.shadowRoot!;
+        const LegacyURL = class extends URL {};
+        Object.defineProperty(LegacyURL, 'parse', { value: undefined });
+        vi.stubGlobal('URL', LegacyURL);
+        page.nodeCardProviders = [{ id: 'mixed', appliesTo: () => true, getItems: () => [
+            { kind: 'link', label: 'Invalid', href: 'https://[' },
+            { kind: 'value', label: 'Pods', value: '3' },
+            { kind: 'link', label: 'Valid', href: '/plugin/example' },
+        ] }];
+        await page.updateComplete;
+        expect(open(root.querySelector('g.node-body')!)).toBe(true);
+        await page.updateComplete;
+        const card = root.querySelector('.node-card')!;
+        expect(card.textContent).toContain('Pods: 3');
+        expect(card.querySelectorAll('a')).toHaveLength(1);
+        expect(card.querySelector('a')!.pathname).toBe('/plugin/example');
+    });
+
+    test.each(['Enter', ' '])('activates once with %j and leaves the native context menu alone', async key => {
+        const page = await mountMap([makeFlow({})]);
+        const getItems = vi.fn<NodeCardProvider['getItems']>(() => [{ kind: 'value', label: 'Pods', value: '2' }]);
+        page.nodeCardProviders = [{ id: 'pods', appliesTo: () => true, getItems }];
+        await page.updateComplete;
+        const node = page.shadowRoot!.querySelector('g.node-body')!;
+        for (const event of [
+            new KeyboardEvent('keydown', { key: 'F10', shiftKey: true, cancelable: true }),
+            new KeyboardEvent('keydown', { key: 'ContextMenu', cancelable: true }),
+            new MouseEvent('contextmenu', { button: 2, cancelable: true }),
+            new MouseEvent('click', { ctrlKey: true, cancelable: true }),
+        ]) expect(node.dispatchEvent(event)).toBe(true);
+        expect(node.dispatchEvent(new KeyboardEvent('keydown', { key, repeat: true, cancelable: true }))).toBe(false);
+        expect(getItems).not.toHaveBeenCalled();
+        expect(node.dispatchEvent(new KeyboardEvent('keydown', { key, cancelable: true }))).toBe(false);
+        expect(getItems).toHaveBeenCalledTimes(1);
+        await page.updateComplete;
+        expect(page.shadowRoot!.querySelector('.node-card')!.textContent).toContain('Pods: 2');
+        expect(page.shadowRoot!.querySelector('.node-card-name')!.textContent).toBe('client');
+        expect(page.shadowRoot!.querySelector('.node-card-kind')!.textContent).toBe('Workload');
+        const close = page.shadowRoot!.querySelector('.node-card button')!;
+        expect(page.shadowRoot!.activeElement).toBe(close);
+        expect(close.dispatchEvent(new KeyboardEvent('keydown', { key, repeat: true, cancelable: true }))).toBe(false);
+        expect(close.dispatchEvent(new KeyboardEvent('keydown', { key, cancelable: true }))).toBe(true);
+    });
+
+    test('disambiguates namespaced nodes and their dialogs', async () => {
+        const page = await mountMap([makeFlow({ srcNs: 'dev', srcPod: 'api', dstNs: 'prod', dstPod: 'api' })]);
+        page.nodeCardProviders = [{ id: 'count', appliesTo: () => true, getItems: () => [{ kind: 'value', label: 'Pods', value: '1' }] }];
+        await page.updateComplete;
+        for (const name of ['dev/api', 'prod/api']) {
+            const node = page.shadowRoot!.querySelector(`g.node-body[aria-label="${name}"]`)!;
+            expect(open(node)).toBe(true);
+            await page.updateComplete;
+            expect(page.shadowRoot!.querySelector('[role="dialog"]')!.getAttribute('aria-label')).toBe(`Details for ${name}`);
+        }
+    });
+
+    test.each(['click', 'Enter', ' '])('folded Namespace details, expansion (%s) and the edge pin use separate targets', async gesture => {
+        const page = await mountMap([makeFlow({ srcNs: 'dev', dstNs: 'prod' })], '/?namespace=_all');
+        const getItems = vi.fn<NodeCardProvider['getItems']>(() => [{ kind: 'value', label: 'Pods', value: '2' }]);
+        page.nodeCardProviders = [{ id: 'pods', appliesTo: n => n.kind === 'namespace', getItems }];
+        await page.updateComplete;
+        const root = page.shadowRoot!;
+        const node = root.querySelector('.node-body[aria-label="dev"]')!;
+        const expand = root.querySelector('[aria-label="Expand namespace dev"]')!;
+        const pin = root.querySelector('[aria-label="Keep edges highlighted for namespace dev"]')!;
+        open(pin);
+        expect(pin.getAttribute('aria-pressed')).toBe('true');
+        expect(getItems).not.toHaveBeenCalled();
+        expect(open(node)).toBe(true);
+        await page.updateComplete;
+        expect(root.querySelector('[role="dialog"]')!.getAttribute('aria-label')).toBe('Details for dev');
+        expect(getItems.mock.calls[0][0]).toEqual({ kind: 'namespace', namespace: 'dev' });
+        if (gesture === 'click') open(expand);
+        else expand.dispatchEvent(new KeyboardEvent('keydown', { key: gesture, cancelable: true, bubbles: true }));
+        await page.updateComplete;
+        expect(getItems).toHaveBeenCalledTimes(1);
+        expect(getItems.mock.calls[0][1].aborted).toBe(true);
+        expect(root.querySelector('.node-body[aria-label="dev"]')).toBeNull();
+        expect(root.querySelector('.namespace-header text')!.textContent).toContain('dev');
+    });
+
+    test('removing or adding providers restores the matching folded Namespace controls', async () => {
+        const page = await mountMap([makeFlow({ srcNs: 'dev', dstNs: 'prod' })], '/?namespace=_all');
+        const root = page.shadowRoot!;
+        const original = root.querySelector('.node-body[aria-label="Expand namespace dev"]')!;
+        page.nodeCardProviders = [{ id: 'dev', appliesTo: n => n.kind === 'namespace' && n.namespace === 'dev', getItems: () => [] }];
+        await page.updateComplete;
+        expect(root.querySelectorAll('.namespace-expand[role="button"]')).toHaveLength(1);
+        expect(root.querySelector('.node-body[aria-label="Expand namespace prod"]')).not.toBeNull();
+        expect(open(original)).toBe(false);
+        expect(original.isConnected).toBe(true);
+        page.nodeCardProviders = [];
+        await page.updateComplete;
+        expect(root.querySelector('.namespace-expand[role="button"]')).toBeNull();
+        expect(root.querySelectorAll('.namespace-expand[aria-hidden="true"]')).toHaveLength(2);
+        expect(original.getAttribute('aria-label')).toBe('Expand namespace dev');
+        open(original);
+        await page.updateComplete;
+        expect(root.querySelector('.namespace-header text')!.textContent).toContain('dev');
+    });
+
+    test('aborts on invalid URL scope and dismisses a clipped anchor without closing a newer card', async () => {
+        const page = await mountMap([makeFlow({})]);
+        const getItems = vi.fn<NodeCardProvider['getItems']>(() => new Promise(() => {}));
+        page.nodeCardProviders = [{ id: 'pending', appliesTo: () => true, getItems }];
+        await page.updateComplete;
+        const [first, second] = page.shadowRoot!.querySelectorAll('g.node-body');
+        open(first);
+        expect(observers[0].observe).toHaveBeenCalledWith(first);
+        open(second);
+        observers[0].notify([{ isIntersecting: false }]);
+        expect(getItems.mock.calls[1][1].aborted).toBe(false);
+        observers[1].notify([{ isIntersecting: false }]);
+        expect(getItems.mock.calls[1][1].aborted).toBe(true);
+        open(first);
+        await page.updateComplete;
+        page.locationSearch = '?namespace=INVALID!';
+        await page.updateComplete;
+        expect(page.shadowRoot!.querySelector('.map-container')).toBeNull();
+        expect(getItems.mock.calls[2][1].aborted).toBe(true);
+        expect(observers.every(observer => observer.disconnect.mock.calls.length === 1)).toBe(true);
+    });
+
+    test('retains stable provider order, focus and requests across traffic updates', async () => {
+        const page = await mountMap([makeFlow({})]);
+        const root = page.shadowRoot!;
+        let complete!: (items: NodeCardItem[]) => void;
+        const pending = vi.fn(() => new Promise<NodeCardItem[]>(resolve => { complete = resolve; }));
+        const failure = vi.spyOn(console, 'error').mockImplementation(() => {});
+        page.nodeCardProviders = [
+            { id: 'first', appliesTo: () => true, getItems: pending },
+            { id: 'failure', appliesTo: () => true, getItems: () => Promise.reject(new Error('offline')) },
+            { id: 'last', appliesTo: () => true, getItems: () => [{ kind: 'link', label: 'Last', href: '/last' }] },
+        ];
+        await page.updateComplete;
+        expect(pending).not.toHaveBeenCalled();
+        const node = root.querySelector<SVGGElement>('g.node-body')!;
+        const edgeChanged = vi.fn();
+        page.addEventListener('antrea-edge-selected', edgeChanged);
+        root.querySelector('.edges path')!.dispatchEvent(new MouseEvent('click'));
+        await page.updateComplete;
+        expect(open(node)).toBe(true);
+        await page.updateComplete;
+        expect(edgeChanged.mock.lastCall?.[0].detail).toBeNull();
+        expect(root.activeElement).toBe(root.querySelector('.node-card button'));
+        const link = root.querySelector<HTMLAnchorElement>('.node-card a')!;
+        link.focus();
+        const state = page as unknown as { _entries: FlowEntry[] };
+        state._entries = [...state._entries];
+        complete([{ kind: 'value', label: 'First', value: '0' }]);
+        await vi.advanceTimersByTimeAsync(0);
+        await page.updateComplete;
+        expect(root.querySelector('.node-card')!.textContent).toMatch(/First: 0\s*Last/);
+        expect(root.activeElement).toBe(link);
+        expect(pending).toHaveBeenCalledTimes(1);
+        expect(failure).toHaveBeenCalled();
+        failure.mockRestore();
+        link.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, composed: true }));
+        await page.updateComplete;
+        expect(root.querySelector('.node-card')).toBeNull();
+        expect(root.activeElement).toBe(node);
+    });
+
+    test('flips beside the node at the map boundary and closes on outside interaction', async () => {
+        const page = await mountMap([makeFlow({})]);
+        page.nodeCardProviders = [{ id: 'link', appliesTo: () => true,
+            getItems: () => [{ kind: 'link', label: 'Open', href: '/plugin/example' }] }];
+        await page.updateComplete;
+        const root = page.shadowRoot!;
+        const node = root.querySelector<SVGGElement>('g.node-body')!;
+        const map = root.querySelector<HTMLElement>('.map-container')!;
+        vi.spyOn(map, 'getBoundingClientRect').mockReturnValue(new DOMRect(10, 20, 500, 300));
+        const bounds = vi.spyOn(node, 'getBoundingClientRect').mockReturnValue(new DOMRect(30, 50, 40, 20));
+        node.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', cancelable: true }));
+        await page.updateComplete;
+        const card = root.querySelector<HTMLElement>('.node-card')!;
+        vi.spyOn(card, 'offsetWidth', 'get').mockReturnValue(140);
+        vi.spyOn(card, 'offsetHeight', 'get').mockReturnValue(60);
+        window.dispatchEvent(new Event('resize'));
+        expect([card.style.left, card.style.top]).toEqual(['68px', '30px']);
+        bounds.mockReturnValue(new DOMRect(450, 300, 40, 20));
+        window.dispatchEvent(new Event('scroll'));
+        expect([card.style.left, card.style.top]).toEqual(['292px', '240px']);
+        card.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, composed: true }));
+        await page.updateComplete;
+        expect(root.querySelector('.node-card')).toBe(card);
+        document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+        await page.updateComplete;
+        expect(root.querySelector('.node-card')).toBeNull();
+    });
+
+    test('keeps links usable inside a closed shadow root and dismisses on a sibling click', async () => {
+        const host = document.body.appendChild(document.createElement('div'));
+        const parent = host.attachShadow({ mode: 'closed' });
+        const outside = parent.appendChild(document.createElement('button'));
+        const page = await mountMap([makeFlow({})], undefined, parent);
+        page.nodeCardProviders = [{ id: 'link', appliesTo: () => true,
+            getItems: () => [{ kind: 'link', label: 'Open', href: '/plugin/example' }] }];
+        await page.updateComplete;
+        const root = page.shadowRoot!;
+        open(root.querySelector('g.node-body')!);
+        await page.updateComplete;
+        const link = root.querySelector<HTMLAnchorElement>('.node-card a')!;
+        link.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, composed: true }));
+        await page.updateComplete;
+        expect(link.isConnected).toBe(true);
+        outside.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, composed: true }));
+        await page.updateComplete;
+        expect(root.querySelector('.node-card')).toBeNull();
+        host.remove();
+    });
+
+    test('keeps a pending card across repeated reads of the same access snapshot', async () => {
+        const page = await mountMap([makeFlow({})]);
+        const registry = createNodeCardRegistry();
+        const getItems = vi.fn<NodeCardProvider['getItems']>(() => new Promise(() => {}));
+        const state = { loaded: true, summary: null };
+        registry.visible(state);
+        registry.register({ id: 'pending', appliesTo: () => true, getItems });
+        page.nodeCardProviders = registry.visible(state);
+        await page.updateComplete;
+        open(page.shadowRoot!.querySelector('g.node-body')!);
+        await page.updateComplete;
+        page.nodeCardProviders = registry.visible({ ...state });
+        await page.updateComplete;
+        expect(getItems).toHaveBeenCalledTimes(1);
+        const signal = getItems.mock.calls[0][1];
+        expect(signal.aborted).toBe(false);
+        expect(page.shadowRoot!.querySelector('[role="dialog"]')).not.toBeNull();
+        page.nodeCardProviders = registry.visible({ ...state, loaded: false });
+        await page.updateComplete;
+        expect(signal.aborted).toBe(true);
+        expect(page.shadowRoot!.querySelector('[role="dialog"]')).toBeNull();
+    });
+
+    test('fits the card inside nested clipping panes while its anchor is visible', async () => {
+        const page = await mountMap([makeFlow({})]);
+        page.nodeCardProviders = [{ id: 'link', appliesTo: () => true,
+            getItems: () => [{ kind: 'link', label: 'Open', href: '/plugin/example' }] }];
+        await page.updateComplete;
+        const root = page.shadowRoot!;
+        const map = root.querySelector<HTMLElement>('.map-container')!;
+        const node = root.querySelector<SVGGElement>('g.node-body')!;
+        const outer = document.createElement('div');
+        outer.style.overflowX = 'clip';
+        map.before(outer);
+        outer.append(map);
+        const inner = document.createElement('div');
+        inner.style.overflowY = 'auto';
+        inner.append(document.createElement('slot'));
+        outer.attachShadow({ mode: 'open' }).append(inner);
+        vi.spyOn(map, 'getBoundingClientRect').mockReturnValue(new DOMRect(10, 20, 500, 300));
+        vi.spyOn(outer, 'getBoundingClientRect').mockReturnValue(new DOMRect(60, 20, 150, 300));
+        vi.spyOn(outer, 'clientWidth', 'get').mockReturnValue(150);
+        vi.spyOn(inner, 'getBoundingClientRect').mockReturnValue(new DOMRect(10, 90, 500, 100));
+        vi.spyOn(inner, 'clientHeight', 'get').mockReturnValue(100);
+        const bounds = vi.spyOn(node, 'getBoundingClientRect').mockReturnValue(new DOMRect(180, 170, 20, 20));
+        open(node);
+        await page.updateComplete;
+        const card = root.querySelector<HTMLElement>('.node-card')!;
+        vi.spyOn(card, 'offsetWidth', 'get').mockReturnValue(140);
+        vi.spyOn(card, 'offsetHeight', 'get').mockReturnValue(60);
+        inner.dispatchEvent(new Event('scroll'));
+        expect(card.style.getPropertyValue('--card-available-width')).toBe('150px');
+        expect(card.style.maxHeight).toBe('100px');
+        expect([card.style.left, card.style.top]).toEqual(['50px', '110px']);
+        bounds.mockReturnValue(new DOMRect(180, 95, 20, 20));
+        inner.dispatchEvent(new Event('scroll'));
+        expect(card.style.top).toBe('75px');
+        bounds.mockReturnValue(new DOMRect(180, 60, 20, 20));
+        inner.dispatchEvent(new Event('scroll'));
+        await page.updateComplete;
+        expect(root.querySelector('.node-card')).toBeNull();
+    });
+
+    test('ignores late replies after switching node, losing access or disconnecting', async () => {
+        const page = await mountMap([makeFlow({})]);
+        const requests: { signal: AbortSignal; finish: (items: NodeCardItem[]) => void }[] = [];
+        const provider: NodeCardProvider = { id: 'async', appliesTo: () => true,
+            getItems: (_node, signal) => new Promise(finish => { requests.push({ signal, finish }); }),
+        };
+        page.nodeCardProviders = [provider];
+        await page.updateComplete;
+        const root = page.shadowRoot!;
+        const [a, b] = root.querySelectorAll('g.node-body');
+        open(a);
+        await page.updateComplete;
+        expect(root.querySelector('[role="status"]')?.textContent).toBe('Loading…');
+        open(b);
+        expect(requests[0].signal.aborted).toBe(true);
+        requests[0].finish([{ kind: 'value', label: 'Stale', value: '1' }]);
+        requests[1].finish([]);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(root.querySelector('.node-card')).toBeNull();
+        open(a);
+        page.nodeCardProviders = [];
+        await page.updateComplete;
+        expect(requests[2].signal.aborted).toBe(true);
+        expect(open(a)).toBe(false);
+        page.nodeCardProviders = [provider];
+        await page.updateComplete;
+        open(b);
+        page.remove();
+        expect(requests[3].signal.aborted).toBe(true);
+    });
+
+    test('passes only disclosed node identities and dismisses a card when its node disappears', async () => {
+        const page = await mountMap([
+            makeFlow({ destService: 'shop/web:http' }),
+            makeFlow({ dstNs: 'hidden', dstDisclosure: EndpointDisclosure.Flow, dstIP: '10.2.0.1' }),
+            makeFlow({ dstNs: '', dstDisclosure: EndpointDisclosure.Flow, dstIP: '10.2.0.2' }),
+            makeFlow({ flowType: FlowType.ToExternal, dstIP: '10.2.0.3' }),
+        ]);
+        const getItems = vi.fn<NodeCardProvider['getItems']>(() => [{ kind: 'value', label: 'Row', value: '1' }]);
+        page.nodeCardProviders = [{ id: 'test', appliesTo: () => true, getItems }];
+        await page.updateComplete;
+        for (const node of page.shadowRoot!.querySelectorAll('g.node-body')) open(node);
+        expect(getItems.mock.calls.map(([node]) => node)).toEqual(expect.arrayContaining([
+            { kind: 'workload', label: 'client', namespace: 'default' },
+            { kind: 'service', name: 'web', namespace: 'shop' },
+            { kind: 'undisclosedNamespace', namespace: 'hidden' }, { kind: 'undisclosed' }, { kind: 'external' },
+        ]));
+        const signal = getItems.mock.lastCall![1];
+        (page as unknown as { _entries: FlowEntry[] })._entries = [];
+        await page.updateComplete;
+        await page.updateComplete;
+        expect(signal.aborted).toBe(true);
+        expect(page.shadowRoot!.querySelector('.node-card')).toBeNull();
+    });
+});
+
+describe('AntreaFlowVisibilityPage — service map zoom controls', () => {
     const button = (page: AntreaFlowVisibilityPage, label: string) =>
         page.shadowRoot!.querySelector<HTMLButtonElement>(`.map-controls button[aria-label="${label}"]`)!;
     const atLimit = (page: AntreaFlowVisibilityPage, label: string) =>

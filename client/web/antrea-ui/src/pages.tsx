@@ -26,7 +26,7 @@ import type { PluginAccessRequirement, ScopeChangeDetail, ScopeChosenDetail } fr
 import { Navigate, useLocation, useSearchParams } from 'react-router';
 import { getLastScope, scopeSearch, setLastScope } from './lastScope';
 import { useLogout } from './logout';
-import { allowsPluginItem, BUILTIN_LANDING_PAGE_TAB_ID, getEdgeExtraRenderers, getFlowTableColumnsProcessors } from './plugins';
+import { allowsPluginItem, BUILTIN_LANDING_PAGE_TAB_ID, getEdgeExtraRenderers, getFlowTableColumnsProcessors, nodeCardRegistry } from './plugins';
 import { useAccess, useScopeUser } from './access';
 import type { LandingPageTab } from './plugins';
 import type { RootState } from './store';
@@ -273,6 +273,7 @@ function useWatchSourceAvailable(): boolean | null {
 export function FlowVisibilityPage({ view }: { view: 'list' | 'map' }) {
     const { ref, search } = useNamespaceScope();
     const { summary, loaded } = useAccess();
+    const nodeCardProviders = nodeCardRegistry.visible({ summary, loaded });
     const watchAvailable = useWatchSourceAvailable();
     if (watchAvailable === null) return null;
     if (!watchAvailable) {
@@ -291,6 +292,7 @@ export function FlowVisibilityPage({ view }: { view: 'list' | 'map' }) {
                 ref={ref}
                 viewMode={view}
                 locationSearch={search}
+                nodeCardProviders={nodeCardProviders}
                 edgeExtraRenderers={getEdgeExtraRenderers()}
                 flowTableColumnsProcessors={getFlowTableColumnsProcessors()}
             />

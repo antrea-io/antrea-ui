@@ -16,7 +16,7 @@
 
 // Registration API for Antrea UI plugins — both whole-page plugins (registerRoute,
 // registerSidebarEntry) and plugins that extend an existing page (registerEdgeExtraRenderer,
-// registerFlowTableColumnsProcessor). Modeled on Headlamp's plugin registry. Call one of the
+// registerNodeCardProvider, registerFlowTableColumnsProcessor). Modeled on Headlamp's plugin registry. Call one of the
 // register*() functions below as an import side effect in your plugin's entry module, the same
 // module that calls customElements.define(...) for any custom element the registration
 // references (e.g. a route's `tag`).
@@ -38,7 +38,8 @@ export type {
     AccessSummary, NamespaceAccessSummary, ResourceQuery, Verdict, PluginAccessRequirement,
     PluginResourceRequirement, PluginHostAccess,
 } from '@antrea/ui-components';
-import type { EdgeExtraRenderer, FlowTableColumnsProcessor, PluginAccessRequirement, PluginHostAccess } from '@antrea/ui-components';
+export type { NodeSelection, NodeCardItem, NodeCardProvider } from '@antrea/ui-components';
+import type { NodeCardProvider, EdgeExtraRenderer, FlowTableColumnsProcessor, PluginAccessRequirement, PluginHostAccess } from '@antrea/ui-components';
 
 // `requires` (below, on PluginRoute, PluginSidebarEntry and LandingPageTab) hides an item from
 // users who don't meet it, evaluated by the host against the user's access summary:
@@ -133,6 +134,7 @@ export interface LandingPageTab {
 export interface AntreaPluginHost {
     registerRoute(route: PluginRoute): void;
     registerSidebarEntry(entry: PluginSidebarEntry): void;
+    registerNodeCardProvider?(provider: NodeCardProvider): void;
     registerEdgeExtraRenderer(fn: EdgeExtraRenderer): void;
     registerFlowTableColumnsProcessor(fn: FlowTableColumnsProcessor): void;
     registerLandingPageTab(tab: LandingPageTab): void;
@@ -170,6 +172,11 @@ export function registerSidebarEntry(entry: PluginSidebarEntry): void {
  * Return `null` to render nothing for a given selection. */
 export function registerEdgeExtraRenderer(fn: EdgeExtraRenderer): void {
     host().registerEdgeExtraRenderer(fn);
+}
+
+/** Adds rows to a Service Map node card. Hosts predating node cards skip this optional extension. */
+export function registerNodeCardProvider(provider: NodeCardProvider): void {
+    host().registerNodeCardProvider?.(provider);
 }
 
 /** Inserts, removes, updates, or reorders columns in the flow list table. Receives the current

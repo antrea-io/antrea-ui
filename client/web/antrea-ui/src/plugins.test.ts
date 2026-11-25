@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { loadPlugins, isCompatible, isValidRange, getIncompatiblePlugins, incompatiblePluginMessage, dedupeByPath, getPluginRoutes, getPluginSidebarEntries, resolveParentPaths, getLandingPageTabs, allowsPluginItem, publishPluginAccess, type PluginManifest, type PluginRoute, type PluginSidebarEntry, type LandingPageTab } from './plugins';
+import { nodeCardRegistry, loadPlugins, isCompatible, isValidRange, getIncompatiblePlugins, incompatiblePluginMessage, dedupeByPath, getPluginRoutes, getPluginSidebarEntries, resolveParentPaths, getLandingPageTabs, allowsPluginItem, publishPluginAccess, type PluginManifest, type PluginRoute, type PluginSidebarEntry, type LandingPageTab } from './plugins';
 import type { AccessSummary } from '@antrea/ui-components';
 
 // The shell version loadPlugins() matches compatibleAntreaUI against; a prerelease version, to
@@ -325,6 +325,19 @@ describe('permission requirements', () => {
         expect(allowsPluginItem({ summary: admin(false), loaded: true }, access)).toBe(false);
         expect(allowsPluginItem({ summary: admin(true), loaded: true }, access)).toBe(true);
         expect(allowsPluginItem({ summary: null, loaded: true }, access)).toBe(true);
+    });
+
+    test('filters node card providers through the plugin host and keeps the first registration', () => {
+        const provider = { id: 'test.gated', appliesTo: () => true, getItems: () => [], requires: { clusterAdmin: true } };
+        const register = window.__antreaPluginHost!.registerNodeCardProvider!;
+        register(provider);
+        const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+        register({ ...provider, requires: { clusterAdmin: false } });
+        expect(error).toHaveBeenCalledOnce();
+        expect(nodeCardRegistry.visible({ loaded: false, summary: admin(true) })).not.toContain(provider);
+        expect(nodeCardRegistry.visible({ loaded: true, summary: admin(false) })).not.toContain(provider);
+        expect(nodeCardRegistry.visible({ loaded: true, summary: admin(true) })).toContain(provider);
+        error.mockRestore();
     });
 
     test('the host exposes what it publishes to plugins as window.__antreaPluginHost.access', async () => {

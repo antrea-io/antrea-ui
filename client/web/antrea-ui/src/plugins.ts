@@ -45,8 +45,8 @@ import valid from 'semver/functions/valid';
 import validRange from 'semver/ranges/valid';
 import { parsePath } from 'react-router';
 import config from './config';
-import { createPluginHostAccess, isNamespaceAware, meetsAccessRequirements, parseAccessRequirements } from '@antrea/ui-components';
-import type { AccessSummary, EdgeExtraRenderer, FlowTableColumnsProcessor, PluginAccessRequirement } from '@antrea/ui-components';
+import { createPluginHostAccess, createNodeCardRegistry, isNamespaceAware, parseAccessRequirements } from '@antrea/ui-components';
+import type { EdgeExtraRenderer, FlowTableColumnsProcessor, PluginAccessRequirement } from '@antrea/ui-components';
 // The host and the SDK must agree on AntreaPluginHost's shape (it's the contract every plugin's
 // registerX() call goes through), but only as types — importing them with `import type` here
 // costs nothing at runtime, so there's no reason to hand-duplicate the interface as the actual
@@ -75,16 +75,7 @@ function gated<T extends { requires?: PluginAccessRequirement }>(item: T, what: 
     return access.length > 0 ? { ...item, access } : item;
 }
 
-/**
- * Whether a plugin item gated by `access` should be shown, given useAccess()'s state. Gated items
- * stay hidden until the summary has loaded, so an admin-only tab never flashes for other users.
- */
-export function allowsPluginItem(
-    { summary, loaded }: { summary: AccessSummary | null; loaded: boolean },
-    access: readonly PluginAccessRequirement[] | undefined,
-): boolean {
-    return !access?.length || (loaded && meetsAccessRequirements(summary, access));
-}
+export { allowsPluginItem } from '@antrea/ui-components';
 
 // window.__antreaPluginHost.access. AccessProvider (access.tsx) publishes into it, so plugin code
 // and this host's nav and routes see the same summary.
@@ -93,6 +84,7 @@ export const publishPluginAccess = pluginAccess.publish;
 
 const pluginRoutes: PluginRoute[] = [];
 const pluginSidebarEntries: PluginSidebarEntry[] = [];
+export const nodeCardRegistry = createNodeCardRegistry();
 const edgeExtraRenderers: EdgeExtraRenderer[] = [];
 const flowTableColumnsProcessors: FlowTableColumnsProcessor[] = [];
 const pluginLandingPageTabs: LandingPageTab[] = [];
@@ -104,6 +96,7 @@ declare global {
 window.__antreaPluginHost = {
     registerRoute: route => pluginRoutes.push(gated(route, `route "${route.path}"`)),
     registerSidebarEntry: entry => pluginSidebarEntries.push(gated(entry, `sidebar entry "${entry.path}"`)),
+    registerNodeCardProvider: nodeCardRegistry.register,
     registerEdgeExtraRenderer: fn => edgeExtraRenderers.push(fn),
     registerFlowTableColumnsProcessor: fn => flowTableColumnsProcessors.push(fn),
     registerLandingPageTab: tab => pluginLandingPageTabs.push(gated(tab, `landing page tab "${tab.id}"`)),
