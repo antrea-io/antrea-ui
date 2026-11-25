@@ -127,6 +127,7 @@ describe('FlowStore', () => {
     test('live backfill outside the window consumes no capacity and causes no eviction warning', () => {
         const store = new FlowStore();
         const recent = makeFlow('10.0.0.2', 80);
+        store.setStreamDate(new Date().toUTCString());
         const dns = makeFlow('10.0.0.3', 53, 17);
         const endTs = new Date(Date.now() - LIVE_FLOW_WINDOW_MS).toISOString();
         const old = Array.from({ length: 10_001 }, (_, i) => ({
@@ -147,10 +148,23 @@ describe('FlowStore', () => {
         const refreshed = { ...second, endTs: new Date().toISOString() };
         store.upsert(refreshed);
         store.get(connectionKey(first));
-        vi.setSystemTime(Date.parse(first.endTs) + LIVE_FLOW_WINDOW_MS);
+        vi.advanceTimersByTime(LIVE_FLOW_WINDOW_MS - 60_000);
         expect(store.expireLiveEntries()).toBe(true);
         expect(store.getAll().map(e => e.flow)).toEqual([refreshed]);
         expect(store.hasEvicted()).toBe(false);
+    });
+
+    test.each([null, 'invalid'])('uses elapsed time since receipt when the stream Date is %s', date => {
+        const store = new FlowStore();
+        store.setStreamDate(date);
+        const flow = { ...makeFlow('10.0.0.2', 80), endTs: '2020-01-01T00:00:00Z' };
+        store.upsert(flow);
+        vi.setSystemTime(new Date('2040-01-01T00:00:00Z'));
+        expect(store.expireLiveEntries()).toBe(false);
+        expect(store.size()).toBe(1);
+        vi.advanceTimersByTime(LIVE_FLOW_WINDOW_MS);
+        expect(store.expireLiveEntries()).toBe(true);
+        expect(store.size()).toBe(0);
     });
 
     test('a live batch frees expired entries before enforcing the limit', () => {
@@ -177,7 +191,7 @@ describe('FlowStore', () => {
             vi.advanceTimersByTime(60_000);
             store.upsert({ ...active, endTs: new Date().toISOString() });
             expect(store.get(connectionKey(active))!.samples).toHaveLength(2);
-            vi.setSystemTime(Date.parse(active.endTs) + LIVE_FLOW_WINDOW_MS);
+            vi.advanceTimersByTime(LIVE_FLOW_WINDOW_MS - 60_000);
             store.expireLiveEntries();
             expect(store.getAll().map(e => e.key)).toEqual([connectionKey(active)]);
             expect(store.hasEvicted()).toBe(false);

@@ -113,14 +113,14 @@ function makeFlow(overrides: FlowOverrides = {}): Flow {
     };
 }
 
-function sseResponse(chunks: string[], status = 200): Response {
+function sseResponse(chunks: string[], status = 200, serverDate = new Date().toUTCString()): Response {
     const encoder = new TextEncoder();
     const stream = new ReadableStream<Uint8Array>({
         start(controller) {
             for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
         },
     });
-    return new Response(stream, { status });
+    return new Response(stream, { status, headers: { Date: serverDate } });
 }
 
 function flowEventChunk(flows: Flow[]): string {
@@ -2100,6 +2100,8 @@ describe('AntreaFlowVisibilityPage — filters, sort, text filter, pause/resume,
         await page.updateComplete;
         expect(page.shadowRoot!.textContent).toContain('Paused');
         expect(pauseBtn.textContent).toContain('Resume');
+        const status = page.shadowRoot!.querySelector('.status-row')!;
+        expect(status.textContent).not.toContain('reported in the last');
 
         const callsAfterPause = streamCalls(fetchMock).length;
         await vi.advanceTimersByTimeAsync(LIVE_FLOW_WINDOW_MS);
@@ -2110,6 +2112,7 @@ describe('AntreaFlowVisibilityPage — filters, sort, text filter, pause/resume,
         await page.updateComplete;
         await vi.advanceTimersByTimeAsync(0);
         expect(streamCalls(fetchMock).length).toBeGreaterThan(callsAfterPause);
+        expect(status.textContent).toContain('reported in the last 3 min');
         expect(page.shadowRoot!.querySelectorAll('tbody tr')).toHaveLength(0);
     });
 
@@ -4056,6 +4059,23 @@ describe('flow query state event', () => {
         expect(page.shadowRoot!.textContent).not.toContain('some recent connections may be missing');
     });
 
+    test.each([-600_000, 150_000, 600_000])('uses the stream Date with %i ms of browser clock skew', async skew => {
+        const serverTime = new Date(makeFlow().endTs);
+        vi.setSystemTime(serverTime.getTime() + skew);
+        const old = { ...makeFlow({ dstPort: 53 }), endTs: new Date(serverTime.getTime() - LIVE_FLOW_WINDOW_MS).toISOString() };
+        const page = await mount(async () => sseResponse([flowEventChunk([old, makeFlow({ dstPort: 443 })])],
+            200, serverTime.toUTCString()));
+        page.viewMode = 'list';
+        const rows = () => page.shadowRoot!.querySelectorAll('tbody tr');
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(rows()).toHaveLength(1);
+        expect(rows()[0].textContent).toContain('443');
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(rows()).toHaveLength(1);
+        await vi.advanceTimersByTimeAsync(LIVE_FLOW_WINDOW_MS - 61_000);
+        expect(rows()).toHaveLength(0);
+    });
+
     test('a quiet live stream ages the selected edge and its eviction warning out of the view', async () => {
         const page = await mount(async () => sseResponse([]));
         const seen = collect(page);
@@ -4500,8 +4520,10 @@ describe('AntreaFlowVisibilityPage — incremental service map', () => {
         });
         const { Allow, Drop, Reject, NoAction } = NetworkPolicyRuleAction;
         const root = page.shadowRoot!;
-        await update(page, state, [flow(80, Drop), flow(443, Drop)]);
+        await update(page, state, [flow(80, Drop), flow(443, Reject)]);
         const path = root.querySelector('.edges path')!;
+        expect(path.hasAttribute('stroke-dasharray')).toBe(false);
+        expect(root.querySelectorAll('.edge-labels tspan')).toHaveLength(1);
         path.dispatchEvent(new MouseEvent('click'));
         await page.updateComplete;
         path.dispatchEvent(new MouseEvent('mouseenter'));
@@ -4509,7 +4531,7 @@ describe('AntreaFlowVisibilityPage — incremental service map', () => {
             [Drop, Drop, 'drop', '', '2 dropped', ['Dropped', 'Dropped']],
             [Drop, Allow, 'drop', '1 allowed · 1 denied', '1 allowed, 1 dropped', ['Allowed', 'Dropped']],
             [Reject, Allow, 'drop', '1 allowed · 1 denied', '1 allowed, 1 rejected', ['Allowed', 'Rejected']],
-            [Drop, Reject, 'drop', '2 denied', '1 dropped, 1 rejected', ['Rejected', 'Dropped']],
+            [Drop, Reject, 'drop', '', '1 dropped, 1 rejected', ['Rejected', 'Dropped']],
             [Reject, Reject, 'drop', '', '2 rejected', ['Rejected', 'Rejected']],
             [Allow, Allow, 'allow', '', '2 allowed', ['Allowed', 'Allowed']],
             [NoAction, NoAction, 'default', '', '2 with no policy action', ['No policy action', 'No policy action']],

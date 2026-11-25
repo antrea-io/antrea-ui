@@ -114,11 +114,18 @@ export class FlowStore {
     private entries = new Map<string, FlowEntry & { expiresAt: number }>();
     // In LRU order so a burst of completed connections cannot displace continuing ones.
     private finished = new Set<string>();
+    // Server epoch time at performance.now() = 0, calibrated whenever a stream opens.
+    private serverTimeOrigin?: number;
     private nextExpiry = Infinity;
     private evictionCount = 0;
     private evictionWarningUntil = 0;
 
     constructor(private readonly maxEntries = DEFAULT_MAX_ENTRIES) {}
+
+    setStreamDate(date: string | null): void {
+        const serverTime = Date.parse(date ?? '');
+        this.serverTimeOrigin = Number.isFinite(serverTime) ? serverTime - performance.now() : undefined;
+    }
 
     upsert(flow: Flow, finite = false): void {
         this.upsertBatch([flow], finite);
@@ -126,14 +133,16 @@ export class FlowStore {
 
     upsertBatch(flows: Flow[], finite = false): void {
         const now = Date.now();
-        if (!finite) this.expireLiveEntries(now);
+        const receivedAt = performance.now();
+        if (!finite) this.expireLiveEntries(receivedAt);
         for (const flow of flows) {
             const end = Date.parse(flow.endTs);
-            // Replayed history ages from its report time. Fall back to receipt time if the
-            // timestamp is missing or ahead of the browser, so a record cannot live forever.
-            const reportedAt = Number.isFinite(end) ? Math.min(end, now) : now;
+            // Convert the cluster report time to the same monotonic clock as our deadlines.
+            // Without a usable HTTP Date or endTs, bound retention from receipt.
+            const reportedAt = this.serverTimeOrigin !== undefined && Number.isFinite(end)
+                ? Math.min(end - this.serverTimeOrigin, receivedAt) : receivedAt;
             const expiresAt = finite ? Infinity : reportedAt + LIVE_FLOW_WINDOW_MS;
-            if (expiresAt <= now) continue;
+            if (expiresAt <= receivedAt) continue;
 
             const key = connectionKey(flow);
             const existing = this.entries.get(key);
@@ -165,7 +174,7 @@ export class FlowStore {
     }
 
     /** Removes expired reports, including when the stream is quiet. Finite results never expire. */
-    expireLiveEntries(now = Date.now()): boolean {
+    expireLiveEntries(now = performance.now()): boolean {
         if (now < this.nextExpiry) return false;
         this.nextExpiry = Infinity;
         let removed = false;
@@ -205,7 +214,7 @@ export class FlowStore {
     }
 
     hasEvicted(): boolean {
-        return this.evictionWarningUntil > Date.now();
+        return this.evictionWarningUntil > performance.now();
     }
 
     clear(): void {

@@ -597,7 +597,11 @@ function outcomeCounts(edge: WorkloadEdge, view: 'label' | 'tooltip'): string[] 
     return Array.from(counts, ([name, count]) => `${count} ${name}`);
 }
 
-function edgeLabel(edge: WorkloadEdge): string {
+function hasMixedOutcomes(edge: WorkloadEdge): boolean {
+    return edge.outcomes.size > 1 && new Set(Array.from(edge.outcomes.keys(), outcome => OUTCOME_ROLES[outcome])).size > 1;
+}
+
+function edgeLabel(edge: WorkloadEdge, mixed: boolean): string {
     if (!edge.protoPorts.size) return '';
     const protocol = Math.min(...edge.protoPorts.keys());
     const ports = edge.protoPorts.get(protocol)!;
@@ -606,7 +610,7 @@ function edgeLabel(edge: WorkloadEdge): string {
     let combinations = 0;
     for (const destinations of edge.protoPorts.values()) combinations += Math.max(1, destinations.size);
     if (combinations > 1) label += ` +${combinations - 1}`;
-    if (edge.outcomes.size > 1) {
+    if (mixed) {
         const counts = outcomeCounts(edge, 'label');
         for (let i = 0; i < counts.length; i += 2) {
             label += '\n' + counts.slice(i, i + 2).join(' · ');
@@ -1589,7 +1593,10 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
                 this._queryState = 'complete';
             },
             onDropped: count => { this._droppedCount = count; },
-            onConnected: () => { this._connected = true; this._reconnecting = false; this._error = null; },
+            onConnected: serverDate => {
+                this._store.setStreamDate(serverDate);
+                this._connected = true; this._reconnecting = false; this._error = null;
+            },
             // onReconnectScheduled follows onDisconnected for a retryable failure, so it sets the
             // flag back; a terminal failure and stop() fire onDisconnected alone, which clears it.
             onDisconnected: () => { this._connected = false; this._reconnecting = false; },
@@ -1854,7 +1861,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         const changedRoles = new Set<D3Link>();
         d3.select(svg).selectAll<SVGPathElement, D3Link>('.edges path').each(function (d) {
             const edge = graph.edgeMap.get(d.edgeKey)!;
-            const mixed = edge.outcomes.size > 1;
+            const mixed = hasMixedOutcomes(edge);
             if (d.mixed !== mixed) {
                 d.mixed = mixed;
                 d3.select(this).attr('stroke-dasharray', mixed ? '6 4' : null);
@@ -1865,7 +1872,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
                 changedRoles.add(d);
                 d3.select(this).style('stroke', EDGE_COLOR_VAR[role]).attr('marker-end', `url(#arrowhead-${role})`);
             }
-            const label = edgeLabel(edge);
+            const label = edgeLabel(edge, mixed);
             if (d.label.text !== label) {
                 d.label = layoutEdgeLabel(label);
                 changedLabels.set(d, this);
@@ -2108,15 +2115,18 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
                 .selectAll<SVGPathElement, EdgeRole>('path').data([role]).join('path').attr('d', 'M-10,-4L0,0L-10,4').style('fill', EDGE_COLOR_VAR[role]);
         }
 
-        const toLink = (e: WorkloadEdge): D3Link => ({
-            source: nodeById.get(e.source)!,
-            target: nodeById.get(e.target)!,
-            edgeKey: `${e.source}|${e.target}`,
-            mixed: e.outcomes.size > 1,
-            role: edgeRole(e),
-            label: layoutEdgeLabel(edgeLabel(e)),
-            bidirectional: graph.edgeMap.has(`${e.target}|${e.source}`),
-        });
+        const toLink = (e: WorkloadEdge): D3Link => {
+            const mixed = hasMixedOutcomes(e);
+            return {
+                source: nodeById.get(e.source)!,
+                target: nodeById.get(e.target)!,
+                edgeKey: `${e.source}|${e.target}`,
+                mixed,
+                role: edgeRole(e),
+                label: layoutEdgeLabel(edgeLabel(e, mixed)),
+                bidirectional: graph.edgeMap.has(`${e.target}|${e.source}`),
+            };
+        };
         const d3Links = shownEdges.map(toLink);
         // Pinning changes visibility, while the same structural edges keep the layout stable.
         const layoutLinks = structural.map(toLink);
@@ -2814,7 +2824,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
                         <span class="status-dot" style="background-color:${statusColor}"></span>
                         ${statusText}
                     </span>
-                    <span>${this._entries.length} connection${this._entries.length === 1 ? '' : 's'}${this._following ? ` reported in the last ${LIVE_FLOW_WINDOW_MS / 60_000} min` : ''}</span>
+                    <span>${this._entries.length} connection${this._entries.length === 1 ? '' : 's'}${this._following && !this._paused ? ` reported in the last ${LIVE_FLOW_WINDOW_MS / 60_000} min` : ''}</span>
                     ${!this._following ? html`<span>${this._snapshotCount} snapshots received</span>` : nothing}
                     ${this._droppedCount > 0 ? html`<span class="warn">${this._droppedCount} flow records dropped by the source</span>` : nothing}
                     ${this._evictionWarning && this._following ? html`<span class="warn">Store limit reached, some recent connections may be missing</span>` : nothing}
@@ -2998,7 +3008,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
                     ${POLICY_OUTCOMES.map(({ edgeRole, label }) => html`
                         <div class="legend-row"><svg width="24" height="6"><line x1="0" y1="3" x2="24" y2="3" style="stroke:${EDGE_COLOR_VAR[edgeRole]}" stroke-width="${EDGE_STROKE_WIDTH}"/></svg><span>${label}</span></div>
                     `)}
-                    <div class="legend-row"><svg width="24" height="6"><line x1="0" y1="3" x2="24" y2="3" stroke="currentColor" stroke-width="2" stroke-dasharray="6 4"/></svg><span>Policy action varies by connection</span></div>
+                    <div class="legend-row"><svg width="24" height="6"><line x1="0" y1="3" x2="24" y2="3" stroke="currentColor" stroke-width="2" stroke-dasharray="6 4"/></svg><span>Policy outcome varies by connection</span></div>
                     <div class="legend-row"><svg width="24" height="14"><rect x="1" y="1" width="22" height="12" rx="3" ry="3" style="fill:${MAP_COLOR_VAR.nsHullFill};stroke:${MAP_COLOR_VAR.nsHullStroke}" stroke-width="1" stroke-dasharray="4,2"/></svg><span>Namespace</span></div>
                     <div class="legend-row"><svg width="24" height="14"><rect x="1" y="1" width="22" height="12" rx="6" ry="6" style="fill:${MAP_COLOR_VAR.nodeFill};stroke:${MAP_COLOR_VAR.nodeStroke}" stroke-width="1.5"/></svg><span>Service (destination only)</span></div>
                     <div class="legend-row"><svg width="24" height="14"><rect x="1" y="1" width="22" height="12" rx="3" ry="3" style="fill:${MAP_COLOR_VAR.nodeFill};stroke:${MAP_COLOR_VAR.nodeStroke}" stroke-width="1.5"/></svg><span>Workload</span></div>
