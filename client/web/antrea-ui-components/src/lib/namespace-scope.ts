@@ -106,7 +106,7 @@ export function writeScopeToURL(host: EventTarget, scope: string): string {
     return url.search;
 }
 
-/** The scope in force on a Namespace-aware page. SCOPE_ALL is an
+/** The scope in force on a Namespace-aware page, as plugin code sees it. SCOPE_ALL is an
  * internal sentinel, so it does not appear here. */
 export type NamespaceScope = { kind: 'all' } | { kind: 'namespace', namespace: string };
 
@@ -120,4 +120,16 @@ export function scopeToValue(scope: NamespaceScope | null): string {
 export function valueToScope(value: string): NamespaceScope | null {
     if (value === '') return null;
     return value === SCOPE_ALL ? { kind: 'all' } : { kind: 'namespace', namespace: value };
+}
+
+/** `search` (a query string, with or without its leading "?") with the scope parameter set to
+ * `value` (SCOPE_ALL, a Namespace name, or '' for none). Everything else in it is kept. Returns
+ * the result with its leading "?", or '' when it is empty. */
+export function searchWithScope(search: string, value: string): string {
+    const params = new URLSearchParams(search);
+    params.delete(NAMESPACE_PARAM);
+    if (value === SCOPE_ALL) params.set(NAMESPACE_PARAM, ALL_NAMESPACES_PARAM_VALUE);
+    else if (value) params.set(NAMESPACE_PARAM, value);
+    const out = params.toString();
+    return out ? `?${out}` : '';
 }

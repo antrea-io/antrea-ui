@@ -1085,8 +1085,108 @@ counts; the entry's own `requires` only gates it. A custom-element route, and an
 Overview tab, are handed the query string as a `locationSearch` property. A
 federated Angular route reads `namespace` from the router itself.
 
-A custom-element page does its part with two events and one property, as the
-built-in pages do. The host records the last scope chosen only from
+**Using the Namespace picker.** The easiest way to do all of this is to render
+`<antrea-namespace-scope>`, which wraps the same picker and scope controller as
+Overview and Flow Visibility, with the same default order, URL handling and
+last-scope bookkeeping. It renders into its own shadow root, so it needs none
+of your styles, and handles communication with the host itself. Pass it the
+`locationSearch` the host gave your element. When `resources` is omitted, the
+React host uses the route's `requires.resources`; pass an array or `{ anyOf: [...] }`
+to override that declaration, for example when switching between watching and
+listing. Listen for
+`antrea-namespace-scope-state`, whose `detail` is the state (`scope`, `source`,
+`access`, `error`, `note`, `offerAll`). It bubbles but is not composed, so it
+stays inside your shadow root:
+
+```ts
+import { LitElement, html } from 'lit';
+import { property, state } from 'lit/decorators.js';
+import { registerRoute, namespaceScope, namespaceScopeSupported } from '@antrea/ui-plugin-sdk';
+import type { NamespaceScopeState } from '@antrea/ui-plugin-sdk';
+
+const PODS = [{ group: '', resource: 'pods', verb: 'list' }];
+
+class PodsPage extends LitElement {
+    @property({ attribute: false }) locationSearch?: string;
+    @state() private scope: NamespaceScopeState | null = null;
+    private requestScope?: string;
+
+    render() {
+        if (!namespaceScopeSupported()) return html`<p>This page needs a newer Antrea UI.</p>`;
+        return html`
+            <antrea-namespace-scope .locationSearch=${this.locationSearch}
+                @antrea-namespace-scope-state=${(e: CustomEvent<NamespaceScopeState>) => {
+                    this.scope = e.detail;
+                    const key = namespaceScope().search(e.detail.scope);
+                    if (key !== this.requestScope) {
+                        this.requestScope = key;
+                        // Cancel the previous request; load only when scope is non-null.
+                        void this.load(e.detail.scope);
+                    }
+                }}></antrea-namespace-scope>`;
+    }
+}
+customElements.define('pods-page', PodsPage);
+registerRoute({ path: '/plugin/pods', tag: 'pods-page',
+    requires: { namespaceScope: true, resources: PODS } });
+```
+
+`state.scope` is `{ kind: 'all' }`, `{ kind: 'namespace', namespace }` or `null`
+(still loading, an invalid URL, or nothing to pick). Only `source: 'url'` and
+`'picker'` are choices; a `'default'` is never reported or written. The state also
+carries `error` for an invalid `?namespace=` or typed name, which the element
+shows itself. Authorization is still the API's: the picker is a hint, so handle a
+403.
+
+When `state.access !== null`, `state.scope === null` and `!state.error`, the
+page should explain why no data is shown, for example: "No Namespace could be
+selected automatically. Use 'Namespace not listed' to enter a name." The element
+already offers that way to type a Namespace; the page supplies the explanation.
+Distinguish this state from loading and invalid input, which have their own feedback.
+
+State events also report changes to access, validation errors and the scope
+note: they are not a request to reload data. Compare the effective scope before
+fetching, abort obsolete requests, and ignore late responses after the scope
+changes or the page disconnects.
+
+For a picker of your own, or a page that uses no Lit, `namespaceScope().create({
+target, resources })` from the SDK gives the same logic without the element.
+Its optional `resources` overrides the route declaration just as the element's
+property does; `setResources(undefined)` restores the route's permissions. Call
+`setLocationSearch()` with each `locationSearch`, `subscribe()` for the state,
+`select()` for a choice and `dispose()` when the page goes away. Call
+`setResources()` when the permissions change, for example when switching
+between watching and listing: a default is cleared until the new verdict is
+ready, while an explicit URL or picker choice remains selected. When both the
+query string and permissions change together, pass them in one call to
+`setLocationSearch(search, { resources })` so subscribers see them together. Equivalent
+resource arrays from a re-render do not reset the scope. Its
+`state().access` holds what a picker offers (`candidates`, `cut`, `mayList`).
+`namespaceScope().search(scope)` builds the query string that carries a scope to
+another Namespace-aware page; it rejects invalid Namespace names instead of
+interpreting them as All Namespaces. Do not bundle your own copy of the Namespace list
+code: each plugin bundle has its own module state, which the host cannot reset when
+the user signs out.
+
+Both the element and the headless API use the host's adapter; neither requires
+forwarding scope events. The route must declare `requires.namespaceScope: true`
+for the React host to update `?namespace=` and remember the last scope chosen.
+On a route without that declaration, a pick only changes the picker's local
+state; the host still handles session expiry. A host that loads federated routes
+must publish an adapter before mounting plugins, and a federated page must pass
+its router's query as `locationSearch`. The adapter's optional `getResources()`
+returns the current page's declared permissions, read when access loads so
+plugins created before the page is bound still use its declaration. Without
+either explicit or host-provided resources, the verdict is allowed only for a
+cluster admin and unknown for other users.
+
+`namespaceScope()` and the element need a host that ships them. Raise
+`compatibleAntreaUI` to that release and check `namespaceScopeSupported()`, as
+above: on an older host the tag is an unknown element and renders nothing.
+
+Without either the element or the headless API, a custom-element page does its
+part with two events and one property, as the built-in pages do. For this
+manual integration, the host records the last scope chosen only from
 `antrea-namespace-scope-chosen`, so a page that merely reads `locationSearch`
 leaves the Overview and Flow Visibility entries carrying a stale scope. The page
 must:

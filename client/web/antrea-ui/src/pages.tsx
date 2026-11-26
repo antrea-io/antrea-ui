@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import React, { useRef, useCallback, useEffect, useState } from 'react';
+import React, { useRef, useCallback, useEffect, useMemo, useState } from 'react';
 import { useSelector } from 'react-redux';
 import '@antrea/ui-components';
 import {
@@ -22,10 +22,12 @@ import {
     sessionIdentity, apiFetchAppSettings, GATE_TRACEFLOW_CREATE, GATE_SUPPORTBUNDLE_LIST, SCOPE_CHANGE_EVENT, SCOPE_CHOSEN_EVENT,
 } from '@antrea/ui-components';
 import { isNamespaceAware } from '@antrea/ui-components';
-import type { PluginAccessRequirement, ScopeChangeDetail, ScopeChosenDetail } from '@antrea/ui-components';
+import type { NamespaceScopeResources, PluginAccessRequirement, ScopeChangeDetail, ScopeChosenDetail } from '@antrea/ui-components';
 import { Navigate, useLocation, useSearchParams } from 'react-router';
 import { getLastScope, scopeSearch, setLastScope } from './lastScope';
 import { useLogout } from './logout';
+import { bindPluginScope } from './pluginScope';
+import type { PluginScopeNavigation } from './pluginScope';
 import { allowsPluginItem, BUILTIN_LANDING_PAGE_TAB_ID, getEdgeExtraRenderers, getFlowTableColumnsProcessors } from './plugins';
 import { useAccess, useScopeUser } from './access';
 import type { LandingPageTab } from './plugins';
@@ -83,7 +85,7 @@ function RequirePermission({ allowed, loaded, children }: { allowed: boolean, lo
     return <>{children}</>;
 }
 
-function useLitPage() {
+function useLitPage(navigation?: PluginScopeNavigation) {
     const logout = useLogout();
     const attachedTo = useRef<HTMLElement | null>(null);
 
@@ -108,7 +110,8 @@ function useLitPage() {
         if (attachedTo.current) attachedTo.current.removeEventListener('antrea-session-expired', onSessionExpired);
         attachedTo.current = el;
         if (el) el.addEventListener('antrea-session-expired', onSessionExpired);
-    }, [onSessionExpired]);
+        bindPluginScope(el ? { sessionExpired: onSessionExpired, navigation } : null);
+    }, [onSessionExpired, navigation]);
 
     return { ref };
 }
@@ -139,7 +142,7 @@ export function OverviewPage({ pluginTabs = NO_PLUGIN_TABS }: { pluginTabs?: Lan
         ? sessionIdentity({ mode: sessionInfo.mode, username: sessionInfo.username }).name
         : undefined;
 
-    const { ref, search } = useNamespaceScope();
+    const { ref } = useNamespaceScope();
 
     // A tab gated by `requires` (see plugins.ts) is left out for users who don't meet it; a ?tab=
     // naming it then falls back to the built-in tab, like an unknown id.
@@ -172,8 +175,8 @@ export function OverviewPage({ pluginTabs = NO_PLUGIN_TABS }: { pluginTabs?: Lan
                     </div>
                 </div>
                 {activeTab.id === BUILTIN_LANDING_PAGE_TAB_ID
-                    ? <antrea-overview-page ref={ref} locationSearch={search} />
-                    : React.createElement(activeTab.tag as string, { ref, locationSearch: search })}
+                    ? <antrea-overview-page ref={ref} />
+                    : React.createElement(activeTab.tag as string, { ref })}
             </div>
         </RequirePermission>
     );
@@ -213,22 +216,32 @@ export function SupportBundlePage() {
 // (`?namespace=`), and rewrites it with history.replaceState, which the router is not told about.
 // It says so with SCOPE_CHANGE_EVENT instead, and the router adopts the location here, so the
 // sidebar's links never go stale. The location goes the other way too: the page is handed the
-// query string (`search`), and follows it when it changes. A scope the page takes from its picker
+// query string, and follows it when it changes. A scope the page takes from its picker
 // or its URL is remembered as the last scope chosen (see lastScope.ts), which the navigation
 // entries carry.
-function useNamespaceScope() {
-    const { ref: litRef } = useLitPage();
+function useNamespaceScope(resources?: NamespaceScopeResources) {
     const { search } = useLocation();
     const [, setSearchParams] = useSearchParams();
     const user = useScopeUser();
+    const navigation = useMemo<PluginScopeNavigation>(() => ({
+        writeScope: namespace => setSearchParams(prev => {
+            const next = new URLSearchParams(prev);
+            if (namespace === null) next.delete('namespace');
+            else next.set('namespace', namespace);
+            return next;
+        }, { replace: true }),
+        rememberScope: scope => setLastScope(user, scope),
+        getResources: () => resources,
+    }), [setSearchParams, user, resources]);
+    const { ref: litRef } = useLitPage(navigation);
     const attachedTo = useRef<HTMLElement | null>(null);
     const onScopeChange = useCallback((e: Event) => {
         const { search } = (e as CustomEvent<ScopeChangeDetail>).detail;
         setSearchParams(new URLSearchParams(search), { replace: true });
     }, [setSearchParams]);
     const onScopeChosen = useCallback((e: Event) => {
-        setLastScope(user, (e as CustomEvent<ScopeChosenDetail>).detail.scope);
-    }, [user]);
+        navigation.rememberScope((e as CustomEvent<ScopeChosenDetail>).detail.scope);
+    }, [navigation]);
     // A callback ref for the same reason as useLitPage's: the element mounts once the permission
     // check resolves, which does not re-render a hook declared here to notice it.
     const ref = useCallback((el: HTMLElement | null) => {
@@ -238,8 +251,12 @@ function useNamespaceScope() {
         attachedTo.current = el;
         el?.addEventListener(SCOPE_CHANGE_EVENT, onScopeChange);
         el?.addEventListener(SCOPE_CHOSEN_EVENT, onScopeChosen);
-    }, [litRef, onScopeChange, onScopeChosen]);
-    return { ref, search };
+        // React clears a changed callback ref before updating element properties. Deliver the
+        // location here, after restoring both the adapter and event listeners, so a synchronous
+        // plugin setter can report its scope instead of losing the report between ref calls.
+        if (el) Object.assign(el, { locationSearch: search });
+    }, [litRef, onScopeChange, onScopeChosen, search]);
+    return { ref };
 }
 
 // Whether a configured flow source can serve live streams, from the settings the server exposes.
@@ -271,7 +288,7 @@ function useWatchSourceAvailable(): boolean | null {
 // answers with an error. Sources that can only list are ignored, and the backend uses the first
 // source that can watch.
 export function FlowVisibilityPage({ view }: { view: 'list' | 'map' }) {
-    const { ref, search } = useNamespaceScope();
+    const { ref } = useNamespaceScope();
     const { summary, loaded } = useAccess();
     const watchAvailable = useWatchSourceAvailable();
     if (watchAvailable === null) return null;
@@ -290,7 +307,6 @@ export function FlowVisibilityPage({ view }: { view: 'list' | 'map' }) {
             <antrea-flow-visibility-page
                 ref={ref}
                 viewMode={view}
-                locationSearch={search}
                 edgeExtraRenderers={getEdgeExtraRenderers()}
                 flowTableColumnsProcessors={getFlowTableColumnsProcessors()}
             />
@@ -320,7 +336,7 @@ export function PluginPage({ tag, access }: { tag: string, access?: readonly Plu
     const accessState = useAccess();
     // A route that declares `namespaceScope` is a Namespace-aware page: it gets the same
     // query-string wiring as the built-in ones (see useNamespaceScope).
-    const element = isNamespaceAware(access) ? <NamespaceAwarePluginElement tag={tag} /> : <PluginElement tag={tag} />;
+    const element = isNamespaceAware(access) ? <NamespaceAwarePluginElement tag={tag} access={access} /> : <PluginElement tag={tag} />;
     if (!access?.length) return element;
     return (
         <RequirePermission allowed={allowsPluginItem(accessState, access)} loaded={accessState.loaded}>
@@ -336,7 +352,10 @@ function PluginElement({ tag }: { tag: string }) {
 
 // The element is handed the query string (`locationSearch`) like a built-in Namespace-aware page,
 // and may report a scope change or choice with SCOPE_CHANGE_EVENT and SCOPE_CHOSEN_EVENT.
-function NamespaceAwarePluginElement({ tag }: { tag: string }) {
-    const { ref, search } = useNamespaceScope();
-    return React.createElement(tag, { ref, locationSearch: search });
+function NamespaceAwarePluginElement({ tag, access }: { tag: string, access?: readonly PluginAccessRequirement[] }) {
+    const declared = access?.find(requirement => requirement.namespaceScope)?.resources;
+    // Namespace-aware declarations accept only an array or anyOf; registration rejects allOf.
+    const resources = Array.isArray(declared) || declared && 'anyOf' in declared ? declared : undefined;
+    const { ref } = useNamespaceScope(resources);
+    return React.createElement(tag, { ref });
 }

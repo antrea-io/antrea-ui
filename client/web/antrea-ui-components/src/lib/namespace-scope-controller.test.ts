@@ -17,7 +17,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { resetAccessSummary } from './access-api.js';
 import type { AccessSummary } from './access-api.js';
 import { createNamespaceScope } from './namespace-scope-controller.js';
-import type { NamespaceScopeOptions } from './namespace-scope-controller.js';
+import type { NamespaceScopeHostAdapter, NamespaceScopeOptions, NamespaceScopeResources } from './namespace-scope-controller.js';
+import { createPluginNamespaceScope } from './plugin-namespace-scope.js';
 import { SCOPE_CHANGE_EVENT, SCOPE_CHOSEN_EVENT } from './namespace-scope.js';
 
 const PODS = [{ group: '', resource: 'pods', verb: 'list' }];
@@ -389,9 +390,9 @@ describe('createNamespaceScope', () => {
         handle.dispose();
     });
 
-    it('ignores equivalent resources from a fresh render', async () => {
+    it('accepts anyOf and ignores equivalent resources from a fresh render', async () => {
         body = summary(clusterPods);
-        const { handle } = setup({ resources: PODS });
+        const { handle } = setup({ resources: { anyOf: PODS } });
         handle.setLocationSearch('');
         await loaded(handle);
         expect(handle.state().scope).toEqual({ kind: 'all' });
@@ -441,5 +442,145 @@ describe('createNamespaceScope', () => {
         await loaded(second.handle);
         expect(second.handle.state().access?.candidates).toEqual(['new-user-ns']);
         second.handle.dispose();
+    });
+});
+
+describe('createNamespaceScope with a host adapter', () => {
+    it('uses route permissions bound after the plugin starts loading access', async () => {
+        body = summary(clusterPods);
+        const route: { resources?: NamespaceScopeResources } = {};
+        const adapter = {
+            writeScope: vi.fn(), rememberScope: vi.fn(), sessionExpired: vi.fn(),
+            getResources: () => route.resources,
+        };
+        const handle = createPluginNamespaceScope(adapter).create({ target: new EventTarget() });
+        handle.setLocationSearch('');
+        route.resources = { anyOf: PODS };
+        await loaded(handle);
+        expect(handle.state().access?.clusterWide).toBe('allowed');
+        expect(handle.state().scope).toEqual({ kind: 'all' });
+        handle.dispose();
+    });
+
+    it('uses explicit permissions until cleared, even when they match the route declaration', async () => {
+        body = summary(clusterPods);
+        const services = [{ group: '', resource: 'services', verb: 'list' }];
+        let routeResources = PODS;
+        const adapter = {
+            writeScope: vi.fn(), rememberScope: vi.fn(), sessionExpired: vi.fn(),
+            getResources: () => routeResources,
+        };
+        const handle = createPluginNamespaceScope(adapter).create({ target: new EventTarget(), resources: services });
+        handle.setLocationSearch('');
+        await loaded(handle);
+        expect(handle.state().access?.clusterWide).toBe('denied');
+        handle.setResources(undefined);
+        await loaded(handle);
+        expect(handle.state().scope).toEqual({ kind: 'all' });
+
+        handle.setResources(PODS);
+        routeResources = services;
+        handle.setLocationSearch('');
+        expect(handle.state().scope).toEqual({ kind: 'all' });
+        handle.setResources(undefined);
+        expect(handle.state().scope).toBeNull();
+        await loaded(handle);
+        expect(handle.state().access?.clusterWide).toBe('denied');
+        expect(handle.state().scope).toEqual({ kind: 'namespace', namespace: 'ns-a' });
+        handle.dispose();
+    });
+
+    it('invalidates a default when the route permissions change with the same query string', async () => {
+        body = summary(clusterPods);
+        let routeResources = PODS;
+        const adapter = {
+            writeScope: vi.fn(), rememberScope: vi.fn(), sessionExpired: vi.fn(),
+            getResources: () => routeResources,
+        };
+        const handle = createPluginNamespaceScope(adapter).create({ target: new EventTarget() });
+        handle.setLocationSearch('');
+        await loaded(handle);
+        expect(handle.state().scope).toEqual({ kind: 'all' });
+        routeResources = [{ group: '', resource: 'services', verb: 'list' }];
+        handle.setLocationSearch('');
+        expect(handle.state().access).toBeNull();
+        expect(handle.state().scope).toBeNull();
+        await loaded(handle);
+        expect(handle.state().access?.clusterWide).toBe('denied');
+        expect(handle.state().scope).toEqual({ kind: 'namespace', namespace: 'ns-a' });
+        handle.dispose();
+    });
+
+    function adapterSetup() {
+        const adapter = {
+            writeScope: vi.fn(), rememberScope: vi.fn(), sessionExpired: vi.fn(),
+        } satisfies NamespaceScopeHostAdapter;
+        const target = new EventTarget();
+        const events = vi.fn();
+        target.addEventListener(SCOPE_CHOSEN_EVENT, events);
+        target.addEventListener(SCOPE_CHANGE_EVENT, events);
+        target.addEventListener('antrea-session-expired', events);
+        const handle = createNamespaceScope({ target, resources: PODS, adapter });
+        return { adapter, events, handle };
+    }
+
+    it('calls the adapter instead of dispatching events or touching the URL', async () => {
+        const { adapter, events, handle } = adapterSetup();
+        handle.setLocationSearch('?namespace=ns-a&x=1');
+        await loaded(handle);
+        expect(adapter.rememberScope).toHaveBeenLastCalledWith('ns-a');
+        handle.select({ kind: 'all' });
+        expect(adapter.writeScope).toHaveBeenLastCalledWith('_all');
+        expect(adapter.rememberScope).toHaveBeenLastCalledWith('_all');
+        // What it wrote is not taken for a navigation when the host hands it back.
+        const before = adapter.rememberScope.mock.calls.length;
+        handle.setLocationSearch('?namespace=_all&x=1');
+        expect(adapter.rememberScope.mock.calls.length).toBe(before);
+        expect(events).not.toHaveBeenCalled();
+        expect(window.location.search).toBe('');
+        handle.dispose();
+    });
+
+    it('reports the URL scope again after mount, once the host has bound its adapter', async () => {
+        const { adapter, handle } = adapterSetup();
+        handle.setLocationSearch('?namespace=ns-a');
+        expect(adapter.rememberScope).toHaveBeenCalledTimes(1);
+        await Promise.resolve();
+        expect(adapter.rememberScope).toHaveBeenCalledTimes(2);
+        handle.dispose();
+    });
+
+    it('does not write the default', async () => {
+        const { adapter, handle } = adapterSetup();
+        handle.setLocationSearch('');
+        await loaded(handle);
+        expect(adapter.writeScope).not.toHaveBeenCalled();
+        expect(adapter.rememberScope).not.toHaveBeenCalled();
+        handle.dispose();
+    });
+
+    it('tells the adapter the session expired', async () => {
+        status = 401;
+        const { adapter, events, handle } = adapterSetup();
+        handle.setLocationSearch('');
+        await vi.waitFor(() => expect(adapter.sessionExpired).toHaveBeenCalledTimes(1));
+        expect(events).not.toHaveBeenCalled();
+        handle.dispose();
+    });
+
+    it('keeps the host adapter and lifecycle even when a plugin passes internal options', async () => {
+        status = 401;
+        const adapter = { writeScope: vi.fn(), rememberScope: vi.fn(), sessionExpired: vi.fn() };
+        const internal = { adapter: undefined, onSessionExpired: vi.fn(), isActive: () => false };
+        const handle = createPluginNamespaceScope(adapter).create({ target: new EventTarget(), ...internal });
+        handle.setLocationSearch('?namespace=ns-a');
+        await loaded(handle);
+        handle.select({ kind: 'namespace', namespace: 'ns-b' });
+        expect(adapter.sessionExpired).toHaveBeenCalledTimes(1);
+        expect(internal.onSessionExpired).not.toHaveBeenCalled();
+        expect(adapter.writeScope).toHaveBeenCalledWith('ns-b');
+        expect(adapter.rememberScope).toHaveBeenLastCalledWith('ns-b');
+        expect(window.location.search).toBe('');
+        handle.dispose();
     });
 });

@@ -16,6 +16,7 @@ export { AntreaButton } from './antrea-button.js';
 export { AntreaAlert } from './antrea-alert.js';
 export { AntreaCard } from './antrea-card.js';
 export { AntreaNamespacePicker } from './antrea-namespace-picker.js';
+export { AntreaNamespaceScope, NAMESPACE_SCOPE_STATE_EVENT } from './antrea-namespace-scope.js';
 export { AntreaNav, AntreaNavItem, AntreaNavGroup } from './antrea-nav.js';
 export { AntreaInput } from './antrea-input.js';
 export { AntreaSummaryPage } from './pages/antrea-summary-page.js';
@@ -97,5 +98,14 @@ export {
 } from './lib/access-api.js';
 export type { PluginAccessRequirement, PluginResourceRequirement, PluginHostAccess } from './lib/plugin-access.js';
 export { parseAccessRequirements, meetsAccessRequirements, isNamespaceAware, createPluginHostAccess } from './lib/plugin-access.js';
-export type { NamespaceAccess } from './lib/namespace-access.js';
+export type { NamespaceAccess, ScopeNote } from './lib/namespace-access.js';
+export type { ScopeSelectDetail } from './antrea-namespace-picker.js';
+export type { NamespaceScope } from './lib/namespace-scope.js';
+export { createNamespaceScope } from './lib/namespace-scope-controller.js';
+export type {
+    NamespaceScopeState, NamespaceScopeOptions, NamespaceScopeResources, NamespaceScopeControllerOptions,
+    NamespaceScopeHandle, NamespaceScopeHostAdapter,
+} from './lib/namespace-scope-controller.js';
+export type { PluginNamespaceScope } from './lib/plugin-namespace-scope.js';
+export { createPluginNamespaceScope } from './lib/plugin-namespace-scope.js';
 export { flowAccess, isValidNamespaceName } from './lib/namespace-access.js';
