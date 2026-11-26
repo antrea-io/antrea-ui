@@ -4024,7 +4024,7 @@ describe('flow query state event', () => {
         await setQuery(page, { follow: false, maxCount: 1 });
         expect(seen.at(-1)).toMatchObject({ state: 'complete', maxCount: 1, truncated: true, evicted: false });
         expect(page.shadowRoot!.textContent).toContain('Result truncated at 1 records');
-        expect(page.shadowRoot!.textContent).toContain('some connections may be missing or show older totals');
+        expect(page.shadowRoot!.textContent).toContain('some connections may be missing or show partial totals');
         expect(page.shadowRoot!.textContent).toContain('Narrow the query with filters or a shorter time window');
     });
 
@@ -4041,6 +4041,32 @@ describe('flow query state event', () => {
         expect(page.shadowRoot!.querySelector('.status-row .warn')?.textContent).toBe('5 flow records dropped by the source');
     });
 
+    test('shows the summed deltas of a source that sends no totals, streaming newest first', async () => {
+        const page = await mount(async () => sseResponse([]));
+        const record = (id: string, endTs: string, octets: number) => {
+            const flow = makeFlow({ id });
+            return {
+                ...flow, endTs,
+                stats: { ...flow.stats, packetTotalCount: 0, octetTotalCount: 0, octetDeltaCount: octets },
+                reverseStats: { ...flow.reverseStats, packetTotalCount: 0, octetTotalCount: 0, octetDeltaCount: octets / 10 },
+            };
+        };
+        vi.mocked(fetch).mockImplementation(async () => finiteResponse([
+            flowEventChunk([
+                record('c', '2026-03-25T00:03:00Z', 300),
+                record('b', '2026-03-25T00:02:00Z', 200),
+                record('a', '2026-03-25T00:01:00Z', 100),
+            ]),
+            FINITE_COMPLETE,
+        ]));
+        await setQuery(page, { follow: false });
+        const entries = (page as unknown as { _entries: FlowEntry[] })._entries;
+        expect(entries).toHaveLength(1);
+        expect(entries[0].flow.id).toBe('c');
+        expect(entries[0].flow.stats.octetTotalCount).toBe(600);
+        expect(entries[0].flow.reverseStats.octetTotalCount).toBe(60);
+    });
+
     test('reports and warns when the store evicted connections during a finite query', async () => {
         const page = await mount(async () => sseResponse([]));
         const seen = collect(page);
@@ -4050,7 +4076,7 @@ describe('flow query state event', () => {
         ]));
         await setQuery(page, { follow: false });
         expect(seen.at(-1)).toMatchObject({ state: 'complete', truncated: false, evicted: true });
-        expect(page.shadowRoot!.textContent).toContain('some connections are missing or show older totals');
+        expect(page.shadowRoot!.textContent).toContain('the oldest connections are missing or show partial totals');
         expect(page.shadowRoot!.textContent).not.toContain('oldest entries evicted');
     });
 

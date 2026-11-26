@@ -36,6 +36,14 @@ export interface FlowSample {
     bytes: number;
 }
 
+// FlowCounters are the traffic counters of one connection key, forward and reverse.
+interface FlowCounters {
+    packets: number;
+    octets: number;
+    reversePackets: number;
+    reverseOctets: number;
+}
+
 export interface FlowEntry {
     key: string;
     flow: Flow;
@@ -44,6 +52,52 @@ export interface FlowEntry {
     // samples holds recent (endTs, cumulative-bytes) observations within RATE_WINDOW_MS,
     // used to derive the sliding-window bit rate (see entryBitRate).
     samples: FlowSample[];
+    // deltaSums is the sum of the delta counters of every record received for the key in a finite
+    // query, older ones included. Unset for a live stream.
+    deltaSums?: FlowCounters;
+}
+
+// hasTotals tells whether a record carries cumulative totals. The Flow Aggregator's do; a source
+// that streams records newest first may send deltas only.
+function hasTotals(flow: Flow): boolean {
+    return flow.stats.packetTotalCount > 0 || flow.stats.octetTotalCount > 0 ||
+        flow.reverseStats.packetTotalCount > 0 || flow.reverseStats.octetTotalCount > 0;
+}
+
+function addDeltas(sums: FlowCounters | undefined, flow: Flow): FlowCounters {
+    return {
+        packets: (sums?.packets ?? 0) + flow.stats.packetDeltaCount,
+        octets: (sums?.octets ?? 0) + flow.stats.octetDeltaCount,
+        reversePackets: (sums?.reversePackets ?? 0) + flow.reverseStats.packetDeltaCount,
+        reverseOctets: (sums?.reverseOctets ?? 0) + flow.reverseStats.octetDeltaCount,
+    };
+}
+
+// withTotals returns a copy of the record whose totals are the sums, so that every reader of a
+// record's totals shows them. The received record is not modified.
+function withTotals(flow: Flow, sums: FlowCounters): Flow {
+    return {
+        ...flow,
+        stats: { ...flow.stats, packetTotalCount: sums.packets, octetTotalCount: sums.octets },
+        reverseStats: {
+            ...flow.reverseStats,
+            packetTotalCount: sums.reversePackets,
+            octetTotalCount: sums.reverseOctets,
+        },
+    };
+}
+
+// endMs is a record's end time in ms; one that cannot be parsed counts as the oldest.
+function endMs(flow: Flow): number {
+    const ms = Date.parse(flow.endTs);
+    return isNaN(ms) ? -Infinity : ms;
+}
+
+// A heap item names an entry by the end time it had when pushed. It is stale once the entry has
+// been removed or has a different end time.
+interface HeapItem {
+    ms: number;
+    key: string;
 }
 
 // entryBitRate returns the connection's throughput in bits/sec over the sliding window,
@@ -103,29 +157,33 @@ function nextSamples(existing: FlowSample[], flow: Flow): FlowSample[] {
 }
 
 /**
- * Bounded in-memory flow store with LRU eviction.
+ * Bounded in-memory flow store.
  * Deduplicates flows by connection key (5-tuple with source port masked).
- * When the store exceeds maxEntries, the oldest entries are evicted.
+ * When the store exceeds maxEntries, a live stream evicts the entry that was used least recently,
+ * and a finite query the one with the oldest end time, whatever order the records arrive in.
  */
 export class FlowStore {
     private entries: Map<string, FlowEntry> = new Map();
     private maxEntries: number;
     private evictionCount = 0;
+    // A min-heap on end time, kept only for a finite query, with stale items removed lazily.
+    private heap: HeapItem[] = [];
 
     constructor(maxEntries: number = DEFAULT_MAX_ENTRIES) {
         this.maxEntries = maxEntries;
     }
 
-    // finite marks a snapshot from a finite query: it is the latest total, not one more sample of a
-    // live rate. service.proto defines no order within a finite query's records, and the key drops
-    // the source port so several connections share it, so the record with the latest endTs is kept
-    // rather than the last one received.
+    // finite marks a snapshot from a finite query, which is not one more sample of a live rate and
+    // is handled by upsertFinite: its records arrive in no particular order, and the key drops the
+    // source port so several connections share it.
     upsert(flow: Flow, finite = false): void {
+        if (finite) {
+            this.upsertFinite(flow);
+            return;
+        }
         const key = connectionKey(flow);
         const existing = this.entries.get(key);
         const now = Date.now();
-
-        if (finite && existing && Date.parse(existing.flow.endTs) > Date.parse(flow.endTs)) return;
 
         if (existing) {
             this.entries.delete(key);
@@ -136,7 +194,7 @@ export class FlowStore {
             flow,
             firstSeen: existing ? existing.firstSeen : now,
             lastSeen: now,
-            samples: finite ? [] : nextSamples(existing ? existing.samples : [], flow),
+            samples: nextSamples(existing ? existing.samples : [], flow),
         };
         this.entries.set(key, entry);
 
@@ -146,6 +204,109 @@ export class FlowStore {
                 this.entries.delete(oldest.value);
                 this.evictionCount++;
             }
+        }
+    }
+
+    // A finite query's records arrive in no particular order: a source may stream the newest
+    // first. The entry shows the record with the latest endTs, and, for a source that sends
+    // no totals, the sum of the deltas of all the key's records as its totals, which does not
+    // depend on the order. When the store is full the entry with the oldest endTs is evicted, so
+    // that it keeps the newest connections, and a record of a new key older than all of them is
+    // dropped.
+    private upsertFinite(flow: Flow): void {
+        const key = connectionKey(flow);
+        const existing = this.entries.get(key);
+        const ms = endMs(flow);
+
+        if (!existing && this.entries.size >= this.maxEntries) {
+            const oldest = this.oldest();
+            if (oldest && ms < oldest.ms) {
+                this.evictionCount++;
+                return;
+            }
+        }
+
+        const sums = addDeltas(existing?.deltaSums, flow);
+        let shown = existing && endMs(existing.flow) > ms ? existing.flow : flow;
+        if (!hasTotals(flow)) {
+            shown = withTotals(shown, sums);
+        }
+        const shownMs = endMs(shown);
+        this.entries.set(key, {
+            key,
+            flow: shown,
+            firstSeen: existing ? existing.firstSeen : Date.now(),
+            lastSeen: Date.now(),
+            samples: [],
+            deltaSums: sums,
+        });
+        if (!existing || shownMs !== endMs(existing.flow)) {
+            this.push({ ms: shownMs, key });
+        }
+
+        while (this.entries.size > this.maxEntries) {
+            const oldest = this.oldest();
+            if (!oldest) break;
+            this.entries.delete(oldest.key);
+            this.evictionCount++;
+        }
+    }
+
+    // oldest returns the item of the entry with the oldest endTs, without removing the entry.
+    private oldest(): HeapItem | undefined {
+        for (;;) {
+            const top = this.heap[0];
+            if (!top) return undefined;
+            const entry = this.entries.get(top.key);
+            if (entry && endMs(entry.flow) === top.ms) return top;
+            this.pop();
+        }
+    }
+
+    private push(item: HeapItem): void {
+        // Updates leave stale items behind. Rebuilding from the entries keeps the heap's size
+        // proportional to the store's.
+        if (this.heap.length > 4 * this.maxEntries + 64) {
+            this.heap = Array.from(this.entries.values(), e => ({ ms: endMs(e.flow), key: e.key }));
+            this.heapify();
+            return;
+        }
+        const heap = this.heap;
+        heap.push(item);
+        let i = heap.length - 1;
+        while (i > 0) {
+            const parent = (i - 1) >> 1;
+            if (heap[parent].ms <= heap[i].ms) break;
+            [heap[parent], heap[i]] = [heap[i], heap[parent]];
+            i = parent;
+        }
+    }
+
+    private pop(): void {
+        const heap = this.heap;
+        const last = heap.pop();
+        if (last && heap.length > 0) {
+            heap[0] = last;
+            this.siftDown(0);
+        }
+    }
+
+    private heapify(): void {
+        for (let i = (this.heap.length >> 1) - 1; i >= 0; i--) this.siftDown(i);
+    }
+
+    private siftDown(start: number): void {
+        const heap = this.heap;
+        let i = start;
+        for (;;) {
+            const left = 2 * i + 1;
+            const right = left + 1;
+            let smallest = i;
+            if (left < heap.length && heap[left].ms < heap[smallest].ms) smallest = left;
+            if (right < heap.length && heap[right].ms < heap[smallest].ms) smallest = right;
+            if (smallest === i) return;
+            [heap[smallest], heap[i]] = [heap[i], heap[smallest]];
+            i = smallest;
         }
     }
 
@@ -183,6 +344,7 @@ export class FlowStore {
 
     clear(): void {
         this.entries.clear();
+        this.heap = [];
         this.evictionCount = 0;
     }
 }

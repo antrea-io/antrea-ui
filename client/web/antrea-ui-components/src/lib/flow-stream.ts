@@ -79,8 +79,8 @@ export interface FlowQueryCompletion { snapshotCount: number; maxCount: number; 
  * record more to detect truncation), known once the query completes, until then it is 0. A
  * finite query is incomplete for any of three reasons: `truncated` is true when the source had
  * more records than `maxCount`; `evicted` is true when the page's store evicted connections
- * during the query, so some are missing or may show older totals; `droppedCount` is the number
- * of records the source reports it lost, which does not end the query. Narrowing the query with
+ * during the query, so the oldest are missing or may show partial totals; `droppedCount` is the
+ * number of records the source reports it lost, which does not end the query. Narrowing the query with
  * filters or a shorter time window helps in each case. A live stream reports none of the three. */
 export const FLOW_QUERY_STATE_EVENT = 'antrea-flow-query-state';
 export interface FlowQueryStateDetail {
