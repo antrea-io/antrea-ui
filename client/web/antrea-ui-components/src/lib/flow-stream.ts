@@ -127,7 +127,8 @@ export interface FlowStreamCallbacks {
     onFlows: (flows: Flow[]) => void;
     onError: (error: Error) => void;
     onDropped?: (droppedCount: number) => void;
-    onConnected?: () => void;
+    /** HTTP Date of this stream response, used to age cluster timestamps even if the browser clock differs. */
+    onConnected?: (serverDate: string | null) => void;
     onDisconnected?: () => void;
     /** Called when a retryable failure has scheduled another connection attempt, after the
      * onDisconnected for that failure. It tells a disconnect that will resolve itself (the
@@ -361,7 +362,7 @@ export class FlowStreamClient {
             }
             if (!response.body) throw new Error('Response body is null');
 
-            this.callbacks.onConnected?.();
+            this.callbacks.onConnected?.(response.headers.get('Date'));
 
             const reader = response.body.getReader();
             const decoder = new TextDecoder();

@@ -14,9 +14,11 @@
  * limitations under the License.
  */
 
-import { Flow, connectionKey } from './flow-types.js';
+import { Flow, FlowEndReason, connectionKey } from './flow-types.js';
 
 const DEFAULT_MAX_ENTRIES = 10_000;
+// Allow several of the Flow Aggregator's usual one-minute reports before aging out a connection.
+export const LIVE_FLOW_WINDOW_MS = 3 * 60_000;
 
 // RATE_WINDOW_MS is the length of the sliding window used to compute the bit rate.
 // It is measured against each flow's own endTs (cluster clock), not the wall-clock time
@@ -69,10 +71,9 @@ export function entryBitRate(entry: FlowEntry): number {
 }
 
 // nextSamples appends a new observation to the existing sample history, handling counter
-// resets (a new connection reusing the same masked 5-tuple key) and pruning anything older
+// resets (a new connection reusing the same 5-tuple) and pruning anything older
 // than the sliding window relative to the newest sample.
-function nextSamples(existing: FlowSample[], flow: Flow): FlowSample[] {
-    const endMs = Date.parse(flow.endTs);
+function nextSamples(existing: FlowSample[], flow: Flow, endMs: number): FlowSample[] {
     if (isNaN(endMs)) {
         return existing;
     }
@@ -102,57 +103,91 @@ function nextSamples(existing: FlowSample[], flow: Flow): FlowSample[] {
     return samples;
 }
 
-/**
- * Bounded in-memory flow store with LRU eviction.
- * Deduplicates flows by connection key (5-tuple with source port masked).
- * When the store exceeds maxEntries, the oldest entries are evicted.
- */
-export class FlowStore {
-    private entries: Map<string, FlowEntry> = new Map();
-    private maxEntries: number;
-    private evictionCount = 0;
+// These are final exports. An active timeout is a periodic report for a continuing flow.
+function isFinalReport(reason: FlowEndReason): boolean {
+    return reason === FlowEndReason.IdleTimeout || reason === FlowEndReason.EndOfFlow ||
+        reason === FlowEndReason.ForcedEnd || reason === FlowEndReason.LackOfResources;
+}
 
-    constructor(maxEntries: number = DEFAULT_MAX_ENTRIES) {
-        this.maxEntries = maxEntries;
+/** One entry per transport five-tuple, bounded by capacity and, for live queries, by report age. */
+export class FlowStore {
+    private entries = new Map<string, FlowEntry & { expiresAt: number }>();
+    // In LRU order so a burst of completed connections cannot displace continuing ones.
+    private finished = new Set<string>();
+    // Server epoch time at performance.now() = 0, calibrated whenever a stream opens.
+    private serverTimeOrigin?: number;
+    private nextExpiry = Infinity;
+    private evictionCount = 0;
+    private evictionWarningUntil = 0;
+
+    constructor(private readonly maxEntries = DEFAULT_MAX_ENTRIES) {}
+
+    setStreamDate(date: string | null): void {
+        const serverTime = Date.parse(date ?? '');
+        this.serverTimeOrigin = Number.isFinite(serverTime) ? serverTime - performance.now() : undefined;
     }
 
-    // finite marks a snapshot from a finite query: it is the latest total, not one more sample of a
-    // live rate. service.proto defines no order within a finite query's records, and the key drops
-    // the source port so several connections share it, so the record with the latest endTs is kept
-    // rather than the last one received.
     upsert(flow: Flow, finite = false): void {
-        const key = connectionKey(flow);
-        const existing = this.entries.get(key);
+        this.upsertBatch([flow], finite);
+    }
+
+    upsertBatch(flows: Flow[], finite = false): void {
         const now = Date.now();
+        const receivedAt = performance.now();
+        if (!finite) this.expireLiveEntries(receivedAt);
+        for (const flow of flows) {
+            const end = Date.parse(flow.endTs);
+            // Convert the cluster report time to the same monotonic clock as our deadlines.
+            // Without a usable HTTP Date or endTs, bound retention from receipt.
+            const reportedAt = this.serverTimeOrigin !== undefined && Number.isFinite(end)
+                ? Math.min(end - this.serverTimeOrigin, receivedAt) : receivedAt;
+            const expiresAt = finite ? Infinity : reportedAt + LIVE_FLOW_WINDOW_MS;
+            if (expiresAt <= receivedAt) continue;
 
-        if (finite && existing && Date.parse(existing.flow.endTs) > Date.parse(flow.endTs)) return;
-
-        if (existing) {
-            this.entries.delete(key);
-        }
-
-        const entry: FlowEntry = {
-            key,
-            flow,
-            firstSeen: existing ? existing.firstSeen : now,
-            lastSeen: now,
-            samples: finite ? [] : nextSamples(existing ? existing.samples : [], flow),
-        };
-        this.entries.set(key, entry);
-
-        while (this.entries.size > this.maxEntries) {
-            const oldest = this.entries.keys().next();
-            if (!oldest.done) {
-                this.entries.delete(oldest.value);
+            const key = connectionKey(flow);
+            const existing = this.entries.get(key);
+            const final = !finite && isFinalReport(flow.endReason);
+            if (existing) {
+                const previousEnd = Date.parse(existing.flow.endTs);
+                // Reconnects can replay an older report, including a periodic report for a
+                // connection whose final export we already have.
+                if (previousEnd > end || (previousEnd === end && this.finished.has(key) && !final)) continue;
+                this.entries.delete(key);
+                this.finished.delete(key);
+            }
+            this.entries.set(key, {
+                key, flow, expiresAt,
+                firstSeen: existing?.firstSeen ?? now,
+                lastSeen: now,
+                samples: finite ? [] : nextSamples(existing?.samples ?? [], flow, end),
+            });
+            if (final) this.finished.add(key);
+            this.nextExpiry = Math.min(this.nextExpiry, expiresAt);
+            if (this.entries.size > this.maxEntries) {
+                const evicted = this.finished.values().next().value ?? this.entries.keys().next().value!;
+                this.evictionWarningUntil = Math.max(this.evictionWarningUntil, this.entries.get(evicted)!.expiresAt);
+                this.entries.delete(evicted);
+                this.finished.delete(evicted);
                 this.evictionCount++;
             }
         }
     }
 
-    upsertBatch(flows: Flow[], finite = false): void {
-        for (const flow of flows) {
-            this.upsert(flow, finite);
+    /** Removes expired reports, including when the stream is quiet. Finite results never expire. */
+    expireLiveEntries(now = performance.now()): boolean {
+        if (now < this.nextExpiry) return false;
+        this.nextExpiry = Infinity;
+        let removed = false;
+        for (const [key, entry] of this.entries) {
+            if (entry.expiresAt <= now) {
+                this.entries.delete(key);
+                this.finished.delete(key);
+                removed = true;
+            } else {
+                this.nextExpiry = Math.min(this.nextExpiry, entry.expiresAt);
+            }
         }
+        return removed;
     }
 
     get(key: string): FlowEntry | undefined {
@@ -161,6 +196,7 @@ export class FlowStore {
             this.entries.delete(key);
             entry.lastSeen = Date.now();
             this.entries.set(key, entry);
+            if (this.finished.delete(key)) this.finished.add(key);
         }
         return entry;
     }
@@ -178,11 +214,14 @@ export class FlowStore {
     }
 
     hasEvicted(): boolean {
-        return this.evictionCount > 0;
+        return this.evictionWarningUntil > performance.now();
     }
 
     clear(): void {
         this.entries.clear();
+        this.finished.clear();
+        this.nextExpiry = Infinity;
         this.evictionCount = 0;
+        this.evictionWarningUntil = 0;
     }
 }

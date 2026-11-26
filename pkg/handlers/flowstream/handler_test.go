@@ -195,6 +195,9 @@ func TestStreamFlowsHappyPath(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 	assert.Contains(t, resp.Header.Get("Content-Type"), "text/event-stream")
+	assert.Equal(t, "Date", resp.Header.Get("Access-Control-Expose-Headers"))
+	_, err = http.ParseTime(resp.Header.Get("Date"))
+	require.NoError(t, err)
 
 	scanner := bufio.NewScanner(resp.Body)
 	var foundFlowEvent bool

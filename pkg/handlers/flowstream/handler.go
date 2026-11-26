@@ -476,6 +476,8 @@ func (h *SSEHandler) StreamFlows(c *gin.Context) {
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
 	c.Header("X-Accel-Buffering", "no")
+	// net/http supplies Date. Expose it to cross-origin UI clients for live flow expiry.
+	c.Header("Access-Control-Expose-Headers", "Date")
 	// Commit and flush the status and headers now, rather than waiting for the first byte of
 	// body: readyCh above already confirmed the stream is live, but flowsCh can still go quiet
 	// for a while on a narrow filter, and c.Stream's loop only writes (and only then flushes) on

@@ -86,7 +86,7 @@ function instrument() {
             svgElements: svg ? svg.getElementsByTagName('*').length : 0,
             pageElements: p?.shadowRoot ? p.shadowRoot.querySelectorAll('*').length : 0,
             storeEntries: typeof p?._store?.size === 'function' ? p._store.size() : null,
-            storeEvicted: typeof p?._store?.hasEvicted === 'function' ? p._store.hasEvicted() : null,
+            storeEvictionCount: typeof p?._store?.getEvictionCount === 'function' ? p._store.getEvictionCount() : null,
         };
         s.lastCollect = now;
         s.longTasks = [];

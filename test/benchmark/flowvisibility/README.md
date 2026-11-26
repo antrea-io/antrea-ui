@@ -89,10 +89,12 @@ visible map node or flow row, lets it warm up (`--warmup`, 30s), then samples fo
 
 The default path, `/flows/map?namespace=_all`, is the cluster-wide map. It folds each identified
 Namespace into one node and shows up to 50 of the busiest edges by default. This display limit
-does not filter the stream. The page retains up to 10,000 distinct connection keys and evicts the
-least recently used entry when a new key would exceed that limit. For large runs such as `xlarge`,
-check `storeEntries` and `storeEvicted` in `page-samples.jsonl` to see how many entries the map
-is built from and whether any have been evicted.
+does not filter the stream. The live view retains connections reported in the last 3 minutes,
+up to 10,000 distinct transport five-tuples. At capacity it evicts the least recently used
+finished connection first. If all connections are still active, it evicts the least recently used
+entry. In `page-samples.jsonl`, `storeEntries` is the current number of connections in the store.
+`storeEvictionCount` counts capacity evictions since the store was last cleared. Aging out of
+the live window leaves this count unchanged.
 
 Use a Namespace-scoped `--path`, such as `/flows/map?namespace=<namespace>`, to measure the cost
 of drawing workloads.
