@@ -18,6 +18,7 @@ import { state, query, property } from 'lit/decorators.js';
 import * as d3 from 'd3';
 import { busiestMapEdges } from '../lib/service-map-edges.js';
 import { reconcileMapNodes, clusterMapNodes, pinMapNodes, seedNamespaceTransition, separateFromNamespaces, nodeBounds, restoreMapPositions } from '../lib/service-map-layout.js';
+import { applicableProviders, loadNodeCardItems, type NodeCardProvider, type NodeSelection } from '../lib/node-card.js';
 import { pageStyles, pickerStyles } from '../lib/styles.js';
 import { SCOPE_ALL, scopeToValue, valueToScope } from '../lib/namespace-scope.js';
 import { createNamespaceScope } from '../lib/namespace-scope-controller.js';
@@ -308,6 +309,55 @@ interface WorkloadNode {
     addresses?: Set<string>;
     internal?: { connections: number; denied: number; bytes: number };
 }
+function nodeToSelection(node: D3Node): NodeSelection {
+    switch (node.kind) {
+        case 'workload':
+            return node.serviceOnly
+                ? { kind: 'service', name: node.shortName, namespace: node.namespace }
+                : { kind: 'workload', label: node.shortName, namespace: node.namespace || undefined };
+        case 'namespace':
+        case 'undisclosedNamespace': return { kind: node.kind, namespace: node.namespace };
+        default: return { kind: node.kind };
+    }
+}
+
+/** The noun a node card's header puts before the node's name. */
+function nodeKindLabel(node: NodeSelection): string {
+    switch (node.kind) {
+        case 'namespace':
+        case 'undisclosedNamespace': return 'Namespace';
+        case 'service': return 'Service';
+        case 'workload': return 'Workload';
+        default: return '';
+    }
+}
+
+function clippingAncestors(container: Element | null) {
+    const clips = /^(auto|scroll|overlay|hidden|clip)$/;
+    const ancestors: { element: Element; clipsX: boolean; clipsY: boolean }[] = [];
+    for (let element = container; element && element !== document.documentElement;) {
+        const style = getComputedStyle(element);
+        const clipsX = clips.test(style.overflowX || style.overflow);
+        const clipsY = clips.test(style.overflowY || style.overflow);
+        if (clipsX || clipsY) ancestors.push({ element, clipsX, clipsY });
+        const root = element.getRootNode();
+        element = element.assignedSlot ?? element.parentElement ?? (root instanceof ShadowRoot ? root.host : null);
+    }
+    return ancestors;
+}
+
+interface OpenNodeCard {
+    anchor: SVGGElement;
+    id: string;
+    label: string;
+    /** What the card is about, shown in its header like a node tooltip's heading. */
+    heading: string;
+    kind: string;
+    request: AbortController;
+    slots: ReturnType<typeof loadNodeCardItems>;
+    clipping: ReturnType<typeof clippingAncestors>;
+}
+
 interface WorkloadEdge {
     source: string; target: string;
     connectionCount: number; totalBytesForward: number; totalBytesReverse: number; bitRate: number;
@@ -633,7 +683,14 @@ function edgePinLabel(node: D3Node): string {
 }
 
 function namespaceTrafficTooltip(internal: NonNullable<WorkloadNode['internal']>): string {
-    return `${internal.connections} internal connections, ${internal.denied} denied, ${formatBytes(internal.bytes)}. Click to expand.`;
+    return `${internal.connections} internal connections, ${internal.denied} denied, ${formatBytes(internal.bytes)}.`;
+}
+
+function isNodeActivation(event: MouseEvent | KeyboardEvent): boolean {
+    if (!(event instanceof KeyboardEvent)) return event.button === 0 && !event.ctrlKey;
+    if (event.key !== 'Enter' && event.key !== ' ') return false;
+    if (event.repeat) event.preventDefault();
+    return !event.repeat;
 }
 
 // ── D3 node geometry ─────────────────────────────────────────────────────────
@@ -679,6 +736,8 @@ const CURVE_OFFSET = 30;
 // rather than as an oversized workload.
 const COLLAPSED_NS_MIN_WIDTH = 150;
 const COLLAPSED_NS_HEIGHT = 56;
+const DISCLOSURE_TARGET = 24;
+const DISCLOSURE_TRIANGLE = 'M-3.5,-5 L4,0 L-3.5,5 Z';
 const LOCK_SIZE = 11;
 // The edge pin's glyph is about this wide, and sits this far from the edge of the node it marks.
 const EDGE_PIN_SIZE = 12;
@@ -740,7 +799,14 @@ function syncNamespaceCounts(svg: SVGSVGElement, graph: GraphData) {
         const g = d3.select(this).select('g.node-body');
         const hasInternalDenials = (d.internal?.denied ?? 0) > 0;
         g.select('rect').style('stroke', hasInternalDenials ? EDGE_COLOR_VAR.drop : MAP_COLOR_VAR.nsHullStroke);
+        // Counters can grow without a layout change. Long rows use the whole second line.
+        const { hw } = nodeHalfSize(d);
+        const space = 2 * (hw - NODE_PADDING_X);
+        const estimated = textWidth(d.detail, 9);
+        const indent = Math.min(DISCLOSURE_TARGET, Math.max(0, space - estimated));
         g.select('text.node-detail').text(d.detail)
+            .attr('x', -hw + NODE_PADDING_X + indent)
+            .attr('textLength', estimated > space ? space : null)
             .style('fill', hasInternalDenials ? EDGE_COLOR_VAR.drop : MAP_COLOR_VAR.nodeNamespaceText);
         g.attr('aria-description', d.detail);
     });
@@ -750,7 +816,7 @@ function nodeHalfSize(d: D3Node): { hw: number; hh: number } {
     if (isDiamond(d)) return { hw: EXTERNAL_SIZE, hh: EXTERNAL_SIZE };
     const w = Math.max(textWidth(d.shortName, 12), d.hideNamespace || d.kind === 'namespace' ? 0 : textWidth(d.detail, 9)) + NODE_PADDING_X * 2 + (d.kind === 'undisclosedNamespace' ? LOCK_SIZE + 6 : 0);
     if (d.kind === 'undisclosedNamespace' || d.kind === 'namespace') {
-        return { hw: Math.max(w, COLLAPSED_NS_MIN_WIDTH) / 2, hh: (COLLAPSED_NS_HEIGHT + NODE_PADDING_Y) / 2 };
+        return { hw: Math.max(w + (d.kind === 'namespace' ? DISCLOSURE_TARGET : 0), COLLAPSED_NS_MIN_WIDTH) / 2, hh: (COLLAPSED_NS_HEIGHT + NODE_PADDING_Y) / 2 };
     }
     const hh = ((d.hideNamespace ? 24 : 38) + NODE_PADDING_Y) / 2;
     // A pill is a rect with rx = hh. Narrower than a circle, SVG clamps rx to the half width and
@@ -1083,13 +1149,27 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         .map-control-btn:disabled, .map-control-btn[aria-disabled="true"] { opacity: 0.4; cursor: not-allowed; }
         .map-legend-title { font-weight: 600; margin-bottom: 2px; }
         .legend-row { display: flex; align-items: center; gap: 6px; }
-        .edge-details {
-            grid-area: 1 / 1; place-self: start end; margin: 10px 10px 0 0;
+        .edge-details { grid-area: 1 / 1; place-self: start end; margin: 10px 10px 0 0; }
+        .edge-details, .node-card {
             background: var(--antrea-color-bg, #1b2a32);
             border: 1px solid var(--antrea-color-border, #314351);
             border-radius: 4px; padding: 16px; min-width: 280px; max-width: 350px; z-index: 10;
             box-sizing: border-box; max-height: calc(100% - 10px); overflow: auto;
         }
+        .node-card {
+            position: absolute; top: 0;
+            min-width: min(12rem, var(--card-available-width, 100%));
+            max-width: min(22rem, var(--card-available-width, 100%));
+            max-height: 100%; width: max-content; padding: 10px 12px; overflow-wrap: anywhere;
+        }
+        .node-card a { color: var(--antrea-color-primary, #0079b8); }
+        .node-card .edge-details-close { margin-left: 12px; }
+        .node-card-heading { margin-bottom: 8px; }
+        .node-card-kind {
+            font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em;
+            color: var(--antrea-color-text-muted, #adbbc4);
+        }
+        .node-card-name { font-weight: 600; }
         .edge-details-close {
             position: sticky; top: 0; float: right;
             background: none; border: none; color: var(--antrea-color-text-muted, #adbbc4);
@@ -1235,11 +1315,14 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
     private _updateEdgeLabels: (() => void) | null = null;
     private _applyMapHighlight: ((highlighted: Set<string>, edges: WorkloadEdge[]) => void) | null = null;
 
+    @state() private _nodeCard: OpenNodeCard | null = null;
+    @query('.node-card') private _cardEl?: HTMLElement;
     @query('#graph-svg') private _svgEl?: SVGSVGElement;
     @query('#graph-tooltip') private _tooltipEl?: HTMLDivElement;
 
     // Plugin extension points — populated by the host from its plugin registry (see
     // `@antrea/ui-plugin-sdk`). Never set by manifest/attribute, so `attribute: false`.
+    @property({ attribute: false }) nodeCardProviders: readonly NodeCardProvider[] = [];
     @property({ attribute: false }) edgeExtraRenderers: EdgeExtraRenderer[] = [];
     @property({ attribute: false }) flowTableColumnsProcessors: FlowTableColumnsProcessor[] = [];
 
@@ -1324,8 +1407,11 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
     private _roHost: HTMLElement | null = null;
     private _graphRef = buildGraph([]);
 
+    // Window listeners see a retargeted path when an embedding shadow root is closed.
+    private _cardPointerEvents = new WeakSet<PointerEvent>();
     private _handleDocClick = (e: PointerEvent) => {
         const path = e.composedPath();
+        if (this._nodeCard && !this._cardPointerEvents.delete(e)) this._closeNodeCard();
         if (!path.some(el => el instanceof Element && (el as Element).closest?.('.multiselect'))) {
             this._nsOpen = false; this._podOpen = false; this._svcOpen = false;
         }
@@ -1367,6 +1453,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         const clusterWide = value === SCOPE_ALL;
         const observedNs = clusterWide ? '' : value;
         if (clusterWide === this._clusterWide && observedNs === this._observedNs) return;
+        this._closeNodeCard();
         this._clusterWide = clusterWide;
         this._observedNs = observedNs;
         // The open filter menu lists the old scope's names, which the new scope does not offer.
@@ -1399,6 +1486,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
 
     override disconnectedCallback() {
         super.disconnectedCallback();
+        this._closeNodeCard();
         this._unsubscribeScope?.();
         this._scopeHandle?.dispose();
         this._scopeHandle = undefined;
@@ -1421,6 +1509,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
 
     override willUpdate(changed: Map<string, unknown>) {
         super.willUpdate(changed);
+        if (changed.has('nodeCardProviders') || changed.has('viewMode')) this._closeNodeCard();
         // A host may change the query and URL together. Apply both before opening a request,
         // and invalidate permissions before a URL without a scope can choose a default.
         if (changed.has('flowQuery')) this._onFlowQueryChange(changed.get('flowQuery') as FlowQuery | undefined);
@@ -1467,6 +1556,11 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         // Rebuild map when entries or SVG dimensions change
         if ((changed.has('_entries') || changed.has('_svgWidth') || changed.has('_svgHeight') || changed.has('_edgeLimit') || changed.has('_expandedNamespaces')) && this.viewMode === 'map') {
             this._buildServiceMap();
+        }
+        if (changed.has('nodeCardProviders')) this._bindNodeActions();
+        if (this._nodeCard) {
+            this._positionNodeCard();
+            if (changed.has('_nodeCard')) this._cardEl?.querySelector('button')?.focus({ preventScroll: true });
         }
         if (changed.has('_selectedEdgeKey')) {
             if (this.viewMode === 'map') this._buildServiceMap();
@@ -1808,6 +1902,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         this._hoveredNode = null;
         this._hoveredEdgeKey = null;
         this._selectedEdgeKey = null;
+        this._closeNodeCard();
         this._hideTooltip();
         this._expandingNamespaces.clear();
         this._expandedNamespaces = new Set();
@@ -1890,6 +1985,12 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         this._shownEdgeCount = shownEdges.length;
         this._totalEdgeCount = graph.edges.length;
         this._graphRef = graph;
+        if (this._nodeCard) {
+            const old = previousGraph.nodeMap.get(this._nodeCard.id);
+            const node = graph.nodeMap.get(this._nodeCard.id);
+            if (!node || old?.kind !== node.kind || old.shortName !== node.shortName ||
+                old.namespace !== node.namespace || old.serviceOnly !== node.serviceOnly) this._closeNodeCard();
+        }
 
         // If a rebuild drops the currently-selected edge, clear the selection so
         // _dispatchEdgeSelected() emits null — otherwise a host listening on the
@@ -2050,6 +2151,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
                 this._mapTransform = event.transform;
                 container.attr('transform', event.transform);
                 this._mapLayoutSnapshot?.setAttribute('transform', event.transform.toString());
+                this._positionNodeCard();
                 const [minimum, maximum] = zoom.scaleExtent();
                 this._canZoomIn = event.transform.k < maximum - 1e-9;
                 this._canZoomOut = event.transform.k > minimum + 1e-9;
@@ -2063,8 +2165,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         if (newViewport) d3svg.call(zoom.transform, transform);
 
         // Namespace boundaries
-        const namespaceLabel = (namespace: string) => this._clusterWide ? `${namespace} ⊖ collapse` : namespace;
-        const namespaceMinWidth = (namespace: string) => textWidth(namespaceLabel(namespace), 10) + 24;
+        const namespaceMinWidth = (namespace: string) => textWidth(namespace, 10) + 24 + (this._clusterWide ? DISCLOSURE_TARGET : 0);
         const namespacePadding = { side: NAMESPACE_PADDING, top: NAMESPACE_PADDING + NAMESPACE_HEADER, bottom: NAMESPACE_PADDING };
         const nsMap = new Map<string, D3Node[]>();
         for (const n of d3Nodes) {
@@ -2075,31 +2176,16 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         }
         const layer = (name: string) => container.selectAll<SVGGElement, null>(`g.${name}`)
             .data([null]).join('g').attr('class', name);
+        const namespaces = Array.from(nsMap);
         const nsHulls = layer('ns-hulls');
         const hullGroups = nsHulls.selectAll<SVGGElement, [string, D3Node[]]>('g.namespace')
-            .data(Array.from(nsMap), d => d[0]).join('g').attr('class', 'namespace')
+            .data(namespaces, d => d[0]).join('g').attr('class', 'namespace')
             .style('cursor', () => this._clusterWide ? 'grab' : null);
         if (this._clusterWide) hullGroups.call(this._namespaceDrag);
         else hullGroups.on('.drag', null);
-        hullGroups.selectAll('rect').data(d => [d]).join('rect').attr('rx', 12).attr('ry', 12)
+        hullGroups.selectAll('rect.namespace-boundary').data(d => [d]).join('rect').attr('class', 'namespace-boundary').attr('rx', 12).attr('ry', 12)
             .style('fill', MAP_COLOR_VAR.nsHullFill).style('stroke', MAP_COLOR_VAR.nsHullStroke)
             .attr('stroke-width', 1).attr('stroke-dasharray', '4,2');
-        hullGroups.selectAll('text').data(d => [d]).join('text')
-            .text(d => namespaceLabel(d[0]))
-            .style('cursor', () => this._clusterWide ? 'pointer' : null)
-            .attr('role', this._clusterWide ? 'button' : null).attr('tabindex', this._clusterWide ? 0 : null)
-            .on('click', (_event, d) => { if (this._clusterWide) this._toggleNamespace(d[0]); })
-            .on('keydown', (event, d) => {
-                if (this._clusterWide && (event.key === 'Enter' || event.key === ' ')) {
-                    event.preventDefault(); this._toggleNamespace(d[0], true);
-                }
-            })
-            .style('fill', MAP_COLOR_VAR.nsLabel).attr('font-size', '10px').attr('font-weight', '600');
-        const nsGroups = hullGroups.nodes().map(element => {
-            const group = d3.select<SVGGElement, [string, D3Node[]]>(element);
-            return { namespace: group.datum()[0], nodes: group.datum()[1], boundary: group.select('rect'), label: group.select('text') };
-        });
-
         // Edge paths
         // A wider invisible stroke makes thin edges selectable, including when zoomed out.
         // Draw it behind the visible paths so nearby targets cannot obscure the actual lines.
@@ -2154,7 +2240,10 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
             })
             .on('click', (_event, d) => {
                 const edge = this._graphRef.edgeMap.get(d.edgeKey);
-                if (edge) this._selectedEdgeKey = d.edgeKey;
+                if (edge) {
+                    this._closeNodeCard();
+                    this._selectedEdgeKey = d.edgeKey;
+                }
             });
         bindEdgeEvents(linkPaths);
         bindEdgeEvents(edgeHitPaths);
@@ -2168,6 +2257,34 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
             .attr('x', d => -textWidth(d.label, 9) / 2 - 3).attr('y', -6)
             .attr('width', d => textWidth(d.label, 9) + 6).attr('height', 12).attr('rx', 3).attr('ry', 3).style('fill', MAP_COLOR_VAR.edgeLabelBg).style('stroke', d => EDGE_COLOR_VAR[d.role]).attr('stroke-width', 0.5).attr('stroke-opacity', 0.5);
         edgeLabelGroups.selectAll('text').data(d => [d]).join('text').text(d => d.label).attr('text-anchor', 'middle').attr('dominant-baseline', 'central').style('fill', MAP_COLOR_VAR.edgeLabelText).attr('font-size', '9px').attr('pointer-events', 'none');
+
+        // Headers sit above edges so their collapse buttons win hit testing at crossings.
+        const headers = layer('namespace-headers').selectAll<SVGGElement, [string, D3Node[]]>('g.namespace-header')
+            .data(namespaces, d => d[0]).join('g').attr('class', 'namespace-header')
+            .attr('pointer-events', this._clusterWide ? null : 'none')
+            .style('cursor', () => this._clusterWide ? 'pointer' : null)
+            .attr('role', this._clusterWide ? 'button' : null).attr('tabindex', this._clusterWide ? 0 : null)
+            .attr('aria-label', ([ns]) => this._clusterWide ? `Collapse namespace ${ns}` : null)
+            .attr('aria-expanded', this._clusterWide ? 'true' : null)
+            .on('click keydown', (event, [ns]) => {
+                if (!this._clusterWide || !isNodeActivation(event)) return;
+                event.preventDefault();
+                this._toggleNamespace(ns, event instanceof KeyboardEvent);
+            });
+        if (this._clusterWide) headers.call(this._namespaceDrag);
+        else headers.on('.drag', null);
+        headers.selectAll('rect').data(d => this._clusterWide ? [d] : []).join('rect')
+            .attr('width', d => namespaceMinWidth(d[0]) - 12).attr('height', DISCLOSURE_TARGET).attr('fill', 'transparent');
+        headers.selectAll('path').data(d => this._clusterWide ? [d] : []).join('path')
+            .attr('d', DISCLOSURE_TRIANGLE).attr('transform', 'translate(10,12) rotate(90)').style('fill', MAP_COLOR_VAR.nodeStroke);
+        headers.selectAll('text').data(d => [d]).join('text')
+            .text(d => d[0]).attr('x', this._clusterWide ? DISCLOSURE_TARGET : 4).attr('y', 16)
+            .style('fill', this._clusterWide ? MAP_COLOR_VAR.nodeText : MAP_COLOR_VAR.nsLabel).attr('font-size', '10px').attr('font-weight', '600');
+        const headerNodes = headers.nodes();
+        const nsGroups = hullGroups.nodes().map((element, index) => {
+            const group = d3.select<SVGGElement, [string, D3Node[]]>(element);
+            return { namespace: group.datum()[0], nodes: group.datum()[1], boundary: group.select('.namespace-boundary'), header: d3.select(headerNodes[index]) };
+        });
 
         // Opaque backing hides passing edges through folded namespace bodies and leaves a
         // narrow gap around their borders. Highlighting hides unrelated backings to reveal the
@@ -2200,13 +2317,16 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         // Keep the pin beside the body in the same translated group. This preserves their tab
         // order and exposes the pin independently of the namespace's button or image role.
         const nodeBodies = nodeGroup.selectAll<SVGGElement, D3Node>('g.node-body')
-            .data(d => [d]).join('g').attr('class', 'node-body');
+            .data(d => [d]).join(enter => enter.append('g').attr('class', 'node-body'));
         nodeBodies.filter(d => d.kind === 'namespace' || d.kind === 'undisclosedNamespace')
             .on('mouseenter', (event, d) => {
+                if (this._nodeCard) return;
                 const body = d.kind === 'namespace'
                     ? namespaceTrafficTooltip(this._graphRef.nodeMap.get(d.id)!.internal!)
                     : collapsedNamespaceTooltip(d.shortName);
-                this._showNodeTooltip(event, d.shortName, body);
+                const hint = d.kind === 'namespace' ?
+                    (event.currentTarget.hasAttribute('aria-haspopup') ? 'Click for details. Click the arrow to expand.' : 'Click to expand.') : '';
+                this._showNodeTooltip(event, d.shortName, body, hint);
             })
             .on('mousemove', event => {
                 if (!this._tooltipEl) return;
@@ -2214,13 +2334,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
                 this._tooltipEl.style.top = `${event.clientY + 12}px`;
             })
             .on('mouseleave', () => this._hideTooltip());
-        nodeBodies.filter(d => d.kind === 'namespace')
-            .on('click', (_event, d) => this._toggleNamespace(d.namespace))
-            .on('keydown', (event, d) => {
-                if (event.key === 'Enter' || event.key === ' ') {
-                    event.preventDefault(); this._toggleNamespace(d.namespace, true);
-                }
-            });
+        const foldedTitles: { text: SVGTextElement; width: number }[] = [];
         nodeBodies.each(function (this: SVGGElement, d: D3Node) {
             const g = d3.select(this);
             // Metadata changes update the glyph, but preserve its group, handlers and position.
@@ -2231,9 +2345,6 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
             if (g.attr('data-appearance') === appearance) return;
             g.attr('data-appearance', appearance);
             g.selectAll('*').remove();
-            g.attr('role', d.kind === 'namespace' ? 'button' : null)
-                .attr('tabindex', d.kind === 'namespace' ? 0 : null);
-            if (d.kind === 'namespace') g.attr('aria-label', `Expand namespace ${d.namespace}`);
             if (d.kind === 'external' || d.kind === 'undisclosed') {
                 const s = EXTERNAL_SIZE;
                 const stroke = d.kind === 'external' ? MAP_COLOR_VAR.externalStroke : MAP_COLOR_VAR.undisclosedStroke;
@@ -2261,18 +2372,17 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
                     .style('fill', MAP_COLOR_VAR.nsHullFill)
                     .style('stroke', MAP_COLOR_VAR.nsHullStroke)
                     .attr('stroke-width', 1).attr('stroke-dasharray', '4,2');
-                g.append('text').text(d.shortName).attr('dy', -3).attr('x', d.kind === 'undisclosedNamespace' ? LOCK_SIZE / 2 + 3 : 0).attr('text-anchor', 'middle')
+                const folded = d.kind === 'namespace';
+                const titleX = -hw + NODE_PADDING_X + DISCLOSURE_TARGET;
+                const title = g.append('text').text(d.shortName).attr('dy', -3)
+                    .attr('x', folded ? titleX : LOCK_SIZE / 2 + 3).attr('text-anchor', folded ? 'start' : 'middle')
                     .style('fill', d.kind === 'namespace' ? MAP_COLOR_VAR.nodeText : MAP_COLOR_VAR.nsLabel)
                     .attr('font-size', '11px').attr('font-weight', '600');
+                if (folded) foldedTitles.push({ text: title.node()!, width: hw - NODE_PADDING_X - titleX });
                 if (d.kind === 'undisclosedNamespace') appendLock(g, -textWidth(d.shortName, 11) / 2 - LOCK_SIZE / 2 + 3, -13, MAP_COLOR_VAR.nsLabel);
                 g.append('text').attr('class', d.kind === 'namespace' ? 'node-detail' : null).text(d.detail)
-                    .attr('dy', 15).attr('text-anchor', 'middle')
+                    .attr('dy', 15).attr('text-anchor', folded ? 'start' : 'middle').attr('lengthAdjust', 'spacingAndGlyphs')
                     .style('fill', MAP_COLOR_VAR.nodeNamespaceText).attr('font-size', '9px');
-                // Worth a tooltip because it is actionable: it can name the grant that would
-                // disclose this namespace. aria-label rather than an SVG <title> - the hover
-                // handler below draws the visible one in the same panel the edge tooltip uses,
-                // and a <title> would stack the browser's own on top of it.
-                if (d.kind === 'undisclosedNamespace') g.attr('role', 'img').attr('aria-label', collapsedNamespaceTooltip(d.shortName));
                 return;
             }
             // A node that is only ever a destination Service is a pill, where a workload is a
@@ -2286,9 +2396,28 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
             if (!d.hideNamespace) g.append('text').text(d.detail).attr('dy', 13).attr('text-anchor', 'middle').style('fill', MAP_COLOR_VAR.nodeNamespaceText).attr('font-size', '9px');
         });
 
+        // Measure newly drawn titles together, before writing any lengths or starting the simulation.
+        const titleLengths = foldedTitles.map(({ text, width }) =>
+            Math.min(text.getComputedTextLength?.() || textWidth(text.textContent ?? '', 11), width));
+        foldedTitles.forEach(({ text }, i) => {
+            text.setAttribute('lengthAdjust', 'spacingAndGlyphs');
+            text.setAttribute('textLength', String(titleLengths[i]));
+        });
+
         syncNamespaceCounts(svg, graph);
         nodeGroup.each((d, index, groups) => {
             const group = d3.select(groups[index]);
+            if (d.kind === 'namespace') {
+                group.selectAll<SVGGElement, D3Node>('g.namespace-expand').data([d]).join(enter => {
+                    const button = enter.append('g').attr('class', 'namespace-expand').attr('aria-hidden', 'true')
+                        .attr('pointer-events', 'none');
+                    button.append('title').text(`Expand namespace ${d.namespace}`);
+                    button.append('rect').attr('x', -DISCLOSURE_TARGET / 2).attr('y', -DISCLOSURE_TARGET / 2)
+                        .attr('width', DISCLOSURE_TARGET).attr('height', DISCLOSURE_TARGET).attr('fill', 'transparent');
+                    button.append('path').attr('d', DISCLOSURE_TRIANGLE).style('fill', MAP_COLOR_VAR.nodeStroke);
+                    return button;
+                }).attr('transform', `translate(${-nodeHalfSize(d).hw + NODE_PADDING_X + DISCLOSURE_TARGET / 2},-7)`);
+            }
             group.selectAll<SVGTextElement, D3Node>('text.edge-pin')
                 .data(expandedEndpoint(d.id) ? [] : [d]).join('text')
                 .attr('class', 'edge-pin').text('↔').attr('text-anchor', 'middle').attr('dominant-baseline', 'central')
@@ -2308,6 +2437,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
                     }
                 });
         });
+        this._bindNodeActions();
         const togglePin = (id: string) => {
             if (this._pinnedNodes.has(id)) this._pinnedNodes.delete(id);
             else this._pinnedNodes.add(id);
@@ -2337,11 +2467,11 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         applyHighlight(highlightedNodes, shownEdges);
 
         function updateHulls() {
-            for (const { namespace, nodes, boundary, label } of nsGroups) {
+            for (const { namespace, nodes, boundary, header } of nsGroups) {
                 const { left, top, right, bottom } = nodeBounds(nodes, nodeHalfSize, namespacePadding, namespaceMinWidth(namespace));
                 boundary.attr('x', left).attr('y', top)
                     .attr('width', right - left).attr('height', bottom - top);
-                label.attr('x', left + 12).attr('y', top + 18);
+                header.attr('transform', `translate(${left + 8},${top + 2})`);
             }
         }
 
@@ -2384,6 +2514,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
             placeLabels(shownLabels(), nodeIndex);
             namespaceBackings.attr('transform', d => `translate(${d.x},${d.y})`);
             nodeGroup.attr('transform', d => `translate(${d.x},${d.y})`);
+            this._positionNodeCard();
             updateHulls();
         };
         this._drawServiceMap = draw;
@@ -2409,8 +2540,8 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
             this._keyboardToggleNamespace = null;
             if (namespace && this.shadowRoot?.activeElement === svg) {
                 const control = this._expandedNamespaces.has(namespace)
-                    ? hullGroups.filter(([ns]) => ns === namespace).select<SVGTextElement>('text').node()
-                    : nodeBodies.filter(d => d.kind === 'namespace' && d.namespace === namespace).node();
+                    ? headers.filter(([ns]) => ns === namespace).node()
+                    : nodeGroup.filter(d => d.kind === 'namespace' && d.namespace === namespace).select<SVGGElement>('.namespace-toggle').node();
                 control?.focus({ preventScroll: true });
             }
         };
@@ -2548,7 +2679,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
      * The accessible name it provided comes from aria-label on the node group instead - using
      * both would pop a native tooltip on top of this one.
      */
-    private _showNodeTooltip(event: MouseEvent, heading: string, body: string) {
+    private _showNodeTooltip(event: MouseEvent, heading: string, body: string, hint: string) {
         const tip = this._tooltipEl;
         if (!tip) return;
         // textContent, not innerHTML: a namespace name is server-supplied data, not markup.
@@ -2562,6 +2693,11 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         text.className = 'node-tooltip-body';
         text.style.maxWidth = '260px';
         tip.append(header, text);
+        if (hint) {
+            const instruction = document.createElement('div');
+            instruction.textContent = hint;
+            tip.append(instruction);
+        }
         tip.style.left = `${event.clientX + 12}px`;
         tip.style.top = `${event.clientY + 12}px`;
         tip.style.opacity = '1';
@@ -2814,6 +2950,164 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
         `;
     }
 
+    private _bindNodeActions() {
+        if (!this._svgEl) return;
+        d3.select(this._svgEl).selectAll<SVGGElement, D3Node>('g.node-body').each((node, index, elements) => {
+            const anchor = elements[index];
+            const selection = Object.freeze(nodeToSelection(node));
+            const providers = applicableProviders(this.nodeCardProviders, selection);
+            const hasCard = providers.length > 0;
+            const folded = node.kind === 'namespace';
+            const label = node.kind === 'workload' && node.namespace ? `${node.namespace}/${node.shortName}` : node.shortName;
+            const expandLabel = `Expand namespace ${node.namespace}`;
+            const body = d3.select(anchor);
+            body.attr('aria-haspopup', hasCard ? 'dialog' : null)
+                .attr('tabindex', hasCard || folded ? 0 : null)
+                .attr('role', hasCard || folded ? 'button' : node.kind === 'undisclosedNamespace' ? 'img' : null)
+                .attr('aria-label', node.kind === 'undisclosedNamespace' ? collapsedNamespaceTooltip(node.shortName)
+                    : hasCard ? label : folded ? expandLabel : null)
+                .attr('aria-expanded', folded && !hasCard ? 'false' : null)
+                .classed('namespace-toggle', folded && !hasCard)
+                .style('cursor', () => hasCard || folded ? 'pointer' : null)
+                .on('.nodeAction', null);
+            if (hasCard) {
+                body.on('click.nodeAction keydown.nodeAction', event => {
+                    if (isNodeActivation(event)) this._openNodeCard(event, anchor, node.id, label, selection, providers,
+                        node.shortName, nodeKindLabel(selection));
+                });
+            }
+            if (!folded) return;
+
+            // The arrow becomes a separate keyboard target when the body opens a card.
+            const arrow = d3.select(anchor.parentNode as SVGGElement).select<SVGGElement>('g.namespace-expand')
+                .classed('namespace-toggle', hasCard)
+                .attr('pointer-events', hasCard ? null : 'none').style('cursor', () => hasCard ? 'pointer' : null)
+                .attr('aria-hidden', hasCard ? null : 'true')
+                .attr('role', hasCard ? 'button' : null).attr('tabindex', hasCard ? 0 : null)
+                .attr('aria-expanded', hasCard ? 'false' : null).attr('aria-label', hasCard ? expandLabel : null)
+                .on('.nodeAction', null);
+            const toggle = hasCard ? arrow : body;
+            toggle.on('click.nodeAction keydown.nodeAction', event => {
+                if (!isNodeActivation(event)) return;
+                event.preventDefault();
+                event.stopPropagation();
+                this._toggleNamespace(node.namespace, event instanceof KeyboardEvent);
+            });
+        });
+    }
+
+    private _openNodeCard(event: Event, anchor: SVGGElement, id: string, label: string,
+        selection: NodeSelection, providers: NodeCardProvider[], heading: string, kind: string) {
+        this._closeNodeCard();
+        const request = new AbortController();
+        const slots = loadNodeCardItems(providers, selection, request.signal, () => {
+            if (slots.every(items => items?.length === 0)) {
+                this._closeNodeCard(this._cardEl?.contains(this.shadowRoot?.activeElement ?? null));
+            } else {
+                this.requestUpdate();
+            }
+        });
+        if (slots.every(items => items?.length === 0)) {
+            request.abort();
+            return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        this._hideTooltip();
+        this._selectedEdgeKey = null;
+        const clipping = clippingAncestors(this._roHost);
+        this._nodeCard = { anchor, id, label, heading, kind, slots, request, clipping };
+        // A scrolling ancestor can clip the anchor while it is still inside the viewport.
+        const visibility = new IntersectionObserver(entries => {
+            if (!request.signal.aborted && !entries[entries.length - 1].isIntersecting) this._closeNodeCard();
+        });
+        visibility.observe(anchor);
+        const options = { passive: true, signal: request.signal };
+        const resize = new ResizeObserver(this._positionNodeCard);
+        for (const { element } of clipping) {
+            resize.observe(element);
+            // Scroll events inside a shadow root do not reach the window.
+            element.addEventListener('scroll', this._positionNodeCard, options);
+        }
+        request.signal.addEventListener('abort', () => { visibility.disconnect(); resize.disconnect(); }, { once: true });
+        window.addEventListener('scroll', this._positionNodeCard, options);
+        window.addEventListener('resize', this._positionNodeCard, options);
+        window.addEventListener('keydown', this._onNodeCardKey, options);
+    }
+
+    private _onNodeCardKey = (event: KeyboardEvent) => {
+        if (event.key === 'Escape') this._closeNodeCard(this._cardEl?.contains(this.shadowRoot?.activeElement ?? null));
+    };
+
+    private _closeNodeCard(restoreFocus = false) {
+        if (!this._nodeCard) return;
+        const { request, anchor } = this._nodeCard;
+        this._nodeCard = null;
+        request.abort();
+        if (restoreFocus && anchor.isConnected) anchor.focus({ preventScroll: true });
+    }
+
+    private _positionNodeCard = () => {
+        if (!this._nodeCard) return;
+        const card = this._cardEl;
+        const container = card?.parentElement;
+        if (!card || !container) return;
+        const map = container.getBoundingClientRect();
+        const node = this._nodeCard.anchor.getBoundingClientRect();
+        let left = Math.max(map.left, 0);
+        let top = Math.max(map.top, 0);
+        let right = Math.min(map.right, window.innerWidth);
+        let bottom = Math.min(map.bottom, window.innerHeight);
+        for (const { element, clipsX, clipsY } of this._nodeCard.clipping) {
+            const rect = element.getBoundingClientRect();
+            if (clipsX) {
+                const x = rect.left + element.clientLeft;
+                left = Math.max(left, x);
+                right = Math.min(right, x + element.clientWidth);
+            }
+            if (clipsY) {
+                const y = rect.top + element.clientTop;
+                top = Math.max(top, y);
+                bottom = Math.min(bottom, y + element.clientHeight);
+            }
+        }
+        if (right < left || bottom < top || node.right < left || node.left > right || node.bottom < top || node.top > bottom) {
+            this._closeNodeCard();
+            return;
+        }
+        const gap = 8;
+        card.style.setProperty('--card-available-width', `${right - left}px`);
+        card.style.maxHeight = `${bottom - top}px`;
+        const width = card.offsetWidth;
+        const nextToNode = node.right + gap + width <= right ? node.right + gap : node.left - width - gap;
+        card.style.left = `${Math.max(left, Math.min(nextToNode, right - width)) - map.left}px`;
+        card.style.top = `${Math.max(top, Math.min(node.top, bottom - card.offsetHeight)) - map.top}px`;
+    };
+
+    private _renderNodeCard() {
+        const card = this._nodeCard;
+        if (!card) return nothing;
+        const loading = card.slots.every(items => !items?.length);
+        return html`<div class="node-card" role="dialog" aria-label=${`Details for ${card.label}`}
+            @pointerdown=${(event: PointerEvent) => this._cardPointerEvents.add(event)}>
+            <button type="button" class="edge-details-close" aria-label="Close node details"
+                @keydown=${(event: KeyboardEvent) => {
+                    if (event.repeat && (event.key === 'Enter' || event.key === ' ')) event.preventDefault();
+                }}
+                @click=${() => this._closeNodeCard(true)}>✕</button>
+            <div class="node-card-heading">
+                ${card.kind ? html`<div class="node-card-kind">${card.kind}</div>` : nothing}
+                <div class="node-card-name">${card.heading}</div>
+            </div>
+            <div class="edge-details-rows">
+                ${loading ? html`<span role="status">Loading…</span>` : nothing}
+                ${card.slots.map(items => items?.map(item => item.kind === 'link'
+                    ? html`<a href=${item.href}>${item.label}</a>`
+                    : html`<div><strong>${item.label}:</strong> ${item.value}</div>`))}
+            </div>
+        </div>`;
+    }
+
     private _renderEdgeExtra(edge: WorkloadEdge) {
         if (this.edgeExtraRenderers.length === 0) return nothing;
         const selection = edgeToSelection(edge, this._graphRef);
@@ -2918,6 +3212,7 @@ export class AntreaFlowVisibilityPage extends SessionAwarePage {
                         <path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/><rect x="9" y="9" width="6" height="6"/>`)}
                 </div>
                 ${this._renderEdgeDetails()}
+                ${this._renderNodeCard()}
             </div>
         `;
     }

@@ -134,6 +134,17 @@ export function meetsAccessRequirements(
     });
 }
 
+/**
+ * Whether a plugin item gated by `access` should be shown for the current access summary. Gated items
+ * stay hidden until the summary has loaded, so an admin-only tab never flashes for other users.
+ */
+export function allowsPluginItem(
+    { summary, loaded }: { summary: AccessSummary | null; loaded: boolean },
+    access: readonly PluginAccessRequirement[] | undefined,
+): boolean {
+    return !access?.length || (loaded && meetsAccessRequirements(summary, access));
+}
+
 /** Whether any requirement marks its item as a Namespace-aware page, regardless of clusterAdmin.
  * Hosts use it to carry the last scope in the item's navigation link and wire scope events. */
 export function isNamespaceAware(requirements: readonly PluginAccessRequirement[] | undefined): boolean {

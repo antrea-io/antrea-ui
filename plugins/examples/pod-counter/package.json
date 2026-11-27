@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "test": "tsc --noCheck --outDir .test-build && node --test",
     "build": "vite build && cd dist && zip -rX bundle.zip . -x manifest.json && find . -mindepth 1 ! -name manifest.json ! -name bundle.zip -delete"
   },
   "dependencies": {
