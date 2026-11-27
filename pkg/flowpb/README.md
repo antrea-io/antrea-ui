@@ -1,51 +1,38 @@
 # pkg/flowpb
 
-The three generated Go files are **copied by hand** from the upstream Antrea repository, not
-generated here. There is no `.proto` source in this repository and no
-generation target in `Makefile` or `hack/`.
+The three `.pb.go` files are generated here from the `.proto` files of the upstream
+Antrea repository, [antrea-io/antrea](https://github.com/antrea-io/antrea),
+`pkg/apis/flow/v1alpha1/`. This repository has no `.proto` source of its own: the
+revision of Antrea the files were generated from is recorded in `UPSTREAM_SHA`.
 
-Source: [antrea-io/antrea](https://github.com/antrea-io/antrea),
-`pkg/apis/flow/v1alpha1/`:
+| File in this directory | Generated from                         |
+| ---------------------- | -------------------------------------- |
+| `flow.pb.go`           | `pkg/apis/flow/v1alpha1/flow.proto`    |
+| `service.pb.go`        | `pkg/apis/flow/v1alpha1/service.proto` |
+| `service_grpc.pb.go`   | `pkg/apis/flow/v1alpha1/service.proto` |
 
-| File in this directory | Upstream file                             |
-| ---------------------- | ----------------------------------------- |
-| `flow.pb.go`           | `pkg/apis/flow/v1alpha1/flow.pb.go`         |
-| `service.pb.go`        | `pkg/apis/flow/v1alpha1/service.pb.go`      |
-| `service_grpc.pb.go`   | `pkg/apis/flow/v1alpha1/service_grpc.pb.go` |
+`policy.go` is written by hand and is not touched by regeneration.
 
-The only local edit is the package clause: upstream declares `package
-v1alpha1`, and these copies declare `package flowpb`. The Apache license
-header at the top of each file is upstream's own and is kept as is.
+The protos are used as upstream has them, except for `go_package`, which is
+rewritten to `antrea.io/antrea-ui/pkg/flowpb`. The proto package name is
+unchanged, so the gRPC full method name stays wire-identical to the Flow
+Aggregator's. As a result, the generated files differ from upstream's own in the
+`go_package` bytes of the embedded descriptor and, possibly, in the formatting of
+doc comments.
 
-To refresh them after an upstream proto change, re-copy all three together and
-re-apply the package rename, for example:
+To move to another upstream revision, run [`hack/update-flowpb.sh`](../../hack/update-flowpb.sh)
+with the revision, which must be a full commit SHA unless `ANTREA_DIR` points to a
+local Antrea checkout:
 
 ```sh
-for f in flow.pb.go service.pb.go service_grpc.pb.go; do
-    git -C /path/to/antrea show main:pkg/apis/flow/v1alpha1/$f \
-        | sed 's/^package v1alpha1$/package flowpb/' > pkg/flowpb/$f
-done
+hack/update-flowpb.sh <antrea-commit-sha>
 ```
 
-The current copies are from antrea-io/antrea@6022589 (antrea-io/antrea#8623).
-They carry antrea-io/antrea#8276, which added `GetFlowsRequest.cluster_wide`,
-`GetFlowsRequest.namespaces`, `FlowKubernetes.source_disclosure`,
-`FlowKubernetes.destination_disclosure` and the `EndpointDisclosure` enum,
-antrea-io/antrea#8432, which added `GetFlowsRequest.resume`,
-`GetFlowsResponse.resume_token` and the `ResumeToken` message, and
-antrea-io/antrea#8471, which changed when an endpoint is disclosed in full (the
-client holds the stream's own verb on `flows` in the endpoint's Namespace) and
-so only the `EndpointDisclosure` comments, and antrea-io/antrea#8491, which limits the
-Namespace withheld at the Flow tier to the destination of a denied connection the client
-initiated, again only in the `EndpointDisclosure` comments. antrea-io/antrea#8563 changed
-how a `FlowFilter` is matched, and so only the `FlowFilter` comments: its directional criteria
-describe a single endpoint, and `service_names` accepts `namespace/name`.
-antrea-io/antrea#8569 changed when a stream that does not follow closes, and so only the
-`GetFlowsRequest.follow` comment. antrea-io/antrea#8564 added
-`FlowKubernetes.destination_service_disclosure`: the destination Service is disclosed at the tier
-of its own Namespace, and `destination_disclosure` no longer covers it.
-antrea-io/antrea#8623 added `FlowFilter.network_policy_outcomes` to select
-flows by the combined outcome of their recorded ingress and egress rules.
+It regenerates the three files and rewrites `UPSTREAM_SHA` only if every step
+succeeds. Without an argument it regenerates from the revision in `UPSTREAM_SHA`.
+The script requires the `protoc` and plugin versions that Antrea uses; its header
+lists them and says where to get them. Review the diff of the generated files
+together with the upstream proto changes between the old and the new `UPSTREAM_SHA`.
 
 ## Flow source contract
 

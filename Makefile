@@ -28,6 +28,7 @@ bin:
 .PHONY: test
 test:
 	$(GO) test -race -v ./pkg/... ./test/benchmark/...
+	bash hack/test/update-flowpb-test.sh
 
 # code linting
 $(GOLANGCI_LINT_BIN):

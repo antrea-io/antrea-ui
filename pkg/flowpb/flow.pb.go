@@ -1685,7 +1685,7 @@ const file_pkg_apis_flow_v1alpha1_flow_proto_rawDesc = "" +
 	"\rFlowDirection\x12\x1a\n" +
 	"\x16FLOW_DIRECTION_INGRESS\x10\x00\x12\x19\n" +
 	"\x15FLOW_DIRECTION_EGRESS\x10\x01\x12\x1b\n" +
-	"\x16FLOW_DIRECTION_UNKNOWN\x10\xff\x01B\x18Z\x16pkg/apis/flow/v1alpha1b\x06proto3"
+	"\x16FLOW_DIRECTION_UNKNOWN\x10\xff\x01B Z\x1eantrea.io/antrea-ui/pkg/flowpbb\x06proto3"
 
 var (
 	file_pkg_apis_flow_v1alpha1_flow_proto_rawDescOnce sync.Once
