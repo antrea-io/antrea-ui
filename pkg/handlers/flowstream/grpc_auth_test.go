@@ -367,6 +367,7 @@ func TestSubscribeReportsOversizedMessageAsNotRetryable(t *testing.T) {
 // response carries a stream epoch, Subscribe must signal ready and forward the flows that follow.
 func TestSubscribeForwardsFlowsAfterStreamEpoch(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
+		sendFlow := make(chan struct{})
 		fake := &fakeFlowStreamServer{handle: func(_ int, _ string) error {
 			return nil
 		}}
@@ -374,7 +375,13 @@ func TestSubscribeForwardsFlowsAfterStreamEpoch(t *testing.T) {
 			if err := stream.Send(firstResponse); err != nil {
 				return err
 			}
-			return stream.Send(&flowpb.GetFlowsResponse{Flows: []*flowpb.Flow{{Id: "flow-1"}}})
+			// Keep the stream open until the epoch alone has signaled readiness.
+			select {
+			case <-sendFlow:
+				return stream.Send(&flowpb.GetFlowsResponse{Flows: []*flowpb.Flow{{Id: "flow-1"}}})
+			case <-stream.Context().Done():
+				return stream.Context().Err()
+			}
 		}
 		h := newTestSubscriber(t, fake)
 
@@ -392,6 +399,7 @@ func TestSubscribeForwardsFlowsAfterStreamEpoch(t *testing.T) {
 		case <-time.After(2 * time.Second):
 			require.FailNow(t, "timed out waiting for ready")
 		}
+		close(sendFlow)
 		select {
 		case evt, ok := <-flowsCh:
 			require.True(t, ok, "the flow after the first response must be forwarded")
